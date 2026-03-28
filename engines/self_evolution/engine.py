@@ -1,17 +1,8 @@
 """
-SelfEvolution Engine
-
-Purpose: System self-evolution and adaptation
-Input:   ['evolution_data', 'adaptation_goals']
-Output:  ['evolution_plan', 'capability_updates']
-
-Flow: Analyzer (Mistral) -> Worker (Qwen) -> Creative (LLaMA) -> Validator (Mistral)
+SelfEvolution Engine — System self-evolution: adapt capabilities to changing environment
 """
-
 from __future__ import annotations
-
 from typing import Any
-
 from engines.base import BaseEngine, EngineStep, StepResult, EngineStatus
 from models.routing.model_router import ModelRouter
 
@@ -26,91 +17,39 @@ class SelfEvolutionEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        # Step 1: Analyze (Mistral)
-        self.flow.add_step(EngineStep(
-            name="analyze",
-            model_role="analyzer",
-            description="Analyze input data and decide whether to proceed",
-            required=True,
-            stop_on_reject=True,
-        ))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze adaptation needs", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-
-        # Step 2: Execute (Qwen)
-        self.flow.add_step(EngineStep(
-            name="execute",
-            model_role="worker",
-            description="Generate structured output based on analysis",
-            required=True,
-        ))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate evolution plan", required=True))
         self.flow.register_executor("execute", self._step_execute)
-
-        # Step 3: Enhance (LLaMA)
-        self.flow.add_step(EngineStep(
-            name="enhance",
-            model_role="creative",
-            description="Enhance and polish the output",
-            required=False,
-        ))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with emergent capabilities", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-
-        # Step 4: Validate (Mistral)
-        self.flow.add_step(EngineStep(
-            name="validate",
-            model_role="validator",
-            description="Validate final output quality",
-            required=True,
-        ))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate evolution safety", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "analyzer",
-            f"Analyze for self_evolution: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="mistral",
-            status=EngineStatus.COMPLETED,
-            output={"analysis": result},
-        )
+        prompt = self._build_prompt("analyze", data)
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "worker",
-            f"Execute self_evolution task: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="qwen",
-            status=EngineStatus.COMPLETED,
-            output={"execution": result},
-        )
+        prompt = self._build_prompt("execute", data)
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "creative",
-            f"Enhance self_evolution output: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="llama",
-            status=EngineStatus.COMPLETED,
-            output={"enhanced": result},
-        )
+        prompt = self._build_prompt("enhance", data)
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "validator",
-            f"Validate self_evolution output quality: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="mistral",
-            status=EngineStatus.COMPLETED,
-            output={"validation": result},
-        )
+        prompt = self._build_prompt("validate", data)
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
+
+    def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
+        templates = {"analyze": """Analyze: environment changes (market, technology, competition), capability gaps, adaptation urgency, evolution constraints.\nData: {evolution_data}\nGoals: {adaptation_goals}""", "execute": """Generate: capability roadmap, new engine proposals, integration plan, deprecation candidates, evolution timeline.\nAnalysis: {analysis}""", "enhance": """Enhance: emergent capabilities from combining existing ones, anticipatory evolution, resilience building.\nPlan: {execution}""", "validate": """Validate: evolution is safe (no breaking changes), rollback possible, human oversight preserved.\nOutput: {enhanced}"""}
+        t = templates.get(step, "")
+        try:
+            return t.format(**data)
+        except KeyError:
+            return t + "\nData: " + str(data)

@@ -1,17 +1,8 @@
 """
-Psychology Engine
-
-Purpose: Apply behavioral psychology to user journeys
-Input:   ['behavior_data', 'journey_stage']
-Output:  ['psychological_triggers', 'recommendations']
-
-Flow: Analyzer (Mistral) -> Worker (Qwen) -> Creative (LLaMA) -> Validator (Mistral)
+Psychology Engine — Apply behavioral psychology principles to optimize user journeys
 """
-
 from __future__ import annotations
-
 from typing import Any
-
 from engines.base import BaseEngine, EngineStep, StepResult, EngineStatus
 from models.routing.model_router import ModelRouter
 
@@ -26,91 +17,41 @@ class PsychologyEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        # Step 1: Analyze (Mistral)
-        self.flow.add_step(EngineStep(
-            name="analyze",
-            model_role="analyzer",
-            description="Analyze input data and decide whether to proceed",
-            required=True,
-            stop_on_reject=True,
-        ))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze behavioral patterns and decision biases", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-
-        # Step 2: Execute (Qwen)
-        self.flow.add_step(EngineStep(
-            name="execute",
-            model_role="worker",
-            description="Generate structured output based on analysis",
-            required=True,
-        ))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate psychology-informed UX recommendations", required=True))
         self.flow.register_executor("execute", self._step_execute)
-
-        # Step 3: Enhance (LLaMA)
-        self.flow.add_step(EngineStep(
-            name="enhance",
-            model_role="creative",
-            description="Enhance and polish the output",
-            required=False,
-        ))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with nuanced behavioral nudges", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-
-        # Step 4: Validate (Mistral)
-        self.flow.add_step(EngineStep(
-            name="validate",
-            model_role="validator",
-            description="Validate final output quality",
-            required=True,
-        ))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate ethical boundaries", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "analyzer",
-            f"Analyze for psychology: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="mistral",
-            status=EngineStatus.COMPLETED,
-            output={"analysis": result},
-        )
+        prompt = self._build_prompt("analyze", data)
+        result = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "worker",
-            f"Execute psychology task: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="qwen",
-            status=EngineStatus.COMPLETED,
-            output={"execution": result},
-        )
+        prompt = self._build_prompt("execute", data)
+        result = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "creative",
-            f"Enhance psychology output: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="llama",
-            status=EngineStatus.COMPLETED,
-            output={"enhanced": result},
-        )
+        prompt = self._build_prompt("enhance", data)
+        result = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "validator",
-            f"Validate psychology output quality: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="mistral",
-            status=EngineStatus.COMPLETED,
-            output={"validation": result},
-        )
+        prompt = self._build_prompt("validate", data)
+        result = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+
+    def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
+        templates = {"analyze": """Analyze: cognitive biases at play, decision fatigue points, choice architecture, emotional state per journey stage.\nBehavior: {behavior_data}\nStage: {journey_stage}""", "execute": """Generate: bias-leveraging tactics per stage (anchoring, framing, social proof, scarcity, loss aversion), implementation specifications.\nAnalysis: {analysis}""", "enhance": """Enhance: subtle micro-copy changes, visual hierarchy adjustments, timing of nudges.\nTactics: {execution}""", "validate": """Validate: ethically sound (no dark patterns), transparent, reversible, genuinely helpful to user.\nOutput: {enhanced}"""}
+        t = templates.get(step, "")
+        try:
+            return t.format(**data)
+        except KeyError:
+            return t + "\nData: " + str(data)
+
+    COGNITIVE_BIASES = ["anchoring", "social_proof", "scarcity", "loss_aversion", "framing", "reciprocity", "commitment", "authority", "bandwagon", "default"]

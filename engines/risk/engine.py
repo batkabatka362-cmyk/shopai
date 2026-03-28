@@ -1,17 +1,8 @@
 """
-Risk Engine
-
-Purpose: Assess and mitigate business risks
-Input:   ['risk_data', 'risk_factors']
-Output:  ['risk_assessment', 'mitigation_plan']
-
-Flow: Analyzer (Mistral) -> Worker (Qwen) -> Creative (LLaMA) -> Validator (Mistral)
+Risk Engine — Assess and mitigate business, operational, and market risks
 """
-
 from __future__ import annotations
-
 from typing import Any
-
 from engines.base import BaseEngine, EngineStep, StepResult, EngineStatus
 from models.routing.model_router import ModelRouter
 
@@ -26,91 +17,50 @@ class RiskEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        # Step 1: Analyze (Mistral)
-        self.flow.add_step(EngineStep(
-            name="analyze",
-            model_role="analyzer",
-            description="Analyze input data and decide whether to proceed",
-            required=True,
-            stop_on_reject=True,
-        ))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze risk landscape", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-
-        # Step 2: Execute (Qwen)
-        self.flow.add_step(EngineStep(
-            name="execute",
-            model_role="worker",
-            description="Generate structured output based on analysis",
-            required=True,
-        ))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate risk mitigation plan", required=True))
         self.flow.register_executor("execute", self._step_execute)
-
-        # Step 3: Enhance (LLaMA)
-        self.flow.add_step(EngineStep(
-            name="enhance",
-            model_role="creative",
-            description="Enhance and polish the output",
-            required=False,
-        ))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with scenario planning", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-
-        # Step 4: Validate (Mistral)
-        self.flow.add_step(EngineStep(
-            name="validate",
-            model_role="validator",
-            description="Validate final output quality",
-            required=True,
-        ))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate risk scoring", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "analyzer",
-            f"Analyze for risk: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="mistral",
-            status=EngineStatus.COMPLETED,
-            output={"analysis": result},
-        )
+        prompt = self._build_prompt("analyze", data)
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "worker",
-            f"Execute risk task: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="qwen",
-            status=EngineStatus.COMPLETED,
-            output={"execution": result},
-        )
+        prompt = self._build_prompt("execute", data)
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "creative",
-            f"Enhance risk output: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="llama",
-            status=EngineStatus.COMPLETED,
-            output={"enhanced": result},
-        )
+        prompt = self._build_prompt("enhance", data)
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "validator",
-            f"Validate risk output quality: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="mistral",
-            status=EngineStatus.COMPLETED,
-            output={"validation": result},
-        )
+        prompt = self._build_prompt("validate", data)
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
+
+    def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
+        templates = {"analyze": """Analyze: risk categories (market, operational, financial, legal, reputational), probability, impact, current controls.\nData: {risk_data}\nFactors: {risk_factors}""", "execute": """Generate: risk matrix (probability x impact), mitigation strategies per risk, contingency plans, monitoring triggers.\nAnalysis: {analysis}""", "enhance": """Enhance: scenario planning for top risks, creative hedging strategies.\nPlan: {execution}""", "validate": """Validate: risk scores consistent, mitigations address root causes, no unaddressed high-impact risks.\nOutput: {enhanced}"""}
+        t = templates.get(step, "")
+        try:
+            return t.format(**data)
+        except KeyError:
+            return t + "\nData: " + str(data)
+
+    @staticmethod
+    def _risk_score(probability: float, impact: float) -> float:
+        return round(probability * impact, 2)
+
+    @staticmethod
+    def _risk_tier(score: float) -> str:
+        if score >= 7: return "critical"
+        if score >= 4: return "high"
+        if score >= 2: return "medium"
+        return "low"

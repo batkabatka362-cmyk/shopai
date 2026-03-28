@@ -1,17 +1,8 @@
 """
-Virality Engine
-
-Purpose: Engineer viral growth mechanics
-Input:   ['content_data', 'network_data']
-Output:  ['viral_strategy', 'growth_projections']
-
-Flow: Analyzer (Mistral) -> Worker (Qwen) -> Creative (LLaMA) -> Validator (Mistral)
+Virality Engine — Engineer viral growth mechanics and shareable content
 """
-
 from __future__ import annotations
-
 from typing import Any
-
 from engines.base import BaseEngine, EngineStep, StepResult, EngineStatus
 from models.routing.model_router import ModelRouter
 
@@ -26,91 +17,47 @@ class ViralityEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        # Step 1: Analyze (Mistral)
-        self.flow.add_step(EngineStep(
-            name="analyze",
-            model_role="analyzer",
-            description="Analyze input data and decide whether to proceed",
-            required=True,
-            stop_on_reject=True,
-        ))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze viral potential and network effects", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-
-        # Step 2: Execute (Qwen)
-        self.flow.add_step(EngineStep(
-            name="execute",
-            model_role="worker",
-            description="Generate structured output based on analysis",
-            required=True,
-        ))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate viral strategy", required=True))
         self.flow.register_executor("execute", self._step_execute)
-
-        # Step 3: Enhance (LLaMA)
-        self.flow.add_step(EngineStep(
-            name="enhance",
-            model_role="creative",
-            description="Enhance and polish the output",
-            required=False,
-        ))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with emotional trigger optimization", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-
-        # Step 4: Validate (Mistral)
-        self.flow.add_step(EngineStep(
-            name="validate",
-            model_role="validator",
-            description="Validate final output quality",
-            required=True,
-        ))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate viral coefficient estimates", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "analyzer",
-            f"Analyze for virality: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="mistral",
-            status=EngineStatus.COMPLETED,
-            output={"analysis": result},
-        )
+        prompt = self._build_prompt("analyze", data)
+        result = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "worker",
-            f"Execute virality task: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="qwen",
-            status=EngineStatus.COMPLETED,
-            output={"execution": result},
-        )
+        prompt = self._build_prompt("execute", data)
+        result = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "creative",
-            f"Enhance virality output: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="llama",
-            status=EngineStatus.COMPLETED,
-            output={"enhanced": result},
-        )
+        prompt = self._build_prompt("enhance", data)
+        result = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        result = self._model_router.execute(
-            "validator",
-            f"Validate virality output quality: " + str(data),
-            context=data,
-        )
-        return StepResult(
-            step_name=step_name,
-            model_used="mistral",
-            status=EngineStatus.COMPLETED,
-            output={"validation": result},
-        )
+        prompt = self._build_prompt("validate", data)
+        result = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+
+    def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
+        templates = {"analyze": """Analyze: shareability factors, emotional triggers, network topology, platform algorithms, existing viral examples in niche.\nContent: {content_data}\nNetwork: {network_data}""", "execute": """Generate: viral loops (share -> see -> try -> share), incentive structure, content formats ranked by viral potential, seeding strategy.\nAnalysis: {analysis}""", "enhance": """Enhance: emotional optimization (awe, humor, outrage, joy), hook formulas, meme potential.\nStrategy: {execution}""", "validate": """Validate: viral coefficient K>1 is justified, growth projections aren't exponential fantasy, seeding budget realistic.\nOutput: {enhanced}"""}
+        t = templates.get(step, "")
+        try:
+            return t.format(**data)
+        except KeyError:
+            return t + "\nData: " + str(data)
+
+    @staticmethod
+    def _viral_coefficient(invites_per_user: float, conversion_rate: float) -> float:
+        return round(invites_per_user * conversion_rate, 3)
+
+    @staticmethod
+    def _is_viral(k_factor: float) -> bool:
+        return k_factor > 1.0
