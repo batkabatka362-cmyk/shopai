@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from utils.logger import get_logger
+from engines.registry import list_engines
 
 logger = get_logger("orchestrator.task_router")
 
-ENGINE_MAP: dict[str, str] = {
+# Alias map: human-friendly task names → engine names
+TASK_ALIASES: dict[str, str] = {
     "find_product": "product_selection",
     "analyze_market": "market_research",
     "set_price": "pricing",
@@ -16,6 +18,10 @@ ENGINE_MAP: dict[str, str] = {
     "optimize_funnel": "funnel",
     "manage_inventory": "inventory",
 }
+
+# All 75 engines: engine_name routes directly to itself
+ENGINE_MAP: dict[str, str] = {name: name for name in list_engines()}
+ENGINE_MAP.update(TASK_ALIASES)
 
 
 class TaskRouter:

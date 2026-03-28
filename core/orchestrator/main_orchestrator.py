@@ -16,6 +16,7 @@ from .task_router import TaskRouter
 from .execution_router import ExecutionRouter
 from .decision_router import DecisionRouter
 from .fallback_router import FallbackRouter
+from engines.registry import get_engine, list_engines
 
 logger = get_logger("orchestrator.main")
 
@@ -59,9 +60,16 @@ class MainOrchestrator:
         engine_cfg = self._config.get("engines", {})
         self._task_router = TaskRouter(engine_config=engine_cfg)
 
+        # Auto-register engine handlers from registry
+        self._register_engines()
+
         self._running = True
         self._state.global_state.system_status = "running"
-        logger.info("MainOrchestrator initialized (env=%s)", system_cfg.get("environment", "unknown"))
+        logger.info(
+            "MainOrchestrator initialized (env=%s, engines=%d)",
+            system_cfg.get("environment", "unknown"),
+            len(self._execution_router.list_handlers()),
+        )
 
     def submit_task(
         self,
@@ -152,6 +160,25 @@ class MainOrchestrator:
         return self._fallback_router
 
     # -- internal helpers --
+
+    def _register_engines(self) -> None:
+        """Auto-register all engines from the registry as execution handlers."""
+        from engines.base import EngineInput
+
+        for engine_name in list_engines():
+            def _make_handler(name: str):
+                def handler(task_id: str, params: dict[str, Any]) -> Any:
+                    engine = get_engine(name)
+                    engine_input = EngineInput(
+                        task_id=task_id,
+                        engine_name=name,
+                        data=params,
+                    )
+                    output = engine.run(engine_input)
+                    return output.to_dict()
+                return handler
+
+            self._execution_router.register_handler(engine_name, _make_handler(engine_name))
 
     def _execute_with_fallback(self, engine: str, task_id: str, params: dict[str, Any] | None) -> dict[str, Any]:
         max_attempts = self._config.get("orchestrator", {}).get("retry_max_attempts", 3)
