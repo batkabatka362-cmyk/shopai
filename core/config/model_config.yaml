@@ -1,0 +1,24 @@
+models:
+  qwen:
+    name: "qwen"
+    enabled: true
+    priority: 1
+    max_tokens: 4096
+    temperature: 0.7
+  mistral:
+    name: "mistral"
+    enabled: true
+    priority: 2
+    max_tokens: 4096
+    temperature: 0.7
+  llama:
+    name: "llama"
+    enabled: true
+    priority: 3
+    max_tokens: 4096
+    temperature: 0.7
+
+routing:
+  strategy: "priority"
+  load_balance: true
+  fallback_enabled: true

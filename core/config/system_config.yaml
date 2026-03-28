@@ -1,0 +1,21 @@
+system:
+  name: "ShopAI"
+  version: "0.1.0"
+  environment: "development"
+  debug: true
+
+orchestrator:
+  max_concurrent_tasks: 10
+  task_timeout_seconds: 300
+  retry_max_attempts: 3
+  retry_backoff_factor: 2.0
+  health_check_interval_seconds: 30
+
+routing:
+  default_strategy: "priority"
+  fallback_enabled: true
+  max_fallback_depth: 3
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
