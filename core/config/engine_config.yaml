@@ -1,0 +1,30 @@
+engines:
+  product_selection:
+    enabled: true
+    priority: 1
+    timeout_seconds: 120
+  market_research:
+    enabled: true
+    priority: 2
+    timeout_seconds: 180
+  pricing:
+    enabled: true
+    priority: 3
+    timeout_seconds: 60
+  content_generation:
+    enabled: true
+    priority: 4
+    timeout_seconds: 90
+  marketing:
+    enabled: true
+    priority: 5
+    timeout_seconds: 120
+  analytics:
+    enabled: true
+    priority: 6
+    timeout_seconds: 60
+
+defaults:
+  enabled: false
+  priority: 10
+  timeout_seconds: 120
