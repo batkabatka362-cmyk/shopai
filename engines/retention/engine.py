@@ -1,5 +1,5 @@
 """
-Retention Engine — Retain customers and reduce churn through targeted interventions
+Retention Engine — Retain customers and reduce churn — cohort analysis, win-back, lifecycle management
 """
 from __future__ import annotations
 from typing import Any
@@ -17,37 +17,37 @@ class RetentionEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze churn patterns and risk segments", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate retention intervention plan", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with re-engagement messaging", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate retention impact estimates", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: churn rate by cohort, churn predictors (recency, frequency, monetary), at-risk segments, exit survey themes.\nCustomers: {customer_data}\nSignals: {churn_signals}""", "execute": """Generate: risk scoring model, intervention triggers (email/discount/call), win-back sequences, loyalty incentives per segment.\nAnalysis: {analysis}""", "enhance": """Enhance: emotional win-back messaging, personalized offers, we-miss-you campaigns.\nPlan: {execution}""", "validate": """Validate: interventions cost less than customer LTV, no over-discounting, sequences don't conflict.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze retention: cohort retention curves, churn rate by segment, early warning signals, NPS/CSAT trends, churn reasons.\n\nCustomers: {customer_data}\nSignals: {churn_signals}""", "execute": """Generate retention plan: at-risk segment interventions, loyalty triggers, reactivation sequences, win-back offers, lifecycle emails.\nAnalysis: {analysis}""", "enhance": """Enhance: emotional connection strategies, surprise and delight moments, community belonging.\nPlan: {execution}""", "validate": """Validate: churn prediction model accuracy, intervention costs vs customer value.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
@@ -56,11 +56,15 @@ class RetentionEngine(BaseEngine):
 
     @staticmethod
     def _churn_rate(lost: int, total: int) -> float:
-        return round(lost / max(total, 1) * 100, 2)
+        if total == 0: return 0.0
+        return round(lost / total * 100, 2)
 
     @staticmethod
-    def _rfm_score(recency: int, frequency: int, monetary: float) -> dict:
-        r = 5 if recency < 7 else 4 if recency < 14 else 3 if recency < 30 else 2 if recency < 60 else 1
-        f = min(5, max(1, frequency))
-        m = 5 if monetary > 500 else 4 if monetary > 200 else 3 if monetary > 100 else 2 if monetary > 50 else 1
-        return {"R": r, "F": f, "M": m, "total": r + f + m}
+    def _retention_rate(retained: int, initial: int) -> float:
+        if initial == 0: return 0.0
+        return round(retained / initial * 100, 2)
+
+    @staticmethod
+    def _cohort_retention(cohort_start: int, cohort_active: int) -> float:
+        if cohort_start == 0: return 0.0
+        return round(cohort_active / cohort_start * 100, 2)

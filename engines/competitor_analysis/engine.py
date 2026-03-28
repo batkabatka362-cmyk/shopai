@@ -1,5 +1,5 @@
 """
-CompetitorAnalysis Engine — Analyze competitor strategies, pricing, positioning, and weaknesses
+CompetitorAnalysis Engine — Analyze competitors — pricing, positioning, strengths/weaknesses, market share, strategy detection
 """
 from __future__ import annotations
 from typing import Any
@@ -17,66 +17,65 @@ class CompetitorAnalysisEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze competitor landscape and strategies", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate competitor profiles and gap analysis", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with competitive positioning angles", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate competitor data completeness", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {
-            "analyze": """Analyze competitors in this market segment:\n- Pricing strategies and price points\n- Product range and differentiation\n- Marketing channels and ad spend indicators\n- Customer reviews sentiment\n- Strengths and weaknesses\n- Market share estimates\n\nCompetitors: {competitor_data}\nSegment: {market_segment}""",
-            "execute": """Generate structured profiles:\n- Per competitor: pricing, positioning, strengths, weaknesses, threat level\n- Strategy gaps: what competitors miss\n- Blue ocean opportunities\n- Competitive advantage recommendations\n\nAnalysis: {analysis}""",
-            "enhance": """Add strategic narrative: how to outmaneuver each competitor, what messaging beats theirs, where they're vulnerable.\n\nProfiles: {execution}""",
-            "validate": """Validate: all competitors profiled, threat levels consistent with data, no unsupported claims, gaps are actionable.\n\nOutput: {enhanced}""",
-        }
-        template = templates.get(step, "")
+        templates = {"analyze": """Analyze competitors:\n- Who are the top 5-10 competitors?\n- Pricing strategy per competitor\n- Product range and quality positioning\n- Marketing channels and spend estimates\n- Customer reviews sentiment\n- Strengths and weaknesses\n- Market share estimates\n- Recent moves (new products, price changes, campaigns)\n\nCompetitor data: {competitor_data}\nSegment: {market_segment}""", "execute": """Generate competitive intelligence:\n- Competitor scorecards (1-10 per dimension)\n- Positioning map (price vs quality)\n- Strategy classification per competitor (cost leader/differentiator/niche)\n- Gap analysis: where no competitor serves well\n- Their likely next moves\n- Our competitive advantage opportunities\n\nAnalysis: {analysis}""", "enhance": """Enhance with strategic insights:\n- How to outposition each competitor\n- Messaging that exploits their weaknesses\n- Blue ocean opportunities\n\nIntelligence: {execution}""", "validate": """Validate: no bias toward any competitor, data-backed claims, gaps are real not wishful.\n\nOutput: {enhanced}"""}
+        t = templates.get(step, "")
         try:
-            return template.format(**data)
+            return t.format(**data)
         except KeyError:
-            return template + "\nData: " + str(data)
+            return t + "\nData: " + str(data)
 
     @staticmethod
-    def _price_position(our_price: float, competitor_prices: list[float]) -> str:
-        if not competitor_prices:
-            return "unknown"
-        avg = sum(competitor_prices) / len(competitor_prices)
-        if our_price < avg * 0.85:
-            return "budget"
-        elif our_price > avg * 1.15:
-            return "premium"
-        return "competitive"
+    def _market_share(revenue: float, total_market: float) -> float:
+        if total_market == 0: return 0.0
+        return round(revenue / total_market * 100, 2)
 
     @staticmethod
-    def _threat_level(competitor: dict) -> str:
-        score = 0
-        if float(competitor.get("market_share", 0)) > 0.2:
-            score += 3
-        if float(competitor.get("ad_spend", 0)) > 10000:
-            score += 2
-        if float(competitor.get("review_rating", 0)) > 4.5:
-            score += 2
-        return "high" if score >= 5 else "medium" if score >= 3 else "low"
+    def _competitive_score(strengths: int, weaknesses: int) -> float:
+        total = strengths + weaknesses
+        if total == 0: return 5.0
+        return round(strengths / total * 10, 2)
+
+    @staticmethod
+    def _strategy_type(price_position: str, quality_position: str) -> str:
+        if price_position == "low" and quality_position == "low": return "cost_leader"
+        if price_position == "high" and quality_position == "high": return "premium"
+        if price_position == "low" and quality_position == "high": return "value_disruptor"
+        if price_position == "high" and quality_position == "low": return "overpriced"
+        return "mid_market"
+
+    @staticmethod
+    def _threat_level(market_share: float, growth_rate: float) -> str:
+        if market_share > 30 and growth_rate > 10: return "critical"
+        if market_share > 15 or growth_rate > 20: return "high"
+        if market_share > 5: return "moderate"
+        return "low"

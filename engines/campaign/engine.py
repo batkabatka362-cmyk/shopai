@@ -1,5 +1,5 @@
 """
-Campaign Engine — Design, manage, and optimize marketing campaigns end-to-end
+Campaign Engine — Design and manage marketing campaigns — planning, execution, optimization
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,51 @@ class CampaignEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze campaign objectives and audience", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate campaign structure and timeline", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with creative hooks and angles", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate campaign feasibility", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: campaign goal (awareness/traffic/conversion), audience segments, platform selection, competition activity.\nBrief: {campaign_brief}\nAudience: {target_audience}""", "execute": """Generate: campaign phases (launch/scale/optimize), ad sets, audience targeting, creative briefs, budget pacing, KPI targets.\nAnalysis: {analysis}""", "enhance": """Enhance: stronger hooks, pattern-interrupt ideas, emotional triggers per audience segment.\nCampaign: {execution}""", "validate": """Validate: timeline realistic, budget pacing sustainable, KPIs measurable, audience overlap minimized.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze campaign opportunity: objective, audience, competitors, timing, budget, creative needs.\n\nBrief: {campaign_brief}\nAudience: {target_audience}""", "execute": """Generate campaign plan: phases, creative requirements, channel mix, timeline, budget per phase, success metrics.\nAnalysis: {analysis}""", "enhance": """Enhance: hook ideas, viral mechanics, UGC strategy.\nPlan: {execution}""", "validate": """Validate: timeline realistic, budget allocated, metrics defined.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    CAMPAIGN_PHASES = ["awareness", "consideration", "conversion", "retention"]
+
+    @staticmethod
+    def _ctr(clicks: int, impressions: int) -> float:
+        if impressions == 0: return 0.0
+        return round(clicks / impressions * 100, 2)
+
+    @staticmethod
+    def _conversion_rate(conversions: int, clicks: int) -> float:
+        if clicks == 0: return 0.0
+        return round(conversions / clicks * 100, 2)

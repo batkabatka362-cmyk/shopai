@@ -1,5 +1,5 @@
 """
-Branding Engine — Build and maintain brand identity: voice, positioning, visual direction
+Branding Engine — Build and maintain brand identity — name, voice, visual identity, positioning
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,47 @@ class BrandingEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze brand landscape and positioning gaps", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate brand identity system", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with memorable brand elements", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate brand coherence", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: current brand perception, competitor branding, white space in market, audience values.\nBrand: {brand_data}\nPosition: {market_position}""", "execute": """Generate brand system: positioning statement, voice guidelines, tagline options, color psychology, typography direction.\nAnalysis: {analysis}""", "enhance": """Enhance: make taglines stickier, voice more distinctive, visual direction more bold.\nBrand: {execution}""", "validate": """Validate: positioning is differentiated, voice is consistent, no brand confusion with competitors.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze brand landscape:\n- Current brand perception\n- Competitor brand positioning map\n- Target audience values and aspirations\n- Brand archetype alignment\n- Visual identity consistency\n- Voice and tone audit\n- Brand equity indicators\n\nBrand: {brand_data}\nPosition: {market_position}""", "execute": """Generate brand strategy:\n- Brand archetype selection with rationale\n- Positioning statement\n- Brand voice guidelines (do/don't)\n- Color psychology alignment\n- Typography recommendations\n- Brand naming criteria (if new)\n- Tagline options (5)\n\nAnalysis: {analysis}""", "enhance": """Enhance with deep brand thinking:\n- Cultural resonance\n- Aspirational identity (who does the customer become?)\n- Brand ritual opportunities\n- Community identity\n\nStrategy: {execution}""", "validate": """Validate: positioning is differentiated, voice is consistent, visual identity is cohesive.\n\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    ARCHETYPES = ["hero", "sage", "explorer", "rebel", "magician", "lover", "jester", "caregiver", "ruler", "creator", "innocent", "everyman"]
+
+    @staticmethod
+    def _brand_consistency_score(elements: dict[str, bool]) -> float:
+        if not elements: return 0.0
+        consistent = sum(1 for v in elements.values() if v)
+        return round(consistent / len(elements) * 10, 2)

@@ -1,5 +1,5 @@
 """
-SelfEvolution Engine — System self-evolution: adapt capabilities to changing environment
+SelfEvolution Engine — System self-evolution — architectural evolution, capability expansion, autonomous adaptation
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,44 @@ class SelfEvolutionEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze adaptation needs", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate evolution plan", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with emergent capabilities", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate evolution safety", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("analyze", data)
-        r = self._model_router.execute("analyzer", prompt, context=data)
+        r = self._model_router.execute("analyzer", self._build_prompt("analyze", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("execute", data)
-        r = self._model_router.execute("worker", prompt, context=data)
+        r = self._model_router.execute("worker", self._build_prompt("execute", data), context=data)
         return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("enhance", data)
-        r = self._model_router.execute("creative", prompt, context=data)
+        r = self._model_router.execute("creative", self._build_prompt("enhance", data), context=data)
         return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("validate", data)
-        r = self._model_router.execute("validator", prompt, context=data)
+        r = self._model_router.execute("validator", self._build_prompt("validate", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: environment changes (market, technology, competition), capability gaps, adaptation urgency, evolution constraints.\nData: {evolution_data}\nGoals: {adaptation_goals}""", "execute": """Generate: capability roadmap, new engine proposals, integration plan, deprecation candidates, evolution timeline.\nAnalysis: {analysis}""", "enhance": """Enhance: emergent capabilities from combining existing ones, anticipatory evolution, resilience building.\nPlan: {execution}""", "validate": """Validate: evolution is safe (no breaking changes), rollback possible, human oversight preserved.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze evolution opportunity: current architecture limits, capability gaps, emerging requirements, technology shifts, complexity budget.\nData: {evolution_data}\nGoals: {adaptation_goals}""", "execute": """Generate evolution plan: architectural changes, new capability development, deprecation candidates, migration strategy, backward compatibility.\nAnalysis: {analysis}""", "enhance": """Enhance: emergent capabilities, self-organizing architecture, anti-fragile design.\nPlan: {execution}""", "validate": """Validate: evolution doesn't break existing systems, backward compatible, reversible.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    @staticmethod
+    def _evolution_readiness(stability: float, test_coverage: float, documentation: float) -> float:
+        return round(stability * 0.4 + test_coverage * 0.35 + documentation * 0.25, 2)
+
+    @staticmethod
+    def _complexity_budget(current: int, max_allowed: int) -> dict:
+        remaining = max_allowed - current
+        return {"current": current, "max": max_allowed, "remaining": remaining, "can_evolve": remaining > 0}

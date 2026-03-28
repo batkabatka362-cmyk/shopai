@@ -1,5 +1,5 @@
 """
-MarketResearch Engine — Research market opportunities, trends, and gaps
+MarketResearch Engine — Research market opportunities — TAM/SAM/SOM analysis, trend detection, gap identification
 """
 from __future__ import annotations
 from typing import Any
@@ -17,54 +17,54 @@ class MarketResearchEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze market landscape and identify patterns", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate market insights and opportunity map", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with strategic narratives", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate market data consistency", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {
-            "analyze": """Analyze the market landscape for the target segment.\n\nAssess: market size (TAM/SAM/SOM), growth rate, key trends, customer pain points, underserved niches, regulatory environment, barriers to entry.\n\nMarket data: {market_data}\nTarget: {target_segment}""",
-            "execute": """Generate structured market insights:\n- Top 5 opportunities ranked by potential\n- Market gaps with estimated demand\n- Entry strategy recommendations\n- Risk factors per opportunity\n\nAnalysis: {analysis}""",
-            "enhance": """Enhance with compelling market narrative: why NOW is the time, what the winning angle is, how to position against incumbents.\n\nInsights: {execution}""",
-            "validate": """Validate: market size numbers are realistic, growth rates sourced, no contradictory insights, opportunities ranked consistently.\n\nOutput: {enhanced}""",
-        }
-        template = templates.get(step, "")
+        templates = {"analyze": """Analyze market landscape:\n- Total Addressable Market (TAM) estimation\n- Serviceable market (SAM/SOM)\n- Growth rate and trajectory\n- Key trends (rising, declining, emerging)\n- Underserved segments\n- Entry barriers\n- Regulatory landscape\n\nMarket: {market_data}\nSegment: {target_segment}""", "execute": """Generate structured market research report:\n- Market size with sources\n- Top 5 opportunities ranked by potential\n- Competitive intensity map\n- Customer persona profiles\n- Channel analysis (where customers buy)\n- Pricing landscape\n- Timing recommendations\n\nAnalysis: {analysis}""", "enhance": """Enhance with narrative insights:\n- Market story (where is this market heading?)\n- Non-obvious opportunities others miss\n- Contrarian angles\n\nReport: {execution}""", "validate": """Validate: market sizes are realistic, opportunities are actionable, no contradictory data.\n\nOutput: {enhanced}"""}
+        t = templates.get(step, "")
         try:
-            return template.format(**data)
+            return t.format(**data)
         except KeyError:
-            return template + "\nData: " + str(data)
+            return t + "\nData: " + str(data)
 
     @staticmethod
-    def _estimate_tam(population: int, conversion_rate: float, avg_order_value: float) -> float:
-        return round(population * conversion_rate * avg_order_value, 2)
+    def _estimate_tam(population: int, avg_spend: float, frequency: float) -> float:
+        return round(population * avg_spend * frequency, 2)
 
     @staticmethod
     def _market_growth_rate(current: float, previous: float) -> float:
-        if previous == 0:
-            return 0.0
+        if previous == 0: return 0.0
         return round((current - previous) / previous * 100, 2)
+
+    @staticmethod
+    def _concentration_ratio(top_n_share: float) -> str:
+        if top_n_share > 0.8: return "highly_concentrated"
+        if top_n_share > 0.5: return "moderately_concentrated"
+        return "fragmented"

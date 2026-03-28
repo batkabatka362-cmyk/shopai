@@ -1,5 +1,5 @@
 """
-Engagement Engine — Drive and measure user engagement across channels
+Engagement Engine — Drive and measure user engagement — session depth, return frequency, interactions
 """
 from __future__ import annotations
 from typing import Any
@@ -17,37 +17,37 @@ class EngagementEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze engagement patterns", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate engagement strategy", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with gamification elements", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate engagement predictions", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: DAU/MAU ratio, session duration, pages per session, return rate, engagement by content type.\nUsers: {user_data}\nMetrics: {engagement_metrics}""", "execute": """Generate: engagement loops, notification strategy, content calendar, gamification mechanics, community triggers.\nAnalysis: {analysis}""", "enhance": """Enhance: surprise and delight moments, personalized hooks, FOMO triggers.\nPlan: {execution}""", "validate": """Validate: engagement targets realistic, no notification fatigue risk, metrics are measurable.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze engagement: DAU/MAU ratio, session duration, pages per session, return frequency, feature usage, content interaction.\n\nUsers: {user_data}\nMetrics: {engagement_metrics}""", "execute": """Generate engagement plan: gamification elements, notification strategy, content personalization, email cadence, milestone rewards.\nAnalysis: {analysis}""", "enhance": """Enhance: habit loops, variable rewards, community features, identity reinforcement.\nPlan: {execution}""", "validate": """Validate: engagement tactics are ethical, not manipulative, sustainable long-term.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
@@ -56,4 +56,9 @@ class EngagementEngine(BaseEngine):
 
     @staticmethod
     def _stickiness(dau: int, mau: int) -> float:
-        return round(dau / max(mau, 1) * 100, 2)
+        if mau == 0: return 0.0
+        return round(dau / mau * 100, 2)
+
+    @staticmethod
+    def _engagement_score(session_duration: float, pages: float, interactions: float) -> float:
+        return round(min(10, session_duration / 30 + pages * 0.5 + interactions * 0.3), 2)

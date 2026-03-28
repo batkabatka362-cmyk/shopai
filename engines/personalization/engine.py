@@ -1,5 +1,5 @@
 """
-Personalization Engine — Personalize user experiences based on behavior, preferences, and context
+Personalization Engine — Personalize user experiences — content, products, offers, UI adaptation
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,45 @@ class PersonalizationEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze user segments and behavior patterns", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate personalization rules", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with surprise elements", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate personalization relevance", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: user segments, browsing patterns, purchase history, preference signals, device/location context.\nProfile: {user_profile}\nBehavior: {behavior_data}""", "execute": """Generate: personalization rules (if X then show Y), content variants per segment, product recommendation logic, email personalization.\nAnalysis: {analysis}""", "enhance": """Enhance: unexpected delight moments, hyper-relevant suggestions, personal touches.\nRules: {execution}""", "validate": """Validate: rules don't conflict, fallback exists for unknown users, no creepy over-personalization.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze personalization: user segments, behavior patterns, preference signals, purchase history, browsing patterns, device/location.\n\nProfile: {user_profile}\nBehavior: {behavior_data}""", "execute": """Generate personalization rules: content mapping per segment, product recommendations, dynamic UI elements, email personalization, offer targeting.\nAnalysis: {analysis}""", "enhance": """Enhance: 1-to-1 personalization narrative, micro-moments, contextual relevance.\nRules: {execution}""", "validate": """Validate: no filter bubbles, privacy compliant, fallbacks for new users.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    @staticmethod
+    def _segment_match(user: dict, segment_rules: dict) -> float:
+        matches = sum(1 for k, v in segment_rules.items() if user.get(k) == v)
+        total = len(segment_rules)
+        return round(matches / max(total, 1), 2)

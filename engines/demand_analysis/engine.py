@@ -1,5 +1,5 @@
 """
-DemandAnalysis Engine — Analyze demand patterns, signals, and predict future demand
+DemandAnalysis Engine — Analyze demand patterns — seasonality, velocity, geographic distribution, price elasticity
 """
 from __future__ import annotations
 from typing import Any
@@ -17,58 +17,67 @@ class DemandAnalysisEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze demand signals and historical patterns", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate demand forecast with confidence intervals", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Add narrative context to demand patterns", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate forecast accuracy metrics", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {
-            "analyze": """Analyze demand patterns:\n- Historical sales velocity\n- Search trend data (Google Trends, social mentions)\n- Seasonal patterns\n- Geographic demand distribution\n- Price elasticity signals\n\nDemand data: {demand_data}\nTime range: {time_range}""",
-            "execute": """Generate demand forecast:\n- Daily/weekly/monthly projections\n- Confidence intervals (low/mid/high)\n- Seasonal adjustment factors\n- Demand drivers ranked by impact\n- Anomaly flags\n\nAnalysis: {analysis}""",
-            "enhance": """Add context: why demand is shifting, what external factors matter, emerging demand signals that aren't obvious from data alone.\n\nForecast: {execution}""",
-            "validate": """Validate: forecasts are within reasonable bounds, confidence intervals widen appropriately, seasonal patterns are consistent with historical data.\n\nOutput: {enhanced}""",
-        }
-        template = templates.get(step, "")
+        templates = {"analyze": """Analyze demand patterns:\n- Volume trends over time\n- Seasonality detection (weekly, monthly, annual)\n- Geographic distribution of demand\n- Price sensitivity / elasticity indicators\n- Demand velocity (acceleration/deceleration)\n- Correlated demand (complementary products)\n- Leading indicators\n\nDemand data: {demand_data}\nTime range: {time_range}""", "execute": """Generate demand intelligence:\n- Demand forecast (next 30/60/90 days)\n- Seasonal multipliers by period\n- Price elasticity coefficient\n- Geographic heat map data\n- Stock-out risk per product\n- Demand clustering (which products move together)\n\nAnalysis: {analysis}""", "enhance": """Enhance with demand narratives:\n- Why is demand shifting?\n- Cultural/social drivers\n- Upcoming events that may spike demand\n\nForecast: {execution}""", "validate": """Validate: forecast within historical variance, seasonality patterns consistent, no impossible growth projections.\n\nOutput: {enhanced}"""}
+        t = templates.get(step, "")
         try:
-            return template.format(**data)
+            return t.format(**data)
         except KeyError:
-            return template + "\nData: " + str(data)
+            return t + "\nData: " + str(data)
 
     @staticmethod
     def _moving_average(values: list[float], window: int = 7) -> list[float]:
-        if len(values) < window:
-            return values
-        return [round(sum(values[i:i+window]) / window, 2) for i in range(len(values) - window + 1)]
+        if len(values) < window: return values
+        result = []
+        for i in range(len(values) - window + 1):
+            avg = sum(values[i:i+window]) / window
+            result.append(round(avg, 2))
+        return result
 
     @staticmethod
-    def _detect_seasonality(monthly_data: list[float]) -> dict[str, Any]:
-        if len(monthly_data) < 12:
-            return {"seasonal": False}
-        avg = sum(monthly_data) / len(monthly_data)
-        peaks = [i+1 for i, v in enumerate(monthly_data) if v > avg * 1.3]
-        return {"seasonal": len(peaks) > 0, "peak_months": peaks, "avg": round(avg, 2)}
+    def _seasonality_index(period_value: float, avg_value: float) -> float:
+        if avg_value == 0: return 1.0
+        return round(period_value / avg_value, 3)
+
+    @staticmethod
+    def _price_elasticity(pct_qty_change: float, pct_price_change: float) -> float:
+        if pct_price_change == 0: return 0.0
+        return round(pct_qty_change / pct_price_change, 3)
+
+    @staticmethod
+    def _demand_velocity(current: float, previous: float) -> str:
+        if previous == 0: return "new"
+        ratio = current / previous
+        if ratio > 1.2: return "accelerating"
+        if ratio > 0.95: return "stable"
+        if ratio > 0.7: return "decelerating"
+        return "declining"

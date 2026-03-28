@@ -1,5 +1,5 @@
 """
-Investment Engine — Evaluate investment decisions: where to allocate capital for max ROI
+Investment Engine — Evaluate investment decisions — ROI analysis, payback period, risk-adjusted returns
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,52 @@ class InvestmentEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze investment options and constraints", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate investment recommendations", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with strategic rationale", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate ROI projections", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("analyze", data)
-        r = self._model_router.execute("analyzer", prompt, context=data)
+        r = self._model_router.execute("analyzer", self._build_prompt("analyze", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("execute", data)
-        r = self._model_router.execute("worker", prompt, context=data)
+        r = self._model_router.execute("worker", self._build_prompt("execute", data), context=data)
         return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("enhance", data)
-        r = self._model_router.execute("creative", prompt, context=data)
+        r = self._model_router.execute("creative", self._build_prompt("enhance", data), context=data)
         return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("validate", data)
-        r = self._model_router.execute("validator", prompt, context=data)
+        r = self._model_router.execute("validator", self._build_prompt("validate", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: options (marketing spend, inventory, tools, hiring), expected returns, risk per option, time to ROI, opportunity cost.\nOptions: {investment_options}\nConstraints: {constraints}""", "execute": """Generate: ranked investment portfolio, capital allocation, expected ROI timeline, risk-adjusted returns, diversification plan.\nAnalysis: {analysis}""", "enhance": """Enhance: strategic narrative for each investment, what success looks like, leading indicators to track.\nRecs: {execution}""", "validate": """Validate: ROI projections conservative, risk properly weighted, total allocation within constraints.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze investments: projected returns, risk profile, payback period, opportunity cost, capital requirements, strategic alignment.\nOptions: {investment_options}\nConstraints: {constraints}""", "execute": """Generate investment analysis: NPV/IRR per option, risk-adjusted ranking, recommended allocation, timeline, milestones.\nAnalysis: {analysis}""", "enhance": """Enhance: asymmetric upside opportunities, optionality value.\nAnalysis: {execution}""", "validate": """Validate: return projections conservative, risks acknowledged, diversification adequate.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    @staticmethod
+    def _roi(gain: float, cost: float) -> float:
+        if cost == 0: return 0.0
+        return round((gain - cost) / cost * 100, 2)
+
+    @staticmethod
+    def _payback_months(investment: float, monthly_return: float) -> float:
+        if monthly_return <= 0: return float("inf")
+        return round(investment / monthly_return, 1)
+
+    @staticmethod
+    def _npv(cash_flows: list[float], discount_rate: float) -> float:
+        total = 0.0
+        for i, cf in enumerate(cash_flows):
+            total += cf / (1 + discount_rate) ** i
+        return round(total, 2)

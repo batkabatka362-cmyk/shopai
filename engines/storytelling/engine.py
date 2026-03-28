@@ -1,5 +1,5 @@
 """
-Storytelling Engine — Create compelling brand narratives and product stories
+Storytelling Engine — Create compelling brand narratives — origin stories, customer journeys, product stories
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,48 @@ class StorytellingEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze brand identity and audience", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate brand narrative structure", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with emotional depth", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate narrative consistency", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze brand story elements: origin, mission, values, unique angle, audience aspirations.\nBrand: {brand_data}\nAudience: {audience}""", "execute": """Build narrative: hero (customer) journey, problem-solution arc, brand as guide, transformation story, proof points.\nAnalysis: {analysis}""", "enhance": """Enhance: vivid imagery, emotional hooks, sensory language, memorable phrases.\nNarrative: {execution}""", "validate": """Validate: consistent voice, no contradictions, emotionally coherent, authentic.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze storytelling opportunity:\n- Brand values and mission\n- Founder/origin story potential\n- Customer transformation stories\n- Product creation journey\n- Problem-solution narrative\n- Cultural context and relevance\n- Emotional territory to own\n\nBrand: {brand_data}\nAudience: {audience}""", "execute": """Generate narrative framework:\n- Brand origin story (hero's journey)\n- Customer journey narrative arc\n- Product story (why it exists)\n- Emotional hooks per story\n- Story formats (short/medium/long)\n- Platform adaptation (social vs long-form)\n\nAnalysis: {analysis}""", "enhance": """Enhance narratives with:\n- Vivid sensory details\n- Emotional turning points\n- Relatable conflict and resolution\n- Memorable phrases and taglines\n- Call to adventure for the customer\n\nStories: {execution}""", "validate": """Validate: narratives are authentic (not fabricated), emotionally resonant, brand-consistent.\n\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    STORY_ARCS = ["heros_journey", "rags_to_riches", "overcoming_monster", "quest", "rebirth", "transformation"]
+
+    @staticmethod
+    def _emotional_score(text: str, power_words: list[str] | None = None) -> float:
+        pw = power_words or ["love", "discover", "transform", "unlock", "dream", "believe", "imagine", "create"]
+        words = text.lower().split()
+        hits = sum(1 for w in words if w in pw)
+        return round(min(10, hits / max(len(words), 1) * 200), 2)

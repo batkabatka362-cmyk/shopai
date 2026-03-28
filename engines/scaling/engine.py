@@ -1,5 +1,5 @@
 """
-Scaling Engine — Scale operations, infrastructure, and team without breaking
+Scaling Engine — Scale operations — capacity planning, resource optimization, growth infrastructure
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,45 @@ class ScalingEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze scaling bottlenecks", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate scaling plan", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with efficiency-at-scale strategies", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate scaling feasibility", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("analyze", data)
-        r = self._model_router.execute("analyzer", prompt, context=data)
+        r = self._model_router.execute("analyzer", self._build_prompt("analyze", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("execute", data)
-        r = self._model_router.execute("worker", prompt, context=data)
+        r = self._model_router.execute("worker", self._build_prompt("execute", data), context=data)
         return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("enhance", data)
-        r = self._model_router.execute("creative", prompt, context=data)
+        r = self._model_router.execute("creative", self._build_prompt("enhance", data), context=data)
         return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("validate", data)
-        r = self._model_router.execute("validator", prompt, context=data)
+        r = self._model_router.execute("validator", self._build_prompt("validate", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: current capacity, bottlenecks (technical, operational, human), growth projections, breaking points.\nData: {scaling_data}\nLimits: {capacity_limits}""", "execute": """Generate: scaling roadmap (what breaks at 2x, 5x, 10x), infrastructure needs, process changes, hiring plan, tool upgrades.\nAnalysis: {analysis}""", "enhance": """Enhance: economies of scale opportunities, automation before hiring, platform vs custom build decisions.\nPlan: {execution}""", "validate": """Validate: scaling steps are sequential, costs are projected, no single points of failure at scale.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze scaling readiness: current capacity utilization, growth rate, bottlenecks, cost per unit at scale, breaking points.\nData: {scaling_data}\nLimits: {capacity_limits}""", "execute": """Generate scaling plan: capacity expansion roadmap, cost projections, technology upgrades, team scaling, process automation.\nAnalysis: {analysis}""", "enhance": """Enhance: economies of scale identification, platform leverage, network effects at scale.\nPlan: {execution}""", "validate": """Validate: costs scale sub-linearly, no single point of failure, quality maintained.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    @staticmethod
+    def _scaling_factor(new_capacity: float, old_capacity: float) -> float:
+        if old_capacity == 0: return 0.0
+        return round(new_capacity / old_capacity, 2)
+
+    @staticmethod
+    def _cost_elasticity(cost_growth_pct: float, capacity_growth_pct: float) -> float:
+        if capacity_growth_pct == 0: return 0.0
+        return round(cost_growth_pct / capacity_growth_pct, 3)

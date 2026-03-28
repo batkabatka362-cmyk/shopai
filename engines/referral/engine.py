@@ -1,5 +1,5 @@
 """
-Referral Engine — Manage and optimize referral systems for viral customer acquisition
+Referral Engine — Manage referral systems — incentive design, tracking, optimization
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,51 @@ class ReferralEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze referral patterns", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate referral program design", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with sharing motivation", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate referral economics", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: current referral rate, referrer profiles, channel effectiveness, incentive response rates.\nReferrals: {referral_data}\nIncentives: {incentive_data}""", "execute": """Generate: incentive structure (give X get Y), sharing mechanics, referral tracking, fraud prevention, viral coefficient target.\nAnalysis: {analysis}""", "enhance": """Enhance: shareable messaging, social proof, make referring feel generous not salesy.\nProgram: {execution}""", "validate": """Validate: CAC via referral < paid CAC, fraud controls adequate, incentive costs sustainable.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze referrals: current referral rate, incentive effectiveness, viral coefficient, channel performance, fraud detection.\n\nReferrals: {referral_data}\nIncentives: {incentive_data}""", "execute": """Generate referral program: incentive structure (two-sided), sharing mechanics, milestone rewards, fraud prevention, tracking.\nAnalysis: {analysis}""", "enhance": """Enhance: social proof, status rewards, gamification, community challenges.\nProgram: {execution}""", "validate": """Validate: unit economics positive, fraud controls in place, incentives not cannibalistic.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    @staticmethod
+    def _referral_rate(referrals: int, customers: int) -> float:
+        if customers == 0: return 0.0
+        return round(referrals / customers * 100, 2)
+
+    @staticmethod
+    def _cac_with_referral(spend: float, new_customers: int, referral_cost: float, referred_customers: int) -> float:
+        total_cost = spend + referral_cost
+        total_customers = new_customers + referred_customers
+        if total_customers == 0: return 0.0
+        return round(total_cost / total_customers, 2)

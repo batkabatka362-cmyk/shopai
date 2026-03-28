@@ -1,5 +1,5 @@
 """
-DynamicPricing Engine — Adjust prices dynamically based on demand, competition, inventory, and time
+DynamicPricing Engine — Adjust prices dynamically based on demand, competition, inventory, and time signals
 """
 from __future__ import annotations
 from typing import Any
@@ -17,61 +17,60 @@ class DynamicPricingEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze real-time market signals for price adjustments", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Calculate dynamic price adjustments", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Add urgency/scarcity messaging", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate adjustments within bounds", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("analyze", data)
-        result = self._model_router.execute("analyzer", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": result})
+        r = self._model_router.execute("analyzer", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("execute", data)
-        result = self._model_router.execute("worker", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": result})
+        r = self._model_router.execute("worker", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("enhance", data)
-        result = self._model_router.execute("creative", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": result})
+        r = self._model_router.execute("creative", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
         prompt = self._build_prompt("validate", data)
-        result = self._model_router.execute("validator", prompt, context=data)
-        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": result})
+        r = self._model_router.execute("validator", prompt, context=data)
+        return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {
-            "analyze": """Analyze signals for price adjustment:\n- Demand velocity (increasing/decreasing)\n- Competitor price changes\n- Inventory levels (overstocked/low)\n- Time factors (day of week, season)\n- Conversion rate trends\n\nCurrent: {current_prices}\nSignals: {market_signals}""",
-            "execute": """Calculate adjustments:\n- Per product: new price, change %, reason\n- Rules: max +/- 20% per day, never below cost, never above 2x competitor avg\n- Priority: low-stock items first\n\nAnalysis: {analysis}""",
-            "enhance": """Suggest urgency messaging for price changes: limited time, stock scarcity, trending now.\n\nAdjustments: {execution}""",
-            "validate": """Validate: changes within bounds, no below-cost prices, no rapid oscillation, reasons documented.\n\nOutput: {enhanced}""",
-        }
-        template = templates.get(step, "")
+        templates = {"analyze": """Analyze dynamic pricing signals:\n- Current demand velocity vs normal\n- Competitor price changes (last 24h/7d)\n- Inventory level (days of stock)\n- Time-based factors (day of week, hour, season)\n- Cart abandonment rate at current price\n- Conversion rate trends\n- External events (holidays, trends)\n\nPrices: {current_prices}\nSignals: {market_signals}""", "execute": """Generate price adjustments:\n- Per-product: new price, change %, reason\n- Priority: which changes have highest impact\n- Timing: when to apply (immediate vs scheduled)\n- Duration: temporary vs permanent\n- Floor/ceiling enforcement\n- Projected revenue impact\n\nAnalysis: {analysis}""", "enhance": """Enhance with urgency optimization:\n- Scarcity signals (low stock = price up?)\n- Demand surge pricing rules\n- Time-decay discounts for aging inventory\n\nAdjustments: {execution}""", "validate": """Validate: no price below floor, no excessive change (>20% in 24h), changes are reversible.\n\nOutput: {enhanced}"""}
+        t = templates.get(step, "")
         try:
-            return template.format(**data)
+            return t.format(**data)
         except KeyError:
-            return template + "\nData: " + str(data)
+            return t + "\nData: " + str(data)
 
     @staticmethod
-    def _calculate_adjustment(current: float, demand_signal: float, inventory_signal: float) -> float:
-        adjustment = 0.0
-        if demand_signal > 0.7:
-            adjustment += 0.05
-        elif demand_signal < 0.3:
-            adjustment -= 0.05
-        if inventory_signal < 0.2:
-            adjustment += 0.08
-        elif inventory_signal > 0.8:
-            adjustment -= 0.08
-        return round(max(-0.20, min(0.20, adjustment)), 3)
+    def _price_change_pct(old: float, new: float) -> float:
+        if old == 0: return 0.0
+        return round((new - old) / old * 100, 2)
 
     @staticmethod
-    def _apply_bounds(price: float, floor: float, ceiling: float) -> float:
-        return round(max(floor, min(ceiling, price)), 2)
+    def _demand_multiplier(current_demand: float, avg_demand: float) -> float:
+        if avg_demand == 0: return 1.0
+        return round(current_demand / avg_demand, 3)
+
+    @staticmethod
+    def _should_adjust(multiplier: float, threshold: float = 0.15) -> bool:
+        return abs(multiplier - 1.0) > threshold
+
+    @staticmethod
+    def _inventory_urgency(days_of_stock: float) -> float:
+        if days_of_stock <= 3: return 0.0
+        if days_of_stock <= 7: return -0.05
+        if days_of_stock > 60: return 0.10
+        return 0.0

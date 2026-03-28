@@ -1,5 +1,5 @@
 """
-Logging Engine — Manage, analyze, and extract insights from system logs
+Logging Engine — Manage and analyze system logs — aggregation, search, pattern detection
 """
 from __future__ import annotations
 from typing import Any
@@ -17,39 +17,44 @@ class LoggingEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze log patterns", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate log analysis report", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with actionable insights", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate log completeness", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("analyze", data)
-        r = self._model_router.execute("analyzer", prompt, context=data)
+        r = self._model_router.execute("analyzer", self._build_prompt("analyze", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("execute", data)
-        r = self._model_router.execute("worker", prompt, context=data)
+        r = self._model_router.execute("worker", self._build_prompt("execute", data), context=data)
         return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("enhance", data)
-        r = self._model_router.execute("creative", prompt, context=data)
+        r = self._model_router.execute("creative", self._build_prompt("enhance", data), context=data)
         return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("validate", data)
-        r = self._model_router.execute("validator", prompt, context=data)
+        r = self._model_router.execute("validator", self._build_prompt("validate", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: log volume, error rates, warning patterns, access patterns, performance trends.\nLogs: {log_data}\nQuery: {query_params}""", "execute": """Generate: pattern summary, error clustering, timeline of events, anomalous log entries, correlation with incidents.\nAnalysis: {analysis}""", "enhance": """Enhance: plain-english narrative of what happened, impact assessment, recommended log improvements.\nReport: {execution}""", "validate": """Validate: analysis covers requested time range, no data gaps, patterns are statistically significant.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Analyze logs: volume trends, error distribution, source breakdown, correlation patterns, unusual activity.\nLogs: {log_data}\nQuery: {query_params}""", "execute": """Generate log analysis: filtered results, pattern summary, error clusters, timeline reconstruction, actionable findings.\nAnalysis: {analysis}""", "enhance": """Enhance: predictive alerting based on log patterns.\nAnalysis: {execution}""", "validate": """Validate: patterns are statistically significant, no important logs missed.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
         except KeyError:
             return t + "\nData: " + str(data)
+
+    @staticmethod
+    def _log_volume(logs: list, window_minutes: int = 60) -> float:
+        return round(len(logs) / max(window_minutes, 1) * 60, 2)
+
+    @staticmethod
+    def _error_ratio(errors: int, total: int) -> float:
+        if total == 0: return 0.0
+        return round(errors / total * 100, 2)

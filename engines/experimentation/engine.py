@@ -1,5 +1,5 @@
 """
-Experimentation Engine — Run structured experiments and A/B tests with statistical rigor
+Experimentation Engine — Run experiments — A/B tests, multivariate tests, hypothesis validation
 """
 from __future__ import annotations
 from typing import Any
@@ -17,37 +17,33 @@ class ExperimentationEngine(BaseEngine):
         super().__init__()
 
     def define_steps(self) -> None:
-        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Analyze experiment design", required=True, stop_on_reject=True))
+        self.flow.add_step(EngineStep(name="analyze", model_role="analyzer", description="Domain analysis", required=True, stop_on_reject=True))
         self.flow.register_executor("analyze", self._step_analyze)
-        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Execute experiment analysis", required=True))
+        self.flow.add_step(EngineStep(name="execute", model_role="worker", description="Generate structured output", required=True))
         self.flow.register_executor("execute", self._step_execute)
-        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Enhance with learning narratives", required=False))
+        self.flow.add_step(EngineStep(name="enhance", model_role="creative", description="Creative enhancement", required=False))
         self.flow.register_executor("enhance", self._step_enhance)
-        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Validate statistical significance", required=True))
+        self.flow.add_step(EngineStep(name="validate", model_role="validator", description="Quality validation", required=True))
         self.flow.register_executor("validate", self._step_validate)
 
     def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("analyze", data)
-        r = self._model_router.execute("analyzer", prompt, context=data)
+        r = self._model_router.execute("analyzer", self._build_prompt("analyze", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"analysis": r})
 
     def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("execute", data)
-        r = self._model_router.execute("worker", prompt, context=data)
+        r = self._model_router.execute("worker", self._build_prompt("execute", data), context=data)
         return StepResult(step_name=step_name, model_used="qwen", status=EngineStatus.COMPLETED, output={"execution": r})
 
     def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("enhance", data)
-        r = self._model_router.execute("creative", prompt, context=data)
+        r = self._model_router.execute("creative", self._build_prompt("enhance", data), context=data)
         return StepResult(step_name=step_name, model_used="llama", status=EngineStatus.COMPLETED, output={"enhanced": r})
 
     def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        prompt = self._build_prompt("validate", data)
-        r = self._model_router.execute("validator", prompt, context=data)
+        r = self._model_router.execute("validator", self._build_prompt("validate", data), context=data)
         return StepResult(step_name=step_name, model_used="mistral", status=EngineStatus.COMPLETED, output={"validation": r})
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        templates = {"analyze": """Analyze: hypothesis clarity, sample size requirements, test duration, confounding variables, success metrics.\nConfig: {experiment_config}\nHypothesis: {hypothesis}""", "execute": """Run analysis: control vs variant, statistical significance (p-value), effect size, confidence interval, sample size adequacy.\nAnalysis: {analysis}""", "enhance": """Enhance: what we learned narrative, follow-up experiment ideas, broader implications.\nResults: {execution}""", "validate": """Validate: p-value threshold met, no peeking bias, sample size sufficient, external validity considered.\nOutput: {enhanced}"""}
+        templates = {"analyze": """Design experiment: hypothesis, variables, sample size, duration, success metrics, statistical significance requirements.\nConfig: {experiment_config}\nHypothesis: {hypothesis}""", "execute": """Generate experiment plan: control/variant design, traffic split, minimum detectable effect, run duration, stopping rules.\nAnalysis: {analysis}""", "enhance": """Enhance: multi-armed bandit optimization, sequential testing, experiment velocity.\nPlan: {execution}""", "validate": """Validate: sample size sufficient, no selection bias, p-value threshold defined.\nOutput: {enhanced}"""}
         t = templates.get(step, "")
         try:
             return t.format(**data)
@@ -55,11 +51,20 @@ class ExperimentationEngine(BaseEngine):
             return t + "\nData: " + str(data)
 
     @staticmethod
-    def _min_sample_size(baseline_rate: float, min_effect: float, power: float = 0.8) -> int:
+    def _sample_size(baseline_rate: float, mde: float, power: float = 0.8, alpha: float = 0.05) -> int:
         import math
         z_alpha = 1.96
         z_beta = 0.84
-        p1 = baseline_rate
-        p2 = baseline_rate * (1 + min_effect)
-        n = ((z_alpha + z_beta) ** 2 * (p1 * (1-p1) + p2 * (1-p2))) / max((p2 - p1) ** 2, 0.0001)
+        p = baseline_rate
+        delta = mde
+        n = ((z_alpha + z_beta) ** 2 * 2 * p * (1 - p)) / (delta ** 2)
         return int(math.ceil(n))
+
+    @staticmethod
+    def _is_significant(p_value: float, alpha: float = 0.05) -> bool:
+        return p_value < alpha
+
+    @staticmethod
+    def _uplift(control: float, variant: float) -> float:
+        if control == 0: return 0.0
+        return round((variant - control) / control * 100, 2)
