@@ -1,4 +1,4 @@
-"""Engine Registry — maps all 75 engine names to their classes.
+"""Engine Registry — maps all 86 engine names to their classes.
 
 Single source of truth for engine lookup. Used by the orchestrator
 to instantiate and route tasks to engines.
@@ -88,6 +88,17 @@ _ENGINE_MAP: dict[str, str] = {
     "meta_learning": "engines.meta_learning",
     "self_improvement": "engines.self_improvement",
     "self_evolution": "engines.self_evolution",
+    "autonomous_control": "engines.autonomous_control",
+    "autonomous_decision": "engines.autonomous_decision",
+    "autonomous_execution": "engines.autonomous_execution",
+    "autonomous_learning": "engines.autonomous_learning",
+    "autonomous_scaling": "engines.autonomous_scaling",
+    "meta_intelligence": "engines.meta_intelligence",
+    "super_intelligence": "engines.super_intelligence",
+    "agbi": "engines.agbi",
+    "empire": "engines.empire",
+    "civilization": "engines.civilization",
+    "infinite_scaling": "engines.infinite_scaling",
 }
 
 _engine_cache: dict[str, BaseEngine] = {}
