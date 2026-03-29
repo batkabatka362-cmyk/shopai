@@ -55,8 +55,21 @@ class RuleEngine:
         return triggered
 
     def evaluate_rule(self, rule: dict, context: dict) -> bool:
-        """Return True when every condition clause matches *context*."""
+        """Return True when every condition clause matches *context*.
+
+        Supports two condition formats:
+          1. Nested: {"price": {"gt": 100}, "name": "exact_match"}
+          2. Flat:   {"field": "price", "op": "gt", "value": 100}
+        """
         condition = rule.get("condition", {})
+
+        # Flat format: {"field": ..., "op": ..., "value": ...}
+        if "field" in condition and "op" in condition:
+            field = condition["field"]
+            ctx_value = context.get(field)
+            return self._check_operator(condition["op"], ctx_value, condition.get("value"))
+
+        # Nested format: {field: {operator: expected}, ...}
         for field, checks in condition.items():
             value = context.get(field)
             if not isinstance(checks, dict):
