@@ -120,13 +120,20 @@ class BaseEngine(ABC):
             return self._fail_output(engine_input.task_id, f"Flow execution error: {exc}", start_time)
 
         # 5. Post-process: clean model output into structured result
+        #    SmartExecutor fills in REAL computed results when model returns placeholders
         if _post_processor is not None and step_results:
             try:
+                _post_processor.set_step_context(engine_input.task_id, data)
+                accumulated = dict(data)
                 for step_result in step_results:
                     if step_result.output and step_result.status == EngineStatus.COMPLETED:
+                        # Pass accumulated context so each step sees prior outputs
+                        _post_processor.set_step_context(engine_input.task_id, accumulated)
                         step_result.output = _post_processor.process(
                             step_result.output, step_result.step_name, self.engine_name
                         )
+                        # Accumulate for next step
+                        accumulated[f"_{step_result.step_name}_output"] = step_result.output
             except Exception as exc:
                 self.logger.warning("Post-processing failed (non-critical): %s", exc)
 
