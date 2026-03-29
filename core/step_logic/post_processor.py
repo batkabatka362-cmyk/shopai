@@ -44,9 +44,9 @@ class PostProcessor:
         is_placeholder = self._is_placeholder(result)
         if is_placeholder or context:
             if step_name == "analyze":
-                result = _smart.execute_analyze(context, result)
+                result = _smart.execute_analyze(context, result, engine_name)
             elif step_name == "execute":
-                result = _smart.execute_work(context, result)
+                result = _smart.execute_work(context, result, engine_name)
             elif step_name == "enhance":
                 result = _smart.execute_enhance(context, result)
             elif step_name == "validate":

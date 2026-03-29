@@ -16,18 +16,20 @@ from typing import Any
 
 from utils.logger import get_logger
 from .computation import Computation
+from .domain import DomainRouter
 
 logger = get_logger("step_logic.smart_executor")
+
+_domain_router = DomainRouter()
 
 
 class SmartExecutor:
     """Executes engine steps with real intelligence.
 
-    For each step type:
-      - analyze: runs scoring algorithms, produces real scores
-      - execute: generates real structured output from computed data
-      - enhance: adds computed insights (not just creative fluff)
-      - validate: runs real validation checks with pass/fail
+    Two-layer execution:
+      1. DomainRouter: if engine has domain-specific logic (pricing, marketing, etc.),
+         use that for deep, specialized computation
+      2. Generic: fallback to universal scoring/ranking/validation
 
     Never modifies engine code. Adds intelligence at the framework level.
     """
@@ -35,8 +37,15 @@ class SmartExecutor:
     def __init__(self) -> None:
         self._comp = Computation()
 
-    def execute_analyze(self, data: dict[str, Any], model_result: dict[str, Any]) -> dict[str, Any]:
+    def execute_analyze(self, data: dict[str, Any], model_result: dict[str, Any], engine_name: str = "") -> dict[str, Any]:
         """Smart analysis: combine model output with real computed scores."""
+        # Try domain-specific logic first
+        domain_result = _domain_router.analyze(engine_name, data)
+        if domain_result:
+            merged = copy.deepcopy(model_result)
+            merged.update(domain_result)
+            return merged
+
         result = copy.deepcopy(model_result)
 
         # Use pre-computed scores if available
@@ -82,8 +91,15 @@ class SmartExecutor:
 
         return result
 
-    def execute_work(self, data: dict[str, Any], model_result: dict[str, Any]) -> dict[str, Any]:
+    def execute_work(self, data: dict[str, Any], model_result: dict[str, Any], engine_name: str = "") -> dict[str, Any]:
         """Smart execution: generate structured output from analysis + computation."""
+        # Try domain-specific logic first
+        domain_result = _domain_router.execute(engine_name, data)
+        if domain_result:
+            merged = copy.deepcopy(model_result)
+            merged.update(domain_result)
+            return merged
+
         result = copy.deepcopy(model_result)
 
         # Use analysis results to generate structured output
