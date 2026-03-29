@@ -50,7 +50,7 @@ class ShopifyAPI:
         """
         url_base, headers = self._resolve_credentials(shop_url, api_key)
         endpoint = f"{url_base}/products.json"
-        params = {"limit": self._DEFAULT_LIMIT, "status": "active"}
+        params: dict[str, Any] = {"limit": self._DEFAULT_LIMIT, "status": "active"}
 
         products: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -87,7 +87,7 @@ class ShopifyAPI:
         since_dt = datetime.datetime.utcnow() - datetime.timedelta(days=days_back)
         since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        params = {
+        params: dict[str, Any] = {
             "limit": self._DEFAULT_LIMIT,
             "status": "any",
             "created_at_min": since_iso,
@@ -112,7 +112,7 @@ class ShopifyAPI:
         """
         url_base, headers = self._resolve_credentials(shop_url, api_key)
         endpoint = f"{url_base}/customers.json"
-        params = {"limit": self._DEFAULT_LIMIT}
+        params: dict[str, Any] = {"limit": self._DEFAULT_LIMIT}
 
         customers: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -168,16 +168,23 @@ class ShopifyAPI:
 
         while next_url:
             response = self._get_with_retry(
-                next_url, headers, params if next_url == url else None,
-                max_retries, retry_delay
+                next_url,
+                headers,
+                params if next_url == url else None,
+                max_retries,
+                retry_delay,
             )
             payload = response.json()
             records = payload.get(resource_key, [])
             all_records.extend(records)
-            logger.debug("Fetched %d %s (running total: %d)", len(records), resource_key, len(all_records))
+            logger.debug(
+                "Fetched %d %s (running total: %d)",
+                len(records),
+                resource_key,
+                len(all_records),
+            )
 
             next_url = self._extract_next_link(response.headers.get("Link", ""))
-            params = {}  # cursor-based; params only on first request
 
         return all_records
 

@@ -1,6 +1,6 @@
 """AdsAPI — fetches ad-performance data from Facebook, Google, and TikTok.
 
-All three platform methods return a normalised structure:
+All three platform methods return a normalised campaign structure:
     {
         "platform":    str,
         "campaign_id": str,
@@ -112,7 +112,9 @@ class AdsAPI:
             "access_token": access_token,
             "level": "campaign",
             "fields": "campaign_id,campaign_name,impressions,clicks,spend,actions",
-            "time_range": f'{{"since":"{date_range["since"]}","until":"{date_range["until"]}"}}',
+            "time_range": (
+                f'{{"since":"{date_range["since"]}","until":"{date_range["until"]}"}}'
+            ),
             "limit": 500,
         }
 
@@ -139,7 +141,11 @@ class AdsAPI:
     def _fb_extract_conversions(actions: list[dict[str, Any]]) -> int:
         """Sum all purchase/conversion action counts from the Meta actions array."""
         total = 0
-        conversion_types = {"purchase", "offsite_conversion.fb_pixel_purchase", "omni_purchase"}
+        conversion_types = {
+            "purchase",
+            "offsite_conversion.fb_pixel_purchase",
+            "omni_purchase",
+        }
         for action in actions:
             if action.get("action_type") in conversion_types:
                 try:
@@ -180,7 +186,7 @@ class AdsAPI:
         gaql = (
             "SELECT campaign.id, campaign.name, "
             "metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions "
-            f"FROM campaign "
+            "FROM campaign "
             f"WHERE segments.date BETWEEN '{date_range['since']}' AND '{date_range['until']}' "
             "ORDER BY metrics.impressions DESC"
         )
@@ -283,6 +289,7 @@ class AdsAPI:
     def _default_date_range(days: int) -> dict[str, str]:
         """Return ``{"since": ..., "until": ...}`` covering the last *days* days."""
         import datetime
+
         today = datetime.date.today()
         since = today - datetime.timedelta(days=days)
         return {"since": since.isoformat(), "until": today.isoformat()}
