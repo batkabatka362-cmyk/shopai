@@ -300,6 +300,26 @@ _ENGINE_MAP: dict[str, str] = {
     "influencer_matching": "engines.influencer_matching",
     "content_repurposing": "engines.content_repurposing",
     "competitor_ad_analysis": "engines.competitor_ad_analysis",
+    # Batch 9: order, shipping, reviews, product content
+    "order_management": "engines.order_management",
+    "order_splitting": "engines.order_splitting",
+    "return_label": "engines.return_label",
+    "exchange_management": "engines.exchange_management",
+    "gift_wrapping": "engines.gift_wrapping",
+    "address_validation": "engines.address_validation",
+    "shipping_rate": "engines.shipping_rate",
+    "tracking_notification": "engines.tracking_notification",
+    "delivery_scheduling": "engines.delivery_scheduling",
+    "click_and_collect": "engines.click_and_collect",
+    "product_review_analysis": "engines.product_review_analysis",
+    "competitor_review_mining": "engines.competitor_review_mining",
+    "price_alert": "engines.price_alert",
+    "back_in_stock": "engines.back_in_stock",
+    "product_qa": "engines.product_qa",
+    "size_chart": "engines.size_chart",
+    "product_video": "engines.product_video",
+    "lifestyle_image": "engines.lifestyle_image",
+    "collection_page": "engines.collection_page",
 }
 
 _engine_cache: dict[str, BaseEngine] = {}
