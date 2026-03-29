@@ -48,6 +48,9 @@ class SmartExecutor:
 
         result = copy.deepcopy(model_result)
 
+        # Generic analysis for ALL engines: compute stats on any input data
+        result.update(self._generic_analyze(data, engine_name))
+
         # Use pre-computed scores if available
         pre_scored = data.get("_pre_scored_products", [])
         pre_computed = data.get("_pre_computed", {})
@@ -101,6 +104,9 @@ class SmartExecutor:
             return merged
 
         result = copy.deepcopy(model_result)
+
+        # Generic execution for ALL engines
+        result.update(self._generic_execute(data, engine_name))
 
         # Use analysis results to generate structured output
         analysis = data.get("_analyze_output", data.get("analysis", {}))
@@ -310,6 +316,119 @@ class SmartExecutor:
         if score > 5: return "high"
         if score > 2: return "medium"
         return "low"
+
+    def _generic_analyze(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
+        """Generic analysis for any engine — computes stats on available data."""
+        result: dict[str, Any] = {}
+
+        # Count and summarize all input data
+        input_stats = {}
+        for key, value in data.items():
+            if key.startswith("_"):
+                continue
+            if isinstance(value, list):
+                input_stats[key] = {"type": "list", "count": len(value)}
+                if value and isinstance(value[0], dict):
+                    input_stats[key]["fields"] = list(value[0].keys())[:10]
+            elif isinstance(value, dict):
+                input_stats[key] = {"type": "dict", "fields": len(value)}
+            elif isinstance(value, (int, float)):
+                input_stats[key] = {"type": "number", "value": value}
+            elif isinstance(value, str):
+                input_stats[key] = {"type": "string", "length": len(value)}
+
+        result["input_summary"] = input_stats
+        result["input_field_count"] = len(input_stats)
+
+        # Compute data completeness
+        non_empty = sum(1 for v in data.values() if v is not None and v != "" and v != [] and v != {})
+        total = sum(1 for k in data if not k.startswith("_"))
+        result["data_completeness"] = round(non_empty / max(total, 1), 2)
+
+        # Use enrichment stats if available
+        for stat_key in ("_product_stats", "_customer_stats", "_order_stats"):
+            if stat_key in data:
+                result[stat_key[1:]] = data[stat_key]
+
+        # Quality assessment
+        quality = data.get("_data_quality", {})
+        result["data_quality"] = quality.get("quality_tier", "unknown")
+
+        # Auto-score based on data quality
+        completeness = result["data_completeness"]
+        result["score"] = round(completeness * 10, 1)
+        result["decision"] = "approve" if completeness >= 0.5 else "reject"
+        result["reason"] = f"Data completeness: {completeness:.0%}, {non_empty}/{total} fields populated"
+
+        return result
+
+    def _generic_execute(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
+        """Generic execution for any engine — produces structured output."""
+        result: dict[str, Any] = {}
+
+        # Extract analysis from prior step
+        analysis = data.get("_analyze_output", {})
+        if isinstance(analysis, dict):
+            result["analysis_score"] = analysis.get("score", 0)
+            result["analysis_decision"] = analysis.get("decision", "pending")
+
+        # Process lists of items (products, customers, orders, etc.)
+        for key, value in data.items():
+            if key.startswith("_"):
+                continue
+            if isinstance(value, list) and value and isinstance(value[0], dict):
+                processed = self._process_item_list(key, value)
+                result[f"processed_{key}"] = processed
+                result["generated"] = True
+
+        # If no lists found, generate summary from dict fields
+        if not result.get("generated"):
+            summary = {}
+            for key, value in data.items():
+                if key.startswith("_"):
+                    continue
+                if isinstance(value, dict) and value:
+                    summary[key] = {k: v for k, v in value.items() if not isinstance(v, (dict, list))}
+                elif isinstance(value, (int, float, str, bool)):
+                    summary[key] = value
+            result["summary"] = summary
+            result["generated"] = True
+
+        result["engine_name"] = engine_name
+        return result
+
+    def _process_item_list(self, key: str, items: list[dict]) -> dict[str, Any]:
+        """Process a list of items — compute stats and rank."""
+        stats: dict[str, Any] = {"total": len(items)}
+
+        # Find numeric fields and compute stats
+        if items and isinstance(items[0], dict):
+            numeric_fields = {}
+            for field, value in items[0].items():
+                if isinstance(value, (int, float)):
+                    numeric_fields[field] = []
+
+            for item in items:
+                for field in numeric_fields:
+                    val = item.get(field)
+                    if isinstance(val, (int, float)):
+                        numeric_fields[field].append(val)
+
+            for field, values in numeric_fields.items():
+                if values:
+                    stats[f"{field}_min"] = round(min(values), 2)
+                    stats[f"{field}_max"] = round(max(values), 2)
+                    stats[f"{field}_avg"] = round(sum(values) / len(values), 2)
+
+        # Count unique values in string fields
+        if items and isinstance(items[0], dict):
+            for field, value in items[0].items():
+                if isinstance(value, str):
+                    unique = len(set(item.get(field, "") for item in items))
+                    if unique < len(items):
+                        stats[f"{field}_unique"] = unique
+
+        return stats
 
     @staticmethod
     def _strategic_insights(products: list[dict[str, Any]]) -> list[str]:

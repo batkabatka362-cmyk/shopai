@@ -11,10 +11,17 @@ from .marketing_logic import MarketingLogic
 from .inventory_logic import InventoryLogic
 from .seo_logic import SeoLogic
 from .customer_logic import CustomerLogic
+from .analytics_logic import AnalyticsLogic
+from .operations_logic import OperationsLogic
+from .content_logic import ContentLogic
 
 
 class DomainRouter:
-    """Routes engines to domain-specific computation logic."""
+    """Routes engines to domain-specific computation logic.
+
+    8 domains covering ~200+ engines with real business logic.
+    Remaining engines use SmartExecutor generic logic.
+    """
 
     def __init__(self) -> None:
         self._domains = [
@@ -23,6 +30,9 @@ class DomainRouter:
             InventoryLogic(),
             SeoLogic(),
             CustomerLogic(),
+            AnalyticsLogic(),
+            OperationsLogic(),
+            ContentLogic(),
         ]
 
     def get_domain(self, engine_name: str):
