@@ -2292,27 +2292,52 @@ _ENGINE_MAP: dict[str, str] = {
     "portfolio_bid": "engines.portfolio_bid",
 }
 
+import threading
+
 _engine_cache: dict[str, BaseEngine] = {}
+_cache_lock = threading.Lock()
 
 
 def get_engine(name: str) -> BaseEngine:
-    """Get an engine instance by name (cached)."""
+    """Get an engine instance by name (cached, thread-safe)."""
     if name in _engine_cache:
         return _engine_cache[name]
 
     if name not in _ENGINE_MAP:
         raise KeyError(f"Unknown engine: {name}")
 
-    import importlib
-    module = importlib.import_module(_ENGINE_MAP[name])
+    with _cache_lock:
+        # Double-check after acquiring lock
+        if name in _engine_cache:
+            return _engine_cache[name]
 
-    # Convention: class name is CamelCase of engine name + "Engine"
-    words = name.split("_")
-    class_name = "".join(w.capitalize() for w in words) + "Engine"
-    engine_class = getattr(module, class_name)
-    instance = engine_class()
-    _engine_cache[name] = instance
-    return instance
+        import importlib
+        module_path = _ENGINE_MAP[name]
+
+        try:
+            module = importlib.import_module(module_path)
+        except ImportError as exc:
+            raise KeyError(f"Failed to import engine '{name}' from '{module_path}': {exc}") from exc
+
+        # Convention: class name is CamelCase of engine name + "Engine"
+        words = name.split("_")
+        class_name = "".join(w.capitalize() for w in words) + "Engine"
+
+        engine_class = getattr(module, class_name, None)
+        if engine_class is None:
+            # Fallback: search for any BaseEngine subclass in the module
+            for attr_name in dir(module):
+                attr = getattr(module, attr_name)
+                if isinstance(attr, type) and attr_name.endswith("Engine") and attr_name != "BaseEngine":
+                    engine_class = attr
+                    break
+
+        if engine_class is None:
+            raise KeyError(f"No engine class found in '{module_path}' for '{name}'")
+
+        instance = engine_class()
+        _engine_cache[name] = instance
+        return instance
 
 
 def list_engines() -> list[str]:
@@ -2323,3 +2348,14 @@ def list_engines() -> list[str]:
 def engine_count() -> int:
     """Return total number of registered engines."""
     return len(_ENGINE_MAP)
+
+
+def clear_cache() -> None:
+    """Clear engine instance cache (useful for testing)."""
+    with _cache_lock:
+        _engine_cache.clear()
+
+
+def is_registered(name: str) -> bool:
+    """Check if an engine name is registered."""
+    return name in _ENGINE_MAP
