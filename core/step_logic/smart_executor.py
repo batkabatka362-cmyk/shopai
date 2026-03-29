@@ -38,14 +38,11 @@ class SmartExecutor:
         self._comp = Computation()
 
     def execute_analyze(self, data: dict[str, Any], model_result: dict[str, Any], engine_name: str = "") -> dict[str, Any]:
-        """Smart analysis: combine model output with real computed scores."""
-        # Try domain-specific logic first
-        domain_result = _domain_router.analyze(engine_name, data)
-        if domain_result:
-            merged = copy.deepcopy(model_result)
-            merged.update(domain_result)
-            return merged
+        """Smart analysis: combine model output with real computed scores.
 
+        Priority: SmartExecutor core logic → Domain logic → Generic fallback
+        Domain results MERGE into (not replace) SmartExecutor results.
+        """
         result = copy.deepcopy(model_result)
 
         # Generic analysis for ALL engines: compute stats on any input data
@@ -92,17 +89,17 @@ class SmartExecutor:
         if quality:
             result["data_quality"] = quality.get("quality_tier", "unknown")
 
+        # Merge domain-specific analysis (additive, not replacing)
+        domain_result = _domain_router.analyze(engine_name, data)
+        if domain_result:
+            for k, v in domain_result.items():
+                if k not in result:  # Only add, never overwrite SmartExecutor results
+                    result[k] = v
+
         return result
 
     def execute_work(self, data: dict[str, Any], model_result: dict[str, Any], engine_name: str = "") -> dict[str, Any]:
         """Smart execution: generate structured output from analysis + computation."""
-        # Try domain-specific logic first
-        domain_result = _domain_router.execute(engine_name, data)
-        if domain_result:
-            merged = copy.deepcopy(model_result)
-            merged.update(domain_result)
-            return merged
-
         result = copy.deepcopy(model_result)
 
         # Generic execution for ALL engines
@@ -156,6 +153,15 @@ class SmartExecutor:
             hint = data.get("_execution_hint", {})
             result["execution_approach"] = hint.get("approach", "balanced")
             result["generated"] = bool(result.get("content"))
+
+        # Merge domain execution results (additive)
+        domain_result = _domain_router.execute(engine_name, data)
+        if domain_result:
+            for k, v in domain_result.items():
+                if k not in result:
+                    result[k] = v
+            if not result.get("generated") and domain_result.get("generated"):
+                result["generated"] = True
 
         return result
 
@@ -328,37 +334,69 @@ class SmartExecutor:
         return "low"
 
     def _generic_enhance(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
-        """Generic enhancement for any engine."""
+        """Generic enhancement for any engine — deep insights from all prior data."""
         result: dict[str, Any] = {"enhanced": True}
 
-        # Gather all prior step outputs
         analyze = data.get("_analyze_output", {})
         execute = data.get("_execute_output", {})
 
-        # Summarize key findings
+        # 1. Strategic insights from scores
         insights = []
-        score = analyze.get("score", execute.get("analysis_score", 0))
-        if isinstance(score, (int, float)):
-            if score >= 8: insights.append(f"Strong overall score ({score}/10) — high confidence in results")
-            elif score >= 5: insights.append(f"Moderate score ({score}/10) — review recommendations before acting")
-            else: insights.append(f"Low score ({score}/10) — data quality may need improvement")
+        score = 0
+        for s in (analyze, execute):
+            if isinstance(s, dict):
+                v = s.get("score", s.get("analysis_score", 0))
+                if isinstance(v, (int, float)) and 0 <= v <= 10 and v > score:
+                    score = v
 
-        decision = analyze.get("decision", "")
-        if decision == "approve": insights.append("Analysis approved — proceed with execution")
-        elif decision == "reject": insights.append("Analysis rejected — review input data")
+        if score >= 8:
+            insights.append(f"Strong results (score {score}/10) — high confidence, ready for implementation")
+        elif score >= 5:
+            insights.append(f"Moderate results (score {score}/10) — review before implementing")
+        elif score > 0:
+            insights.append(f"Weak results (score {score}/10) — improve input data quality")
 
-        # Extract key metrics from execute output
+        # 2. Data-driven insights from execute output
         if isinstance(execute, dict):
             for key, value in execute.items():
-                if key.startswith("_"): continue
-                if isinstance(value, list) and value:
-                    insights.append(f"{key}: {len(value)} items generated")
-                elif isinstance(value, dict) and value:
-                    insights.append(f"{key}: {len(value)} fields computed")
+                if key.startswith("_") or key in ("generated", "engine_name"):
+                    continue
+                if isinstance(value, list) and len(value) > 0:
+                    if isinstance(value[0], dict):
+                        # Find patterns in list items
+                        numeric_fields = [k for k, v in value[0].items() if isinstance(v, (int, float))]
+                        for nf in numeric_fields[:2]:
+                            vals = [float(item.get(nf, 0)) for item in value if isinstance(item.get(nf), (int, float))]
+                            if vals:
+                                avg = sum(vals) / len(vals)
+                                high = sum(1 for v in vals if v > avg * 1.2)
+                                if high > 0:
+                                    insights.append(f"{key}: {high}/{len(vals)} items above average {nf} ({avg:.1f})")
+                    insights.append(f"{key}: {len(value)} items processed")
 
-        result["insights"] = insights if insights else ["Processing complete — review output for details"]
-        result["engine_name"] = engine_name
+        # 3. Risk indicators
+        risks = []
+        quality = data.get("_data_quality", {})
+        if quality.get("quality_tier") == "low":
+            risks.append("Input data quality is low — results may be unreliable")
+        completeness = data.get("data_completeness", 1)
+        if isinstance(completeness, (int, float)) and completeness < 0.5:
+            risks.append(f"Data only {completeness:.0%} complete — missing fields may affect accuracy")
+
+        # 4. Opportunity detection
+        opportunities = []
+        if isinstance(execute, dict):
+            for key, value in execute.items():
+                if isinstance(value, list) and len(value) > 3:
+                    opportunities.append(f"Multiple {key} options available — compare and prioritize")
+                if isinstance(value, dict) and len(value) > 5:
+                    opportunities.append(f"Rich {key} data — explore detailed breakdown")
+
+        result["insights"] = insights[:5] if insights else ["Processing complete"]
+        result["risks"] = risks
+        result["opportunities"] = opportunities[:3]
         result["quality_assessment"] = "high" if score >= 7 else "medium" if score >= 4 else "low"
+        result["engine_name"] = engine_name
         return result
 
     def _generic_validate(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
@@ -389,14 +427,43 @@ class SmartExecutor:
         )
         checks.append({"check": "no_errors", "passed": not has_errors, "detail": "Clean" if not has_errors else "Errors found"})
 
+        # Check data quality
+        quality = data.get("_data_quality", {})
+        quality_ok = quality.get("quality_tier") in ("high", "medium", None)
+        checks.append({"check": "data_quality", "passed": quality_ok, "detail": f"Quality: {quality.get('quality_tier', 'not_assessed')}"})
+
+        # Check output has actionable data (not just metadata)
+        all_output = {}
+        for d in [analyze, execute, enhance]:
+            if isinstance(d, dict):
+                all_output.update(d)
+        actionable_keys = [k for k in all_output if not k.startswith("_") and k not in
+                           ("score", "decision", "reason", "generated", "enhanced", "engine_name",
+                            "request_id", "model", "role", "context_keys", "input_summary",
+                            "input_field_count", "data_completeness", "data_quality")]
+        has_actionable = len(actionable_keys) >= 2
+        checks.append({"check": "actionable_output", "passed": has_actionable, "detail": f"{len(actionable_keys)} actionable fields"})
+
+        # Check consistency — score should match decision
+        a_score = analyze.get("score", 5)
+        a_decision = analyze.get("decision", "approve")
+        consistent = True
+        if isinstance(a_score, (int, float)):
+            if a_score >= 7 and a_decision == "reject":
+                consistent = False
+            if a_score < 3 and a_decision == "approve":
+                consistent = False
+        checks.append({"check": "consistency", "passed": consistent, "detail": f"Score {a_score} / Decision {a_decision}"})
+
         passed = sum(1 for c in checks if c["passed"])
         total = len(checks)
         return {
             "validation_checks": checks,
             "score": round(passed / total * 10, 1) if total else 0,
-            "valid": passed >= total - 1,  # Allow 1 non-critical failure
-            "decision": "approve" if passed >= total - 1 else "reject",
+            "valid": passed >= total - 2,  # Allow up to 2 non-critical failures
+            "decision": "approve" if passed >= total - 2 else "reject",
             "reason": f"{passed}/{total} checks passed",
+            "issues": [c["detail"] for c in checks if not c["passed"]],
         }
 
     def _generic_analyze(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
