@@ -253,6 +253,27 @@ _ENGINE_MAP: dict[str, str] = {
     "staff_management": "engines.staff_management",
     "multi_channel": "engines.multi_channel",
     "pos_integration": "engines.pos_integration",
+    # Batch 7: marketing channels, SEO, community, intelligence
+    "sms_marketing": "engines.sms_marketing",
+    "push_notification": "engines.push_notification",
+    "product_feed": "engines.product_feed",
+    "sitemap_generation": "engines.sitemap_generation",
+    "structured_data": "engines.structured_data",
+    "link_building": "engines.link_building",
+    "keyword_research": "engines.keyword_research",
+    "content_gap": "engines.content_gap",
+    "social_listening": "engines.social_listening",
+    "ugc_management": "engines.ugc_management",
+    "community_management": "engines.community_management",
+    "event_marketing": "engines.event_marketing",
+    "seasonal_promotion": "engines.seasonal_promotion",
+    "win_back": "engines.win_back",
+    "vip_management": "engines.vip_management",
+    "product_launch": "engines.product_launch",
+    "brand_voice": "engines.brand_voice",
+    "competitor_tracking": "engines.competitor_tracking",
+    "market_intelligence": "engines.market_intelligence",
+    "pricing_intelligence": "engines.pricing_intelligence",
 }
 
 _engine_cache: dict[str, BaseEngine] = {}
