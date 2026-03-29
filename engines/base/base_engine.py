@@ -21,6 +21,16 @@ from .validator import OutputValidator
 from .output_handler import OutputHandler
 
 
+# Global learning hook — set by orchestrator, never modifies code
+_feedback_store = None
+
+
+def set_feedback_store(store) -> None:
+    """Set the global feedback store for all engines. Called once at startup."""
+    global _feedback_store
+    _feedback_store = store
+
+
 class BaseEngine(ABC):
     """Abstract base for all ShopAI engines.
 
@@ -101,4 +111,21 @@ class BaseEngine(ABC):
 
         elapsed = time.monotonic() - start_time
         self.logger.info("Engine run complete: status=%s elapsed=%.3fs", output.status.value, elapsed)
+
+        # Record feedback for learning (read-only — never modifies engine code)
+        if _feedback_store is not None:
+            try:
+                _feedback_store.record(
+                    engine_name=self.engine_name,
+                    task_id=engine_input.task_id,
+                    status=output.status.value,
+                    elapsed_seconds=elapsed,
+                    input_summary=engine_input.data,
+                    output_summary=output.result,
+                    step_results=[s.__dict__ for s in output.steps] if output.steps else None,
+                    error=output.error,
+                )
+            except Exception as fb_exc:
+                self.logger.warning("Feedback recording failed (non-critical): %s", fb_exc)
+
         return output

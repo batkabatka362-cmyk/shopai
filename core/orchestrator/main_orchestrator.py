@@ -17,6 +17,7 @@ from .execution_router import ExecutionRouter
 from .decision_router import DecisionRouter
 from .fallback_router import FallbackRouter
 from engines.registry import get_engine, list_engines
+from core.learning import FeedbackStore, LearningEngine, ImprovementTracker
 
 logger = get_logger("orchestrator.main")
 
@@ -43,6 +44,9 @@ class MainOrchestrator:
         self._execution_router = ExecutionRouter()
         self._decision_router = DecisionRouter()
         self._fallback_router = FallbackRouter()
+        self._feedback_store = FeedbackStore()
+        self._learning_engine = LearningEngine(self._feedback_store)
+        self._improvement_tracker = ImprovementTracker()
         self._running = False
 
     def initialize(self, config_override: dict[str, Any] | None = None) -> None:
@@ -59,6 +63,10 @@ class MainOrchestrator:
 
         engine_cfg = self._config.get("engines", {})
         self._task_router = TaskRouter(engine_config=engine_cfg)
+
+        # Wire learning feedback into all engines (read-only — never modifies code)
+        from engines.base.base_engine import set_feedback_store
+        set_feedback_store(self._feedback_store)
 
         # Auto-register engine handlers from registry
         self._register_engines()
@@ -179,6 +187,22 @@ class MainOrchestrator:
     @property
     def fallback_router(self) -> FallbackRouter:
         return self._fallback_router
+
+    @property
+    def learning(self) -> LearningEngine:
+        return self._learning_engine
+
+    @property
+    def feedback(self) -> FeedbackStore:
+        return self._feedback_store
+
+    def analyze_engine(self, engine_name: str) -> dict[str, Any]:
+        """Analyze engine performance using learning data (read-only)."""
+        return self._learning_engine.analyze(engine_name)
+
+    def analyze_system(self) -> dict[str, Any]:
+        """Analyze entire system learning state (read-only)."""
+        return self._learning_engine.analyze_system()
 
     # -- internal helpers --
 
