@@ -39,13 +39,17 @@ class QwenWrapper(BaseModel):
         if not self._loaded:
             self.load()
 
-        self.logger.info("Qwen executing (prompt_len=%d)", len(prompt))
+        from utils.helpers import generate_id
+        request_id = generate_id("req")
+        self.logger.info("Qwen executing (request=%s, prompt_len=%d)", request_id, len(prompt))
 
         # Placeholder: returns structured execution output
         return {
+            "request_id": request_id,
+            "model": self.model_name,
+            "role": self.model_role,
             "generated": True,
             "content": {},
-            "raw_prompt": prompt,
             "context_keys": list((context or {}).keys()),
         }
 

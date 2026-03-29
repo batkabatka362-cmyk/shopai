@@ -39,12 +39,16 @@ class LlamaWrapper(BaseModel):
         if not self._loaded:
             self.load()
 
-        self.logger.info("LLaMA creating (prompt_len=%d)", len(prompt))
+        from utils.helpers import generate_id
+        request_id = generate_id("req")
+        self.logger.info("LLaMA creating (request=%s, prompt_len=%d)", request_id, len(prompt))
 
         return {
+            "request_id": request_id,
+            "model": self.model_name,
+            "role": self.model_role,
             "enhanced": True,
             "content": {},
-            "raw_prompt": prompt,
             "context_keys": list((context or {}).keys()),
         }
 

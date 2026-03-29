@@ -77,38 +77,59 @@ class MainOrchestrator:
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
+        import time
+
         if not self._running:
-            return {"status": "error", "error": "Orchestrator not running"}
+            return {"task_id": "", "engine": "", "status": "error", "result": None, "error": "Orchestrator not running", "timestamp": ""}
 
         task_id = generate_id("task")
+        start_time = time.monotonic()
 
         # Register in runtime state
         self._state.runtime.register_task(task_id, task_type)
 
-        # Build context
-        session = self._state.get_session(session_id) if session_id else None
-        session_data = session.snapshot() if session else None
-        context = self._context.create_context(task_type, params, session_data)
+        try:
+            # Build context
+            session = self._state.get_session(session_id) if session_id else None
+            session_data = session.snapshot() if session else None
+            context = self._context.create_context(task_type, params, session_data)
 
-        # Decision routing — check if rules override the default route
-        decision_action = self._decision_router.evaluate(context)
+            # Decision routing — check if rules override the default route
+            decision_action = self._decision_router.evaluate(context)
 
-        # Task routing — resolve engine
-        engine = decision_action or self._task_router.resolve(task_type)
-        if engine is None:
-            self._state.runtime.update_task(task_id, "failed", error="No engine found")
-            return {"task_id": task_id, "status": "failed", "error": f"No engine for task_type={task_type}"}
+            # Task routing — resolve engine
+            engine = decision_action or self._task_router.resolve(task_type)
+            if engine is None:
+                self._state.runtime.update_task(task_id, "failed", error="No engine found")
+                return {"task_id": task_id, "engine": task_type, "status": "failed", "result": None, "error": f"No engine for task_type={task_type}", "timestamp": time.time()}
 
-        # Execute (with fallback support)
-        result = self._execute_with_fallback(engine, task_id, params)
+            # Execute (with fallback support)
+            result = self._execute_with_fallback(engine, task_id, params or {})
 
-        # Store result in memory
-        self._memory_router.route_store(f"result:{task_id}", result, data_type="task_result")
+            # Store result in memory
+            self._memory_router.route_store(f"result:{task_id}", result, data_type="task_result")
 
-        # Update runtime state
-        self._state.runtime.update_task(task_id, result["status"], result=result.get("result"), error=result.get("error"))
+            # Update runtime state
+            self._state.runtime.update_task(task_id, result["status"], result=result.get("result"), error=result.get("error"))
 
-        return result
+            elapsed = time.monotonic() - start_time
+            result["elapsed_seconds"] = round(elapsed, 3)
+            return result
+
+        except Exception as exc:
+            elapsed = time.monotonic() - start_time
+            logger.error("Task %s crashed: %s", task_id, exc)
+            error_result = {
+                "task_id": task_id,
+                "engine": task_type,
+                "status": "error",
+                "result": None,
+                "error": str(exc),
+                "elapsed_seconds": round(elapsed, 3),
+                "timestamp": time.time(),
+            }
+            self._state.runtime.update_task(task_id, "failed", error=str(exc))
+            return error_result
 
     def create_session(self, session_id: str | None = None) -> str:
         session = self._state.create_session(session_id)

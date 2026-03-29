@@ -43,15 +43,19 @@ class MistralWrapper(BaseModel):
         if not self._loaded:
             self.load()
 
-        self.logger.info("Mistral analyzing (prompt_len=%d)", len(prompt))
+        from utils.helpers import generate_id
+        request_id = generate_id("req")
+        self.logger.info("Mistral analyzing (request=%s, prompt_len=%d)", request_id, len(prompt))
 
         # Placeholder: returns structured analysis output
         # Will be replaced with actual model inference
         return {
+            "request_id": request_id,
+            "model": self.model_name,
+            "role": self.model_role,
             "score": 0.0,
             "decision": "pending",
             "reason": "Model inference not yet connected",
-            "raw_prompt": prompt,
             "context_keys": list((context or {}).keys()),
         }
 

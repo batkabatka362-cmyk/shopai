@@ -46,7 +46,16 @@ class BaseEngine(ABC):
         """Register EngineSteps and their executor callables on self.flow."""
 
     def run(self, engine_input: EngineInput) -> EngineOutput:
-        """Execute the full engine pipeline: validate → flow → validate output → return."""
+        """Execute the full engine pipeline: validate → flow → validate output → return.
+
+        GUARANTEES:
+          - Never raises exceptions — always returns EngineOutput
+          - Never mutates engine_input.data
+          - Output is always a structured dict
+        """
+        import time
+
+        start_time = time.monotonic()
 
         # 1. Validate & prepare input
         try:
@@ -60,11 +69,29 @@ class BaseEngine(ABC):
                 error=str(exc),
             )
 
-        # 2. Execute flow steps
-        step_results = self.flow.run(data)
+        # 2. Execute flow steps (catches all exceptions internally)
+        try:
+            step_results = self.flow.run(data)
+        except Exception as exc:
+            self.logger.error("Flow execution crashed: %s", exc)
+            return EngineOutput(
+                task_id=engine_input.task_id,
+                engine_name=self.engine_name,
+                status=EngineStatus.FAILED,
+                error=f"Flow execution error: {exc}",
+            )
 
         # 3. Build output
-        output = self.output_handler.build_output(engine_input.task_id, step_results)
+        try:
+            output = self.output_handler.build_output(engine_input.task_id, step_results)
+        except Exception as exc:
+            self.logger.error("Output building failed: %s", exc)
+            return EngineOutput(
+                task_id=engine_input.task_id,
+                engine_name=self.engine_name,
+                status=EngineStatus.FAILED,
+                error=f"Output build error: {exc}",
+            )
 
         # 4. Validate output
         errors = self.validator.validate(output)
@@ -72,5 +99,6 @@ class BaseEngine(ABC):
             output.status = EngineStatus.FAILED
             output.error = "; ".join(errors)
 
-        self.logger.info("Engine run complete: status=%s", output.status.value)
+        elapsed = time.monotonic() - start_time
+        self.logger.info("Engine run complete: status=%s elapsed=%.3fs", output.status.value, elapsed)
         return output
