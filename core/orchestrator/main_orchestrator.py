@@ -28,6 +28,10 @@ from core.error_intelligence import ErrorClassifier, FixSuggester, ErrorPatternD
 from core.self_monitor import SystemMonitor
 from core.shared_memory import CrossEngineCache, SessionContext
 from core.chaining import ChainRegistry
+from core.bridge import AgentEngineBridge
+from core.bridge.pipeline_bridge import PipelineBridge
+from core.bridge.execution_bridge import ExecutionBridge
+from core.bridge.workflow_bridge import WorkflowBridge
 
 logger = get_logger("orchestrator.main")
 
@@ -68,6 +72,11 @@ class MainOrchestrator:
         self._system_monitor = SystemMonitor()
         self._cross_cache = CrossEngineCache()
         self._chain_registry = ChainRegistry()
+        # Bridges
+        self._agent_bridge = AgentEngineBridge()
+        self._pipeline_bridge = PipelineBridge()
+        self._execution_bridge = ExecutionBridge()
+        self._workflow_bridge = WorkflowBridge()
         self._running = False
 
     def initialize(self, config_override: dict[str, Any] | None = None) -> None:
@@ -317,6 +326,42 @@ class MainOrchestrator:
     def run_chain(self, chain_name: str, data: dict[str, Any]) -> dict[str, Any]:
         """Run a named engine chain."""
         return self._chain_registry.run(chain_name, data)
+
+    # -- bridges --
+
+    def agent_run(self, agent_name: str, task: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Run a task through an agent (agent decides which engine)."""
+        return self._agent_bridge.agent_run(agent_name, task, data)
+
+    def run_workflow(self, workflow_name: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Run a named business workflow (multi-agent, multi-engine)."""
+        return self._workflow_bridge.run_workflow(workflow_name, data)
+
+    def plan_actions(self, engine_name: str, result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Plan executable actions from engine output."""
+        return self._execution_bridge.plan_actions(engine_name, result)
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        return self._agent_bridge.list_agents()
+
+    def list_workflows(self) -> list[dict[str, Any]]:
+        return self._workflow_bridge.list_workflows()
+
+    @property
+    def agents(self) -> AgentEngineBridge:
+        return self._agent_bridge
+
+    @property
+    def workflows(self) -> WorkflowBridge:
+        return self._workflow_bridge
+
+    @property
+    def execution(self) -> ExecutionBridge:
+        return self._execution_bridge
+
+    @property
+    def pipeline(self) -> PipelineBridge:
+        return self._pipeline_bridge
 
     # -- internal helpers --
 
