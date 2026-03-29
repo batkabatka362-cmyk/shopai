@@ -18,6 +18,8 @@ from .decision_router import DecisionRouter
 from .fallback_router import FallbackRouter
 from engines.registry import get_engine, list_engines
 from core.learning import FeedbackStore, LearningEngine, ImprovementTracker
+from core.data_context import DataEnricher
+from core.step_logic import PreProcessor, PostProcessor
 
 logger = get_logger("orchestrator.main")
 
@@ -64,9 +66,14 @@ class MainOrchestrator:
         engine_cfg = self._config.get("engines", {})
         self._task_router = TaskRouter(engine_config=engine_cfg)
 
-        # Wire learning feedback into all engines (read-only — never modifies code)
-        from engines.base.base_engine import set_feedback_store
+        # Wire data processing layers into all engines
+        from engines.base.base_engine import set_feedback_store, set_data_layers
         set_feedback_store(self._feedback_store)
+        set_data_layers(
+            enricher=DataEnricher(),
+            pre_processor=PreProcessor(),
+            post_processor=PostProcessor(),
+        )
 
         # Auto-register engine handlers from registry
         self._register_engines()
