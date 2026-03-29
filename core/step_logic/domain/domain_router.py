@@ -16,11 +16,25 @@ from .operations_logic import OperationsLogic
 from .content_logic import ContentLogic
 
 
+# Keyword → domain mapping for engines not in explicit sets
+KEYWORD_DOMAIN_MAP = {
+    PricingLogic: ["price", "pricing", "discount", "coupon", "cost", "margin", "markup", "tariff", "fee", "commission", "royalty", "billing", "payment", "invoice", "revenue", "valuation", "budget"],
+    MarketingLogic: ["marketing", "campaign", "ad", "ads", "social", "email", "sms", "push", "influencer", "affiliate", "brand", "promotion", "viral", "reach", "impression", "click", "conversion", "funnel", "audience", "targeting", "retarget", "media"],
+    InventoryLogic: ["inventory", "stock", "warehouse", "supply", "reorder", "demand", "forecast", "procurement", "supplier", "vendor", "fulfillment", "shipping", "freight", "logistics", "delivery", "pallet", "batch"],
+    SeoLogic: ["seo", "keyword", "search", "sitemap", "robots", "meta", "backlink", "rank", "serp", "crawl", "index", "canonical", "schema", "structured_data", "snippet", "hreflang", "redirect"],
+    CustomerLogic: ["customer", "churn", "retention", "loyalty", "segmentation", "persona", "nps", "satisfaction", "engagement", "lifetime", "ltv", "rfm", "onboarding", "support", "ticket", "complaint", "feedback"],
+    AnalyticsLogic: ["analytics", "analysis", "tracking", "metric", "kpi", "dashboard", "report", "forecast", "predict", "trend", "anomaly", "benchmark", "cohort", "attribution", "roi", "performance"],
+    OperationsLogic: ["order", "shipping", "delivery", "fulfillment", "warehouse", "logistics", "route", "carrier", "return", "refund", "quality", "inspection", "tracking", "customs", "freight", "pack"],
+    ContentLogic: ["content", "blog", "article", "copy", "headline", "description", "story", "creative", "video", "image", "photo", "translation", "faq", "press", "case_study", "landing", "page_builder"],
+}
+
+
 class DomainRouter:
     """Routes engines to domain-specific computation logic.
 
-    8 domains covering ~200+ engines with real business logic.
-    Remaining engines use SmartExecutor generic logic.
+    Two-tier matching:
+      1. Explicit engine sets (126 engines) — exact match
+      2. Keyword matching (1000+ engines) — engine name contains domain keyword
     """
 
     def __init__(self) -> None:
@@ -34,13 +48,44 @@ class DomainRouter:
             OperationsLogic(),
             ContentLogic(),
         ]
+        self._keyword_cache: dict[str, int | None] = {}
 
     def get_domain(self, engine_name: str):
-        """Get domain logic for an engine. Returns None if no match."""
+        """Get domain logic for an engine. Two-tier: explicit → keyword."""
+        # Tier 1: Explicit match
         for domain in self._domains:
             if domain.applies_to(engine_name):
                 return domain
-        return None
+
+        # Tier 2: Keyword match (cached)
+        if engine_name in self._keyword_cache:
+            idx = self._keyword_cache[engine_name]
+            return self._domains[idx] if idx is not None else None
+
+        name_lower = engine_name.lower()
+        best_domain_idx = None
+        best_score = 0
+
+        for domain_cls, keywords in KEYWORD_DOMAIN_MAP.items():
+            score = sum(1 for kw in keywords if kw in name_lower)
+            if score > best_score:
+                best_score = score
+                # Find matching domain instance
+                for i, d in enumerate(self._domains):
+                    if isinstance(d, domain_cls):
+                        best_domain_idx = i
+                        break
+
+        # If no keyword match, use AnalyticsLogic as universal fallback
+        # (it handles any numeric/list data with stats + trend detection)
+        if best_domain_idx is None:
+            for i, d in enumerate(self._domains):
+                if isinstance(d, AnalyticsLogic):
+                    best_domain_idx = i
+                    break
+
+        self._keyword_cache[engine_name] = best_domain_idx
+        return self._domains[best_domain_idx] if best_domain_idx is not None else None
 
     def analyze(self, engine_name: str, data: dict[str, Any]) -> dict[str, Any] | None:
         """Run domain-specific analysis. Returns None if no domain match."""
@@ -57,8 +102,8 @@ class DomainRouter:
         return domain.execute(data)
 
     def covers(self, engine_name: str) -> bool:
-        """Check if any domain covers this engine."""
-        return any(d.applies_to(engine_name) for d in self._domains)
+        """Check if any domain covers this engine (explicit or keyword)."""
+        return self.get_domain(engine_name) is not None
 
     def list_covered_engines(self) -> dict[str, list[str]]:
         """List all engines covered by each domain."""

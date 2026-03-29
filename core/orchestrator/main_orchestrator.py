@@ -21,6 +21,13 @@ from core.learning import FeedbackStore, LearningEngine, ImprovementTracker
 from core.data_context import DataEnricher
 from core.step_logic import PreProcessor, PostProcessor
 from core.step_logic.response_enricher import ResponseEnricher
+from core.events import EventBus, EventType, EventHandler
+from core.telemetry import Tracer, MetricsCollector
+from core.performance import ExecutionCache
+from core.error_intelligence import ErrorClassifier, FixSuggester, ErrorPatternDetector
+from core.self_monitor import SystemMonitor
+from core.shared_memory import CrossEngineCache, SessionContext
+from core.chaining import ChainRegistry
 
 logger = get_logger("orchestrator.main")
 
@@ -50,6 +57,17 @@ class MainOrchestrator:
         self._feedback_store = FeedbackStore()
         self._learning_engine = LearningEngine(self._feedback_store)
         self._improvement_tracker = ImprovementTracker()
+        # System modules
+        self._event_bus = EventBus()
+        self._tracer = Tracer()
+        self._metrics = MetricsCollector()
+        self._exec_cache = ExecutionCache()
+        self._error_classifier = ErrorClassifier()
+        self._fix_suggester = FixSuggester()
+        self._error_patterns = ErrorPatternDetector()
+        self._system_monitor = SystemMonitor()
+        self._cross_cache = CrossEngineCache()
+        self._chain_registry = ChainRegistry()
         self._running = False
 
     def initialize(self, config_override: dict[str, Any] | None = None) -> None:
@@ -77,6 +95,10 @@ class MainOrchestrator:
             response_enricher=ResponseEnricher(),
         )
 
+        # Wire events system
+        EventHandler().register_defaults()
+        self._event_bus.emit(EventType.SYSTEM_HEALTH_CHECK, "orchestrator", {"phase": "startup"})
+
         # Auto-register engine handlers from registry
         self._register_engines()
 
@@ -102,6 +124,21 @@ class MainOrchestrator:
         task_id = generate_id("task")
         start_time = time.monotonic()
 
+        # Start trace
+        trace_span = self._tracer.start_trace(f"task:{task_type}", {"task_id": task_id})
+        self._metrics.increment("task.submitted")
+        self._event_bus.emit(EventType.ENGINE_START, task_type, {"task_id": task_id})
+
+        # Check execution cache
+        cached = self._exec_cache.get(task_type, params or {})
+        if cached is not None:
+            self._metrics.increment("task.cache_hit")
+            self._tracer.finish_span(trace_span, "cache_hit")
+            elapsed = time.monotonic() - start_time
+            cached["_cached"] = True
+            cached["elapsed_seconds"] = round(elapsed, 3)
+            return cached
+
         # Register in runtime state
         self._state.runtime.register_task(task_id, task_type)
 
@@ -118,10 +155,13 @@ class MainOrchestrator:
             engine = decision_action or self._task_router.resolve(task_type)
             if engine is None:
                 self._state.runtime.update_task(task_id, "failed", error="No engine found")
+                self._tracer.finish_span(trace_span, "no_engine")
                 return {"task_id": task_id, "engine": task_type, "status": "failed", "result": None, "error": f"No engine for task_type={task_type}", "timestamp": time.time()}
 
             # Execute (with fallback support)
+            exec_span = self._tracer.start_span(trace_span.trace_id, f"execute:{engine}", trace_span.span_id)
             result = self._execute_with_fallback(engine, task_id, params or {})
+            self._tracer.finish_span(exec_span, result.get("status", "unknown"))
 
             # Store result in memory
             self._memory_router.route_store(f"result:{task_id}", result, data_type="task_result")
@@ -131,11 +171,31 @@ class MainOrchestrator:
 
             elapsed = time.monotonic() - start_time
             result["elapsed_seconds"] = round(elapsed, 3)
+
+            # Post-execution: cache, events, metrics, cross-engine cache
+            status = result.get("status", "unknown")
+            self._metrics.increment(f"task.{status}")
+            self._metrics.histogram("task.duration_ms", elapsed * 1000)
+            self._tracer.finish_span(trace_span, status)
+
+            if status == "completed":
+                self._exec_cache.store(task_type, params or {}, result)
+                self._cross_cache.store(task_type, "latest_result", result.get("result", {}))
+                self._event_bus.emit(EventType.ENGINE_COMPLETE, task_type, {"task_id": task_id, "elapsed": elapsed})
+            else:
+                error_msg = result.get("error", "unknown")
+                self._event_bus.emit(EventType.ENGINE_FAILED, task_type, {"task_id": task_id, "error": error_msg})
+                self._error_patterns.record(task_type, str(error_msg), severity="high")
+
             return result
 
         except Exception as exc:
             elapsed = time.monotonic() - start_time
             logger.error("Task %s crashed: %s", task_id, exc)
+            self._tracer.finish_span(trace_span, "crash")
+            self._metrics.increment("task.crash")
+            self._error_patterns.record(task_type, str(exc), severity="critical")
+            self._event_bus.emit(EventType.ENGINE_FAILED, task_type, {"task_id": task_id, "error": str(exc)})
             error_result = {
                 "task_id": task_id,
                 "engine": task_type,
@@ -165,6 +225,11 @@ class MainOrchestrator:
             "memory": self._memory.get_stats(),
             "routes": self._task_router.list_routes(),
             "handlers": self._execution_router.list_handlers(),
+            "metrics": self._metrics.snapshot(),
+            "cache_stats": self._exec_cache.get_stats(),
+            "event_stats": self._event_bus.get_stats(),
+            "error_patterns": self._error_patterns.detect_patterns(),
+            "chains": self._chain_registry.list_chains(),
         }
 
     # -- component accessors --
@@ -212,6 +277,46 @@ class MainOrchestrator:
     def analyze_system(self) -> dict[str, Any]:
         """Analyze entire system learning state (read-only)."""
         return self._learning_engine.analyze_system()
+
+    @property
+    def events(self) -> EventBus:
+        return self._event_bus
+
+    @property
+    def tracer(self) -> Tracer:
+        return self._tracer
+
+    @property
+    def metrics(self) -> MetricsCollector:
+        return self._metrics
+
+    @property
+    def cache(self) -> ExecutionCache:
+        return self._exec_cache
+
+    @property
+    def monitor(self) -> SystemMonitor:
+        return self._system_monitor
+
+    @property
+    def chains(self) -> ChainRegistry:
+        return self._chain_registry
+
+    @property
+    def errors(self) -> ErrorPatternDetector:
+        return self._error_patterns
+
+    def diagnose_error(self, error: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Diagnose an error with classification, root cause, and fix suggestions."""
+        return self._fix_suggester.suggest(error, context)
+
+    def health_check(self) -> dict[str, Any]:
+        """Run full system health check."""
+        return self._system_monitor.full_check()
+
+    def run_chain(self, chain_name: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Run a named engine chain."""
+        return self._chain_registry.run(chain_name, data)
 
     # -- internal helpers --
 
