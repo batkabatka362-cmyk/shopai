@@ -27,13 +27,24 @@ class LlamaWrapper(BaseModel):
         super().__init__()
         self._model_path = model_path
         self._loaded = False
+        self._backend = None
 
     def load(self) -> None:
         if self._loaded:
             return
         self.logger.info("Loading LLaMA model (creative)...")
+        try:
+            from models.inference.ollama_backend import OllamaBackend
+            backend = OllamaBackend()
+            if backend.is_available():
+                models = backend.list_models()
+                if any("llama" in m.lower() for m in models):
+                    self._backend = backend
+                    self.logger.info("LLaMA connected via Ollama")
+        except Exception:
+            pass
         self._loaded = True
-        self.logger.info("LLaMA model ready")
+        self.logger.info("LLaMA model ready (backend=%s)", "ollama" if self._backend else "computed")
 
     def execute(self, prompt: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._loaded:
@@ -41,15 +52,27 @@ class LlamaWrapper(BaseModel):
 
         from utils.helpers import generate_id
         request_id = generate_id("req")
-        self.logger.info("LLaMA creating (request=%s, prompt_len=%d)", request_id, len(prompt))
+
+        if self._backend is not None:
+            try:
+                result = self._backend.generate(
+                    model_name="llama3.1",
+                    prompt=prompt,
+                    system_prompt="You are a creative copywriter. Enhance content with compelling, persuasive language while maintaining accuracy.",
+                    temperature=0.8,
+                )
+                if result.get("text"):
+                    return {
+                        "request_id": request_id, "model": self.model_name, "role": self.model_role,
+                        "text": result["text"], "enhanced": True, "tokens_used": result.get("tokens_used", 0),
+                        "backend": "ollama", "context_keys": list((context or {}).keys()),
+                    }
+            except Exception as exc:
+                self.logger.warning("Ollama inference failed: %s", exc)
 
         return {
-            "request_id": request_id,
-            "model": self.model_name,
-            "role": self.model_role,
-            "enhanced": True,
-            "content": {},
-            "context_keys": list((context or {}).keys()),
+            "request_id": request_id, "model": self.model_name, "role": self.model_role,
+            "enhanced": True, "content": {}, "context_keys": list((context or {}).keys()),
         }
 
     def enhance(self, content: dict[str, Any], style: str = "persuasive") -> dict[str, Any]:

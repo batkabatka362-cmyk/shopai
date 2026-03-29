@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  shopai:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - SHOPAI_ENV=production
+      - SHOPAI_SHOPIFY_URL=${SHOPAI_SHOPIFY_URL}
+      - SHOPAI_SHOPIFY_KEY=${SHOPAI_SHOPIFY_KEY}
+      - SHOPAI_OLLAMA_URL=http://ollama:11434
+    volumes:
+      - shopai_data:/tmp/shopai_learning
+      - shopai_memory:/tmp/shopai_memory
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  shopai_data:
+  shopai_memory:
+  ollama_models:
