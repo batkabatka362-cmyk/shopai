@@ -26,6 +26,7 @@ _feedback_store = None
 _data_enricher = None
 _pre_processor = None
 _post_processor = None
+_response_enricher = None
 
 
 def set_feedback_store(store) -> None:
@@ -34,12 +35,13 @@ def set_feedback_store(store) -> None:
     _feedback_store = store
 
 
-def set_data_layers(enricher=None, pre_processor=None, post_processor=None) -> None:
+def set_data_layers(enricher=None, pre_processor=None, post_processor=None, response_enricher=None) -> None:
     """Set the global data processing layers for all engines."""
-    global _data_enricher, _pre_processor, _post_processor
+    global _data_enricher, _pre_processor, _post_processor, _response_enricher
     _data_enricher = enricher
     _pre_processor = pre_processor
     _post_processor = post_processor
+    _response_enricher = response_enricher
 
 
 class BaseEngine(ABC):
@@ -151,6 +153,13 @@ class BaseEngine(ABC):
             output.error = "; ".join(errors)
 
         elapsed = time.monotonic() - start_time
+
+        # 7.5 Enrich response with actionable intelligence
+        if _response_enricher is not None and output.status == EngineStatus.COMPLETED:
+            try:
+                output.result = _response_enricher.enrich(output.result, self.engine_name, elapsed)
+            except Exception as enrich_exc:
+                self.logger.warning("Response enrichment failed (non-critical): %s", enrich_exc)
         self.logger.info("Engine run complete: status=%s elapsed=%.3fs", output.status.value, elapsed)
 
         # 8. Record feedback for learning (read-only — never modifies engine code)

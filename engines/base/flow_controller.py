@@ -80,6 +80,7 @@ class FlowController:
                     error=str(exc),
                 )
             elapsed = time.monotonic() - start_time
+            result.duration_ms = round(elapsed * 1000, 2)
 
             # Ensure result is always a StepResult (defensive)
             if not isinstance(result, StepResult):

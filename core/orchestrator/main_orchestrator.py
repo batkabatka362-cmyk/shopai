@@ -20,6 +20,7 @@ from engines.registry import get_engine, list_engines
 from core.learning import FeedbackStore, LearningEngine, ImprovementTracker
 from core.data_context import DataEnricher
 from core.step_logic import PreProcessor, PostProcessor
+from core.step_logic.response_enricher import ResponseEnricher
 
 logger = get_logger("orchestrator.main")
 
@@ -73,6 +74,7 @@ class MainOrchestrator:
             enricher=DataEnricher(),
             pre_processor=PreProcessor(),
             post_processor=PostProcessor(),
+            response_enricher=ResponseEnricher(),
         )
 
         # Auto-register engine handlers from registry

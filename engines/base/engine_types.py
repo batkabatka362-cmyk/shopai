@@ -44,6 +44,7 @@ class StepResult:
     status: EngineStatus
     output: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    duration_ms: float = 0.0
     timestamp: str = field(default_factory=timestamp_now)
 
 
@@ -83,6 +84,7 @@ class EngineOutput:
                     "status": s.status.value,
                     "output": s.output,
                     "error": s.error,
+                    "duration_ms": s.duration_ms,
                     "timestamp": s.timestamp,
                 }
                 for s in self.steps

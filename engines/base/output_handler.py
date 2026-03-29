@@ -86,4 +86,19 @@ class OutputHandler:
                     merged[key] = value
 
         merged["_steps"] = steps_detail
+
+        # Add timing summary
+        timings = {}
+        total_ms = 0.0
+        for step in steps:
+            ms = getattr(step, "duration_ms", 0.0)
+            timings[step.step_name] = ms
+            total_ms += ms
+        if timings:
+            merged["_timing"] = {
+                "steps": timings,
+                "total_ms": round(total_ms, 2),
+                "slowest": max(timings, key=timings.get) if timings else None,
+            }
+
         return merged
