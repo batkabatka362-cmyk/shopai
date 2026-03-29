@@ -159,13 +159,18 @@ class SmartExecutor:
 
         return result
 
-    def execute_enhance(self, data: dict[str, Any], model_result: dict[str, Any]) -> dict[str, Any]:
+    def execute_enhance(self, data: dict[str, Any], model_result: dict[str, Any], engine_name: str = "") -> dict[str, Any]:
         """Smart enhancement: add computed insights, not just creative text."""
         result = copy.deepcopy(model_result)
 
         # Get execution output
         execution = data.get("_execute_output", data.get("execution", {}))
         selected = execution.get("selected_products", []) if isinstance(execution, dict) else []
+
+        # Generic enhancement for ALL engines when no selected products
+        if not selected:
+            result.update(self._generic_enhance(data, engine_name))
+            return result
 
         if selected:
             enhanced_products = []
@@ -199,7 +204,7 @@ class SmartExecutor:
 
         return result
 
-    def execute_validate(self, data: dict[str, Any], model_result: dict[str, Any]) -> dict[str, Any]:
+    def execute_validate(self, data: dict[str, Any], model_result: dict[str, Any], engine_name: str = "") -> dict[str, Any]:
         """Smart validation: run real checks on output data."""
         result = copy.deepcopy(model_result)
         checks = []
@@ -207,11 +212,16 @@ class SmartExecutor:
         # Validate execution output
         execution = data.get("_execute_output", data.get("execution", {}))
         enhanced = data.get("_enhance_output", data.get("enhanced", {}))
-        source = enhanced if enhanced else execution
+        source = enhanced if isinstance(enhanced, dict) and enhanced else execution
         if not isinstance(source, dict):
             source = {}
 
         selected = source.get("selected_products", source.get("enhanced_products", []))
+
+        # If no selected products, use generic validation
+        if not selected:
+            result.update(self._generic_validate(data, engine_name))
+            return result
 
         # Check 1: Products exist
         checks.append({
@@ -316,6 +326,78 @@ class SmartExecutor:
         if score > 5: return "high"
         if score > 2: return "medium"
         return "low"
+
+    def _generic_enhance(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
+        """Generic enhancement for any engine."""
+        result: dict[str, Any] = {"enhanced": True}
+
+        # Gather all prior step outputs
+        analyze = data.get("_analyze_output", {})
+        execute = data.get("_execute_output", {})
+
+        # Summarize key findings
+        insights = []
+        score = analyze.get("score", execute.get("analysis_score", 0))
+        if isinstance(score, (int, float)):
+            if score >= 8: insights.append(f"Strong overall score ({score}/10) — high confidence in results")
+            elif score >= 5: insights.append(f"Moderate score ({score}/10) — review recommendations before acting")
+            else: insights.append(f"Low score ({score}/10) — data quality may need improvement")
+
+        decision = analyze.get("decision", "")
+        if decision == "approve": insights.append("Analysis approved — proceed with execution")
+        elif decision == "reject": insights.append("Analysis rejected — review input data")
+
+        # Extract key metrics from execute output
+        if isinstance(execute, dict):
+            for key, value in execute.items():
+                if key.startswith("_"): continue
+                if isinstance(value, list) and value:
+                    insights.append(f"{key}: {len(value)} items generated")
+                elif isinstance(value, dict) and value:
+                    insights.append(f"{key}: {len(value)} fields computed")
+
+        result["insights"] = insights if insights else ["Processing complete — review output for details"]
+        result["engine_name"] = engine_name
+        result["quality_assessment"] = "high" if score >= 7 else "medium" if score >= 4 else "low"
+        return result
+
+    def _generic_validate(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
+        """Generic validation for any engine."""
+        checks = []
+
+        # Check data completeness
+        analyze = data.get("_analyze_output", {})
+        execute = data.get("_execute_output", {})
+        enhance = data.get("_enhance_output", {})
+
+        has_analysis = isinstance(analyze, dict) and len(analyze) > 3
+        has_execution = isinstance(execute, dict) and (execute.get("generated") or len(execute) > 3)
+        has_enhancement = isinstance(enhance, dict) and enhance.get("enhanced")
+
+        checks.append({"check": "analysis_complete", "passed": has_analysis, "detail": f"{len(analyze)} fields" if has_analysis else "No analysis"})
+        checks.append({"check": "execution_complete", "passed": has_execution, "detail": f"{len(execute)} fields" if has_execution else "No execution"})
+        checks.append({"check": "enhancement_done", "passed": has_enhancement, "detail": "Enhanced" if has_enhancement else "Not enhanced"})
+
+        # Check score validity
+        score = analyze.get("score", 0)
+        checks.append({"check": "score_valid", "passed": isinstance(score, (int, float)) and 0 <= score <= 10, "detail": f"Score: {score}"})
+
+        # Check no errors in prior steps
+        has_errors = any(
+            isinstance(d, dict) and d.get("error")
+            for d in [analyze, execute, enhance]
+        )
+        checks.append({"check": "no_errors", "passed": not has_errors, "detail": "Clean" if not has_errors else "Errors found"})
+
+        passed = sum(1 for c in checks if c["passed"])
+        total = len(checks)
+        return {
+            "validation_checks": checks,
+            "score": round(passed / total * 10, 1) if total else 0,
+            "valid": passed >= total - 1,  # Allow 1 non-critical failure
+            "decision": "approve" if passed >= total - 1 else "reject",
+            "reason": f"{passed}/{total} checks passed",
+        }
 
     def _generic_analyze(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
         """Generic analysis for any engine — computes stats on available data."""

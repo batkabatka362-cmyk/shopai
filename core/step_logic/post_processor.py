@@ -24,21 +24,17 @@ class PostProcessor:
     """Processes model output into structured results."""
 
     def __init__(self) -> None:
-        self._context_cache: dict[str, dict[str, Any]] = {}
+        self._context: dict[str, Any] = {}
 
     def set_step_context(self, task_id: str, data: dict[str, Any]) -> None:
-        """Cache step input data for smart execution."""
-        self._context_cache[task_id] = data
+        """Update accumulated context with new data."""
+        self._context = copy.deepcopy(data)
 
     def process(self, model_output: dict[str, Any], step_name: str, engine_name: str) -> dict[str, Any]:
         """Post-process model output. Returns clean structured dict."""
         result = copy.deepcopy(model_output)
 
-        # Get cached context for smart execution
-        context = {}
-        for key in list(self._context_cache.keys()):
-            context = self._context_cache.get(key, {})
-            break  # Use most recent
+        context = self._context
 
         # Smart execution: enhance model output with real computation
         is_placeholder = self._is_placeholder(result)
@@ -48,9 +44,9 @@ class PostProcessor:
             elif step_name == "execute":
                 result = _smart.execute_work(context, result, engine_name)
             elif step_name == "enhance":
-                result = _smart.execute_enhance(context, result)
+                result = _smart.execute_enhance(context, result, engine_name)
             elif step_name == "validate":
-                result = _smart.execute_validate(context, result)
+                result = _smart.execute_validate(context, result, engine_name)
 
         # Extract structured data from text responses
         text = result.get("text", result.get("content", ""))
