@@ -15,9 +15,9 @@ class MarketingLogic:
 
     MARKETING_ENGINES = {
         "marketing", "campaign", "email_marketing", "social_media", "ads",
-        "attribution", "audience_targeting", "content_generation", "seo",
+        "attribution", "audience_targeting",
         "influencer", "affiliate", "ab_testing", "landing_page",
-        "ad_copy", "copywriting", "headline_generator",
+        "ad_copy",
     }
 
     def applies_to(self, engine_name: str) -> bool:
@@ -47,10 +47,16 @@ class MarketingLogic:
         result = {}
         campaign = data.get("campaign_data", data.get("campaign", {}))
         audience = data.get("audience_data", {})
+        # Budget can be top-level or inside campaign_data
         budget = float(data.get("budget", data.get("total_budget", 0)))
+        if budget == 0 and isinstance(campaign, dict):
+            budget = float(campaign.get("budget", campaign.get("total_budget", 0)))
 
         if budget > 0:
             result["budget_allocation"] = self._allocate_budget(budget, data)
+        else:
+            result["budget_allocation"] = {"note": "No budget specified — using default split",
+                                           "facebook": 300, "google": 350, "email": 150, "social": 100, "other": 100}
 
         if isinstance(campaign, dict):
             result["campaign_plan"] = self._build_campaign_plan(campaign, data)

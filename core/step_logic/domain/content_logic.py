@@ -7,9 +7,8 @@ class ContentLogic:
     CONTENT_ENGINES = {
         "content_generation", "creative_generation", "blog_generation",
         "product_description", "copywriting", "headline_generator",
-        "ad_copy", "email_marketing", "social_media", "video_marketing",
-        "faq_generation", "translation", "storytelling", "brand_voice",
-        "press_release", "case_study", "landing_page", "landing_page_builder",
+        "video_marketing", "faq_generation", "translation", "storytelling",
+        "brand_voice", "press_release", "case_study",
     }
 
     def applies_to(self, engine_name: str) -> bool:

@@ -38,15 +38,19 @@ class DomainRouter:
     """
 
     def __init__(self) -> None:
+        # ORDER MATTERS: specific domains BEFORE general ones
+        # SeoLogic before MarketingLogic (both match "seo" but Seo is more specific)
+        # ContentLogic before MarketingLogic (both match "content_generation")
+        # CustomerLogic before AnalyticsLogic (both match "customer_analytics")
         self._domains = [
-            PricingLogic(),
-            MarketingLogic(),
-            InventoryLogic(),
-            SeoLogic(),
-            CustomerLogic(),
-            AnalyticsLogic(),
-            OperationsLogic(),
-            ContentLogic(),
+            SeoLogic(),          # Most specific: seo, keyword, sitemap, etc.
+            ContentLogic(),      # Specific: content, blog, description, etc.
+            CustomerLogic(),     # Specific: customer, churn, retention, etc.
+            PricingLogic(),      # Specific: pricing, discount, margin, etc.
+            InventoryLogic(),    # Specific: inventory, stock, warehouse, etc.
+            OperationsLogic(),   # Medium: order, shipping, fulfillment, etc.
+            MarketingLogic(),    # Broad: marketing, campaign, ads, etc.
+            AnalyticsLogic(),    # Broadest: analytics, tracking, metric, etc.
         ]
         self._keyword_cache: dict[str, int | None] = {}
 

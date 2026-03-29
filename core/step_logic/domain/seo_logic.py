@@ -69,7 +69,7 @@ class SeoLogic:
             "total_keywords": len(analyzed),
             "keywords": analyzed,
             "top_opportunities": analyzed[:5],
-            "long_tail_count": sum(1 for a in analyzed if a.get("word_count", a.get("type") == "long_tail", 0)),
+            "long_tail_count": sum(1 for a in analyzed if a.get("type") == "long_tail"),
         }
 
     def _audit_on_page(self, page: dict) -> dict:
