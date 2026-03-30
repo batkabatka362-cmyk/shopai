@@ -58,6 +58,11 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/chain": self._run_chain,
             "/api/batch": self._batch_process,
             "/api/analyze": self._analyze_engine,
+            "/api/webhook/shopify": self._handle_webhook,
+            "/api/agent": self._agent_run,
+            "/api/workflow": self._run_workflow,
+        }
+            "/api/analyze": self._analyze_engine,
         }
 
         handler = routes.get(path)
@@ -161,6 +166,48 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             result = self.orchestrator.analyze_engine(engine_name)
         else:
             result = self.orchestrator.analyze_system()
+        self._json_response(200, result)
+
+    def _handle_webhook(self, body: dict) -> None:
+        """Handle Shopify webhook event."""
+        topic = self.headers.get("X-Shopify-Topic", body.get("topic", ""))
+        shop = self.headers.get("X-Shopify-Shop-Domain", body.get("shop", ""))
+        hmac_val = self.headers.get("X-Shopify-Hmac-SHA256", "")
+
+        if not topic:
+            self._json_response(400, {"error": "Missing webhook topic"})
+            return
+
+        from core.webhooks import ShopifyWebhookHandler
+        handler = ShopifyWebhookHandler()
+        result = handler.handle(topic, body, hmac_val, shop)
+        self._json_response(200, result)
+
+    def _agent_run(self, body: dict) -> None:
+        """Run a task through an agent."""
+        if not self.orchestrator:
+            self._json_response(503, {"error": "Orchestrator not initialized"})
+            return
+        agent = body.get("agent", "")
+        task = body.get("task", "")
+        data = body.get("data", {})
+        if not agent or not task:
+            self._json_response(400, {"error": "Missing agent or task"})
+            return
+        result = self.orchestrator.agent_run(agent, task, data)
+        self._json_response(200, result)
+
+    def _run_workflow(self, body: dict) -> None:
+        """Run a named workflow."""
+        if not self.orchestrator:
+            self._json_response(503, {"error": "Orchestrator not initialized"})
+            return
+        workflow = body.get("workflow", "")
+        data = body.get("data", {})
+        if not workflow:
+            self._json_response(400, {"error": "Missing workflow name"})
+            return
+        result = self.orchestrator.run_workflow(workflow, data)
         self._json_response(200, result)
 
     # --- Helpers ---
