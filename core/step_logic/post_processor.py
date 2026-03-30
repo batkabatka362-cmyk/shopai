@@ -31,14 +31,45 @@ class PostProcessor:
         self._context = copy.deepcopy(data)
 
     def process(self, model_output: dict[str, Any], step_name: str, engine_name: str) -> dict[str, Any]:
-        """Post-process model output. Returns clean structured dict."""
+        """Post-process model output. Returns clean structured dict.
+
+        Two modes:
+          - Placeholder mode: SmartExecutor REPLACES model output with computed results
+          - Real AI mode: SmartExecutor MERGES computed data INTO AI response
+        """
         result = copy.deepcopy(model_output)
 
         context = self._context
-
-        # Smart execution: enhance model output with real computation
         is_placeholder = self._is_placeholder(result)
-        if is_placeholder or context:
+        has_real_ai = self._has_real_ai_response(result)
+
+        if is_placeholder and context:
+            # No real AI — SmartExecutor provides all intelligence
+            if step_name == "analyze":
+                result = _smart.execute_analyze(context, result, engine_name)
+            elif step_name == "execute":
+                result = _smart.execute_work(context, result, engine_name)
+            elif step_name == "enhance":
+                result = _smart.execute_enhance(context, result, engine_name)
+            elif step_name == "validate":
+                result = _smart.execute_validate(context, result, engine_name)
+        elif has_real_ai and context:
+            # Real AI response — merge SmartExecutor computed data as enrichment
+            computed = {}
+            if step_name == "analyze":
+                computed = _smart.execute_analyze(context, {}, engine_name)
+            elif step_name == "execute":
+                computed = _smart.execute_work(context, {}, engine_name)
+            elif step_name == "validate":
+                computed = _smart.execute_validate(context, {}, engine_name)
+
+            # AI response takes priority, computed fills gaps
+            for key, value in computed.items():
+                if key not in result and not key.startswith("request_id"):
+                    result[key] = value
+            result["_ai_enhanced"] = True
+        elif context:
+            # Unknown state — run SmartExecutor as fallback
             if step_name == "analyze":
                 result = _smart.execute_analyze(context, result, engine_name)
             elif step_name == "execute":
@@ -146,6 +177,17 @@ class PostProcessor:
                 value = {k: v for k, v in value.items() if k != "raw_prompt"}
             cleaned[key] = value
         return cleaned
+
+    @staticmethod
+    def _has_real_ai_response(result: dict[str, Any]) -> bool:
+        """Detect if model returned real AI-generated content."""
+        if result.get("backend") in ("ollama", "vllm"):
+            return True
+        if result.get("text") and len(str(result.get("text", ""))) > 20:
+            return True
+        if result.get("tokens_used", 0) > 0:
+            return True
+        return False
 
     @staticmethod
     def _is_placeholder(result: dict[str, Any]) -> bool:

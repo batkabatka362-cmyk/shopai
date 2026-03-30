@@ -150,7 +150,58 @@ class PricingLogic:
         else:
             rec["action"] = "maintain"
 
+        # Psychological pricing
+        charm_price = self._charm_price(price)
+        if charm_price != price:
+            rec["charm_price"] = charm_price
+            rec["charm_savings_pct"] = round((price - charm_price) / price * 100, 1)
+
+        # Price anchoring
+        if cost > 0:
+            rec["anchor_price"] = round(price * 1.4, 2)  # Show "was" price at 40% higher
+            rec["perceived_discount"] = round((1 - price / (price * 1.4)) * 100, 0)
+
+        # Elasticity estimate (simplified)
+        rec["elasticity_estimate"] = self._estimate_elasticity(product)
+
         return rec
+
+    @staticmethod
+    def _charm_price(price: float) -> float:
+        """Convert to psychological charm price: $30 → $29.99, $45 → $44.99."""
+        if price <= 0:
+            return price
+        rounded = round(price)
+        if rounded == price and price >= 10:
+            return price - 0.01
+        if price % 1 == 0 and price >= 5:
+            return price - 0.01
+        return price
+
+    @staticmethod
+    def _estimate_elasticity(product: dict) -> dict:
+        """Estimate price elasticity based on product attributes."""
+        price = float(product.get("price", 0))
+        category = product.get("category", "").lower()
+        competition = float(product.get("competition", 0))
+
+        # Higher competition = more elastic (customers switch easily)
+        # Luxury/premium = less elastic (brand loyalty)
+        if category in ("luxury", "premium", "designer"):
+            elasticity = -0.5  # Inelastic
+        elif competition > 500:
+            elasticity = -2.5  # Very elastic
+        elif competition > 100:
+            elasticity = -1.5  # Moderately elastic
+        else:
+            elasticity = -0.8  # Relatively inelastic
+
+        return {
+            "coefficient": elasticity,
+            "interpretation": "inelastic" if abs(elasticity) < 1 else "elastic",
+            "pricing_power": "high" if abs(elasticity) < 1 else "low",
+            "10pct_increase_demand_change": round(elasticity * 10, 1),
+        }
 
     def _recommend_discounts(self, products: list[dict], data: dict) -> dict:
         high_margin = [p for p in products if self._margin(p) > 50]
