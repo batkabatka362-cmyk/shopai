@@ -1,7 +1,10 @@
 """PreProcessor — runs real computation BEFORE model is called.
 
-This is where real business logic lives. Model gets pre-computed data
-so it can make better decisions. Never sends raw, unprocessed data to model.
+Uses Intelligence modules to enrich ALL engine data with real algorithms:
+  - Products → pricing intelligence (margins, elasticity, segments)
+  - Customers → recommendation intelligence (similar users, cross-sell)
+  - Pages → SEO intelligence (audit scores, keyword difficulty)
+  - Emails → email intelligence (subject scoring, send timing)
 """
 from __future__ import annotations
 
@@ -13,9 +16,47 @@ from utils.logger import get_logger
 
 logger = get_logger("step_logic.pre")
 
+# Lazy-load intelligence modules
+_pricing_intel = None
+_rec_intel = None
+_email_intel = None
+_seo_intel = None
+
+
+def _get_pricing():
+    global _pricing_intel
+    if _pricing_intel is None:
+        from core.intelligence.pricing_intelligence import PricingIntelligence
+        _pricing_intel = PricingIntelligence()
+    return _pricing_intel
+
+
+def _get_rec():
+    global _rec_intel
+    if _rec_intel is None:
+        from core.intelligence.recommendation_intelligence import RecommendationIntelligence
+        _rec_intel = RecommendationIntelligence()
+    return _rec_intel
+
+
+def _get_email():
+    global _email_intel
+    if _email_intel is None:
+        from core.intelligence.email_intelligence import EmailIntelligence
+        _email_intel = EmailIntelligence()
+    return _email_intel
+
+
+def _get_seo():
+    global _seo_intel
+    if _seo_intel is None:
+        from core.intelligence.seo_intelligence import SEOIntelligence
+        _seo_intel = SEOIntelligence()
+    return _seo_intel
+
 
 class PreProcessor:
-    """Runs business computations before model call."""
+    """Runs business computations + intelligence injection before model call."""
 
     def process(self, data: dict[str, Any], engine_name: str, step_name: str) -> dict[str, Any]:
         """Pre-process data for a specific engine step. Returns new dict."""
@@ -23,6 +64,9 @@ class PreProcessor:
 
         # Always compute data quality score
         result["_data_quality"] = self._score_data_quality(data)
+
+        # Intelligence auto-injection — enrich ANY engine data
+        result = self._inject_intelligence(result, engine_name)
 
         # Step-specific pre-processing
         if step_name == "analyze":
@@ -33,6 +77,60 @@ class PreProcessor:
             result = self._pre_validate(result, engine_name)
 
         return result
+
+    def _inject_intelligence(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
+        """Auto-inject intelligence into ANY engine's data based on what data is available."""
+        try:
+            # Products → pricing intelligence
+            products = data.get("products", data.get("product_data", []))
+            if isinstance(products, list) and products and isinstance(products[0], dict):
+                sales = data.get("sales_history", data.get("price_history", []))
+                if isinstance(sales, list) and len(sales) >= 3:
+                    data["_pricing_intel"] = _get_pricing().compute_demand_curve(sales)
+
+                comps = data.get("competitor_data", data.get("competitor_prices", []))
+                if isinstance(comps, list) and comps:
+                    p = products[0]
+                    price = float(p.get("price", 0))
+                    cost = float(p.get("cost", 0))
+                    if price > 0 and cost > 0:
+                        data["_competitor_intel"] = _get_pricing().competitor_response(price, cost, comps)
+
+            # Customers → recommendation intelligence
+            customers = data.get("customer_data", data.get("customers", []))
+            purchase_history = data.get("purchase_history", data.get("orders", []))
+            if isinstance(purchase_history, list) and len(purchase_history) >= 3:
+                target = ""
+                if isinstance(customers, list) and customers and isinstance(customers[0], dict):
+                    target = str(customers[0].get("id", customers[0].get("name", "")))
+                if target:
+                    data["_recommendation_intel"] = _get_rec().collaborative_filter(purchase_history, target)
+
+            # Pages → SEO intelligence
+            page_data = data.get("page_data", data.get("content_data", {}))
+            if isinstance(page_data, dict) and page_data.get("title"):
+                data["_seo_intel"] = _get_seo().audit_page(page_data)
+
+            # Keywords → difficulty scoring
+            keywords = data.get("keywords", data.get("seed_keywords", []))
+            if isinstance(keywords, list) and keywords:
+                kw_diffs = []
+                for kw in keywords[:5]:
+                    term = kw if isinstance(kw, str) else kw.get("keyword", "") if isinstance(kw, dict) else ""
+                    if term:
+                        kw_diffs.append(_get_seo().keyword_difficulty(term))
+                if kw_diffs:
+                    data["_keyword_intel"] = kw_diffs
+
+            # Email subject → scoring
+            subject = data.get("subject_line", data.get("subject", ""))
+            if isinstance(subject, str) and len(subject) > 5:
+                data["_email_intel"] = _get_email().score_subject_line(subject)
+
+        except Exception as exc:
+            logger.warning("Intelligence injection failed (non-critical): %s", exc)
+
+        return data
 
     def _pre_analyze(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
         """Pre-compute scores and metrics for analyzer."""
