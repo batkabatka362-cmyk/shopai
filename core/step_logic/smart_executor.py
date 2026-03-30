@@ -119,10 +119,23 @@ class SmartExecutor:
             min_margin = float(criteria.get("min_margin", 0))
 
             selected = []
+            rejected = []
             for i, p in enumerate(ranked):
                 margin = p.get("margin_pct", 0)
+                competition = float(p.get("competition", 0))
+                max_comp = float(criteria.get("max_competition", 0))
+
+                # Apply criteria filters
+                skip_reason = None
                 if min_margin and margin < min_margin:
+                    skip_reason = f"margin {margin:.0f}% < min {min_margin:.0f}%"
+                if max_comp and competition > max_comp:
+                    skip_reason = f"competition {competition:.0f} > max {max_comp:.0f}"
+
+                if skip_reason:
+                    rejected.append({"name": p.get("name", ""), "reason": skip_reason})
                     continue
+
                 selected.append({
                     "rank": i + 1,
                     "name": p.get("name", f"Product {i}"),
@@ -143,9 +156,11 @@ class SmartExecutor:
             result["selection_summary"] = {
                 "total_evaluated": len(ranked),
                 "selected": len(selected),
-                "rejected": len(ranked) - len(selected),
+                "rejected": len(rejected),
+                "rejected_reasons": rejected,
                 "avg_score": self._comp.mean([s["total_score"] for s in selected]) if selected else 0,
                 "top_product": selected[0]["name"] if selected else None,
+                "criteria_applied": {k: v for k, v in criteria.items() if v},
             }
             result["generated"] = True
         else:
