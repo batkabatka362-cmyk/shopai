@@ -1,5 +1,5 @@
 """
-LoyaltyPredictor2 Engine
+MetaOptimizer Engine
 Flow: Analyzer(Mistral) → Worker(Qwen) → Creative(LLaMA) → Validator(Mistral)
 """
 from __future__ import annotations
@@ -8,10 +8,10 @@ from engines.base import BaseEngine, EngineStep, StepResult, EngineStatus
 from models.routing.model_router import ModelRouter
 
 
-class LoyaltyPredictor2Engine(BaseEngine):
-    engine_name = "loyalty_predictor"
-    required_input_fields = ['customer_data', 'behavior_data']
-    required_output_fields = ['loyalty_forecast', 'retention_triggers']
+class MetaOptimizerEngine(BaseEngine):
+    engine_name = "meta_optimizer"
+    required_input_fields = ['optimization_data', 'meta_config']
+    required_output_fields = ['optimal_strategy', 'parameter_tuning']
 
     def __init__(self) -> None:
         self._model_router = ModelRouter()
@@ -19,7 +19,7 @@ class LoyaltyPredictor2Engine(BaseEngine):
 
     def define_steps(self) -> None:
         for step, role, req in [("analyze","analyzer",True),("execute","worker",True),("enhance","creative",False),("validate","validator",True)]:
-            self.flow.add_step(EngineStep(name=step, model_role=role, description=f"{step} loyalty predictor", required=req, stop_on_reject=req))
+            self.flow.add_step(EngineStep(name=step, model_role=role, description=f"{step} meta optimizer", required=req, stop_on_reject=req))
             self.flow.register_executor(step, getattr(self, f"_step_{step}"))
 
     def _run_step(self, step_name: str, role: str, model: str, data: dict[str, Any]) -> StepResult:
@@ -33,4 +33,4 @@ class LoyaltyPredictor2Engine(BaseEngine):
     def _step_validate(self, sn: str, d: dict[str, Any]) -> StepResult: return self._run_step(sn, "validator", "mistral", d)
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
-        return f"{step.upper()} loyalty predictor: {data}"
+        return f"{step.upper()} meta optimizer: {data}"
