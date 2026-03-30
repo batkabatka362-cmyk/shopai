@@ -13,6 +13,8 @@ from .seo_logic import SeoLogic
 from .customer_logic import CustomerLogic
 from .analytics_logic import AnalyticsLogic
 from .operations_logic import OperationsLogic
+from .shopify_logic import ShopifyLogic
+from .growth_logic import GrowthLogic
 from .content_logic import ContentLogic
 
 
@@ -26,6 +28,8 @@ KEYWORD_DOMAIN_MAP = {
     AnalyticsLogic: ["analytics", "analysis", "tracking", "metric", "kpi", "dashboard", "report", "forecast", "predict", "trend", "anomaly", "benchmark", "cohort", "attribution", "roi", "performance"],
     OperationsLogic: ["order", "shipping", "delivery", "fulfillment", "warehouse", "logistics", "route", "carrier", "return", "refund", "quality", "inspection", "tracking", "customs", "freight", "pack"],
     ContentLogic: ["content", "blog", "article", "copy", "headline", "description", "story", "creative", "video", "image", "photo", "translation", "faq", "press", "case_study", "landing", "page_builder"],
+    ShopifyLogic: ["shopify", "theme", "checkout", "collection", "metafield", "store", "pos", "app_recommend"],
+    GrowthLogic: ["growth", "experiment", "activation", "onboarding", "adoption", "viral", "flywheel", "north_star", "aha_moment", "mvp", "product_market"],
 }
 
 
@@ -43,7 +47,9 @@ class DomainRouter:
         # ContentLogic before MarketingLogic (both match "content_generation")
         # CustomerLogic before AnalyticsLogic (both match "customer_analytics")
         self._domains = [
-            SeoLogic(),          # Most specific: seo, keyword, sitemap, etc.
+            ShopifyLogic(),      # Most specific: shopify-specific engines
+            GrowthLogic(),       # Specific: growth, experiments, activation
+            SeoLogic(),          # Specific: seo, keyword, sitemap, etc.
             ContentLogic(),      # Specific: content, blog, description, etc.
             CustomerLogic(),     # Specific: customer, churn, retention, etc.
             PricingLogic(),      # Specific: pricing, discount, margin, etc.
