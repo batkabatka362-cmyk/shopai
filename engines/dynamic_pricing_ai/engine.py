@@ -1,5 +1,5 @@
 """
-DynamicPricingAi Engine — Dynamic Pricing Ai
+DynamicPricingAi2 Engine
 Flow: Analyzer(Mistral) → Worker(Qwen) → Creative(LLaMA) → Validator(Mistral)
 """
 from __future__ import annotations
@@ -8,10 +8,10 @@ from engines.base import BaseEngine, EngineStep, StepResult, EngineStatus
 from models.routing.model_router import ModelRouter
 
 
-class DynamicPricingAiEngine(BaseEngine):
+class DynamicPricingAi2Engine(BaseEngine):
     engine_name = "dynamic_pricing_ai"
-    required_input_fields = ['market_data', 'pricing_rules']
-    required_output_fields = ['dynamic_prices', 'price_history']
+    required_input_fields = ['product_data', 'demand_data']
+    required_output_fields = ['dynamic_prices', 'pricing_rules']
 
     def __init__(self) -> None:
         self._model_router = ModelRouter()
@@ -27,17 +27,10 @@ class DynamicPricingAiEngine(BaseEngine):
         result = self._model_router.execute(role, prompt, context=data)
         return StepResult(step_name=step_name, model_used=model, status=EngineStatus.COMPLETED, output={step_name: result})
 
-    def _step_analyze(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        return self._run_step(step_name, "analyzer", "mistral", data)
-
-    def _step_execute(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        return self._run_step(step_name, "worker", "qwen", data)
-
-    def _step_enhance(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        return self._run_step(step_name, "creative", "llama", data)
-
-    def _step_validate(self, step_name: str, data: dict[str, Any]) -> StepResult:
-        return self._run_step(step_name, "validator", "mistral", data)
+    def _step_analyze(self, sn: str, d: dict[str, Any]) -> StepResult: return self._run_step(sn, "analyzer", "mistral", d)
+    def _step_execute(self, sn: str, d: dict[str, Any]) -> StepResult: return self._run_step(sn, "worker", "qwen", d)
+    def _step_enhance(self, sn: str, d: dict[str, Any]) -> StepResult: return self._run_step(sn, "creative", "llama", d)
+    def _step_validate(self, sn: str, d: dict[str, Any]) -> StepResult: return self._run_step(sn, "validator", "mistral", d)
 
     def _build_prompt(self, step: str, data: dict[str, Any]) -> str:
         return f"{step.upper()} dynamic pricing ai: {data}"
