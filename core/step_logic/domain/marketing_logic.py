@@ -1,13 +1,16 @@
 """MarketingLogic — deep business logic for marketing engines.
 
-Covers: marketing, campaign, email_marketing, social_media, ads, attribution,
-        audience_targeting, content_generation, seo
+Uses EmailIntelligence for real email optimization.
 """
 from __future__ import annotations
 
 import copy
 import math
 from typing import Any
+
+from core.intelligence.email_intelligence import EmailIntelligence
+
+_ei = EmailIntelligence()
 
 
 class MarketingLogic:
@@ -63,6 +66,25 @@ class MarketingLogic:
 
         result["content_calendar"] = self._generate_content_calendar(data)
         result["kpi_targets"] = self._set_kpi_targets(data)
+
+        # Email intelligence
+        subject = data.get("subject_line", data.get("subject", ""))
+        if isinstance(subject, str) and subject:
+            result["subject_score"] = _ei.score_subject_line(subject)
+
+        flow_type = data.get("flow_type", data.get("automation_type", ""))
+        if isinstance(flow_type, str) and flow_type:
+            result["email_flow"] = _ei.build_automation_flow(flow_type, data)
+        elif "email" in str(data.get("_step", "")):
+            result["email_flows_available"] = [
+                {"type": "welcome", "description": "Welcome series for new customers"},
+                {"type": "abandoned_cart", "description": "Recover abandoned checkouts"},
+                {"type": "post_purchase", "description": "Post-purchase engagement"},
+                {"type": "win_back", "description": "Re-engage inactive customers"},
+                {"type": "browse_abandonment", "description": "Follow up on browsed products"},
+                {"type": "vip", "description": "VIP customer program"},
+            ]
+
         result["generated"] = True
         return result
 

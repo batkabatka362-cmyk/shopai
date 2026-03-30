@@ -1,7 +1,14 @@
-"""CustomerLogic — deep business logic for customer-related engines."""
+"""CustomerLogic — deep business logic for customer-related engines.
+
+Uses RecommendationIntelligence for product recommendations.
+"""
 from __future__ import annotations
 import math
 from typing import Any
+
+from core.intelligence.recommendation_intelligence import RecommendationIntelligence
+
+_ri = RecommendationIntelligence()
 
 
 class CustomerLogic:
@@ -39,6 +46,20 @@ class CustomerLogic:
             result["segments"] = self._create_segments(customers)
             result["retention_plan"] = self._retention_plan(data)
             result["personalization_rules"] = self._personalization_rules(customers)
+
+            # Product recommendations via RecommendationIntelligence
+            purchase_history = data.get("purchase_history", data.get("orders", []))
+            if isinstance(purchase_history, list) and purchase_history:
+                target = customers[0].get("id", customers[0].get("name", ""))
+                if target:
+                    result["product_recommendations"] = _ri.collaborative_filter(purchase_history, str(target))
+
+            # Cart cross-sell if cart data available
+            cart = data.get("cart_items", data.get("cart_data", []))
+            catalog = data.get("product_catalog", data.get("products", []))
+            if isinstance(cart, list) and cart and isinstance(catalog, list) and catalog:
+                result["cross_sell"] = _ri.cart_cross_sell(cart, catalog)
+
             result["generated"] = True
         return result
 

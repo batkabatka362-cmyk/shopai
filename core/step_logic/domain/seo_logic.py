@@ -1,10 +1,17 @@
-"""SeoLogic — deep business logic for SEO engines."""
+"""SeoLogic — deep business logic for SEO engines.
+
+Uses SEOIntelligence for real algorithms: page audit, keyword difficulty, content gap.
+"""
 from __future__ import annotations
 from typing import Any
 
+from core.intelligence.seo_intelligence import SEOIntelligence
+
+_si = SEOIntelligence()
+
 
 class SeoLogic:
-    """Real SEO computations."""
+    """Real SEO computations powered by SEOIntelligence."""
 
     SEO_ENGINES = {
         "seo", "keyword_research", "content_optimization", "search_optimization",
@@ -25,7 +32,24 @@ class SeoLogic:
             result["keyword_analysis"] = self._analyze_keywords(keywords)
 
         if isinstance(page_data, dict) and page_data:
-            result["on_page_audit"] = self._audit_on_page(page_data)
+            # Use real SEOIntelligence audit
+            result["on_page_audit"] = _si.audit_page(page_data)
+
+        # Keyword difficulty scoring
+        if isinstance(keywords, list) and keywords:
+            kw_difficulties = []
+            for kw in keywords[:10]:
+                term = kw if isinstance(kw, str) else kw.get("keyword", "")
+                if term:
+                    kw_difficulties.append(_si.keyword_difficulty(term))
+            if kw_difficulties:
+                result["keyword_difficulties"] = kw_difficulties
+
+        # Content gap if competitor data available
+        our_content = data.get("our_content", data.get("site_content", []))
+        comp_content = data.get("competitor_content", [])
+        if isinstance(our_content, list) and isinstance(comp_content, list) and comp_content:
+            result["content_gap"] = _si.content_gap(our_content, comp_content)
 
         result["score"] = self._seo_score(result)
         result["decision"] = "approve" if result["score"] >= 5 else "reject"

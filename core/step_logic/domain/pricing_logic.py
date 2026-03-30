@@ -1,13 +1,20 @@
 """PricingLogic — deep business logic for pricing engines.
 
-Covers: pricing, dynamic_pricing, price_elasticity, discount_strategy,
-        price_optimization, price_testing, competitor_pricing, markdown_optimization
+Uses PricingIntelligence for real algorithms:
+  - Demand curve estimation
+  - Competitor response strategy
+  - A/B test analysis
+  - Price elasticity
 """
 from __future__ import annotations
 
 import copy
 import math
 from typing import Any
+
+from core.intelligence.pricing_intelligence import PricingIntelligence
+
+_pi = PricingIntelligence()
 
 
 class PricingLogic:
@@ -37,9 +44,26 @@ class PricingLogic:
             result["decision"] = "approve" if result["score"] >= 5 else "reject"
             result["reason"] = self._pricing_reason(result)
 
+            # Real demand curve if sales history available
+            sales_history = data.get("sales_history", data.get("price_history", []))
+            if isinstance(sales_history, list) and len(sales_history) >= 3:
+                result["demand_curve"] = _pi.compute_demand_curve(sales_history)
+
         competitors = data.get("competitor_data", data.get("competitor_prices", []))
-        if isinstance(competitors, list) and competitors:
+        if isinstance(competitors, list) and competitors and products:
             result["competitive_position"] = self._competitive_analysis(products, competitors)
+            # Real competitor response from PricingIntelligence
+            for p in products[:3]:
+                price = float(p.get("price", 0))
+                cost = float(p.get("cost", 0))
+                if price > 0 and cost > 0:
+                    result["competitor_strategy"] = _pi.competitor_response(price, cost, competitors)
+                    break
+
+        # A/B test analysis if test data available
+        ab_data = data.get("ab_test_data", data.get("test_results", {}))
+        if isinstance(ab_data, dict) and "variant_a" in ab_data and "variant_b" in ab_data:
+            result["ab_analysis"] = _pi.ab_test_analysis(ab_data["variant_a"], ab_data["variant_b"])
 
         return result
 
