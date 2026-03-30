@@ -1,0 +1,252 @@
+"""Integration tests — end-to-end flows across multiple systems."""
+import unittest
+import time
+
+
+class TestWorkflowIntegration(unittest.TestCase):
+    """Test multi-agent multi-engine workflows end-to-end."""
+
+    def setUp(self):
+        from core.orchestrator import MainOrchestrator
+        self.orch = MainOrchestrator()
+        self.orch.initialize()
+
+    def tearDown(self):
+        self.orch.shutdown()
+
+    def test_product_launch_workflow(self):
+        result = self.orch.run_workflow("product_launch", {
+            "products": [{"name": "Test Widget", "price": 29.99, "cost": 8}],
+            "criteria": {},
+        })
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["completed_steps"], result["total_steps"])
+        self.assertGreater(result["elapsed_seconds"], 0)
+
+    def test_customer_retention_workflow(self):
+        result = self.orch.run_workflow("customer_retention", {
+            "customer_data": [
+                {"name": "Alice", "orders": 10, "total_spent": 500, "days_since_last_order": 5},
+                {"name": "Bob", "orders": 1, "total_spent": 20, "days_since_last_order": 150},
+            ],
+        })
+        self.assertEqual(result["status"], "completed")
+
+    def test_pricing_optimization_workflow(self):
+        result = self.orch.run_workflow("pricing_optimization", {
+            "products": [{"name": "X", "price": 30, "cost": 8}],
+        })
+        self.assertIn(result["status"], ["completed", "partial"])
+
+    def test_workflow_with_empty_data(self):
+        result = self.orch.run_workflow("product_launch", {})
+        # Should handle gracefully — partial or completed
+        self.assertIn(result["status"], ["completed", "partial"])
+
+    def test_unknown_workflow(self):
+        result = self.orch.run_workflow("nonexistent_workflow_xyz", {})
+        self.assertIn("error", result)
+
+
+class TestAgentIntegration(unittest.TestCase):
+    """Test agent-engine coordination."""
+
+    def setUp(self):
+        from core.orchestrator import MainOrchestrator
+        self.orch = MainOrchestrator()
+        self.orch.initialize()
+
+    def tearDown(self):
+        self.orch.shutdown()
+
+    def test_product_agent_pricing(self):
+        result = self.orch.agent_run("product_agent", "pricing", {
+            "products": [{"name": "X", "price": 30, "cost": 8}],
+        })
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("_agent", result)
+        self.assertEqual(result["_agent"]["name"], "product_agent")
+
+    def test_customer_agent_segmentation(self):
+        result = self.orch.agent_run("customer_agent", "customer_segmentation", {
+            "customer_data": [{"name": "A", "orders": 5, "total_spent": 200, "days_since_last_order": 10}],
+            "segmentation_criteria": {},
+        })
+        self.assertEqual(result["status"], "completed")
+
+    def test_agent_with_wrong_task(self):
+        result = self.orch.agent_run("product_agent", "completely_wrong_task_xyz", {})
+        # Agent falls back to first available engine
+        self.assertIn("_agent", result)
+
+    def test_all_agents_accessible(self):
+        agents = self.orch.list_agents()
+        self.assertGreaterEqual(len(agents), 6)
+        for agent in agents:
+            self.assertIn("name", agent)
+            self.assertGreater(agent["engines"], 0)
+
+
+class TestWebhookIntegration(unittest.TestCase):
+    """Test Shopify webhook → engine pipeline."""
+
+    def setUp(self):
+        from core.orchestrator import MainOrchestrator
+        self.orch = MainOrchestrator()
+        self.orch.initialize()
+
+    def tearDown(self):
+        self.orch.shutdown()
+
+    def test_order_created_webhook(self):
+        from core.webhooks import ShopifyWebhookHandler
+        wh = ShopifyWebhookHandler()
+        result = wh.handle("orders/create", {
+            "id": 12345, "total_price": "89.99", "line_items": [{"id": 1}],
+            "customer": {"id": 999},
+        })
+        self.assertEqual(result["status"], "processed")
+        self.assertGreater(result["engines_triggered"], 0)
+
+    def test_product_update_webhook(self):
+        from core.webhooks import ShopifyWebhookHandler
+        wh = ShopifyWebhookHandler()
+        result = wh.handle("products/update", {
+            "id": 555, "title": "Updated Product",
+            "variants": [{"price": "34.99", "cost": "10.00"}],
+        })
+        self.assertEqual(result["status"], "processed")
+
+    def test_unknown_webhook_skipped(self):
+        from core.webhooks import ShopifyWebhookHandler
+        wh = ShopifyWebhookHandler()
+        result = wh.handle("unknown/topic", {})
+        self.assertEqual(result["status"], "skipped")
+
+    def test_hmac_validation(self):
+        from core.webhooks import ShopifyWebhookHandler
+        wh = ShopifyWebhookHandler(webhook_secret="test_secret")
+        result = wh.handle("orders/create", {"id": 1}, hmac_header="invalid_hmac")
+        self.assertEqual(result["status"], "rejected")
+
+
+class TestChainIntegration(unittest.TestCase):
+    """Test engine chain execution."""
+
+    def setUp(self):
+        from core.orchestrator import MainOrchestrator
+        self.orch = MainOrchestrator()
+        self.orch.initialize()
+
+    def tearDown(self):
+        self.orch.shutdown()
+
+    def test_run_chain(self):
+        from core.chaining import ChainBuilder
+        chain = ChainBuilder("test_chain").then("product_selection").then("pricing").build()
+        result = chain.run({"products": [{"name": "X", "price": 30, "cost": 8}], "criteria": {}})
+        self.assertIn(result["status"], ["completed", "partial", "failed"])
+        self.assertIn("steps", result)
+
+    def test_smart_chain_conditional(self):
+        from core.chaining import SmartChain
+        chain = SmartChain("conditional_test")
+        chain.add("product_selection")
+        chain.add_conditional(
+            condition=lambda d: True,
+            if_true="pricing",
+            if_false="market_research",
+        )
+        result = chain.run({"products": [{"name": "X", "price": 30, "cost": 8}], "criteria": {}})
+        self.assertIn(result["status"], ["completed", "partial"])
+
+
+class TestShopifyBridgeIntegration(unittest.TestCase):
+    """Test Shopify bridge data flow."""
+
+    def test_mock_data_available(self):
+        from core.bridge.shopify_bridge import ShopifyBridge
+        sb = ShopifyBridge()
+        products = sb.fetch_products()
+        self.assertGreater(len(products), 0)
+        self.assertIn("name", products[0])
+        self.assertIn("price", products[0])
+
+    def test_fetch_for_engine(self):
+        from core.bridge.shopify_bridge import ShopifyBridge
+        sb = ShopifyBridge()
+        data = sb.fetch_for_engine("product_selection")
+        self.assertIn("products", data)
+
+    def test_shopify_data_to_engine(self):
+        """End-to-end: Shopify data → engine → result."""
+        from core.orchestrator import MainOrchestrator
+        from core.bridge.shopify_bridge import ShopifyBridge
+        orch = MainOrchestrator()
+        orch.initialize()
+        sb = ShopifyBridge()
+        data = sb.fetch_for_engine("pricing")
+        result = orch.submit_task("pricing", data)
+        self.assertEqual(result["status"], "completed")
+        orch.shutdown()
+
+
+class TestExecutionBridgeIntegration(unittest.TestCase):
+    """Test engine result → action plan pipeline."""
+
+    def setUp(self):
+        from core.orchestrator import MainOrchestrator
+        self.orch = MainOrchestrator()
+        self.orch.initialize()
+
+    def tearDown(self):
+        self.orch.shutdown()
+
+    def test_plan_actions_from_result(self):
+        actions = self.orch.plan_actions("product_selection", {
+            "selected_products": [{"name": "Earbuds", "price": 30, "viable": True}],
+            "churn_risks": [{"customer": "Bob", "risk_level": "high", "days_inactive": 120}],
+        })
+        self.assertGreater(len(actions), 0)
+        for action in actions:
+            self.assertIn("action_type", action)
+            self.assertIn("priority", action)
+
+    def test_empty_result_no_actions(self):
+        actions = self.orch.plan_actions("analytics", {})
+        self.assertEqual(len(actions), 0)
+
+
+class TestSystemIntegration(unittest.TestCase):
+    """Test full system health and monitoring."""
+
+    def test_health_check(self):
+        from core.orchestrator import MainOrchestrator
+        orch = MainOrchestrator()
+        orch.initialize()
+        health = orch.health_check()
+        self.assertEqual(health["status"], "healthy")
+        orch.shutdown()
+
+    def test_metrics_tracking(self):
+        from core.orchestrator import MainOrchestrator
+        orch = MainOrchestrator()
+        orch.initialize()
+        # Run a task
+        orch.submit_task("pricing", {"products": [{"name": "X", "price": 30, "cost": 8}]})
+        # Check metrics recorded
+        count = orch.metrics.get_counter("task.submitted")
+        self.assertGreater(count, 0)
+        orch.shutdown()
+
+    def test_event_system(self):
+        from core.orchestrator import MainOrchestrator
+        orch = MainOrchestrator()
+        orch.initialize()
+        stats = orch.events.get_stats()
+        self.assertGreater(stats["published"], 0)  # startup event
+        orch.shutdown()
+
+
+if __name__ == "__main__":
+    unittest.main()

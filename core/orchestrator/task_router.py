@@ -6,7 +6,8 @@ from utils.logger import get_logger
 
 logger = get_logger("orchestrator.task_router")
 
-ENGINE_MAP: dict[str, str] = {
+# Alias map: human-friendly task names → engine names
+TASK_ALIASES: dict[str, str] = {
     "find_product": "product_selection",
     "analyze_market": "market_research",
     "set_price": "pricing",
@@ -16,6 +17,18 @@ ENGINE_MAP: dict[str, str] = {
     "optimize_funnel": "funnel",
     "manage_inventory": "inventory",
 }
+
+# Lazy-loaded engine map — built on first access, not on import
+_ENGINE_MAP: dict[str, str] | None = None
+
+
+def _get_engine_map() -> dict[str, str]:
+    global _ENGINE_MAP
+    if _ENGINE_MAP is None:
+        from engines.registry import list_engines
+        _ENGINE_MAP = {name: name for name in list_engines()}
+        _ENGINE_MAP.update(TASK_ALIASES)
+    return _ENGINE_MAP
 
 
 class TaskRouter:
@@ -30,10 +43,11 @@ class TaskRouter:
         logger.info("Registered custom route: %s -> %s", task_type, engine_name)
 
     def resolve(self, task_type: str) -> str | None:
+        engine_map = _get_engine_map()
         if task_type in self._custom_routes:
             engine = self._custom_routes[task_type]
-        elif task_type in ENGINE_MAP:
-            engine = ENGINE_MAP[task_type]
+        elif task_type in engine_map:
+            engine = engine_map[task_type]
         else:
             logger.warning("No route found for task_type=%s", task_type)
             return None
@@ -47,6 +61,6 @@ class TaskRouter:
         return engine
 
     def list_routes(self) -> dict[str, str]:
-        routes = dict(ENGINE_MAP)
+        routes = dict(_get_engine_map())
         routes.update(self._custom_routes)
         return routes

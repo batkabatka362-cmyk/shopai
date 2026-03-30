@@ -16,6 +16,22 @@ from .task_router import TaskRouter
 from .execution_router import ExecutionRouter
 from .decision_router import DecisionRouter
 from .fallback_router import FallbackRouter
+from engines.registry import get_engine, list_engines
+from core.learning import FeedbackStore, LearningEngine, ImprovementTracker
+from core.data_context import DataEnricher
+from core.step_logic import PreProcessor, PostProcessor
+from core.step_logic.response_enricher import ResponseEnricher
+from core.events import EventBus, EventType, EventHandler
+from core.telemetry import Tracer, MetricsCollector
+from core.performance import ExecutionCache
+from core.error_intelligence import ErrorClassifier, FixSuggester, ErrorPatternDetector
+from core.self_monitor import SystemMonitor
+from core.shared_memory import CrossEngineCache, SessionContext
+from core.chaining import ChainRegistry
+from core.bridge import AgentEngineBridge
+from core.bridge.pipeline_bridge import PipelineBridge
+from core.bridge.execution_bridge import ExecutionBridge
+from core.bridge.workflow_bridge import WorkflowBridge
 
 logger = get_logger("orchestrator.main")
 
@@ -42,6 +58,25 @@ class MainOrchestrator:
         self._execution_router = ExecutionRouter()
         self._decision_router = DecisionRouter()
         self._fallback_router = FallbackRouter()
+        self._feedback_store = FeedbackStore()
+        self._learning_engine = LearningEngine(self._feedback_store)
+        self._improvement_tracker = ImprovementTracker()
+        # System modules
+        self._event_bus = EventBus()
+        self._tracer = Tracer()
+        self._metrics = MetricsCollector()
+        self._exec_cache = ExecutionCache()
+        self._error_classifier = ErrorClassifier()
+        self._fix_suggester = FixSuggester()
+        self._error_patterns = ErrorPatternDetector()
+        self._system_monitor = SystemMonitor()
+        self._cross_cache = CrossEngineCache()
+        self._chain_registry = ChainRegistry()
+        # Bridges
+        self._agent_bridge = AgentEngineBridge()
+        self._pipeline_bridge = PipelineBridge()
+        self._execution_bridge = ExecutionBridge()
+        self._workflow_bridge = WorkflowBridge()
         self._running = False
 
     def initialize(self, config_override: dict[str, Any] | None = None) -> None:
@@ -59,9 +94,30 @@ class MainOrchestrator:
         engine_cfg = self._config.get("engines", {})
         self._task_router = TaskRouter(engine_config=engine_cfg)
 
+        # Wire data processing layers into all engines
+        from engines.base.base_engine import set_feedback_store, set_data_layers
+        set_feedback_store(self._feedback_store)
+        set_data_layers(
+            enricher=DataEnricher(),
+            pre_processor=PreProcessor(),
+            post_processor=PostProcessor(),
+            response_enricher=ResponseEnricher(),
+        )
+
+        # Wire events system
+        EventHandler().register_defaults()
+        self._event_bus.emit(EventType.SYSTEM_HEALTH_CHECK, "orchestrator", {"phase": "startup"})
+
+        # Auto-register engine handlers from registry
+        self._register_engines()
+
         self._running = True
         self._state.global_state.system_status = "running"
-        logger.info("MainOrchestrator initialized (env=%s)", system_cfg.get("environment", "unknown"))
+        logger.info(
+            "MainOrchestrator initialized (env=%s, engines=%d)",
+            system_cfg.get("environment", "unknown"),
+            len(self._execution_router.list_handlers()),
+        )
 
     def submit_task(
         self,
@@ -69,38 +125,97 @@ class MainOrchestrator:
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
+        import time
+
         if not self._running:
-            return {"status": "error", "error": "Orchestrator not running"}
+            return {"task_id": "", "engine": "", "status": "error", "result": None, "error": "Orchestrator not running", "timestamp": ""}
 
         task_id = generate_id("task")
+        start_time = time.monotonic()
+
+        # Start trace
+        trace_span = self._tracer.start_trace(f"task:{task_type}", {"task_id": task_id})
+        self._metrics.increment("task.submitted")
+        self._event_bus.emit(EventType.ENGINE_START, task_type, {"task_id": task_id})
+
+        # Check execution cache
+        cached = self._exec_cache.get(task_type, params or {})
+        if cached is not None:
+            self._metrics.increment("task.cache_hit")
+            self._tracer.finish_span(trace_span, "cache_hit")
+            elapsed = time.monotonic() - start_time
+            cached["_cached"] = True
+            cached["elapsed_seconds"] = round(elapsed, 3)
+            return cached
 
         # Register in runtime state
         self._state.runtime.register_task(task_id, task_type)
 
-        # Build context
-        session = self._state.get_session(session_id) if session_id else None
-        session_data = session.snapshot() if session else None
-        context = self._context.create_context(task_type, params, session_data)
+        try:
+            # Build context
+            session = self._state.get_session(session_id) if session_id else None
+            session_data = session.snapshot() if session else None
+            context = self._context.create_context(task_type, params, session_data)
 
-        # Decision routing — check if rules override the default route
-        decision_action = self._decision_router.evaluate(context)
+            # Decision routing — check if rules override the default route
+            decision_action = self._decision_router.evaluate(context)
 
-        # Task routing — resolve engine
-        engine = decision_action or self._task_router.resolve(task_type)
-        if engine is None:
-            self._state.runtime.update_task(task_id, "failed", error="No engine found")
-            return {"task_id": task_id, "status": "failed", "error": f"No engine for task_type={task_type}"}
+            # Task routing — resolve engine
+            engine = decision_action or self._task_router.resolve(task_type)
+            if engine is None:
+                self._state.runtime.update_task(task_id, "failed", error="No engine found")
+                self._tracer.finish_span(trace_span, "no_engine")
+                return {"task_id": task_id, "engine": task_type, "status": "failed", "result": None, "error": f"No engine for task_type={task_type}", "timestamp": time.time()}
 
-        # Execute (with fallback support)
-        result = self._execute_with_fallback(engine, task_id, params)
+            # Execute (with fallback support)
+            exec_span = self._tracer.start_span(trace_span.trace_id, f"execute:{engine}", trace_span.span_id)
+            result = self._execute_with_fallback(engine, task_id, params or {})
+            self._tracer.finish_span(exec_span, result.get("status", "unknown"))
 
-        # Store result in memory
-        self._memory_router.route_store(f"result:{task_id}", result, data_type="task_result")
+            # Store result in memory
+            self._memory_router.route_store(f"result:{task_id}", result, data_type="task_result")
 
-        # Update runtime state
-        self._state.runtime.update_task(task_id, result["status"], result=result.get("result"), error=result.get("error"))
+            # Update runtime state
+            self._state.runtime.update_task(task_id, result["status"], result=result.get("result"), error=result.get("error"))
 
-        return result
+            elapsed = time.monotonic() - start_time
+            result["elapsed_seconds"] = round(elapsed, 3)
+
+            # Post-execution: cache, events, metrics, cross-engine cache
+            status = result.get("status", "unknown")
+            self._metrics.increment(f"task.{status}")
+            self._metrics.histogram("task.duration_ms", elapsed * 1000)
+            self._tracer.finish_span(trace_span, status)
+
+            if status == "completed":
+                self._exec_cache.store(task_type, params or {}, result)
+                self._cross_cache.store(task_type, "latest_result", result.get("result", {}))
+                self._event_bus.emit(EventType.ENGINE_COMPLETE, task_type, {"task_id": task_id, "elapsed": elapsed})
+            else:
+                error_msg = result.get("error", "unknown")
+                self._event_bus.emit(EventType.ENGINE_FAILED, task_type, {"task_id": task_id, "error": error_msg})
+                self._error_patterns.record(task_type, str(error_msg), severity="high")
+
+            return result
+
+        except Exception as exc:
+            elapsed = time.monotonic() - start_time
+            logger.error("Task %s crashed: %s", task_id, exc)
+            self._tracer.finish_span(trace_span, "crash")
+            self._metrics.increment("task.crash")
+            self._error_patterns.record(task_type, str(exc), severity="critical")
+            self._event_bus.emit(EventType.ENGINE_FAILED, task_type, {"task_id": task_id, "error": str(exc)})
+            error_result = {
+                "task_id": task_id,
+                "engine": task_type,
+                "status": "error",
+                "result": None,
+                "error": str(exc),
+                "elapsed_seconds": round(elapsed, 3),
+                "timestamp": time.time(),
+            }
+            self._state.runtime.update_task(task_id, "failed", error=str(exc))
+            return error_result
 
     def create_session(self, session_id: str | None = None) -> str:
         session = self._state.create_session(session_id)
@@ -119,6 +234,11 @@ class MainOrchestrator:
             "memory": self._memory.get_stats(),
             "routes": self._task_router.list_routes(),
             "handlers": self._execution_router.list_handlers(),
+            "metrics": self._metrics.snapshot(),
+            "cache_stats": self._exec_cache.get_stats(),
+            "event_stats": self._event_bus.get_stats(),
+            "error_patterns": self._error_patterns.detect_patterns(),
+            "chains": self._chain_registry.list_chains(),
         }
 
     # -- component accessors --
@@ -151,7 +271,118 @@ class MainOrchestrator:
     def fallback_router(self) -> FallbackRouter:
         return self._fallback_router
 
+    @property
+    def learning(self) -> LearningEngine:
+        return self._learning_engine
+
+    @property
+    def feedback(self) -> FeedbackStore:
+        return self._feedback_store
+
+    def analyze_engine(self, engine_name: str) -> dict[str, Any]:
+        """Analyze engine performance using learning data (read-only)."""
+        return self._learning_engine.analyze(engine_name)
+
+    def analyze_system(self) -> dict[str, Any]:
+        """Analyze entire system learning state (read-only)."""
+        return self._learning_engine.analyze_system()
+
+    @property
+    def events(self) -> EventBus:
+        return self._event_bus
+
+    @property
+    def tracer(self) -> Tracer:
+        return self._tracer
+
+    @property
+    def metrics(self) -> MetricsCollector:
+        return self._metrics
+
+    @property
+    def cache(self) -> ExecutionCache:
+        return self._exec_cache
+
+    @property
+    def monitor(self) -> SystemMonitor:
+        return self._system_monitor
+
+    @property
+    def chains(self) -> ChainRegistry:
+        return self._chain_registry
+
+    @property
+    def errors(self) -> ErrorPatternDetector:
+        return self._error_patterns
+
+    def diagnose_error(self, error: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Diagnose an error with classification, root cause, and fix suggestions."""
+        return self._fix_suggester.suggest(error, context)
+
+    def health_check(self) -> dict[str, Any]:
+        """Run full system health check."""
+        return self._system_monitor.full_check()
+
+    def run_chain(self, chain_name: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Run a named engine chain."""
+        return self._chain_registry.run(chain_name, data)
+
+    # -- bridges --
+
+    def agent_run(self, agent_name: str, task: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Run a task through an agent (agent decides which engine)."""
+        return self._agent_bridge.agent_run(agent_name, task, data)
+
+    def run_workflow(self, workflow_name: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Run a named business workflow (multi-agent, multi-engine)."""
+        return self._workflow_bridge.run_workflow(workflow_name, data)
+
+    def plan_actions(self, engine_name: str, result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Plan executable actions from engine output."""
+        return self._execution_bridge.plan_actions(engine_name, result)
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        return self._agent_bridge.list_agents()
+
+    def list_workflows(self) -> list[dict[str, Any]]:
+        return self._workflow_bridge.list_workflows()
+
+    @property
+    def agents(self) -> AgentEngineBridge:
+        return self._agent_bridge
+
+    @property
+    def workflows(self) -> WorkflowBridge:
+        return self._workflow_bridge
+
+    @property
+    def execution(self) -> ExecutionBridge:
+        return self._execution_bridge
+
+    @property
+    def pipeline(self) -> PipelineBridge:
+        return self._pipeline_bridge
+
     # -- internal helpers --
+
+    def _register_engines(self) -> None:
+        """Auto-register all engines from the registry as execution handlers."""
+        from engines.base import EngineInput
+
+        for engine_name in list_engines():
+            def _make_handler(name: str):
+                def handler(task_id: str, params: dict[str, Any]) -> Any:
+                    engine = get_engine(name)
+                    engine_input = EngineInput(
+                        task_id=task_id,
+                        engine_name=name,
+                        data=params,
+                    )
+                    output = engine.run(engine_input)
+                    return output.to_dict()
+                return handler
+
+            self._execution_router.register_handler(engine_name, _make_handler(engine_name))
 
     def _execute_with_fallback(self, engine: str, task_id: str, params: dict[str, Any] | None) -> dict[str, Any]:
         max_attempts = self._config.get("orchestrator", {}).get("retry_max_attempts", 3)

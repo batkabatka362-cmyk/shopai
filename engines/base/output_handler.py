@@ -65,8 +65,40 @@ class OutputHandler:
 
     @staticmethod
     def _merge_step_outputs(steps: list[StepResult]) -> dict[str, Any]:
+        """Merge step outputs into a flat result dict.
+
+        Strategy: later steps override earlier ones for same keys.
+        Also keeps step-namespaced copy for full traceability.
+        Final result has both flat fields and _steps namespace.
+        """
         merged: dict[str, Any] = {}
+        steps_detail: dict[str, Any] = {}
+
         for step in steps:
             if step.output and step.status != EngineStatus.FAILED:
-                merged[step.step_name] = step.output
+                steps_detail[step.step_name] = step.output
+                # Flatten important fields to top level
+                for key, value in step.output.items():
+                    if key.startswith("_"):
+                        continue  # Skip internal fields
+                    if key in ("request_id", "model", "role", "raw_prompt", "context_keys"):
+                        continue  # Skip model metadata
+                    merged[key] = value
+
+        merged["_steps"] = steps_detail
+
+        # Add timing summary
+        timings = {}
+        total_ms = 0.0
+        for step in steps:
+            ms = getattr(step, "duration_ms", 0.0)
+            timings[step.step_name] = ms
+            total_ms += ms
+        if timings:
+            merged["_timing"] = {
+                "steps": timings,
+                "total_ms": round(total_ms, 2),
+                "slowest": max(timings, key=timings.get) if timings else None,
+            }
+
         return merged

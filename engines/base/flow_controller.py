@@ -8,6 +8,8 @@ Stop execution on reject from Analyzer. One step = one model.
 
 from __future__ import annotations
 
+import copy
+import time
 from typing import Any, Callable
 
 from utils.logger import get_logger
@@ -36,9 +38,14 @@ class FlowController:
         return list(self._steps)
 
     def run(self, data: dict[str, Any]) -> list[StepResult]:
-        """Execute all steps in sequence. Stop on reject if configured."""
+        """Execute all steps in sequence. Stop on reject if configured.
+
+        IMPORTANT: Never mutates the original input data — uses deep copy.
+        Each step receives accumulated context from prior steps.
+        """
         results: list[StepResult] = []
-        working_data = dict(data)
+        # Deep copy to prevent input mutation
+        working_data = copy.deepcopy(data)
 
         for step in self._steps:
             executor = self._executors.get(step.name)
@@ -59,8 +66,11 @@ class FlowController:
                 self._engine_name, step.name, step.model_role,
             )
 
+            start_time = time.monotonic()
             try:
-                result = executor(step.name, working_data)
+                # Pass a copy so steps can't corrupt working_data
+                step_input = copy.deepcopy(working_data)
+                result = executor(step.name, step_input)
             except Exception as exc:
                 logger.error("[%s] Step '%s' raised: %s", self._engine_name, step.name, exc)
                 result = StepResult(
@@ -69,8 +79,22 @@ class FlowController:
                     status=EngineStatus.FAILED,
                     error=str(exc),
                 )
+            elapsed = time.monotonic() - start_time
+            result.duration_ms = round(elapsed * 1000, 2)
+
+            # Ensure result is always a StepResult (defensive)
+            if not isinstance(result, StepResult):
+                logger.error("[%s] Step '%s' returned non-StepResult: %s", self._engine_name, step.name, type(result))
+                result = StepResult(
+                    step_name=step.name,
+                    model_used=step.model_role,
+                    status=EngineStatus.FAILED,
+                    error=f"Step returned {type(result).__name__} instead of StepResult",
+                )
 
             results.append(result)
+            logger.info("[%s] Step '%s' completed in %.3fs (status=%s)",
+                        self._engine_name, step.name, elapsed, result.status.value)
 
             # Stop on reject
             if result.status == EngineStatus.REJECTED and step.stop_on_reject:
@@ -83,7 +107,7 @@ class FlowController:
                 return results
 
             # Pass step output forward as input for next step
-            if result.output:
+            if result.output and isinstance(result.output, dict):
                 working_data.update(result.output)
 
         return results
