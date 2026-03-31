@@ -310,17 +310,19 @@ class SmartExecutor:
           - reviews:      0.10  (social proof / demand validation)
           - price_point:  0.05  (sweet spot for e-commerce: $15-60)
         """
+        from utils.helpers import safe_float, safe_int
         scored = []
         for p in products:
             if not isinstance(p, dict):
                 continue
-            price = float(p.get("price", 0))
-            cost = float(p.get("cost", 0))
-            weight = float(p.get("weight", 0))
-            search = float(p.get("search_volume", 0))
-            comp = float(p.get("competition", 1))
-            rating = float(p.get("rating", 0))
-            reviews = int(p.get("review_count", p.get("reviews", 0)))
+            price = safe_float(p.get("price"))
+            cost = safe_float(p.get("cost"))
+            weight = safe_float(p.get("weight"))
+            search = safe_float(p.get("search_volume"))
+            comp = safe_float(p.get("competition"), 1.0)
+            rating = safe_float(p.get("rating"))
+            reviews = safe_int(p.get("review_count", p.get("reviews", 0)))
+            inventory = safe_int(p.get("inventory_quantity", p.get("quantity", -1)))
 
             # Factor 1: Margin (0-10)
             margin_pct = self._comp.margin(price, cost)
@@ -365,16 +367,16 @@ class SmartExecutor:
                 + price_score * 0.05
             )
 
-            # Decision confidence (how many factors are strong?)
-            strong_factors = sum(1 for s in [margin_score, demand_score, comp_score, ship_score, rating_score]
-                                 if s >= 7)
-            weak_factors = sum(1 for s in [margin_score, demand_score, comp_score, ship_score, rating_score]
-                               if s < 4)
+            # Decision confidence — all 7 factors included
+            all_scores = [margin_score, demand_score, comp_score, ship_score, rating_score, review_score, price_score]
+            strong_factors = sum(1 for s in all_scores if s >= 7)
+            weak_factors = sum(1 for s in all_scores if s < 4)
             confidence = "high" if strong_factors >= 4 and weak_factors == 0 else \
                          "medium" if strong_factors >= 2 else "low"
 
-            # Viability: needs margin + at least 2 other strong factors
-            viable = total >= 5.0 and margin_pct >= 20 and strong_factors >= 2
+            # Viability: needs margin + at least 2 strong factors + in stock (if inventory known)
+            in_stock = inventory != 0  # -1 means unknown (OK), 0 means out of stock
+            viable = total >= 5.0 and margin_pct >= 20 and strong_factors >= 2 and in_stock
 
             sp = dict(p)
             sp.update({

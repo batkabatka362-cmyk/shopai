@@ -17,13 +17,16 @@ import time
 from typing import Any
 
 from utils.logger import get_logger
-from utils.helpers import generate_id
+from utils.helpers import generate_id, safe_float, safe_int, safe_dict
 
 logger = get_logger("intelligence_loop")
 
 
 class IntelligenceLoop:
     """Complete closed intelligence loop. Every stage connects to the next."""
+
+    # Scoring weight adjustments from learning (class-level, persists across instances)
+    _weight_adjustments: dict[str, float] = {}
 
     def __init__(self) -> None:
         self._history: list[dict[str, Any]] = []
@@ -117,7 +120,7 @@ class IntelligenceLoop:
         fixes = []
         issues = []
 
-        # Fix string prices
+        # Fix string prices at top level
         for key in list(data.keys()):
             if key.startswith("_"):
                 continue
@@ -125,10 +128,11 @@ class IntelligenceLoop:
 
             # Fix string numbers
             if isinstance(val, str) and key.lower() in ("price", "cost", "revenue", "spend", "budget"):
-                try:
-                    data[key] = float(val.replace("$", "").replace(",", ""))
+                converted = safe_float(val, default=None)
+                if converted is not None:
+                    data[key] = converted
                     fixes.append(f"{key}: string→float")
-                except ValueError:
+                else:
                     issues.append(f"{key}: invalid number '{val}'")
 
             # Fix list items
@@ -136,15 +140,12 @@ class IntelligenceLoop:
                 cleaned = []
                 for item in val:
                     if isinstance(item, dict):
-                        # Fix nested string prices
                         for k in ("price", "cost", "total", "spend"):
                             if k in item and isinstance(item[k], str):
-                                try:
-                                    item[k] = float(item[k].replace("$", "").replace(",", ""))
+                                converted = safe_float(item[k], default=None)
+                                if converted is not None:
+                                    item[k] = converted
                                     fixes.append(f"{key}[].{k}: string→float")
-                                except ValueError:
-                                    pass
-                        # Remove items with no name/id
                         if item.get("name") or item.get("id") or item.get("title"):
                             cleaned.append(item)
                         else:
@@ -158,30 +159,28 @@ class IntelligenceLoop:
                 del data[key]
                 fixes.append(f"{key}: removed empty")
 
-        # Business logic validation — detect bad data BEFORE scoring
+        # Business logic validation
         biz_issues = []
         for key in ("products", "product_data"):
             items = data.get(key, [])
-            if isinstance(items, list):
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    price = None
-                    for pk in ("price", "cost"):
-                        if pk in item:
-                            try:
-                                price = float(item[pk])
-                            except (ValueError, TypeError):
-                                pass
-                            if price is not None and price < 0:
-                                biz_issues.append(f"{item.get('name', '?')}: negative {pk} ({price})")
-                                issues.append(f"Negative {pk}: {price}")
-                    # Cost > price (losing money)
-                    item_price = float(item.get("price", 0)) if isinstance(item.get("price"), (int, float)) else 0
-                    item_cost = float(item.get("cost", 0)) if isinstance(item.get("cost"), (int, float)) else 0
-                    if item_cost > 0 and item_price > 0 and item_cost > item_price:
-                        biz_issues.append(f"{item.get('name', '?')}: cost ({item_cost}) > price ({item_price})")
-                        issues.append(f"Cost exceeds price: {item_cost} > {item_price}")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_price = safe_float(item.get("price"))
+                item_cost = safe_float(item.get("cost"))
+                item_name = item.get("name", item.get("title", "?"))
+
+                if item_price < 0:
+                    biz_issues.append(f"{item_name}: negative price ({item_price})")
+                    issues.append(f"Negative price: {item_price}")
+                if item_cost < 0:
+                    biz_issues.append(f"{item_name}: negative cost ({item_cost})")
+                    issues.append(f"Negative cost: {item_cost}")
+                if item_cost > 0 and item_price > 0 and item_cost > item_price:
+                    biz_issues.append(f"{item_name}: cost ({item_cost}) > price ({item_price})")
+                    issues.append(f"Cost exceeds price: {item_cost} > {item_price}")
 
         # Quality score
         total_fields = len([k for k in data if not k.startswith("_")])
@@ -201,7 +200,7 @@ class IntelligenceLoop:
 
         # Penalize for business logic violations
         if biz_issues:
-            penalty = min(50, len(biz_issues) * 25)  # Each violation costs 25 points
+            penalty = min(50, len(biz_issues) * 25)
             quality = max(0, quality - penalty)
 
         return {
@@ -231,7 +230,7 @@ class IntelligenceLoop:
             analysis["products"] = {
                 "total": len(products),
                 "viable": len(viable),
-                "top_product": top[0] if top else None,
+                "top_product": top[0] if top else {},
                 "avg_score": round(sum(p.get("total_score", 0) for p in scored) / max(len(scored), 1), 2),
                 "scored": scored,
             }
@@ -241,11 +240,11 @@ class IntelligenceLoop:
             if top and top[0].get("total_score", 0) > 8:
                 analysis["findings"].append(f"Strong candidate: {top[0].get('name')} (score {top[0]['total_score']})")
 
-        # Customer analysis
+        # Customer analysis — safe type conversion
         customers = data.get("customer_data", data.get("customers", []))
         if isinstance(customers, list) and customers:
-            repeat = sum(1 for c in customers if int(c.get("orders", 0)) > 1)
-            at_risk = sum(1 for c in customers if int(c.get("days_since_last_order", 0)) > 60)
+            repeat = sum(1 for c in customers if isinstance(c, dict) and safe_int(c.get("orders")) > 1)
+            at_risk = sum(1 for c in customers if isinstance(c, dict) and safe_int(c.get("days_since_last_order")) > 60)
             analysis["customers"] = {
                 "total": len(customers),
                 "repeat_rate": round(repeat / max(len(customers), 1) * 100, 1),
@@ -254,10 +253,10 @@ class IntelligenceLoop:
             if at_risk > 0:
                 analysis["findings"].append(f"{at_risk} customers at churn risk")
 
-        # Revenue analysis
+        # Revenue analysis — safe type conversion
         orders = data.get("orders", data.get("order_data", []))
         if isinstance(orders, list) and orders:
-            revenue = sum(float(o.get("total", o.get("amount", 0))) for o in orders)
+            revenue = sum(safe_float(o.get("total", o.get("amount", o.get("total_price", 0)))) for o in orders if isinstance(o, dict))
             aov = revenue / max(len(orders), 1)
             analysis["revenue"] = {"total": round(revenue, 2), "orders": len(orders), "aov": round(aov, 2)}
             if aov < 30:
@@ -271,7 +270,6 @@ class IntelligenceLoop:
     def _stage_decide(self, analysis: dict[str, Any], goal: str) -> dict[str, Any]:
         """Rank options, apply learning from past outcomes, set confidence."""
 
-        # Get past learning
         past_advice = self._get_past_learning(goal)
 
         opp_score = analysis.get("opportunity_score", 50)
@@ -282,9 +280,9 @@ class IntelligenceLoop:
         # Decision logic based on goal
         if goal == "maximize_profit":
             if products.get("viable", 0) > 0:
-                top = products.get("top_product", {})
+                top = safe_dict(products.get("top_product"))
                 action = f"Launch {top.get('name', 'top product')} — score {top.get('total_score', 0)}"
-                confidence = "high" if top.get("total_score", 0) > 7 else "medium"
+                confidence = "high" if safe_float(top.get("total_score")) > 7 else "medium"
             else:
                 action = "No viable products — improve margins or find new products"
                 confidence = "low"
@@ -302,8 +300,8 @@ class IntelligenceLoop:
 
         elif goal == "increase_aov":
             revenue = analysis.get("revenue", {})
-            if revenue.get("aov", 0) < 50:
-                action = f"AOV ${revenue.get('aov', 0):.2f} — implement bundle offers and upsells"
+            if safe_float(revenue.get("aov")) < 50:
+                action = f"AOV ${safe_float(revenue.get('aov')):.2f} — implement bundle offers and upsells"
                 confidence = "high"
             else:
                 action = "AOV acceptable — test premium product line"
@@ -315,7 +313,8 @@ class IntelligenceLoop:
         # Apply past learning adjustments
         if past_advice.get("avoid_below_score"):
             threshold = past_advice["avoid_below_score"]
-            if products.get("top_product", {}).get("total_score", 10) < threshold:
+            top_score = safe_float(safe_dict(products.get("top_product")).get("total_score"), 10)
+            if top_score < threshold:
                 action = f"CAUTION: Past data shows scores below {threshold} fail. " + action
                 confidence = "low"
 
@@ -337,14 +336,12 @@ class IntelligenceLoop:
     def _stage_plan(self, decision: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
         """Create specific, executable actions from decision."""
         actions = []
-        goal = decision.get("goal", "")
         confidence = decision.get("confidence", "medium")
 
-        # Always: data quality actions
         products = data.get("products", data.get("product_data", []))
-        customers = data.get("customer_data", [])
+        customers = data.get("customer_data", data.get("customers", []))
 
-        if products:
+        if isinstance(products, list) and products:
             actions.append({
                 "type": "pricing_analysis", "priority": 1,
                 "description": "Run pricing intelligence on all products",
@@ -364,7 +361,7 @@ class IntelligenceLoop:
                 "data_needed": "products",
             })
 
-        if customers:
+        if isinstance(customers, list) and customers:
             actions.append({
                 "type": "segment_customers", "priority": 1,
                 "description": "Segment customers by RFM and detect churn risks",
@@ -373,7 +370,8 @@ class IntelligenceLoop:
             })
 
         # Goal-specific actions
-        if "launch" in decision.get("recommended_action", "").lower():
+        recommended = decision.get("recommended_action", "").lower()
+        if "launch" in recommended:
             actions.append({
                 "type": "product_launch", "priority": 1,
                 "description": "Execute product launch workflow",
@@ -381,7 +379,7 @@ class IntelligenceLoop:
                 "data_needed": "products",
             })
 
-        if "win-back" in decision.get("recommended_action", "").lower():
+        if "win-back" in recommended:
             actions.append({
                 "type": "win_back_email", "priority": 1,
                 "description": "Create and send win-back email campaign",
@@ -389,7 +387,7 @@ class IntelligenceLoop:
                 "data_needed": "customers",
             })
 
-        if "bundle" in decision.get("recommended_action", "").lower() or "upsell" in decision.get("recommended_action", "").lower():
+        if "bundle" in recommended or "upsell" in recommended:
             actions.append({
                 "type": "bundle_strategy", "priority": 1,
                 "description": "Create bundle/upsell offers to increase AOV",
@@ -416,6 +414,8 @@ class IntelligenceLoop:
     def _stage_execute(self, plan: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
         """Format actions for target systems — ready to send."""
         ready = []
+        products = data.get("products", data.get("product_data", []))
+        products_valid = isinstance(products, list) and products and isinstance(products[0], dict)
 
         for action in plan["actions"]:
             target = action["target"]
@@ -427,31 +427,32 @@ class IntelligenceLoop:
                 "status": "ready",
             }
 
-            # Add execution details per target
-            if target == "pricing_engine":
-                products = data.get("products", data.get("product_data", []))
-                if isinstance(products, list) and products and isinstance(products[0], dict):
+            try:
+                if target == "pricing_engine" and products_valid:
                     formatted["payload"] = {"engine": "pricing", "data": {"products": products[:10]}}
 
-            elif target == "email_engine":
-                from core.intelligence.email_intelligence import EmailIntelligence
-                flow = EmailIntelligence().build_automation_flow("win_back")
-                formatted["payload"] = {"flow": flow["name"], "emails": len(flow["emails"])}
-                formatted["estimated_impact"] = flow.get("estimated_recovery", "3-8%")
+                elif target == "email_engine":
+                    from core.intelligence.email_intelligence import EmailIntelligence
+                    flow = EmailIntelligence().build_automation_flow("win_back")
+                    formatted["payload"] = {"flow": flow["name"], "emails": len(flow["emails"])}
+                    formatted["estimated_impact"] = flow.get("estimated_recovery", "3-8%")
 
-            elif target == "seo_engine":
-                products = data.get("products", data.get("product_data", []))
-                if isinstance(products, list) and products and isinstance(products[0], dict):
+                elif target == "seo_engine" and products_valid:
                     from core.intelligence.seo_intelligence import SEOIntelligence
-                    audit = SEOIntelligence().audit_page({"title": products[0].get("name", ""), "keyword": products[0].get("category", "product")})
+                    p0 = products[0]
+                    audit = SEOIntelligence().audit_page({
+                        "title": p0.get("name", ""),
+                        "keyword": p0.get("category", "product"),
+                    })
                     formatted["payload"] = {"audit_score": audit["score"], "issues": audit["issue_count"]}
 
-            elif target == "content_engine":
-                products = data.get("products", data.get("product_data", []))
-                if isinstance(products, list) and products and isinstance(products[0], dict):
+                elif target == "content_engine" and products_valid:
                     from core.intelligence.content_generator import ContentGenerator
                     desc = ContentGenerator().product_description(products[0])
                     formatted["payload"] = {"headline": desc["headline"][:60], "bullets": len(desc["bullet_points"])}
+
+            except Exception as exc:
+                formatted["payload_error"] = str(exc)
 
             ready.append(formatted)
 
@@ -465,12 +466,15 @@ class IntelligenceLoop:
             from core.learning.outcome_tracker import OutcomeTracker
             ot = OutcomeTracker()
             decision = context.get("decision", {})
+            analysis = context.get("analysis", {})
             ot.record_decision(loop_id, "intelligence_loop", {
                 "goal": context.get("goal"),
                 "action": decision.get("recommended_action", ""),
                 "confidence": decision.get("confidence", ""),
                 "opportunity_score": decision.get("opportunity_score", 0),
                 "data_quality": context.get("clean", {}).get("quality_score", 0),
+                "viable_products": analysis.get("products", {}).get("viable", 0),
+                "avg_score": analysis.get("products", {}).get("avg_score", 0),
             })
         except Exception:
             pass
@@ -485,10 +489,23 @@ class IntelligenceLoop:
             patterns = ot.get_winning_patterns("intelligence_loop")
 
             adjustments = []
-            if patterns.get("success_rate", 0.5) < 0.4:
+            success_rate = patterns.get("success_rate", 0.5)
+
+            if success_rate < 0.4:
                 adjustments.append("Low success rate — system needs strategy adjustment")
-            if patterns.get("success_rate", 0.5) > 0.7:
+            if success_rate > 0.7:
                 adjustments.append("High success rate — continue current approach")
+
+            # Apply weight adjustments from patterns
+            for p in patterns.get("patterns", []):
+                if p.get("pattern") == "score_range":
+                    avg_success_score = safe_float(p.get("avg", p.get("min", 0)))
+                    if avg_success_score > 7:
+                        IntelligenceLoop._weight_adjustments["margin"] = 0.30
+                        adjustments.append(f"Boosted margin weight — high scores ({avg_success_score:.1f}) correlate with success")
+                    elif avg_success_score < 4:
+                        IntelligenceLoop._weight_adjustments["demand"] = 0.30
+                        adjustments.append("Boosted demand weight — margin alone not enough")
 
             advice_result = ot.should_proceed("intelligence_loop", decision)
 
@@ -499,6 +516,7 @@ class IntelligenceLoop:
                 "adjustments": adjustments,
                 "advice": advice_result.get("reasons", ["No past data — first run"]),
                 "patterns": patterns.get("patterns", []),
+                "weight_adjustments": dict(IntelligenceLoop._weight_adjustments),
             }
         except Exception:
             return {"past_outcomes": 0, "adjustments_made": False, "advice": ["Learning system initializing"]}
@@ -513,11 +531,10 @@ class IntelligenceLoop:
             result = {"success_rate": patterns.get("success_rate", 0)}
             for p in patterns.get("patterns", []):
                 if "avoid" in p.get("detail", "").lower():
-                    # Extract minimum score from pattern
                     import re
                     nums = re.findall(r'[\d.]+', p.get("detail", ""))
                     if nums:
-                        result["avoid_below_score"] = float(nums[-1])
+                        result["avoid_below_score"] = safe_float(nums[-1])
             return result
         except Exception:
             return {}
@@ -529,15 +546,15 @@ class IntelligenceLoop:
         products = analysis.get("products", {})
         if products.get("viable", 0) > 0:
             score += 20
-        if products.get("avg_score", 0) > 7:
+        if safe_float(products.get("avg_score")) > 7:
             score += 10
         customers = analysis.get("customers", {})
-        if customers.get("repeat_rate", 0) > 30:
+        if safe_float(customers.get("repeat_rate")) > 30:
             score += 10
-        if customers.get("at_risk", 0) > 0:
+        if safe_int(customers.get("at_risk")) > 0:
             score -= 5
         revenue = analysis.get("revenue", {})
-        if revenue.get("aov", 0) > 50:
+        if safe_float(revenue.get("aov")) > 50:
             score += 10
         return max(0, min(100, score))
 

@@ -48,12 +48,31 @@ class FullSystemLoop:
         pipeline_result = self._phase_data(raw_data, cfg)
         phases["data"] = pipeline_result
 
-        # Use pipeline-cleaned data for intelligence
-        clean_data = pipeline_result.get("clean_data", raw_data)
+        # Validate pipeline output before passing downstream
+        clean_data = pipeline_result.get("clean_data")
+        if not isinstance(clean_data, dict) or not clean_data:
+            clean_data = raw_data
+            pipeline_result["quality"] = "validation_fallback"
 
         # ── Phase 2: INTELLIGENCE LOOP ──
         intel_result = self._phase_intelligence(clean_data, cfg.get("goal", "maximize_profit"))
         phases["intelligence"] = intel_result
+
+        # Gate: if intelligence aborted, skip execution
+        if intel_result.get("status") == "aborted":
+            phases["agents"] = {"tasks_routed": 0, "agents_used": [], "skipped": "intel_aborted"}
+            phases["execution"] = {"dispatched": 0, "queued": 0, "skipped": "intel_aborted"}
+            phases["memory"] = self._phase_memory(cycle_id, phases)
+            phases["learning"] = self._phase_learn(cycle_id, phases)
+            elapsed = time.monotonic() - start
+            self._cycle_count += 1
+            return {
+                "cycle_id": cycle_id, "cycle_number": self._cycle_count,
+                "elapsed_seconds": round(elapsed, 3), "status": "partial",
+                "reason": intel_result.get("reason", "Intelligence aborted"),
+                "phases": {k: v for k, v in phases.items()},
+                "summary": f"PARTIAL: Intelligence aborted — {intel_result.get('reason', 'unknown')}",
+            }
 
         # ── Phase 3: AGENT COORDINATION ──
         agent_result = self._phase_agents(intel_result, cfg)
