@@ -19,7 +19,9 @@ class UnifiedIntelligence:
 
     def full_store_analysis(self, products: list[dict], customers: list[dict] | None = None,
                              orders: list[dict] | None = None, competitors: list[dict] | None = None,
-                             suppliers: list[dict] | None = None, ad_campaigns: list[dict] | None = None) -> dict[str, Any]:
+                             suppliers: list[dict] | None = None, ad_campaigns: list[dict] | None = None,
+                             funnel_data: list[dict] | None = None, traffic_sources: list[dict] | None = None,
+                             sessions: list[dict] | None = None) -> dict[str, Any]:
         """One command — full store intelligence."""
         report_id = generate_id("unified")
         start = time.monotonic()
@@ -159,6 +161,40 @@ class UnifiedIntelligence:
             vc = VisualContentAI()
             brief = vc.product_image_brief(products[0])
             results["visual"] = {"shots_needed": len(brief["shots"]), "formats": len(brief["formats"])}
+
+        # 13. Analytics — funnel, traffic, sessions
+        from core.intelligence.analytics_intelligence import AnalyticsIntelligence
+        analytics = AnalyticsIntelligence()
+
+        if funnel_data:
+            funnel = analytics.analyze_funnel(funnel_data)
+            results["funnel"] = {
+                "overall_conversion": funnel.get("overall_conversion"),
+                "worst_drop": funnel.get("worst_drop_off", {}).get("step"),
+                "worst_drop_pct": funnel.get("worst_drop_off", {}).get("drop_pct"),
+            }
+            worst = funnel.get("worst_drop_off", {})
+            if worst.get("drop_pct", 0) > 50:
+                all_recommendations.append({"priority": 1, "category": "funnel",
+                    "action": f"Fix {worst['step']} — {worst['drop_pct']}% drop-off"})
+
+        if traffic_sources:
+            traffic = analytics.analyze_traffic_sources(traffic_sources)
+            results["traffic"] = {
+                "best_source": traffic.get("best_source"),
+                "overall_roas": traffic.get("overall_roas"),
+                "total_revenue": traffic.get("total_revenue"),
+            }
+            for rec in traffic.get("recommendations", [])[:1]:
+                all_recommendations.append({"priority": 2, "category": "traffic", "action": rec["action"][:60]})
+
+        if sessions:
+            sess = analytics.session_analysis(sessions)
+            results["sessions"] = {
+                "conversion_rate": sess.get("conversion_rate"),
+                "avg_pages": sess.get("avg_pages_viewed"),
+                "insight": sess.get("insight", "")[:80],
+            }
 
         elapsed = time.monotonic() - start
 
