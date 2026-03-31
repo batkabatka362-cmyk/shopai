@@ -77,6 +77,15 @@ class MainOrchestrator:
         self._pipeline_bridge = PipelineBridge()
         self._execution_bridge = ExecutionBridge()
         self._workflow_bridge = WorkflowBridge()
+        # New module integrations
+        self._agent_manager = None
+        self._message_bus = None
+        self._vector_db = None
+        self._rule_engine = None
+        self._prompt_manager = None
+        self._product_pipeline = None
+        self._marketing_pipeline = None
+        self._analytics_pipeline = None
         self._running = False
 
     def initialize(self, config_override: dict[str, Any] | None = None) -> None:
@@ -107,6 +116,9 @@ class MainOrchestrator:
         # Wire events system
         EventHandler().register_defaults()
         self._event_bus.emit(EventType.SYSTEM_HEALTH_CHECK, "orchestrator", {"phase": "startup"})
+
+        # Initialize new modules
+        self._init_modules()
 
         # Auto-register engine handlers from registry
         self._register_engines()
@@ -327,6 +339,11 @@ class MainOrchestrator:
         """Run a named engine chain."""
         return self._chain_registry.run(chain_name, data)
 
+    def run_full_loop(self, data: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run the FULL system loop: Pipeline → Intelligence → Agents → Execution → Memory → Learning."""
+        from core.full_system_loop import FullSystemLoop
+        return FullSystemLoop().run(data, config)
+
     # -- bridges --
 
     def agent_run(self, agent_name: str, task: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -363,7 +380,145 @@ class MainOrchestrator:
     def pipeline(self) -> PipelineBridge:
         return self._pipeline_bridge
 
+    # -- new module accessors --
+
+    @property
+    def agent_manager(self):
+        return self._agent_manager
+
+    @property
+    def message_bus(self):
+        return self._message_bus
+
+    @property
+    def vector_db(self):
+        return self._vector_db
+
+    @property
+    def rule_engine(self):
+        return self._rule_engine
+
+    @property
+    def prompt_manager(self):
+        return self._prompt_manager
+
+    def run_pipeline(self, pipeline_type: str, data: Any) -> dict[str, Any]:
+        """Run data through a specific pipeline before engine processing."""
+        pipelines = {
+            "product": self._product_pipeline,
+            "marketing": self._marketing_pipeline,
+            "analytics": self._analytics_pipeline,
+        }
+        pipeline = pipelines.get(pipeline_type)
+        if pipeline is None:
+            return {"status": "error", "error": f"Unknown pipeline: {pipeline_type}"}
+        try:
+            return pipeline.run(data)
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+
+    def store_knowledge(self, collection: str, key: str, embedding: list[float], metadata: dict[str, Any] | None = None) -> bool:
+        """Store a vector embedding in the knowledge base."""
+        if self._vector_db is None:
+            return False
+        self._vector_db.add(collection, key, embedding, metadata or {})
+        return True
+
+    def search_knowledge(self, collection: str, query_embedding: list[float], top_k: int = 5) -> list[dict[str, Any]]:
+        """Search knowledge base by vector similarity."""
+        if self._vector_db is None:
+            return []
+        return self._vector_db.search(collection, query_embedding, top_k=top_k)
+
+    def evaluate_rules(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Evaluate business rules against data."""
+        if self._rule_engine is None:
+            return []
+        return self._rule_engine.evaluate(data)
+
+    def publish_message(self, topic: str, payload: dict[str, Any], sender: str = "orchestrator") -> bool:
+        """Publish a message to the agent message bus."""
+        if self._message_bus is None:
+            return False
+        self._message_bus.publish(topic, payload, sender)
+        return True
+
     # -- internal helpers --
+
+    def _init_modules(self) -> None:
+        """Initialize all external modules — agents, pipelines, memory, knowledge."""
+        try:
+            from agents.manager.agent_manager import AgentManager
+            from agents.communication.message_bus import MessageBus
+            self._agent_manager = AgentManager()
+            self._message_bus = MessageBus()
+            # Register default agents
+            for agent_type in ("product", "marketing", "customer", "operations", "analytics", "content"):
+                self._agent_manager.register_agent(agent_type, agent_type, {"auto_created": True})
+            logger.info("Agents module initialized (%d agents)", len(self._agent_manager.list_agents()))
+        except Exception as exc:
+            logger.warning("Agents module not available: %s", exc)
+
+        try:
+            from memory.vector_store.vector_db import VectorDB
+            self._vector_db = VectorDB()
+            logger.info("VectorDB initialized")
+        except Exception as exc:
+            logger.warning("VectorDB not available: %s", exc)
+
+        try:
+            from knowledge.rules.rule_engine import RuleEngine
+            from knowledge.prompts.prompt_manager import PromptManager
+            self._rule_engine = RuleEngine()
+            self._prompt_manager = PromptManager()
+            # Load default business rules
+            self._rule_engine.add_rule(
+                "low_stock_alert",
+                condition={"inventory_quantity": {"lt": 5}},
+                action={"type": "notify", "message": "Low stock alert"},
+                priority=10,
+            )
+            self._rule_engine.add_rule(
+                "high_value_order",
+                condition={"total": {"gt": 200}},
+                action={"type": "notify", "message": "High value order"},
+                priority=8,
+            )
+            logger.info("Knowledge module initialized (%d rules)", len(self._rule_engine.list_rules()))
+        except Exception as exc:
+            logger.warning("Knowledge module not available: %s", exc)
+
+        try:
+            from data_pipeline.pipelines.product_pipeline import ProductPipeline
+            from data_pipeline.pipelines.marketing_pipeline import MarketingPipeline
+            from data_pipeline.pipelines.analytics_pipeline import AnalyticsPipeline
+            self._product_pipeline = ProductPipeline()
+            self._marketing_pipeline = MarketingPipeline()
+            self._analytics_pipeline = AnalyticsPipeline()
+            logger.info("Data pipelines initialized (product, marketing, analytics)")
+        except Exception as exc:
+            logger.warning("Data pipelines not available: %s", exc)
+
+        # Wire execution bridge to real executors
+        self._wire_executors()
+
+    def _wire_executors(self) -> None:
+        """Connect ExecutionBridge to real execution modules."""
+        try:
+            from execution.shopify.product_creator import ProductCreator
+            from execution.shopify.product_updater import ProductUpdater
+            from execution.marketing.ad_launcher import AdLauncher
+            from execution.marketing.campaign_manager import CampaignManager
+            from execution.content.publisher import ContentPublisher
+
+            self._execution_bridge.register_executor("shopify", "product.create_listing", ProductCreator())
+            self._execution_bridge.register_executor("shopify", "pricing.update", ProductUpdater())
+            self._execution_bridge.register_executor("multi_channel", "marketing.launch_campaign", AdLauncher())
+            self._execution_bridge.register_executor("multi_channel", "marketing.manage_campaign", CampaignManager())
+            self._execution_bridge.register_executor("cms", "content.publish", ContentPublisher())
+            logger.info("Execution bridge wired to real executors")
+        except Exception as exc:
+            logger.warning("Executor wiring partial: %s", exc)
 
     def _register_engines(self) -> None:
         """Auto-register all engines from the registry as execution handlers."""

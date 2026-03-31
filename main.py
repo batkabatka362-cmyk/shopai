@@ -62,6 +62,12 @@ def main() -> None:
     logger.info("System status: running=%s", status["running"])
     logger.info("Registered engines: %d", engine_count())
 
+    # Report new module status
+    logger.info("Agent manager: %s", "active" if orchestrator.agent_manager else "N/A")
+    logger.info("Vector DB: %s", "active" if orchestrator.vector_db else "N/A")
+    logger.info("Rule engine: %s", "active" if orchestrator.rule_engine else "N/A")
+    logger.info("Data pipelines: %s", "active" if orchestrator._product_pipeline else "N/A")
+
     orchestrator.shutdown()
     logger.info("ShopAI stopped.")
 

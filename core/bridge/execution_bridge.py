@@ -41,11 +41,18 @@ class ActionPlan:
 
 
 class ExecutionBridge:
-    """Converts engine results into action plans."""
+    """Converts engine results into action plans and dispatches to real executors."""
 
     def __init__(self) -> None:
         self._action_queue: list[ActionPlan] = []
         self._executed: list[dict[str, Any]] = []
+        self._executors: dict[str, Any] = {}  # (target, action_type) → executor
+
+    def register_executor(self, target: str, action_type: str, executor: Any) -> None:
+        """Register a real executor for a target/action_type pair."""
+        key = f"{target}:{action_type}"
+        self._executors[key] = executor
+        logger.info("Registered executor for %s", key)
 
     def plan_actions(self, engine_name: str, result: dict[str, Any]) -> list[dict[str, Any]]:
         """Extract actionable items from engine result and create action plans."""
@@ -163,15 +170,46 @@ class ExecutionBridge:
         return list(self._executed[-limit:])
 
     def _route_and_execute(self, action: ActionPlan) -> dict[str, Any]:
-        """Route action to the right executor."""
-        # For now, log the action — real execution connects to Shopify/email/etc.
-        logger.info("Executing action %s: %s → %s", action.action_id, action.action_type, action.target)
+        """Route action to registered executor, or log if none available."""
+        key = f"{action.target}:{action.action_type}"
+        executor = self._executors.get(key)
+
+        if executor is not None:
+            logger.info("Dispatching action %s to real executor: %s", action.action_id, key)
+            try:
+                # Call executor's execute/run method
+                method = getattr(executor, "execute", None) or getattr(executor, "run", None)
+                if method:
+                    exec_result = method(action.data)
+                    return {
+                        "action_id": action.action_id,
+                        "action_type": action.action_type,
+                        "target": action.target,
+                        "success": exec_result.get("status") != "error" if isinstance(exec_result, dict) else True,
+                        "result": exec_result,
+                        "executor": key,
+                        "timestamp": time.time(),
+                    }
+            except Exception as exc:
+                logger.error("Executor %s failed: %s", key, exc)
+                return {
+                    "action_id": action.action_id,
+                    "action_type": action.action_type,
+                    "target": action.target,
+                    "success": False,
+                    "error": str(exc),
+                    "executor": key,
+                    "timestamp": time.time(),
+                }
+
+        # Fallback: no executor registered, queue for manual execution
+        logger.info("No executor for %s — action %s queued", key, action.action_id)
         return {
             "action_id": action.action_id,
             "action_type": action.action_type,
             "target": action.target,
             "success": True,
-            "message": f"Action {action.action_type} queued for {action.target}",
+            "message": f"Action {action.action_type} queued for {action.target} (no auto-executor)",
             "timestamp": time.time(),
         }
 
