@@ -24,7 +24,11 @@ logger = get_logger("intelligence_loop")
 
 
 # Persistent learned weights — saved to disk, survives restarts
-_WEIGHTS_PATH = "/tmp/shopai_learned_weights.json"
+try:
+    from core.memory.storage_config import learned_weights_path
+    _WEIGHTS_PATH = learned_weights_path()
+except Exception:
+    _WEIGHTS_PATH = "/tmp/shopai_learned_weights.json"
 _learned_weights: dict[str, float] = {}
 _weights_loaded = False
 

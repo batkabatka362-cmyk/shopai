@@ -20,7 +20,11 @@ from utils.helpers import safe_float
 
 logger = get_logger("intelligence.kpi")
 
-_KPI_DIR = "/tmp/shopai_kpi"
+try:
+    from core.memory.storage_config import kpi_dir
+    _KPI_DIR = kpi_dir()
+except Exception:
+    _KPI_DIR = "/tmp/shopai_kpi"
 
 
 class KPITracker:

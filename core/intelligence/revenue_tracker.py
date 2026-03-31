@@ -16,7 +16,11 @@ from utils.helpers import safe_float
 
 logger = get_logger("intelligence.revenue")
 
-_REVENUE_DIR = "/tmp/shopai_revenue"
+try:
+    from core.memory.storage_config import revenue_dir
+    _REVENUE_DIR = revenue_dir()
+except Exception:
+    _REVENUE_DIR = "/tmp/shopai_revenue"
 
 
 class RevenueTracker:

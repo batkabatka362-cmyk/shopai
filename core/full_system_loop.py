@@ -26,6 +26,28 @@ logger = get_logger("full_system_loop")
 class FullSystemLoop:
     """Master loop: pipeline → intelligence → agents → execution → memory → learn → feedback."""
 
+    # Shared memory instances — persist across cycles within same process
+    _shared_vdb = None
+    _shared_cache = None
+
+    @classmethod
+    def _get_vector_db(cls):
+        if cls._shared_vdb is None:
+            from memory.vector_store.vector_db import VectorDB
+            try:
+                from core.memory.storage_config import vector_db_path
+                cls._shared_vdb = VectorDB(persist_path=vector_db_path())
+            except Exception:
+                cls._shared_vdb = VectorDB()
+        return cls._shared_vdb
+
+    @classmethod
+    def _get_cache(cls):
+        if cls._shared_cache is None:
+            from memory.short_term.cache import ShortTermCache
+            cls._shared_cache = ShortTermCache()
+        return cls._shared_cache
+
     def __init__(self) -> None:
         self._history: list[dict[str, Any]] = []
         self._cycle_count = 0
@@ -114,6 +136,7 @@ class FullSystemLoop:
                 },
                 "memory": {
                     "vectors_stored": memory_result.get("stored", 0),
+                    "similar_past_cycles": len(memory_result.get("similar_past_cycles", [])),
                 },
                 "learning": {
                     "rules_updated": learn_result.get("rules_updated", 0),
@@ -283,33 +306,56 @@ class FullSystemLoop:
         return result
 
     def _phase_memory(self, cycle_id: str, phases: dict[str, Any]) -> dict[str, Any]:
-        """Phase 5: Store results in memory for future retrieval."""
+        """Phase 5: Store results + retrieve similar past cycles."""
         stored = 0
+        similar_cycles = []
 
         try:
-            from memory.vector_store.vector_db import VectorDB
-            from memory.short_term.cache import ShortTermCache
-            vdb = VectorDB()
-            cache = ShortTermCache()
+            vdb = self._get_vector_db()
+            cache = self._get_cache()
 
             intel = phases.get("intelligence", {})
             decision = intel.get("decision", {})
+
+            # Store decision in short-term cache
             if decision:
                 cache.set(f"decision:{cycle_id}", decision, ttl=3600)
                 stored += 1
 
+            # Create embedding for this cycle
             embedding = self._simple_embedding(phases)
+
+            # RETRIEVE similar past cycles BEFORE storing current
+            if vdb.total_documents() > 0:
+                try:
+                    results = vdb.search("cycles", embedding, top_k=3)
+                    similar_cycles = [
+                        {"cycle": r["doc_id"], "similarity": r["score"], "decision": r["metadata"].get("decision", ""),
+                         "quality": r["metadata"].get("quality", 0), "success": r["metadata"].get("success")}
+                        for r in results if r["score"] > 0.7
+                    ]
+                except Exception:
+                    pass
+
+            # Store current cycle
+            exec_phase = phases.get("execution", {})
+            success = exec_phase.get("success_count", 0) > exec_phase.get("fail_count", 0)
             vdb.add("cycles", cycle_id, embedding, {
                 "type": "cycle_result",
                 "decision": str(decision.get("action", ""))[:100],
                 "quality": intel.get("data_quality", 0),
+                "confidence": decision.get("confidence_score", 0),
+                "success": success if exec_phase.get("dispatched", 0) > 0 else None,
             })
             stored += 1
+
+            # Force save to disk
+            vdb.save()
 
         except Exception as exc:
             logger.warning("Memory storage error: %s", exc)
 
-        return {"stored": stored}
+        return {"stored": stored, "similar_past_cycles": similar_cycles}
 
     def _phase_learn(self, cycle_id: str, phases: dict[str, Any]) -> dict[str, Any]:
         """Phase 6: Feed execution outcomes back to learning — closes the loop.

@@ -301,9 +301,11 @@ class TestExecutionBridge:
 
 class TestOutcomeTracker:
     def setup_method(self):
-        path = "/tmp/shopai_outcomes/test_ot.json"
-        if os.path.exists(path):
-            os.remove(path)
+        # Clean both old and new paths
+        for base in ("/tmp/shopai_outcomes", os.path.expanduser("~/.shopai/data/outcomes")):
+            path = os.path.join(base, "test_ot.json")
+            if os.path.exists(path):
+                os.remove(path)
 
     def test_record_and_retrieve(self):
         from core.learning.outcome_tracker import OutcomeTracker
@@ -363,19 +365,21 @@ class TestOutcomeTracker:
         assert len(errors) == 0
 
     def teardown_method(self):
-        path = "/tmp/shopai_outcomes/test_ot.json"
-        if os.path.exists(path):
-            os.remove(path)
+        for base in ("/tmp/shopai_outcomes", os.path.expanduser("~/.shopai/data/outcomes")):
+            path = os.path.join(base, "test_ot.json")
+            if os.path.exists(path):
+                os.remove(path)
 
 
 # ── KPI Tracker Tests ──
 
 class TestKPITracker:
     def setup_method(self):
-        for f in ("decisions.json", "revenue_events.json"):
-            path = f"/tmp/shopai_kpi/{f}"
-            if os.path.exists(path):
-                os.remove(path)
+        for base in ("/tmp/shopai_kpi", os.path.expanduser("~/.shopai/data/kpi")):
+            for f in ("decisions.json", "revenue_events.json"):
+                path = os.path.join(base, f)
+                if os.path.exists(path):
+                    os.remove(path)
 
     def test_record_decision_outcome(self):
         from core.intelligence.kpi_tracker import KPITracker
@@ -406,10 +410,11 @@ class TestKPITracker:
         assert result["overall_cac"] == 2.0
 
     def teardown_method(self):
-        for f in ("decisions.json", "revenue_events.json"):
-            path = f"/tmp/shopai_kpi/{f}"
-            if os.path.exists(path):
-                os.remove(path)
+        for base in ("/tmp/shopai_kpi", os.path.expanduser("~/.shopai/data/kpi")):
+            for f in ("decisions.json", "revenue_events.json"):
+                path = os.path.join(base, f)
+                if os.path.exists(path):
+                    os.remove(path)
 
 
 # ── SystemHealthReport Tests ──
@@ -445,9 +450,10 @@ class TestSystemHealth:
 
 class TestRevenueTracker:
     def setup_method(self):
-        path = "/tmp/shopai_revenue/actions.json"
-        if os.path.exists(path):
-            os.remove(path)
+        for base in ("/tmp/shopai_revenue", os.path.expanduser("~/.shopai/data/revenue")):
+            path = os.path.join(base, "actions.json")
+            if os.path.exists(path):
+                os.remove(path)
 
     def test_record_and_query(self):
         from core.intelligence.revenue_tracker import RevenueTracker
@@ -478,6 +484,7 @@ class TestRevenueTracker:
         assert len(errors) == 0
 
     def teardown_method(self):
-        path = "/tmp/shopai_revenue/actions.json"
-        if os.path.exists(path):
-            os.remove(path)
+        for base in ("/tmp/shopai_revenue", os.path.expanduser("~/.shopai/data/revenue")):
+            path = os.path.join(base, "actions.json")
+            if os.path.exists(path):
+                os.remove(path)

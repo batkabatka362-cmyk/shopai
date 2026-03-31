@@ -16,7 +16,11 @@ from utils.helpers import safe_float
 
 logger = get_logger("learning.outcome")
 
-_OUTCOME_DIR = "/tmp/shopai_outcomes"
+try:
+    from core.memory.storage_config import outcomes_dir
+    _OUTCOME_DIR = outcomes_dir()
+except Exception:
+    _OUTCOME_DIR = "/tmp/shopai_outcomes"
 
 
 class OutcomeTracker:

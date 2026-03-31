@@ -88,6 +88,7 @@ class MainOrchestrator:
         self._analytics_pipeline = None
         self._kpi_tracker = None
         self._system_health = None
+        self._engine_memories: dict[str, Any] = {}
         self._running = False
 
     def initialize(self, config_override: dict[str, Any] | None = None) -> None:
@@ -181,10 +182,27 @@ class MainOrchestrator:
                 self._tracer.finish_span(trace_span, "no_engine")
                 return {"task_id": task_id, "engine": task_type, "status": "failed", "result": None, "error": f"No engine for task_type={task_type}", "timestamp": time.time()}
 
+            # Engine memory: check for duplicate inputs
+            engine_mem = self._engine_memories.get(task_type)
+            if engine_mem and params:
+                try:
+                    dedup = engine_mem.remember_input(params)
+                    if dedup.get("is_duplicate"):
+                        self._metrics.increment("task.duplicate_input")
+                except Exception:
+                    pass
+
             # Execute (with fallback support)
             exec_span = self._tracer.start_span(trace_span.trace_id, f"execute:{engine}", trace_span.span_id)
             result = self._execute_with_fallback(engine, task_id, params or {})
             self._tracer.finish_span(exec_span, result.get("status", "unknown"))
+
+            # Engine memory: record successful patterns
+            if engine_mem and result.get("status") == "completed":
+                try:
+                    engine_mem.remember_success(params or {}, result.get("result", {}))
+                except Exception:
+                    pass
 
             # Store result in memory
             self._memory_router.route_store(f"result:{task_id}", result, data_type="task_result")
@@ -465,6 +483,17 @@ class MainOrchestrator:
     def kpi_tracker(self):
         return self._kpi_tracker
 
+    def get_engine_memory(self, engine_type: str) -> dict[str, Any]:
+        """Get learned patterns for an engine type."""
+        mem = self._engine_memories.get(engine_type)
+        if mem is None:
+            return {"status": "not_available"}
+        return {
+            "engine": engine_type,
+            "success_patterns": mem.get_success_patterns(),
+            "baselines": mem.get_baselines() if hasattr(mem, "get_baselines") else {},
+        }
+
     def get_system_health(self) -> dict[str, Any]:
         """Generate comprehensive system health report."""
         if self._system_health is None:
@@ -545,6 +574,15 @@ class MainOrchestrator:
             logger.info("KPI tracker and system health monitor initialized")
         except Exception as exc:
             logger.warning("KPI/Health not available: %s", exc)
+
+        # Initialize engine memory for pattern learning
+        try:
+            from core.shared_memory import EngineMemory
+            for engine_type in ("pricing", "marketing", "customer", "seo", "content", "inventory"):
+                self._engine_memories[engine_type] = EngineMemory(engine_type)
+            logger.info("Engine memory initialized for %d engine types", len(self._engine_memories))
+        except Exception as exc:
+            logger.warning("Engine memory not available: %s", exc)
 
         # Wire execution bridge to real executors
         self._wire_executors()
