@@ -134,6 +134,57 @@ class StrategyOptimizer:
             }
         return report
 
+    def auto_pilot(self, current_goal: str, performance_data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Auto-pilot mode: automatically determine the best strategy.
+
+        Analyzes recent outcomes and recommends whether to:
+          - Continue current goal
+          - Switch to a different goal
+          - Adjust strategy weights
+        """
+        self.update_from_outcomes()
+        weights_by_goal = {}
+        for goal in _DEFAULT_WEIGHTS:
+            weights_by_goal[goal] = self.get_adjusted_weights(goal)
+
+        # Score each goal based on adjusted weights
+        goal_scores = {}
+        for goal, weights in weights_by_goal.items():
+            avg_weight = sum(weights.values()) / max(len(weights), 1)
+            max_weight = max(weights.values())
+            goal_scores[goal] = round(avg_weight * 0.6 + max_weight * 0.4, 3)
+
+        best_goal = max(goal_scores, key=goal_scores.get)
+        should_switch = best_goal != current_goal and goal_scores[best_goal] > goal_scores.get(current_goal, 0) + 0.1
+
+        # Get strategy for best goal
+        recommended_weights = weights_by_goal[best_goal]
+        top_strategy = max(recommended_weights, key=recommended_weights.get)
+
+        result = {
+            "current_goal": current_goal,
+            "recommended_goal": best_goal,
+            "should_switch": should_switch,
+            "goal_scores": goal_scores,
+            "recommended_strategy": top_strategy,
+            "recommended_weights": recommended_weights,
+        }
+
+        if should_switch:
+            result["switch_reason"] = f"'{best_goal}' scores {goal_scores[best_goal]:.3f} vs current '{current_goal}' at {goal_scores.get(current_goal, 0):.3f}"
+        else:
+            result["stay_reason"] = f"'{current_goal}' is optimal or close enough"
+
+        # Performance-based refinement
+        if performance_data:
+            revenue_trend = performance_data.get("revenue_trend", "stable")
+            if revenue_trend == "declining" and current_goal == "maximize_profit":
+                result["warning"] = "Revenue declining — consider switching to grow_customers"
+            elif revenue_trend == "growing" and current_goal != "maximize_profit":
+                result["opportunity"] = "Revenue growing — maximize_profit may yield higher returns"
+
+        return result
+
     def _load(self) -> None:
         if os.path.exists(_STRATEGY_PATH):
             try:
