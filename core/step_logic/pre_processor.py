@@ -171,20 +171,21 @@ class PreProcessor:
         return data
 
     def _pre_analyze(self, data: dict[str, Any], engine_name: str) -> dict[str, Any]:
-        """Pre-compute scores and metrics for analyzer."""
+        """Pre-compute scores and metrics for analyzer using 7-factor model."""
         products = data.get("products", data.get("product_data", []))
 
         if isinstance(products, list):
-            scored = []
-            for p in products:
-                if isinstance(p, dict):
-                    scored.append(self._score_product(p))
+            # Use SmartExecutor's 7-factor scoring
+            from core.step_logic.smart_executor import SmartExecutor
+            se = SmartExecutor()
+            scored = se._score_products(products)
             if scored:
                 data["_pre_scored_products"] = scored
                 data["_pre_computed"] = {
                     "avg_score": round(sum(s.get("total_score", 0) for s in scored) / len(scored), 2),
                     "viable_count": sum(1 for s in scored if s.get("viable", False)),
                     "top_margin": max((s.get("margin_pct", 0) for s in scored), default=0),
+                    "high_confidence": sum(1 for s in scored if s.get("confidence") == "high"),
                 }
 
         # Pre-compute pricing intelligence

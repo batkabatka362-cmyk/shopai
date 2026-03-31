@@ -137,14 +137,20 @@ class SmartExecutor:
                     continue
 
                 selected.append({
-                    "rank": i + 1,
+                    "rank": len(selected) + 1,
                     "name": p.get("name", f"Product {i}"),
                     "total_score": p.get("total_score", 0),
+                    "confidence": p.get("confidence", "unknown"),
                     "margin_pct": p.get("margin_pct", 0),
                     "margin_score": p.get("margin_score", 0),
                     "demand_score": p.get("demand_score", 0),
                     "competition_score": p.get("competition_score", 0),
                     "shipping_score": p.get("shipping_score", 0),
+                    "rating_score": p.get("rating_score", 0),
+                    "review_score": p.get("review_score", 0),
+                    "price_point_score": p.get("price_point_score", 0),
+                    "strong_factors": p.get("strong_factors", 0),
+                    "weak_factors": p.get("weak_factors", 0),
                     "viable": p.get("viable", False),
                     "price": p.get("price", 0),
                     "cost": p.get("cost", 0),
@@ -293,7 +299,17 @@ class SmartExecutor:
     # --- Private helpers ---
 
     def _score_products(self, products: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Score a list of products."""
+        """Score products with 7-factor multi-dimensional analysis.
+
+        Factors (weights total 1.0):
+          - margin:      0.25  (profitability)
+          - demand:       0.20  (search volume / interest)
+          - competition:  0.15  (market saturation)
+          - shipping:     0.10  (weight/size affects cost)
+          - rating:       0.15  (customer satisfaction signal)
+          - reviews:      0.10  (social proof / demand validation)
+          - price_point:  0.05  (sweet spot for e-commerce: $15-60)
+        """
         scored = []
         for p in products:
             if not isinstance(p, dict):
@@ -303,14 +319,62 @@ class SmartExecutor:
             weight = float(p.get("weight", 0))
             search = float(p.get("search_volume", 0))
             comp = float(p.get("competition", 1))
+            rating = float(p.get("rating", 0))
+            reviews = int(p.get("review_count", p.get("reviews", 0)))
 
+            # Factor 1: Margin (0-10)
             margin_pct = self._comp.margin(price, cost)
             margin_score = min(margin_pct / 10, 10)
+
+            # Factor 2: Demand (0-10) — log scale of search volume
             demand_score = min(math.log1p(search) / math.log1p(10000) * 10, 10) if search > 0 else 0
+
+            # Factor 3: Competition (0-10) — lower = better
             comp_score = max(10 - math.log1p(comp), 0) if comp > 0 else 10
+
+            # Factor 4: Shipping (0-10) — lighter = cheaper to ship
             ship_score = max(10 - weight * 0.5, 0) if weight > 0 else 5
 
-            total = margin_score * 0.35 + demand_score * 0.30 + comp_score * 0.20 + ship_score * 0.15
+            # Factor 5: Rating (0-10) — customer satisfaction
+            rating_score = 0.0
+            if rating > 0:
+                rating_score = min(rating * 2, 10)  # 4.5 → 9.0, 5.0 → 10.0
+
+            # Factor 6: Reviews (0-10) — social proof volume
+            review_score = 0.0
+            if reviews > 0:
+                review_score = min(math.log1p(reviews) / math.log1p(500) * 10, 10)
+
+            # Factor 7: Price point (0-10) — $15-60 sweet spot
+            price_score = 0.0
+            if 15 <= price <= 60:
+                price_score = 10.0  # Perfect range
+            elif 10 <= price <= 100:
+                price_score = 6.0  # Acceptable
+            elif price > 0:
+                price_score = 3.0  # Suboptimal
+
+            # Weighted total
+            total = (
+                margin_score * 0.25
+                + demand_score * 0.20
+                + comp_score * 0.15
+                + ship_score * 0.10
+                + rating_score * 0.15
+                + review_score * 0.10
+                + price_score * 0.05
+            )
+
+            # Decision confidence (how many factors are strong?)
+            strong_factors = sum(1 for s in [margin_score, demand_score, comp_score, ship_score, rating_score]
+                                 if s >= 7)
+            weak_factors = sum(1 for s in [margin_score, demand_score, comp_score, ship_score, rating_score]
+                               if s < 4)
+            confidence = "high" if strong_factors >= 4 and weak_factors == 0 else \
+                         "medium" if strong_factors >= 2 else "low"
+
+            # Viability: needs margin + at least 2 other strong factors
+            viable = total >= 5.0 and margin_pct >= 20 and strong_factors >= 2
 
             sp = dict(p)
             sp.update({
@@ -319,8 +383,14 @@ class SmartExecutor:
                 "demand_score": round(demand_score, 2),
                 "competition_score": round(comp_score, 2),
                 "shipping_score": round(ship_score, 2),
+                "rating_score": round(rating_score, 2),
+                "review_score": round(review_score, 2),
+                "price_point_score": round(price_score, 2),
                 "total_score": round(total, 2),
-                "viable": total >= 5.0 and margin_pct >= 20,
+                "confidence": confidence,
+                "strong_factors": strong_factors,
+                "weak_factors": weak_factors,
+                "viable": viable,
             })
             scored.append(sp)
         return scored
