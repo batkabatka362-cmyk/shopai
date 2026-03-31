@@ -128,6 +128,88 @@ class ReportGenerator:
         lines.append(f"\n{'='*50}")
         return "\n".join(lines)
 
+    def decision_accuracy_report(self) -> dict[str, Any]:
+        """Report on ShopAI decision quality — is the system getting smarter?"""
+        report_id = generate_id("rpt")
+        result = {
+            "report_id": report_id,
+            "report_type": "decision_accuracy",
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        # Decision KPIs
+        try:
+            from core.intelligence.kpi_tracker import KPITracker
+            kpi = KPITracker()
+            decision_kpis = kpi.get_decision_kpis()
+            result["decision_quality"] = decision_kpis
+        except Exception:
+            result["decision_quality"] = {"status": "unavailable"}
+
+        # Learning patterns
+        try:
+            from core.learning.outcome_tracker import OutcomeTracker
+            ot = OutcomeTracker()
+            il_patterns = ot.get_winning_patterns("intelligence_loop")
+            fsl_patterns = ot.get_winning_patterns("full_system_loop")
+            result["learning"] = {
+                "intelligence_loop": {
+                    "outcomes": il_patterns.get("with_outcomes", 0),
+                    "success_rate": il_patterns.get("success_rate", 0),
+                    "patterns": len(il_patterns.get("patterns", [])),
+                },
+                "full_system_loop": {
+                    "outcomes": fsl_patterns.get("with_outcomes", 0),
+                    "success_rate": fsl_patterns.get("success_rate", 0),
+                    "patterns": len(fsl_patterns.get("patterns", [])),
+                },
+            }
+        except Exception:
+            result["learning"] = {"status": "unavailable"}
+
+        # Strategy optimizer state
+        try:
+            from core.intelligence.strategy_optimizer import StrategyOptimizer
+            so = StrategyOptimizer()
+            result["strategy"] = so.get_strategy_report()
+        except Exception:
+            result["strategy"] = {"status": "unavailable"}
+
+        # Learned weights
+        try:
+            from core.intelligence_loop import get_learned_weights
+            result["learned_weights"] = get_learned_weights()
+        except Exception:
+            result["learned_weights"] = {}
+
+        # Campaign health
+        try:
+            from core.intelligence.campaign_optimizer import CampaignOptimizer
+            result["campaign_optimizer"] = {"status": "available"}
+        except Exception:
+            result["campaign_optimizer"] = {"status": "unavailable"}
+
+        # Revenue impact
+        try:
+            from core.intelligence.revenue_tracker import RevenueTracker
+            rt = RevenueTracker()
+            result["revenue_impact"] = rt.get_roi_summary()
+        except Exception:
+            result["revenue_impact"] = {"status": "unavailable"}
+
+        # System health grade
+        try:
+            from core.intelligence.system_health import SystemHealthReport
+            health = SystemHealthReport().generate()
+            result["system_health"] = {
+                "grade": health.get("overall_grade", "N/A"),
+                "sections": {k: v.get("grade", "N/A") for k, v in health.get("sections", {}).items()},
+            }
+        except Exception:
+            result["system_health"] = {"status": "unavailable"}
+
+        return result
+
     @staticmethod
     def _daily_recommendations(revenue, aov, repeat, total_customers, seo_score) -> list[dict]:
         recs = []

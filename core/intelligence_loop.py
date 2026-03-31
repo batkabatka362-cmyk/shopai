@@ -170,6 +170,7 @@ class IntelligenceLoop:
 
             if isinstance(val, list):
                 cleaned = []
+                is_product_list = key in ("products", "product_data")
                 for item in val:
                     if isinstance(item, dict):
                         for k in ("price", "cost", "total", "spend"):
@@ -178,10 +179,14 @@ class IntelligenceLoop:
                                 if converted is not None:
                                     item[k] = converted
                                     fixes.append(f"{key}[].{k}: string→float")
-                        if item.get("name") or item.get("id") or item.get("title"):
-                            cleaned.append(item)
+                        # Only require name/id for product lists, not orders/customers
+                        if is_product_list:
+                            if item.get("name") or item.get("id") or item.get("title"):
+                                cleaned.append(item)
+                            else:
+                                issues.append(f"{key}: item without name/id removed")
                         else:
-                            issues.append(f"{key}: item without name/id removed")
+                            cleaned.append(item)
                     elif item is not None:
                         cleaned.append(item)
                 data[key] = cleaned
@@ -290,6 +295,36 @@ class IntelligenceLoop:
             if aov < 30:
                 analysis["findings"].append(f"Low AOV ${aov:.2f} — upsell/bundle opportunity")
 
+        # Revenue forecast — predict future trends
+        revenue_series = data.get("daily_revenue", data.get("revenue_history", []))
+        if not revenue_series and isinstance(orders, list) and len(orders) >= 3:
+            # Build revenue series from orders
+            revenue_series = [safe_float(o.get("total", o.get("amount", 0))) for o in orders if isinstance(o, dict)]
+
+        if isinstance(revenue_series, list) and len(revenue_series) >= 3:
+            try:
+                from core.intelligence.forecasting import Forecasting
+                fc = Forecasting()
+                forecast = fc.forecast([safe_float(v) for v in revenue_series if safe_float(v) > 0], periods=7)
+                if "error" not in forecast:
+                    growth = safe_float(forecast.get("summary", {}).get("growth_pct"))
+                    trend = forecast.get("trend", {})
+                    analysis["forecast"] = {
+                        "method": forecast.get("method"),
+                        "growth_pct": growth,
+                        "trend_direction": trend.get("direction", "stable"),
+                        "forecast_avg": forecast.get("summary", {}).get("forecast_avg", 0),
+                        "confidence": forecast.get("confidence_level"),
+                    }
+                    if growth > 10:
+                        analysis["findings"].append(f"Revenue forecast: +{growth:.1f}% growth — momentum is strong")
+                    elif growth < -10:
+                        analysis["findings"].append(f"Revenue forecast: {growth:.1f}% decline — action needed")
+                    else:
+                        analysis["findings"].append(f"Revenue forecast: {growth:+.1f}% — stable")
+            except Exception:
+                pass
+
         analysis["opportunity_score"] = self._calc_opportunity(analysis)
         return analysis
 
@@ -380,17 +415,27 @@ class IntelligenceLoop:
         }
         weights = goal_weights.get(goal, {"profit_potential": 0.30, "risk": 0.20, "data_support": 0.25, "speed": 0.25})
 
+        # Get strategy adjustments from past outcomes
+        try:
+            from core.intelligence.strategy_optimizer import StrategyOptimizer
+            strategy_weights = StrategyOptimizer().get_adjusted_weights(goal)
+        except Exception:
+            strategy_weights = {}
+
         for opt in options:
             s = opt["scores"]
-            # Risk is inverted: lower risk = higher score
             risk_score = 10 - s.get("risk", 5)
-            opt["total_score"] = round(
+            base_score = (
                 s.get("profit_potential", 5) * weights["profit_potential"]
                 + risk_score * weights["risk"]
                 + s.get("data_support", 5) * weights["data_support"]
-                + s.get("speed", 5) * weights["speed"],
-                2,
+                + s.get("speed", 5) * weights["speed"]
             )
+            # Apply strategy weight multiplier (learned from outcomes)
+            opt_type = opt.get("type", "")
+            strategy_mult = strategy_weights.get(opt_type, 1.0)
+            opt["total_score"] = round(base_score * strategy_mult, 2)
+            opt["strategy_multiplier"] = strategy_mult
 
         # Rank options
         options.sort(key=lambda o: o["total_score"], reverse=True)
@@ -464,11 +509,21 @@ class IntelligenceLoop:
         success_rate = past_advice.get("success_rate", 0)
         score += success_rate * 20
 
-        # Factor 5: Evidence volume (0-15 pts)
+        # Factor 5: Evidence volume (0-10 pts)
         findings_count = len(analysis.get("findings", []))
         products_count = analysis.get("products", {}).get("total", 0)
-        evidence = min(findings_count * 3 + products_count * 2, 15)
+        evidence = min(findings_count * 2 + products_count * 2, 10)
         score += evidence
+
+        # Factor 6: Forecast alignment (0-5 pts)
+        forecast = analysis.get("forecast", {})
+        growth = safe_float(forecast.get("growth_pct"))
+        if growth > 10:
+            score += 5  # Strong positive forecast
+        elif growth > 0:
+            score += 3  # Mild positive
+        elif growth < -10:
+            score -= 5  # Negative forecast reduces confidence
 
         return max(0, min(100, round(score)))
 
