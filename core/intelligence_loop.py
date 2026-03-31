@@ -331,75 +331,19 @@ class IntelligenceLoop:
     # ── Stage 3: DECIDE ─────────────────────────────────────
 
     def _stage_decide(self, analysis: dict[str, Any], clean_result: dict[str, Any], goal: str) -> dict[str, Any]:
-        """Multi-option decision scoring with real confidence calculation."""
+        """Data-driven decision: options generated FROM analysis, scored FROM data."""
 
         past_advice = self._get_past_learning(goal)
 
         products = analysis.get("products", {})
         customers = analysis.get("customers", {})
         revenue = analysis.get("revenue", {})
+        forecast = analysis.get("forecast", {})
         opp_score = analysis.get("opportunity_score", 50)
 
-        # Build decision options — evaluate ALL, then pick best
-        options = []
-        top = safe_dict(products.get("top_product"))
+        # Generate options FROM DATA — not hardcoded menu
+        options = self._generate_options(products, customers, revenue, forecast, past_advice)
 
-        # Option 1: Launch top product
-        if products.get("viable", 0) > 0 and top:
-            top_score = safe_float(top.get("total_score"))
-            options.append({
-                "action": f"Launch {top.get('name', 'top product')} — score {top_score}",
-                "type": "product_launch",
-                "scores": {
-                    "profit_potential": min(top_score * 1.2, 10),
-                    "risk": 3 if top_score > 7 else 5 if top_score > 5 else 7,
-                    "data_support": 8 if products.get("total", 0) > 3 else 5,
-                    "speed": 7,
-                },
-            })
-
-        # Option 2: Pricing optimization
-        if products.get("total", 0) > 0:
-            avg_margin = safe_float(top.get("margin_pct"))
-            options.append({
-                "action": "Optimize pricing across product catalog",
-                "type": "pricing_optimization",
-                "scores": {
-                    "profit_potential": 7 if avg_margin > 30 else 5,
-                    "risk": 2,
-                    "data_support": 7 if products.get("total", 0) > 2 else 4,
-                    "speed": 9,
-                },
-            })
-
-        # Option 3: Customer retention
-        if customers.get("at_risk", 0) > 0:
-            risk_count = customers["at_risk"]
-            options.append({
-                "action": f"Retain {risk_count} at-risk customers with win-back campaign",
-                "type": "customer_retention",
-                "scores": {
-                    "profit_potential": 6 if risk_count > 3 else 4,
-                    "risk": 2,
-                    "data_support": 8 if customers.get("total", 0) > 5 else 4,
-                    "speed": 8,
-                },
-            })
-
-        # Option 4: AOV increase
-        if safe_float(revenue.get("aov")) > 0 and safe_float(revenue.get("aov")) < 50:
-            options.append({
-                "action": f"AOV ${safe_float(revenue.get('aov')):.2f} — implement bundle offers and upsells",
-                "type": "aov_increase",
-                "scores": {
-                    "profit_potential": 8,
-                    "risk": 3,
-                    "data_support": 6,
-                    "speed": 6,
-                },
-            })
-
-        # Option 5: Data collection (fallback)
         if not options:
             options.append({
                 "action": f"Collect more data for: {goal}",
@@ -482,6 +426,142 @@ class IntelligenceLoop:
             "all_options": [{"action": o["action"][:60], "score": o["total_score"]} for o in options],
             "past_learning_applied": bool(past_advice.get("success_rate")),
         }
+
+    @staticmethod
+    def _generate_options(products: dict, customers: dict, revenue: dict,
+                          forecast: dict, past_advice: dict) -> list[dict[str, Any]]:
+        """Generate decision options FROM DATA — every score comes from analysis."""
+        options = []
+        top = safe_dict(products.get("top_product"))
+        total_products = products.get("total", 0)
+        viable_count = products.get("viable", 0)
+        avg_score = safe_float(products.get("avg_score"))
+        total_customers = customers.get("total", 0)
+        at_risk = customers.get("at_risk", 0)
+        repeat_rate = safe_float(customers.get("repeat_rate"))
+        aov = safe_float(revenue.get("aov"))
+        growth_pct = safe_float(forecast.get("growth_pct"))
+        past_success = safe_float(past_advice.get("success_rate"))
+
+        # Option: Launch top product (only if viable products exist)
+        if viable_count > 0 and top:
+            top_score = safe_float(top.get("total_score"))
+            conf_num = safe_float(top.get("confidence_numeric", 5))
+            options.append({
+                "action": f"Launch {top.get('name', 'top product')} — score {top_score:.1f}",
+                "type": "product_launch",
+                "scores": {
+                    "profit_potential": min(top_score, 10),            # FROM product score
+                    "risk": max(10 - conf_num, 1),                     # FROM confidence
+                    "data_support": min(total_products * 1.5, 10),     # FROM volume
+                    "speed": 7,
+                },
+            })
+
+        # Option: Pricing optimization (if margin room exists)
+        if total_products > 0:
+            margin = safe_float(top.get("margin_pct"))
+            options.append({
+                "action": f"Optimize pricing ({margin:.0f}% avg margin, {total_products} products)",
+                "type": "pricing_optimization",
+                "scores": {
+                    "profit_potential": min(margin / 10, 10),          # FROM actual margin
+                    "risk": 2,
+                    "data_support": min(total_products * 2, 10),       # FROM product count
+                    "speed": 9,
+                },
+            })
+
+        # Option: Customer retention (if churn risk detected)
+        if at_risk > 0:
+            risk_ratio = at_risk / max(total_customers, 1)
+            options.append({
+                "action": f"Retain {at_risk} at-risk customers ({risk_ratio:.0%} of base)",
+                "type": "customer_retention",
+                "scores": {
+                    "profit_potential": min(risk_ratio * 20, 10),       # FROM risk severity
+                    "risk": 2,
+                    "data_support": min(total_customers, 10),           # FROM customer volume
+                    "speed": 8,
+                },
+            })
+
+        # Option: AOV increase (if AOV is below potential)
+        if aov > 0 and aov < 80:
+            options.append({
+                "action": f"Increase AOV ${aov:.0f} → target ${aov * 1.3:.0f} with bundles/upsells",
+                "type": "aov_increase",
+                "scores": {
+                    "profit_potential": min((80 - aov) / 8, 10),        # FROM aov gap
+                    "risk": 3,
+                    "data_support": min(revenue.get("orders", 0) * 2, 10),
+                    "speed": 6,
+                },
+            })
+
+        # NEW: Emergency pricing (if revenue declining)
+        if growth_pct < -10:
+            options.append({
+                "action": f"Emergency: revenue declining {growth_pct:.1f}% — run promotions + ad boost",
+                "type": "emergency_pricing",
+                "scores": {
+                    "profit_potential": min(abs(growth_pct) / 5, 10),   # FROM decline severity
+                    "risk": 6,
+                    "data_support": 7,
+                    "speed": 10,
+                },
+            })
+
+        # NEW: Product improvement (if avg score is low)
+        if total_products > 0 and avg_score < 5:
+            options.append({
+                "action": f"Improve product catalog (avg score {avg_score:.1f}/10 — below threshold)",
+                "type": "product_improvement",
+                "scores": {
+                    "profit_potential": min((5 - avg_score) * 2.5, 10),  # FROM score gap
+                    "risk": 3,
+                    "data_support": min(total_products * 2, 10),
+                    "speed": 5,
+                },
+            })
+
+        # NEW: Loyalty program (if repeat rate is low)
+        if total_customers > 3 and repeat_rate < 25:
+            options.append({
+                "action": f"Launch loyalty program (repeat rate {repeat_rate:.0f}% — below 25% target)",
+                "type": "loyalty_program",
+                "scores": {
+                    "profit_potential": min((25 - repeat_rate) / 3, 10),  # FROM retention gap
+                    "risk": 3,
+                    "data_support": min(total_customers, 10),
+                    "speed": 6,
+                },
+            })
+
+        # NEW: Inventory restock (if products are selling fast)
+        if viable_count > 0 and top:
+            velocity = safe_float(top.get("velocity"))
+            inv = safe_float(top.get("inventory_quantity", top.get("quantity", 100)))
+            if velocity > 0 and inv > 0:
+                days_until_oos = inv / max(velocity, 0.01)
+                if days_until_oos < 14:
+                    options.append({
+                        "action": f"Restock {top.get('name')} — {days_until_oos:.0f} days until out-of-stock",
+                        "type": "inventory_restock",
+                        "scores": {
+                            "profit_potential": min(velocity * 3, 10),
+                            "risk": 1,
+                            "data_support": 8,
+                            "speed": 7,
+                        },
+                    })
+
+        # Boost options that historically succeed
+        if past_success > 0:
+            for opt in options:
+                opt["scores"]["past_success_boost"] = round(past_success * 3, 1)
+
+        return options
 
     def _calculate_confidence(self, clean_result: dict, analysis: dict,
                                best_option: dict, past_advice: dict,
@@ -628,7 +708,15 @@ class IntelligenceLoop:
         except Exception:
             pass
 
-    # ── Stage 7: LEARN ──────────────────────────────────────
+    # ── Stage 7: LEARN — Bayesian incremental updates ──────
+
+    # Learning hyperparameters
+    LEARNING_RATE = 0.05   # How fast to adjust (small = stable, large = reactive)
+    DECAY = 0.95           # How fast old learning fades (0.95 = 5% decay per cycle)
+    MAX_ADJUSTMENT = 0.30  # Maximum deviation from base weight
+
+    # All learnable scoring factors
+    LEARNABLE_FACTORS = ("margin", "demand", "competition", "shipping", "rating", "review", "price", "velocity")
 
     def _stage_learn(self, loop_id: str, decision: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -644,27 +732,50 @@ class IntelligenceLoop:
             if success_rate > 0.7:
                 adjustments.append("High success rate — continue current approach")
 
-            # Apply weight adjustments from patterns → these feed back to scoring
-            for p in patterns.get("patterns", []):
-                if p.get("pattern") == "score_range" and p.get("correlation") == "confirmed":
-                    avg = safe_float(p.get("avg"))
-                    if avg > 7:
-                        _learned_weights["margin"] = 0.05
-                        adjustments.append(f"Boosted margin weight — high scores ({avg:.1f}) drive success")
-                    elif avg < 4:
-                        _learned_weights["demand"] = 0.05
-                        adjustments.append("Boosted demand weight — margin alone not enough")
+            # Bayesian incremental weight updates for ALL factors
+            entries = ot._load("intelligence_loop")
+            outcomes = [e for e in entries if e.get("outcome") is not None]
+            successes = [e for e in outcomes if e.get("success")]
+            failures = [e for e in outcomes if not e.get("success")]
 
+            if successes and failures:
+                # Compare factor averages between successes and failures
+                for factor in self.LEARNABLE_FACTORS:
+                    score_key = f"{factor}_score" if factor != "price" else "price_point_score"
+                    success_avg = self._avg_decision_field(successes, score_key)
+                    failure_avg = self._avg_decision_field(failures, score_key)
+
+                    if success_avg is not None and failure_avg is not None:
+                        if success_avg > failure_avg + 0.5:
+                            self._update_weight(factor, +1)
+                            adjustments.append(f"{factor}: success avg {success_avg:.1f} > fail avg {failure_avg:.1f} → boost")
+                        elif failure_avg > success_avg + 0.5:
+                            self._update_weight(factor, -1)
+                            adjustments.append(f"{factor}: fail avg {failure_avg:.1f} > success avg {success_avg:.1f} → reduce")
+                        else:
+                            # Decay toward zero when no clear signal
+                            self._decay_weight(factor)
+            elif outcomes:
+                # Only successes or only failures — decay all toward zero
+                for factor in self.LEARNABLE_FACTORS:
+                    self._decay_weight(factor)
+
+            # Pattern-based meta-learning
+            for p in patterns.get("patterns", []):
                 if p.get("pattern") == "high_confidence_wins":
-                    _learned_weights["confidence_boost"] = 0.1
-                    adjustments.append("High-confidence decisions outperform — boosting confidence weighting")
+                    _learned_weights["confidence_boost"] = min(
+                        _learned_weights.get("confidence_boost", 0) + 0.02, 0.2
+                    )
+                    adjustments.append("High confidence → success: boosting confidence factor")
 
                 if p.get("pattern") == "quality_matters":
-                    _learned_weights["quality_gate"] = 50
-                    adjustments.append("Data quality predicts success — raising quality threshold")
+                    _learned_weights["quality_gate"] = min(
+                        _learned_weights.get("quality_gate", 40) + 2, 70
+                    )
+                    adjustments.append("Data quality matters: raising quality threshold")
 
-            # Persist weights to disk after any adjustment
-            if adjustments:
+            # Persist all weight changes
+            if adjustments or outcomes:
                 _save_weights()
 
             advice_result = ot.should_proceed("intelligence_loop", decision)
@@ -732,6 +843,33 @@ class IntelligenceLoop:
 
         except Exception:
             return None
+
+    @classmethod
+    def _update_weight(cls, factor: str, direction: int) -> None:
+        """Bayesian incremental weight update: small steps, bounded."""
+        current = _learned_weights.get(factor, 0.0)
+        current *= cls.DECAY  # Decay old learning
+        current += cls.LEARNING_RATE * direction  # Add new signal
+        _learned_weights[factor] = max(-cls.MAX_ADJUSTMENT, min(cls.MAX_ADJUSTMENT, round(current, 4)))
+
+    @classmethod
+    def _decay_weight(cls, factor: str) -> None:
+        """Decay weight toward zero when no clear signal."""
+        current = _learned_weights.get(factor, 0.0)
+        if abs(current) > 0.001:
+            _learned_weights[factor] = round(current * cls.DECAY, 4)
+
+    @staticmethod
+    def _avg_decision_field(entries: list[dict], field: str) -> float | None:
+        """Average a numeric field from decision data in outcome entries."""
+        values = []
+        for e in entries:
+            d = e.get("decision", {})
+            if isinstance(d, dict):
+                v = d.get(field)
+                if isinstance(v, (int, float)):
+                    values.append(float(v))
+        return sum(values) / len(values) if values else None
 
     def _get_past_learning(self, goal: str) -> dict[str, Any]:
         try:

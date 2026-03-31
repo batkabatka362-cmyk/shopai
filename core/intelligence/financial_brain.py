@@ -49,9 +49,31 @@ class FinancialBrain:
             "health_score": self._financial_health_score(pnl, margin_alerts),
         }
 
+    # Configurable cost parameters (can be overridden per store)
+    DEFAULT_COSTS = {
+        "refund_rate": 0.08,            # 8% of orders get refunded
+        "chargeback_rate": 0.005,       # 0.5% chargeback rate
+        "chargeback_fee": 15.0,         # $15 per chargeback
+        "payment_fee_pct": 0.029,       # 2.9% Stripe/Shopify Payments
+        "payment_fee_fixed": 0.30,      # $0.30 per transaction
+        "shopify_plan_fee": 0.0,        # Additional Shopify plan fee %
+        "sales_tax_rate": 0.07,         # 7% average sales tax
+        "return_shipping_cost": 6.0,    # $6 avg return shipping
+        "packaging_cost": 1.50,         # $1.50 avg packaging
+        "shipping_rates": {             # Weight-based shipping
+            "light": {"max_kg": 0.5, "cost": 4.0},
+            "medium": {"max_kg": 2.0, "cost": 7.0},
+            "heavy": {"max_kg": 10.0, "cost": 12.0},
+            "oversized": {"max_kg": 999, "cost": 20.0},
+        },
+    }
+
     def calculate_pnl(self, products: list[dict], orders: list[dict],
-                      ad_spend: float = 0, operating_costs: float = 0) -> dict[str, Any]:
-        """Calculate Profit & Loss statement."""
+                      ad_spend: float = 0, operating_costs: float = 0,
+                      cost_config: dict | None = None) -> dict[str, Any]:
+        """Calculate Profit & Loss with real-world costs: refunds, taxes, fees, shipping."""
+        cfg = {**self.DEFAULT_COSTS, **(cost_config or {})}
+
         # Revenue
         gross_revenue = sum(safe_float(o.get("total", o.get("amount", 0))) for o in orders if isinstance(o, dict))
         order_count = len([o for o in orders if isinstance(o, dict)])
@@ -66,7 +88,6 @@ class FinancialBrain:
                 for item in items:
                     if isinstance(item, dict):
                         qty = safe_int(item.get("quantity", 1))
-                        # Find cost from products
                         pid = item.get("product_id", "")
                         cost = safe_float(item.get("cost", 0))
                         if cost == 0:
@@ -76,21 +97,53 @@ class FinancialBrain:
                                     break
                         total_cogs += cost * qty
 
-        # If no line items, estimate from product avg cost
+        # Estimate COGS if no line items
         if total_cogs == 0 and products:
             avg_cost = sum(safe_float(p.get("cost")) for p in products if isinstance(p, dict)) / max(len(products), 1)
             avg_price = sum(safe_float(p.get("price")) for p in products if isinstance(p, dict)) / max(len(products), 1)
             if avg_price > 0:
-                cost_ratio = avg_cost / avg_price
-                total_cogs = gross_revenue * cost_ratio
+                total_cogs = gross_revenue * (avg_cost / avg_price)
 
         gross_profit = gross_revenue - total_cogs
         gross_margin = round(gross_profit / max(gross_revenue, 0.01) * 100, 1)
 
-        # Operating expenses
-        shopify_fees = round(gross_revenue * 0.029 + order_count * 0.30, 2)  # Standard Shopify
-        shipping_est = round(order_count * 5.0, 2)  # $5 avg shipping
-        total_expenses = ad_spend + operating_costs + shopify_fees + shipping_est
+        # Real-world expenses
+        # Payment processing fees (Stripe: 2.9% + $0.30 per txn)
+        payment_fees = round(gross_revenue * cfg["payment_fee_pct"] + order_count * cfg["payment_fee_fixed"], 2)
+
+        # Shopify additional fees
+        shopify_fees = round(gross_revenue * cfg["shopify_plan_fee"], 2)
+
+        # Shipping — weight-based estimate
+        avg_weight = 0
+        if products:
+            weights = [safe_float(p.get("weight")) for p in products if isinstance(p, dict)]
+            avg_weight = sum(weights) / max(len(weights), 1) if weights else 1.0
+        shipping_rate = 7.0  # default
+        for tier in cfg["shipping_rates"].values():
+            if avg_weight <= tier["max_kg"]:
+                shipping_rate = tier["cost"]
+                break
+        shipping_cost = round(order_count * shipping_rate, 2)
+
+        # Packaging
+        packaging_cost = round(order_count * cfg["packaging_cost"], 2)
+
+        # Refunds & returns
+        refund_orders = round(order_count * cfg["refund_rate"])
+        refund_cost = round(gross_revenue * cfg["refund_rate"], 2)
+        return_shipping = round(refund_orders * cfg["return_shipping_cost"], 2)
+
+        # Chargebacks
+        chargeback_count = max(round(order_count * cfg["chargeback_rate"]), 0)
+        chargeback_cost = round(chargeback_count * cfg["chargeback_fee"], 2)
+
+        # Sales tax (collected but passed through — shown for awareness)
+        sales_tax = round(gross_revenue * cfg["sales_tax_rate"], 2)
+
+        total_expenses = (ad_spend + operating_costs + payment_fees + shopify_fees
+                          + shipping_cost + packaging_cost + refund_cost
+                          + return_shipping + chargeback_cost)
 
         net_profit = gross_profit - total_expenses
         net_margin = round(net_profit / max(gross_revenue, 0.01) * 100, 1)
@@ -103,9 +156,24 @@ class FinancialBrain:
             "expenses": {
                 "ad_spend": round(ad_spend, 2),
                 "operating_costs": round(operating_costs, 2),
+                "payment_fees": payment_fees,
                 "shopify_fees": shopify_fees,
-                "shipping_est": shipping_est,
+                "shipping_cost": shipping_cost,
+                "packaging_cost": packaging_cost,
+                "refund_cost": refund_cost,
+                "return_shipping": return_shipping,
+                "chargeback_cost": chargeback_cost,
                 "total": round(total_expenses, 2),
+            },
+            "refunds": {
+                "refund_rate": cfg["refund_rate"],
+                "refund_orders": refund_orders,
+                "refund_amount": refund_cost,
+            },
+            "tax_info": {
+                "sales_tax_rate": cfg["sales_tax_rate"],
+                "estimated_tax": sales_tax,
+                "note": "Sales tax collected from customers, passed through to state",
             },
             "net_profit": round(net_profit, 2),
             "net_margin_pct": net_margin,

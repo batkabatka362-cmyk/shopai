@@ -299,16 +299,19 @@ class SmartExecutor:
     # --- Private helpers ---
 
     def _score_products(self, products: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Score products with 7-factor multi-dimensional analysis.
+        """Score products with 8-factor analysis using realistic e-commerce curves.
 
-        Factors (weights total 1.0):
-          - margin:      0.25  (profitability)
-          - demand:       0.20  (search volume / interest)
-          - competition:  0.15  (market saturation)
-          - shipping:     0.10  (weight/size affects cost)
-          - rating:       0.15  (customer satisfaction signal)
-          - reviews:      0.10  (social proof / demand validation)
-          - price_point:  0.05  (sweet spot for e-commerce: $15-60)
+        Factors:
+          - margin:      Logarithmic curve (diminishing returns above 50%)
+          - demand:       Search volume * conversion rate estimate
+          - competition:  Sweet spot model (some competition = validated market)
+          - shipping:     Weight-based cost impact
+          - rating:       Exponential (4.5+ much better than 3.5)
+          - reviews:      Log scale with minimum threshold
+          - price_point:  Category-aware sweet spot
+          - velocity:     Units sold / days listed (actual sales speed)
+
+        All 8 weights are learnable via IntelligenceLoop feedback.
         """
         from utils.helpers import safe_float, safe_int
         scored = []
@@ -323,38 +326,76 @@ class SmartExecutor:
             rating = safe_float(p.get("rating"))
             reviews = safe_int(p.get("review_count", p.get("reviews", 0)))
             inventory = safe_int(p.get("inventory_quantity", p.get("quantity", -1)))
+            units_sold = safe_int(p.get("units_sold", p.get("sold", 0)))
+            days_listed = max(safe_int(p.get("days_listed", p.get("days_active", 30))), 1)
+            cvr = safe_float(p.get("conversion_rate"), 0.02)
+            category = str(p.get("category", "general")).lower()
 
-            # Factor 1: Margin (0-10)
+            # Factor 1: Margin (0-10) — logarithmic, diminishing returns above 50%
             margin_pct = self._comp.margin(price, cost)
-            margin_score = min(margin_pct / 10, 10)
+            margin_score = min(math.log1p(max(margin_pct, 0)) / math.log1p(80) * 10, 10)
 
-            # Factor 2: Demand (0-10) — log scale of search volume
-            demand_score = min(math.log1p(search) / math.log1p(10000) * 10, 10) if search > 0 else 0
+            # Factor 2: Demand (0-10) — search volume * conversion rate
+            demand_raw = search * cvr if search > 0 else 0
+            demand_score = min(math.log1p(demand_raw) / math.log1p(200) * 10, 10) if demand_raw > 0 else 0
 
-            # Factor 3: Competition (0-10) — lower = better
-            comp_score = max(10 - math.log1p(comp), 0) if comp > 0 else 10
+            # Factor 3: Competition (0-10) — sweet spot: 3-15 = validated, not saturated
+            if comp <= 0:
+                comp_score = 3.0  # No data = uncertain
+            elif 3 <= comp <= 15:
+                comp_score = 10.0 - abs(comp - 9) * 0.3  # Peak at ~9 competitors
+            elif comp < 3:
+                comp_score = max(comp * 2.5, 1.0)  # Too few = maybe no market
+            else:
+                comp_score = max(10 - math.log1p(comp - 15) * 2, 1.0)  # Crowded
 
-            # Factor 4: Shipping (0-10) — lighter = cheaper to ship
-            ship_score = max(10 - weight * 0.5, 0) if weight > 0 else 5
+            # Factor 4: Shipping (0-10) — weight-based real cost impact
+            if weight <= 0:
+                ship_score = 5.0  # Unknown weight
+            elif weight < 0.5:
+                ship_score = 10.0  # Light, cheap to ship
+            elif weight < 2:
+                ship_score = 8.0 - (weight - 0.5) * 2
+            elif weight < 5:
+                ship_score = 5.0 - (weight - 2) * 1
+            else:
+                ship_score = max(2.0 - (weight - 5) * 0.3, 0)
 
-            # Factor 5: Rating (0-10) — customer satisfaction
+            # Factor 5: Rating (0-10) — exponential: 4.5+ is MUCH better than 3.5
             rating_score = 0.0
             if rating > 0:
-                rating_score = min(rating * 2, 10)  # 4.5 → 9.0, 5.0 → 10.0
+                # Sigmoid-like: ratings below 3.0 are bad, 4.0+ is good, 4.5+ is great
+                rating_score = min(max((rating - 2.0) ** 1.5 * 1.8, 0), 10)
 
-            # Factor 6: Reviews (0-10) — social proof volume
+            # Factor 6: Reviews (0-10) — log scale with minimum threshold
             review_score = 0.0
-            if reviews > 0:
+            if reviews >= 5:
                 review_score = min(math.log1p(reviews) / math.log1p(500) * 10, 10)
+            elif reviews > 0:
+                review_score = reviews * 0.5  # <5 reviews = very low confidence
 
-            # Factor 7: Price point (0-10) — $15-60 sweet spot
-            price_score = 0.0
-            if 15 <= price <= 60:
-                price_score = 10.0  # Perfect range
-            elif 10 <= price <= 100:
-                price_score = 6.0  # Acceptable
+            # Factor 7: Price point (0-10) — category-aware sweet spots
+            price_sweet_spots = {
+                "electronics": (30, 150),
+                "accessories": (10, 40),
+                "clothing": (20, 80),
+                "fitness": (15, 60),
+                "home": (15, 80),
+                "beauty": (10, 50),
+                "general": (15, 60),
+            }
+            low, high = price_sweet_spots.get(category, price_sweet_spots["general"])
+            if low <= price <= high:
+                price_score = 10.0
             elif price > 0:
-                price_score = 3.0  # Suboptimal
+                dist = min(abs(price - low), abs(price - high))
+                price_score = max(10 - dist / (high - low) * 8, 1.0)
+            else:
+                price_score = 0.0
+
+            # Factor 8: Velocity (0-10) — actual sales speed
+            velocity = units_sold / days_listed if units_sold > 0 else 0
+            velocity_score = min(velocity * 2, 10) if velocity > 0 else 0
 
             # Apply learned weight adjustments from IntelligenceLoop
             try:
@@ -363,25 +404,22 @@ class SmartExecutor:
             except Exception:
                 lw = {}
 
-            # Base weights + learned adjustments
-            w_margin = 0.25 + lw.get("margin", 0)
-            w_demand = 0.20 + lw.get("demand", 0)
-            w_comp = 0.15
-            w_ship = 0.10
-            w_rating = 0.15
-            w_review = 0.10
-            w_price = 0.05
+            # Base weights + ALL learned adjustments (8 factors)
+            w_margin = 0.20 + lw.get("margin", 0)
+            w_demand = 0.18 + lw.get("demand", 0)
+            w_comp = 0.10 + lw.get("competition", 0)
+            w_ship = 0.07 + lw.get("shipping", 0)
+            w_rating = 0.15 + lw.get("rating", 0)
+            w_review = 0.10 + lw.get("review", 0)
+            w_price = 0.05 + lw.get("price", 0)
+            w_velocity = 0.15 + lw.get("velocity", 0)
 
             # Normalize weights to sum to 1.0
-            w_total = w_margin + w_demand + w_comp + w_ship + w_rating + w_review + w_price
-            if w_total > 0:
-                w_margin /= w_total
-                w_demand /= w_total
-                w_comp /= w_total
-                w_ship /= w_total
-                w_rating /= w_total
-                w_review /= w_total
-                w_price /= w_total
+            all_w = [w_margin, w_demand, w_comp, w_ship, w_rating, w_review, w_price, w_velocity]
+            w_total = sum(max(w, 0.01) for w in all_w)
+            w_margin, w_demand, w_comp, w_ship, w_rating, w_review, w_price, w_velocity = [
+                max(w, 0.01) / w_total for w in all_w
+            ]
 
             total = (
                 margin_score * w_margin
@@ -391,17 +429,18 @@ class SmartExecutor:
                 + rating_score * w_rating
                 + review_score * w_review
                 + price_score * w_price
+                + velocity_score * w_velocity
             )
 
-            # Decision confidence — all 7 factors included
-            all_scores = [margin_score, demand_score, comp_score, ship_score, rating_score, review_score, price_score]
+            # Decision confidence — all 8 factors
+            all_scores = [margin_score, demand_score, comp_score, ship_score, rating_score, review_score, price_score, velocity_score]
             strong_factors = sum(1 for s in all_scores if s >= 7)
-            weak_factors = sum(1 for s in all_scores if s < 4)
+            weak_factors = sum(1 for s in all_scores if s < 3)
             confidence = "high" if strong_factors >= 4 and weak_factors == 0 else \
                          "medium" if strong_factors >= 2 else "low"
 
-            # Viability: needs margin + at least 2 strong factors + in stock (if inventory known)
-            in_stock = inventory != 0  # -1 means unknown (OK), 0 means out of stock
+            # Viability: margin + strong factors + in stock
+            in_stock = inventory != 0
             viable = total >= 5.0 and margin_pct >= 20 and strong_factors >= 2 and in_stock
 
             sp = dict(p)
@@ -414,8 +453,11 @@ class SmartExecutor:
                 "rating_score": round(rating_score, 2),
                 "review_score": round(review_score, 2),
                 "price_point_score": round(price_score, 2),
+                "velocity_score": round(velocity_score, 2),
+                "velocity": round(velocity, 2),
                 "total_score": round(total, 2),
                 "confidence": confidence,
+                "confidence_numeric": round(strong_factors / max(len(all_scores), 1) * 10, 1),
                 "strong_factors": strong_factors,
                 "weak_factors": weak_factors,
                 "viable": viable,
