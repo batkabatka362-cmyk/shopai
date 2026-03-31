@@ -356,15 +356,41 @@ class SmartExecutor:
             elif price > 0:
                 price_score = 3.0  # Suboptimal
 
-            # Weighted total
+            # Apply learned weight adjustments from IntelligenceLoop
+            try:
+                from core.intelligence_loop import get_learned_weights
+                lw = get_learned_weights()
+            except Exception:
+                lw = {}
+
+            # Base weights + learned adjustments
+            w_margin = 0.25 + lw.get("margin", 0)
+            w_demand = 0.20 + lw.get("demand", 0)
+            w_comp = 0.15
+            w_ship = 0.10
+            w_rating = 0.15
+            w_review = 0.10
+            w_price = 0.05
+
+            # Normalize weights to sum to 1.0
+            w_total = w_margin + w_demand + w_comp + w_ship + w_rating + w_review + w_price
+            if w_total > 0:
+                w_margin /= w_total
+                w_demand /= w_total
+                w_comp /= w_total
+                w_ship /= w_total
+                w_rating /= w_total
+                w_review /= w_total
+                w_price /= w_total
+
             total = (
-                margin_score * 0.25
-                + demand_score * 0.20
-                + comp_score * 0.15
-                + ship_score * 0.10
-                + rating_score * 0.15
-                + review_score * 0.10
-                + price_score * 0.05
+                margin_score * w_margin
+                + demand_score * w_demand
+                + comp_score * w_comp
+                + ship_score * w_ship
+                + rating_score * w_rating
+                + review_score * w_review
+                + price_score * w_price
             )
 
             # Decision confidence — all 7 factors included

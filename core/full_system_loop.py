@@ -5,10 +5,12 @@ The COMPLETE chain:
   → IntelligenceLoop (analyze/decide/plan/execute/track/learn)
   → Agents (coordinate multi-agent tasks)
   → Execution (dispatch to Shopify/email/ads)
-  → Memory (store results for future decisions)
+  → Memory (store results for future retrieval)
   → Knowledge (update rules from outcomes)
+  → Outcome Recording (link decision→action→result for learning)
 
-This is the MASTER loop — everything flows through here.
+Every phase's output feeds the next phase.
+Execution outcomes feed BACK to learning — closing the loop.
 """
 from __future__ import annotations
 
@@ -16,29 +18,20 @@ import time
 from typing import Any
 
 from utils.logger import get_logger
-from utils.helpers import generate_id
+from utils.helpers import generate_id, safe_float, safe_int
 
 logger = get_logger("full_system_loop")
 
 
 class FullSystemLoop:
-    """Master loop connecting data pipeline → intelligence → agents → execution → memory → learning."""
+    """Master loop: pipeline → intelligence → agents → execution → memory → learn → feedback."""
 
     def __init__(self) -> None:
         self._history: list[dict[str, Any]] = []
         self._cycle_count = 0
 
     def run(self, raw_data: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Run the FULL system loop.
-
-        Phases:
-          1. DATA    — Pipeline: clean, normalize, validate, extract features
-          2. INTEL   — IntelligenceLoop: analyze, decide, plan
-          3. AGENTS  — Coordinate: route tasks to specialized agents
-          4. EXECUTE — Dispatch: send actions to real systems
-          5. MEMORY  — Store: save results for future retrieval
-          6. LEARN   — Update: feed outcomes back to improve decisions
-        """
+        """Run the FULL system loop. Every phase connects to the next."""
         cycle_id = generate_id("full")
         start = time.monotonic()
         cfg = config or {}
@@ -48,7 +41,6 @@ class FullSystemLoop:
         pipeline_result = self._phase_data(raw_data, cfg)
         phases["data"] = pipeline_result
 
-        # Validate pipeline output before passing downstream
         clean_data = pipeline_result.get("clean_data")
         if not isinstance(clean_data, dict) or not clean_data:
             clean_data = raw_data
@@ -58,10 +50,10 @@ class FullSystemLoop:
         intel_result = self._phase_intelligence(clean_data, cfg.get("goal", "maximize_profit"))
         phases["intelligence"] = intel_result
 
-        # Gate: if intelligence aborted, skip execution
+        # Gate: if intelligence aborted, skip execution but still learn
         if intel_result.get("status") == "aborted":
             phases["agents"] = {"tasks_routed": 0, "agents_used": [], "skipped": "intel_aborted"}
-            phases["execution"] = {"dispatched": 0, "queued": 0, "skipped": "intel_aborted"}
+            phases["execution"] = {"dispatched": 0, "queued": 0, "skipped": "intel_aborted", "results": []}
             phases["memory"] = self._phase_memory(cycle_id, phases)
             phases["learning"] = self._phase_learn(cycle_id, phases)
             elapsed = time.monotonic() - start
@@ -86,7 +78,7 @@ class FullSystemLoop:
         memory_result = self._phase_memory(cycle_id, phases)
         phases["memory"] = memory_result
 
-        # ── Phase 6: LEARNING UPDATE ──
+        # ── Phase 6: LEARNING + OUTCOME RECORDING (closes the loop) ──
         learn_result = self._phase_learn(cycle_id, phases)
         phases["learning"] = learn_result
 
@@ -108,6 +100,7 @@ class FullSystemLoop:
                     "data_quality": intel_result.get("data_quality", 0),
                     "decision": intel_result.get("decision", {}),
                     "actions_planned": intel_result.get("plan", {}).get("actions", 0),
+                    "confidence_score": intel_result.get("decision", {}).get("confidence_score", 0),
                 },
                 "agents": {
                     "tasks_routed": agent_result.get("tasks_routed", 0),
@@ -116,6 +109,8 @@ class FullSystemLoop:
                 "execution": {
                     "actions_dispatched": exec_result.get("dispatched", 0),
                     "actions_queued": exec_result.get("queued", 0),
+                    "success_count": exec_result.get("success_count", 0),
+                    "fail_count": exec_result.get("fail_count", 0),
                 },
                 "memory": {
                     "vectors_stored": memory_result.get("stored", 0),
@@ -123,6 +118,8 @@ class FullSystemLoop:
                 "learning": {
                     "rules_updated": learn_result.get("rules_updated", 0),
                     "patterns_found": learn_result.get("patterns_found", 0),
+                    "outcome_recorded": learn_result.get("outcome_recorded", False),
+                    "decision_accuracy": learn_result.get("decision_accuracy"),
                 },
             },
             "summary": self._build_summary(phases, elapsed),
@@ -161,10 +158,8 @@ class FullSystemLoop:
             try:
                 from data_pipeline.processing.cleaner import DataCleaner
                 from data_pipeline.processing.normalizer import DataNormalizer
-                cleaner = DataCleaner()
-                normalizer = DataNormalizer()
-                cleaned = cleaner.clean(customers)
-                normalized = normalizer.normalize(cleaned)
+                cleaned = DataCleaner().clean(customers)
+                normalized = DataNormalizer().normalize(cleaned)
                 result["clean_data"]["customers"] = normalized
                 result["customers_processed"] = len(normalized)
             except Exception:
@@ -176,15 +171,14 @@ class FullSystemLoop:
         """Phase 2: Run IntelligenceLoop on cleaned data."""
         try:
             from core.intelligence_loop import IntelligenceLoop
-            il = IntelligenceLoop()
-            return il.run(data, goal=goal)
+            return IntelligenceLoop().run(data, goal=goal)
         except Exception as exc:
             logger.error("Intelligence loop error: %s", exc)
             return {"data_quality": 0, "decision": {"action": "error", "confidence": "none"}, "plan": {"actions": 0}}
 
     def _phase_agents(self, intel_result: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
-        """Phase 3: Route tasks to specialized agents."""
-        result = {"tasks_routed": 0, "agents_used": [], "agent_results": []}
+        """Phase 3: Route tasks to agents and collect their feedback."""
+        result = {"tasks_routed": 0, "agents_used": [], "agent_feedback": []}
 
         try:
             from agents.manager.agent_manager import AgentManager
@@ -192,11 +186,10 @@ class FullSystemLoop:
             am = AgentManager()
             mb = MessageBus()
 
-            # Register agents for this cycle
             for agent_type in ("product", "marketing", "customer", "analytics"):
                 am.register_agent(agent_type, agent_type, {})
 
-            # Route intelligence actions to appropriate agents
+            # Route priority-1 actions to agents
             plan = intel_result.get("plan", {})
             p1_actions = plan.get("priority_1", [])
             if isinstance(p1_actions, list):
@@ -206,7 +199,6 @@ class FullSystemLoop:
                     target = action.get("target", "")
                     agent_type = self._target_to_agent(target)
 
-                    # Publish task to message bus
                     mb.publish(f"task.{agent_type}", {
                         "action": action,
                         "intel": {
@@ -219,7 +211,7 @@ class FullSystemLoop:
                     if agent_type not in result["agents_used"]:
                         result["agents_used"].append(agent_type)
 
-            # Also route all ready execution targets
+            # Route ready execution targets
             execution = intel_result.get("execution", {})
             ready = execution.get("ready", [])
             if isinstance(ready, list):
@@ -239,8 +231,8 @@ class FullSystemLoop:
         return result
 
     def _phase_execute(self, intel_result: dict[str, Any], agent_result: dict[str, Any]) -> dict[str, Any]:
-        """Phase 4: Dispatch actions to real execution modules."""
-        result = {"dispatched": 0, "queued": 0, "results": []}
+        """Phase 4: Dispatch actions and track results."""
+        result = {"dispatched": 0, "queued": 0, "results": [], "success_count": 0, "fail_count": 0}
 
         try:
             from core.bridge.execution_bridge import ExecutionBridge
@@ -255,23 +247,22 @@ class FullSystemLoop:
             except Exception:
                 pass
 
-            # Plan actions from intelligence result
+            # Plan actions from intelligence output
             execution = intel_result.get("execution", {})
             ready = execution.get("ready", [])
             if isinstance(ready, list):
                 for action_data in ready:
                     if not isinstance(action_data, dict):
                         continue
-                    # Create action plans from intelligence output
                     actions = eb.plan_actions(
                         action_data.get("target", "unknown"),
                         action_data.get("payload", action_data),
                     )
                     result["queued"] += len(actions)
 
-            # Auto-approve low-risk actions
+            # Auto-approve low/medium risk actions
             for action in eb.get_queue():
-                if action.get("priority") in ("low", "medium"):
+                if action.get("priority") in ("low", "medium", 1, 2):
                     eb.approve_action(action["action_id"])
 
             # Execute approved actions
@@ -279,13 +270,20 @@ class FullSystemLoop:
             result["dispatched"] = len(executed)
             result["results"] = executed
 
+            # Count successes/failures for feedback
+            for ex in executed:
+                if ex.get("success"):
+                    result["success_count"] += 1
+                else:
+                    result["fail_count"] += 1
+
         except Exception as exc:
             logger.warning("Execution dispatch error: %s", exc)
 
         return result
 
     def _phase_memory(self, cycle_id: str, phases: dict[str, Any]) -> dict[str, Any]:
-        """Phase 5: Store important results in vector memory."""
+        """Phase 5: Store results in memory for future retrieval."""
         stored = 0
 
         try:
@@ -294,14 +292,12 @@ class FullSystemLoop:
             vdb = VectorDB()
             cache = ShortTermCache()
 
-            # Store decision in short-term cache
             intel = phases.get("intelligence", {})
             decision = intel.get("decision", {})
             if decision:
                 cache.set(f"decision:{cycle_id}", decision, ttl=3600)
                 stored += 1
 
-            # Store a simple embedding of the cycle result for similarity search
             embedding = self._simple_embedding(phases)
             vdb.add("cycles", cycle_id, embedding, {
                 "type": "cycle_result",
@@ -316,57 +312,125 @@ class FullSystemLoop:
         return {"stored": stored}
 
     def _phase_learn(self, cycle_id: str, phases: dict[str, Any]) -> dict[str, Any]:
-        """Phase 6: Feed outcomes back to knowledge system."""
+        """Phase 6: Feed execution outcomes back to learning — closes the loop.
+
+        This is the CRITICAL connection:
+          Decision made → Actions executed → Results measured → Learning updated
+        """
         rules_updated = 0
         patterns_found = 0
+        outcome_recorded = False
+        decision_accuracy = None
 
         try:
+            from core.learning.outcome_tracker import OutcomeTracker
+            ot = OutcomeTracker()
+
+            intel = phases.get("intelligence", {})
+            exec_phase = phases.get("execution", {})
+            decision = intel.get("decision", {})
+
+            # 1. Record the decision
+            ot.record_decision(cycle_id, "full_system_loop", {
+                "action": decision.get("action", ""),
+                "confidence": decision.get("confidence", ""),
+                "confidence_score": decision.get("confidence_score", 0),
+                "data_quality": intel.get("data_quality", 0),
+                "actions_dispatched": exec_phase.get("dispatched", 0),
+                "opportunity_score": decision.get("opportunity_score", 0),
+            })
+
+            # 2. IMMEDIATELY record execution outcome — closes the feedback loop
+            exec_results = exec_phase.get("results", [])
+            success_count = exec_phase.get("success_count", 0)
+            fail_count = exec_phase.get("fail_count", 0)
+            total_dispatched = exec_phase.get("dispatched", 0)
+
+            if total_dispatched > 0:
+                success = success_count > fail_count
+                ot.record_outcome(cycle_id, "full_system_loop", {
+                    "success": success,
+                    "dispatched": total_dispatched,
+                    "succeeded": success_count,
+                    "failed": fail_count,
+                    "success_rate": round(success_count / max(total_dispatched, 1), 2),
+                    "execution_results": exec_results[:5],
+                })
+                outcome_recorded = True
+
+                # Calculate decision accuracy: was the confidence prediction correct?
+                confidence = decision.get("confidence", "medium")
+                if confidence == "high" and success:
+                    decision_accuracy = "correct_high"
+                elif confidence == "high" and not success:
+                    decision_accuracy = "overconfident"
+                elif confidence == "low" and not success:
+                    decision_accuracy = "correct_low"
+                elif confidence == "low" and success:
+                    decision_accuracy = "underconfident"
+                else:
+                    decision_accuracy = "neutral"
+
+            # 3. Record revenue impact if available
+            try:
+                from core.intelligence.revenue_tracker import RevenueTracker
+                rt = RevenueTracker()
+                action_name = decision.get("action", "unknown")[:50]
+                action_id = rt.record_action("system_decision", action_name, {
+                    "cycle_id": cycle_id,
+                    "confidence": decision.get("confidence", ""),
+                    "data_quality": intel.get("data_quality", 0),
+                })
+                # Link execution outcomes to revenue tracking
+                if total_dispatched > 0:
+                    rt.record_revenue(action_id, revenue=0, cost=0, orders=total_dispatched)
+            except Exception:
+                pass
+
+            # 4. Generate rules from patterns
             from knowledge.rules.rule_engine import RuleEngine
             re = RuleEngine()
-
-            # Check if intelligence found patterns that should become rules
-            intel = phases.get("intelligence", {})
             learning = intel.get("learning", {})
             patterns = learning.get("patterns", [])
             patterns_found = len(patterns)
 
-            # Auto-generate rules from strong patterns
             for pattern in patterns:
                 if not isinstance(pattern, dict):
                     continue
-                if pattern.get("pattern") == "score_range":
-                    min_score = pattern.get("min", 0)
+                if pattern.get("pattern") == "score_range" and pattern.get("correlation") == "confirmed":
+                    min_score = safe_float(pattern.get("min"))
                     if min_score > 0:
                         re.add_rule(
                             f"auto_min_score_{min_score}",
                             condition={"total_score": {"lt": min_score}},
-                            action={"type": "notify", "message": f"Score below learned minimum {min_score}"},
+                            action={"type": "notify", "message": f"Score below proven minimum {min_score}"},
                             priority=5,
                         )
                         rules_updated += 1
 
-            # Record this cycle's outcome for the learning engine
-            from core.learning.outcome_tracker import OutcomeTracker
-            ot = OutcomeTracker()
-            decision = intel.get("decision", {})
-            exec_phase = phases.get("execution", {})
-            ot.record_decision(cycle_id, "full_system_loop", {
-                "action": decision.get("action", ""),
-                "confidence": decision.get("confidence", ""),
-                "data_quality": intel.get("data_quality", 0),
-                "actions_dispatched": exec_phase.get("dispatched", 0),
-            })
+                if pattern.get("pattern") == "quality_matters":
+                    re.add_rule(
+                        "auto_quality_gate",
+                        condition={"data_quality": {"lt": 50}},
+                        action={"type": "notify", "message": "Data quality below threshold for reliable decisions"},
+                        priority=8,
+                    )
+                    rules_updated += 1
 
         except Exception as exc:
             logger.warning("Learning update error: %s", exc)
 
-        return {"rules_updated": rules_updated, "patterns_found": patterns_found}
+        return {
+            "rules_updated": rules_updated,
+            "patterns_found": patterns_found,
+            "outcome_recorded": outcome_recorded,
+            "decision_accuracy": decision_accuracy,
+        }
 
     # ── Helpers ──
 
     @staticmethod
     def _target_to_agent(target: str) -> str:
-        """Map execution targets to agent types."""
         mapping = {
             "pricing_engine": "product",
             "seo_engine": "marketing",
@@ -380,38 +444,37 @@ class FullSystemLoop:
 
     @staticmethod
     def _simple_embedding(phases: dict[str, Any]) -> list[float]:
-        """Create a simple numerical embedding from cycle data for vector search."""
         intel = phases.get("intelligence", {})
         exec_p = phases.get("execution", {})
         data_p = phases.get("data", {})
-
-        # 8-dimension embedding capturing key metrics
+        conf = intel.get("decision", {}).get("confidence", "medium")
         return [
-            float(intel.get("data_quality", 0)) / 100.0,
-            1.0 if intel.get("decision", {}).get("confidence") == "high" else 0.5 if intel.get("decision", {}).get("confidence") == "medium" else 0.2,
-            float(intel.get("plan", {}).get("actions", 0)) / 10.0,
-            float(exec_p.get("dispatched", 0)) / 10.0,
-            float(data_p.get("products_processed", 0)) / 100.0,
-            float(data_p.get("features_extracted", 0)) / 50.0,
-            float(intel.get("learning", {}).get("past_outcomes", 0)) / 20.0,
-            float(phases.get("agents", {}).get("tasks_routed", 0)) / 10.0,
+            safe_float(intel.get("data_quality")) / 100.0,
+            1.0 if conf == "high" else 0.5 if conf == "medium" else 0.2,
+            safe_float(intel.get("plan", {}).get("actions")) / 10.0,
+            safe_float(exec_p.get("dispatched")) / 10.0,
+            safe_float(data_p.get("products_processed")) / 100.0,
+            safe_float(data_p.get("features_extracted")) / 50.0,
+            safe_float(intel.get("learning", {}).get("past_outcomes")) / 20.0,
+            safe_float(phases.get("agents", {}).get("tasks_routed")) / 10.0,
         ]
 
     @staticmethod
     def _build_summary(phases: dict[str, Any], elapsed: float) -> str:
-        """Human-readable summary of the full system cycle."""
         data = phases.get("data", {})
         intel = phases.get("intelligence", {})
         agents = phases.get("agents", {})
         exec_p = phases.get("execution", {})
+        learn = phases.get("learning", {})
 
         decision = intel.get("decision", {})
         lines = [
             f"Pipeline: {data.get('products_processed', 0)} products → {data.get('features_extracted', 0)} features",
             f"Decision: {decision.get('action', 'N/A')[:60]}",
-            f"Confidence: {decision.get('confidence', 'N/A')}",
-            f"Agents: {len(agents.get('agents_used', []))} active, {agents.get('tasks_routed', 0)} tasks routed",
-            f"Execution: {exec_p.get('dispatched', 0)} dispatched, {exec_p.get('queued', 0)} queued",
+            f"Confidence: {decision.get('confidence', 'N/A')} (score: {decision.get('confidence_score', 'N/A')})",
+            f"Agents: {len(agents.get('agents_used', []))} active, {agents.get('tasks_routed', 0)} tasks",
+            f"Execution: {exec_p.get('dispatched', 0)} dispatched ({exec_p.get('success_count', 0)} ok, {exec_p.get('fail_count', 0)} fail)",
+            f"Learning: {learn.get('patterns_found', 0)} patterns, outcome={'yes' if learn.get('outcome_recorded') else 'no'}",
             f"Time: {elapsed:.3f}s",
         ]
         return "\n".join(lines)

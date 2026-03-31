@@ -2,13 +2,14 @@
 
 ONE connected loop: Data → Decision → Execution → Result → Learning → Better Decision
 
-This is NOT separate modules — it's ONE flow where each stage
-feeds into the next, and outcomes feed BACK into decisions.
-
-The key insight:
-  - Good data → smart decision → effective execution → real results → system learns → BETTER decisions
-  - Bad data at ANY stage → everything downstream fails
-  - Learning MUST flow back to decisions or system never improves
+Stages:
+  1. CLEAN   — validate, fix, score data quality
+  2. ANALYZE — compute scores, detect patterns, assess opportunity
+  3. DECIDE  — rank multiple options, apply learning, calculate real confidence
+  4. PLAN    — create specific executable actions
+  5. EXECUTE — format for target systems (Shopify, email, ads)
+  6. TRACK   — record what was decided and why
+  7. LEARN   — compare outcomes, adjust weights, feed back to stage 3
 """
 from __future__ import annotations
 
@@ -22,30 +23,22 @@ from utils.helpers import generate_id, safe_float, safe_int, safe_dict
 logger = get_logger("intelligence_loop")
 
 
-class IntelligenceLoop:
-    """Complete closed intelligence loop. Every stage connects to the next."""
+# Persistent learned weights — survives across instances within same process
+_learned_weights: dict[str, float] = {}
 
-    # Scoring weight adjustments from learning (class-level, persists across instances)
-    _weight_adjustments: dict[str, float] = {}
+
+def get_learned_weights() -> dict[str, float]:
+    """Get current learned scoring weight adjustments."""
+    return dict(_learned_weights)
+
+
+class IntelligenceLoop:
+    """Complete closed intelligence loop with multi-factor confidence and adaptive learning."""
 
     def __init__(self) -> None:
         self._history: list[dict[str, Any]] = []
 
     def run(self, raw_data: dict[str, Any], goal: str = "maximize_profit") -> dict[str, Any]:
-        """Run the FULL intelligence loop on any data.
-
-        Stages:
-          1. CLEAN   — validate, fix, score data quality
-          2. ANALYZE — compute scores, detect patterns, assess opportunity
-          3. DECIDE  — rank options, apply learning, set confidence
-          4. PLAN    — create specific executable actions
-          5. EXECUTE — format for target systems (Shopify, email, ads)
-          6. TRACK   — record what was decided and why
-          7. LEARN   — compare with past outcomes, adjust weights
-
-        Every stage gets the output of ALL previous stages.
-        Learning from stage 7 feeds back into stage 3 next time.
-        """
         loop_id = generate_id("loop")
         start = time.monotonic()
         context = {"loop_id": loop_id, "goal": goal, "raw_data": raw_data}
@@ -61,15 +54,15 @@ class IntelligenceLoop:
         analysis = self._stage_analyze(clean_result["data"], goal)
         context["analysis"] = analysis
 
-        # Stage 3: DECIDE (uses learning from past outcomes)
-        decision = self._stage_decide(analysis, goal)
+        # Stage 3: DECIDE — multi-option with real confidence
+        decision = self._stage_decide(analysis, clean_result, goal)
         context["decision"] = decision
 
         # Stage 4: PLAN
         plan = self._stage_plan(decision, clean_result["data"])
         context["plan"] = plan
 
-        # Stage 5: EXECUTE (format for target systems)
+        # Stage 5: EXECUTE
         execution = self._stage_execute(plan, clean_result["data"])
         context["execution"] = execution
 
@@ -90,7 +83,10 @@ class IntelligenceLoop:
             "decision": {
                 "action": decision["recommended_action"],
                 "confidence": decision["confidence"],
+                "confidence_score": decision["confidence_score"],
                 "reason": decision["reason"],
+                "options_evaluated": decision.get("options_evaluated", 0),
+                "opportunity_score": decision.get("opportunity_score", 0),
             },
             "plan": {
                 "actions": len(plan["actions"]),
@@ -104,6 +100,7 @@ class IntelligenceLoop:
                 "past_outcomes": learning["past_outcomes"],
                 "adjusted": learning["adjustments_made"],
                 "advice": learning["advice"],
+                "weight_adjustments": learning.get("weight_adjustments", {}),
             },
             "stages_completed": 7,
             "summary": self._summarize(decision, plan, execution, learning, elapsed),
@@ -115,18 +112,15 @@ class IntelligenceLoop:
     # ── Stage 1: CLEAN ──────────────────────────────────────
 
     def _stage_clean(self, raw: dict[str, Any]) -> dict[str, Any]:
-        """Validate, fix types, remove noise, score quality."""
         data = copy.deepcopy(raw)
         fixes = []
         issues = []
 
-        # Fix string prices at top level
         for key in list(data.keys()):
             if key.startswith("_"):
                 continue
             val = data[key]
 
-            # Fix string numbers
             if isinstance(val, str) and key.lower() in ("price", "cost", "revenue", "spend", "budget"):
                 converted = safe_float(val, default=None)
                 if converted is not None:
@@ -135,7 +129,6 @@ class IntelligenceLoop:
                 else:
                     issues.append(f"{key}: invalid number '{val}'")
 
-            # Fix list items
             if isinstance(val, list):
                 cleaned = []
                 for item in val:
@@ -154,7 +147,6 @@ class IntelligenceLoop:
                         cleaned.append(item)
                 data[key] = cleaned
 
-            # Remove None/empty
             if val is None or val == "" or val == []:
                 del data[key]
                 fixes.append(f"{key}: removed empty")
@@ -179,7 +171,7 @@ class IntelligenceLoop:
                     biz_issues.append(f"{item_name}: negative cost ({item_cost})")
                     issues.append(f"Negative cost: {item_cost}")
                 if item_cost > 0 and item_price > 0 and item_cost > item_price:
-                    biz_issues.append(f"{item_name}: cost ({item_cost}) > price ({item_price})")
+                    biz_issues.append(f"{item_name}: cost > price")
                     issues.append(f"Cost exceeds price: {item_cost} > {item_price}")
 
         # Quality score
@@ -198,7 +190,6 @@ class IntelligenceLoop:
         if not issues:
             quality += 15
 
-        # Penalize for business logic violations
         if biz_issues:
             penalty = min(50, len(biz_issues) * 25)
             quality = max(0, quality - penalty)
@@ -215,15 +206,13 @@ class IntelligenceLoop:
     # ── Stage 2: ANALYZE ────────────────────────────────────
 
     def _stage_analyze(self, data: dict[str, Any], goal: str) -> dict[str, Any]:
-        """Compute scores, detect patterns, assess opportunity."""
         analysis = {"goal": goal, "findings": []}
 
         # Product analysis
         products = data.get("products", data.get("product_data", []))
         if isinstance(products, list) and products:
             from core.step_logic.smart_executor import SmartExecutor
-            se = SmartExecutor()
-            scored = se._score_products(products)
+            scored = SmartExecutor()._score_products(products)
             viable = [p for p in scored if p.get("viable")]
             top = sorted(scored, key=lambda p: p.get("total_score", 0), reverse=True)
 
@@ -240,7 +229,7 @@ class IntelligenceLoop:
             if top and top[0].get("total_score", 0) > 8:
                 analysis["findings"].append(f"Strong candidate: {top[0].get('name')} (score {top[0]['total_score']})")
 
-        # Customer analysis — safe type conversion
+        # Customer analysis
         customers = data.get("customer_data", data.get("customers", []))
         if isinstance(customers, list) and customers:
             repeat = sum(1 for c in customers if isinstance(c, dict) and safe_int(c.get("orders")) > 1)
@@ -253,7 +242,7 @@ class IntelligenceLoop:
             if at_risk > 0:
                 analysis["findings"].append(f"{at_risk} customers at churn risk")
 
-        # Revenue analysis — safe type conversion
+        # Revenue analysis
         orders = data.get("orders", data.get("order_data", []))
         if isinstance(orders, list) and orders:
             revenue = sum(safe_float(o.get("total", o.get("amount", o.get("total_price", 0)))) for o in orders if isinstance(o, dict))
@@ -267,144 +256,204 @@ class IntelligenceLoop:
 
     # ── Stage 3: DECIDE ─────────────────────────────────────
 
-    def _stage_decide(self, analysis: dict[str, Any], goal: str) -> dict[str, Any]:
-        """Rank options, apply learning from past outcomes, set confidence."""
+    def _stage_decide(self, analysis: dict[str, Any], clean_result: dict[str, Any], goal: str) -> dict[str, Any]:
+        """Multi-option decision scoring with real confidence calculation."""
 
         past_advice = self._get_past_learning(goal)
 
-        opp_score = analysis.get("opportunity_score", 50)
         products = analysis.get("products", {})
         customers = analysis.get("customers", {})
-        findings = analysis.get("findings", [])
+        revenue = analysis.get("revenue", {})
+        opp_score = analysis.get("opportunity_score", 50)
 
-        # Decision logic based on goal
-        if goal == "maximize_profit":
-            if products.get("viable", 0) > 0:
-                top = safe_dict(products.get("top_product"))
-                action = f"Launch {top.get('name', 'top product')} — score {top.get('total_score', 0)}"
-                confidence = "high" if safe_float(top.get("total_score")) > 7 else "medium"
-            else:
-                action = "No viable products — improve margins or find new products"
-                confidence = "low"
+        # Build decision options — evaluate ALL, then pick best
+        options = []
+        top = safe_dict(products.get("top_product"))
 
-        elif goal == "grow_customers":
-            if customers.get("at_risk", 0) > 0:
-                action = f"Retain {customers['at_risk']} at-risk customers with win-back campaign"
-                confidence = "high"
-            elif customers.get("repeat_rate", 0) < 30:
-                action = "Low repeat rate — launch loyalty program"
-                confidence = "medium"
-            else:
-                action = "Customer base healthy — focus on acquisition"
-                confidence = "medium"
+        # Option 1: Launch top product
+        if products.get("viable", 0) > 0 and top:
+            top_score = safe_float(top.get("total_score"))
+            options.append({
+                "action": f"Launch {top.get('name', 'top product')} — score {top_score}",
+                "type": "product_launch",
+                "scores": {
+                    "profit_potential": min(top_score * 1.2, 10),
+                    "risk": 3 if top_score > 7 else 5 if top_score > 5 else 7,
+                    "data_support": 8 if products.get("total", 0) > 3 else 5,
+                    "speed": 7,
+                },
+            })
 
-        elif goal == "increase_aov":
-            revenue = analysis.get("revenue", {})
-            if safe_float(revenue.get("aov")) < 50:
-                action = f"AOV ${safe_float(revenue.get('aov')):.2f} — implement bundle offers and upsells"
-                confidence = "high"
-            else:
-                action = "AOV acceptable — test premium product line"
-                confidence = "medium"
-        else:
-            action = f"Analyze and optimize for: {goal}"
-            confidence = "medium"
+        # Option 2: Pricing optimization
+        if products.get("total", 0) > 0:
+            avg_margin = safe_float(top.get("margin_pct"))
+            options.append({
+                "action": "Optimize pricing across product catalog",
+                "type": "pricing_optimization",
+                "scores": {
+                    "profit_potential": 7 if avg_margin > 30 else 5,
+                    "risk": 2,
+                    "data_support": 7 if products.get("total", 0) > 2 else 4,
+                    "speed": 9,
+                },
+            })
 
-        # Apply past learning adjustments
+        # Option 3: Customer retention
+        if customers.get("at_risk", 0) > 0:
+            risk_count = customers["at_risk"]
+            options.append({
+                "action": f"Retain {risk_count} at-risk customers with win-back campaign",
+                "type": "customer_retention",
+                "scores": {
+                    "profit_potential": 6 if risk_count > 3 else 4,
+                    "risk": 2,
+                    "data_support": 8 if customers.get("total", 0) > 5 else 4,
+                    "speed": 8,
+                },
+            })
+
+        # Option 4: AOV increase
+        if safe_float(revenue.get("aov")) > 0 and safe_float(revenue.get("aov")) < 50:
+            options.append({
+                "action": f"AOV ${safe_float(revenue.get('aov')):.2f} — implement bundle offers and upsells",
+                "type": "aov_increase",
+                "scores": {
+                    "profit_potential": 8,
+                    "risk": 3,
+                    "data_support": 6,
+                    "speed": 6,
+                },
+            })
+
+        # Option 5: Data collection (fallback)
+        if not options:
+            options.append({
+                "action": f"Collect more data for: {goal}",
+                "type": "data_collection",
+                "scores": {"profit_potential": 2, "risk": 1, "data_support": 2, "speed": 5},
+            })
+
+        # Score options with goal-weighted factors
+        goal_weights = {
+            "maximize_profit": {"profit_potential": 0.40, "risk": 0.20, "data_support": 0.25, "speed": 0.15},
+            "grow_customers": {"profit_potential": 0.20, "risk": 0.15, "data_support": 0.30, "speed": 0.35},
+            "increase_aov": {"profit_potential": 0.35, "risk": 0.15, "data_support": 0.25, "speed": 0.25},
+        }
+        weights = goal_weights.get(goal, {"profit_potential": 0.30, "risk": 0.20, "data_support": 0.25, "speed": 0.25})
+
+        for opt in options:
+            s = opt["scores"]
+            # Risk is inverted: lower risk = higher score
+            risk_score = 10 - s.get("risk", 5)
+            opt["total_score"] = round(
+                s.get("profit_potential", 5) * weights["profit_potential"]
+                + risk_score * weights["risk"]
+                + s.get("data_support", 5) * weights["data_support"]
+                + s.get("speed", 5) * weights["speed"],
+                2,
+            )
+
+        # Rank options
+        options.sort(key=lambda o: o["total_score"], reverse=True)
+        best = options[0]
+
+        # Apply past learning adjustment
         if past_advice.get("avoid_below_score"):
             threshold = past_advice["avoid_below_score"]
-            top_score = safe_float(safe_dict(products.get("top_product")).get("total_score"), 10)
-            if top_score < threshold:
-                action = f"CAUTION: Past data shows scores below {threshold} fail. " + action
-                confidence = "low"
+            if safe_float(top.get("total_score"), 10) < threshold:
+                best["action"] = f"CAUTION: Past data shows scores below {threshold} fail. " + best["action"]
 
-        reason_parts = findings[:3]
+        # Calculate REAL confidence score (0-100)
+        confidence_score = self._calculate_confidence(
+            clean_result, analysis, best, past_advice, options
+        )
+
+        confidence = "high" if confidence_score >= 70 else "medium" if confidence_score >= 40 else "low"
+
+        reason_parts = analysis.get("findings", [])[:3]
         if past_advice.get("success_rate"):
             reason_parts.append(f"Past success rate: {past_advice['success_rate']:.0%}")
+        if len(options) > 1:
+            reason_parts.append(f"Best of {len(options)} options (score: {best['total_score']})")
 
         return {
-            "recommended_action": action,
+            "recommended_action": best["action"],
             "confidence": confidence,
+            "confidence_score": confidence_score,
             "reason": " | ".join(reason_parts) if reason_parts else "Standard analysis",
             "opportunity_score": opp_score,
             "goal": goal,
+            "decision_type": best.get("type", "unknown"),
+            "options_evaluated": len(options),
+            "all_options": [{"action": o["action"][:60], "score": o["total_score"]} for o in options],
             "past_learning_applied": bool(past_advice.get("success_rate")),
         }
+
+    def _calculate_confidence(self, clean_result: dict, analysis: dict,
+                               best_option: dict, past_advice: dict,
+                               all_options: list) -> int:
+        """Calculate real confidence score 0-100 based on multiple factors."""
+        score = 0
+
+        # Factor 1: Data quality (0-25 pts)
+        data_quality = clean_result.get("quality_score", 0)
+        score += min(data_quality * 0.25, 25)
+
+        # Factor 2: Best option strength (0-25 pts)
+        best_score = best_option.get("total_score", 0)
+        score += min(best_score * 2.5, 25)
+
+        # Factor 3: Score gap between best and second-best (0-15 pts)
+        # Larger gap = higher confidence in choice
+        if len(all_options) >= 2:
+            gap = all_options[0].get("total_score", 0) - all_options[1].get("total_score", 0)
+            score += min(gap * 5, 15)
+        else:
+            score += 5  # Only one option = moderate confidence
+
+        # Factor 4: Historical success rate (0-20 pts)
+        success_rate = past_advice.get("success_rate", 0)
+        score += success_rate * 20
+
+        # Factor 5: Evidence volume (0-15 pts)
+        findings_count = len(analysis.get("findings", []))
+        products_count = analysis.get("products", {}).get("total", 0)
+        evidence = min(findings_count * 3 + products_count * 2, 15)
+        score += evidence
+
+        return max(0, min(100, round(score)))
 
     # ── Stage 4: PLAN ───────────────────────────────────────
 
     def _stage_plan(self, decision: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
-        """Create specific, executable actions from decision."""
         actions = []
         confidence = decision.get("confidence", "medium")
+        decision_type = decision.get("decision_type", "")
 
         products = data.get("products", data.get("product_data", []))
         customers = data.get("customer_data", data.get("customers", []))
 
         if isinstance(products, list) and products:
-            actions.append({
-                "type": "pricing_analysis", "priority": 1,
-                "description": "Run pricing intelligence on all products",
-                "target": "pricing_engine",
-                "data_needed": "products",
-            })
-            actions.append({
-                "type": "seo_audit", "priority": 2,
-                "description": "Audit product pages for SEO issues",
-                "target": "seo_engine",
-                "data_needed": "products",
-            })
-            actions.append({
-                "type": "content_check", "priority": 2,
-                "description": "Generate/improve product descriptions",
-                "target": "content_engine",
-                "data_needed": "products",
-            })
+            actions.append({"type": "pricing_analysis", "priority": 1, "description": "Run pricing intelligence", "target": "pricing_engine", "data_needed": "products"})
+            actions.append({"type": "seo_audit", "priority": 2, "description": "Audit product pages for SEO", "target": "seo_engine", "data_needed": "products"})
+            actions.append({"type": "content_check", "priority": 2, "description": "Improve product descriptions", "target": "content_engine", "data_needed": "products"})
 
         if isinstance(customers, list) and customers:
-            actions.append({
-                "type": "segment_customers", "priority": 1,
-                "description": "Segment customers by RFM and detect churn risks",
-                "target": "customer_engine",
-                "data_needed": "customers",
-            })
+            actions.append({"type": "segment_customers", "priority": 1, "description": "Segment by RFM and detect churn", "target": "customer_engine", "data_needed": "customers"})
 
-        # Goal-specific actions
-        recommended = decision.get("recommended_action", "").lower()
-        if "launch" in recommended:
-            actions.append({
-                "type": "product_launch", "priority": 1,
-                "description": "Execute product launch workflow",
-                "target": "workflow_engine",
-                "data_needed": "products",
-            })
-
-        if "win-back" in recommended:
-            actions.append({
-                "type": "win_back_email", "priority": 1,
-                "description": "Create and send win-back email campaign",
-                "target": "email_engine",
-                "data_needed": "customers",
-            })
-
-        if "bundle" in recommended or "upsell" in recommended:
-            actions.append({
-                "type": "bundle_strategy", "priority": 1,
-                "description": "Create bundle/upsell offers to increase AOV",
-                "target": "pricing_engine",
-                "data_needed": "products",
-            })
+        # Decision-type-specific actions
+        if decision_type == "product_launch":
+            actions.append({"type": "product_launch", "priority": 1, "description": "Execute product launch workflow", "target": "workflow_engine", "data_needed": "products"})
+        elif decision_type == "customer_retention":
+            actions.append({"type": "win_back_email", "priority": 1, "description": "Create win-back email campaign", "target": "email_engine", "data_needed": "customers"})
+        elif decision_type == "aov_increase":
+            actions.append({"type": "bundle_strategy", "priority": 1, "description": "Create bundle/upsell offers", "target": "pricing_engine", "data_needed": "products"})
 
         # Deprioritize if low confidence
         if confidence == "low":
             for a in actions:
                 a["priority"] = max(a["priority"], 2)
-            actions.append({
-                "type": "gather_more_data", "priority": 1,
-                "description": "Low confidence — collect more data before major actions",
-                "target": "data_engine",
-                "data_needed": "all",
-            })
+            actions.append({"type": "gather_more_data", "priority": 1, "description": "Low confidence — collect more data", "target": "data_engine", "data_needed": "all"})
 
         actions.sort(key=lambda a: a["priority"])
         return {"actions": actions, "total": len(actions)}
@@ -412,7 +461,6 @@ class IntelligenceLoop:
     # ── Stage 5: EXECUTE ────────────────────────────────────
 
     def _stage_execute(self, plan: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
-        """Format actions for target systems — ready to send."""
         ready = []
         products = data.get("products", data.get("product_data", []))
         products_valid = isinstance(products, list) and products and isinstance(products[0], dict)
@@ -435,15 +483,10 @@ class IntelligenceLoop:
                     from core.intelligence.email_intelligence import EmailIntelligence
                     flow = EmailIntelligence().build_automation_flow("win_back")
                     formatted["payload"] = {"flow": flow["name"], "emails": len(flow["emails"])}
-                    formatted["estimated_impact"] = flow.get("estimated_recovery", "3-8%")
 
                 elif target == "seo_engine" and products_valid:
                     from core.intelligence.seo_intelligence import SEOIntelligence
-                    p0 = products[0]
-                    audit = SEOIntelligence().audit_page({
-                        "title": p0.get("name", ""),
-                        "keyword": p0.get("category", "product"),
-                    })
+                    audit = SEOIntelligence().audit_page({"title": products[0].get("name", ""), "keyword": products[0].get("category", "product")})
                     formatted["payload"] = {"audit_score": audit["score"], "issues": audit["issue_count"]}
 
                 elif target == "content_engine" and products_valid:
@@ -461,7 +504,6 @@ class IntelligenceLoop:
     # ── Stage 6: TRACK ──────────────────────────────────────
 
     def _stage_track(self, loop_id: str, context: dict[str, Any]) -> None:
-        """Record the decision for future learning."""
         try:
             from core.learning.outcome_tracker import OutcomeTracker
             ot = OutcomeTracker()
@@ -471,10 +513,13 @@ class IntelligenceLoop:
                 "goal": context.get("goal"),
                 "action": decision.get("recommended_action", ""),
                 "confidence": decision.get("confidence", ""),
+                "confidence_score": decision.get("confidence_score", 0),
                 "opportunity_score": decision.get("opportunity_score", 0),
                 "data_quality": context.get("clean", {}).get("quality_score", 0),
                 "viable_products": analysis.get("products", {}).get("viable", 0),
                 "avg_score": analysis.get("products", {}).get("avg_score", 0),
+                "decision_type": decision.get("decision_type", ""),
+                "options_evaluated": decision.get("options_evaluated", 0),
             })
         except Exception:
             pass
@@ -482,7 +527,6 @@ class IntelligenceLoop:
     # ── Stage 7: LEARN ──────────────────────────────────────
 
     def _stage_learn(self, loop_id: str, decision: dict[str, Any]) -> dict[str, Any]:
-        """Check past outcomes, generate learning, adjust future decisions."""
         try:
             from core.learning.outcome_tracker import OutcomeTracker
             ot = OutcomeTracker()
@@ -492,20 +536,28 @@ class IntelligenceLoop:
             success_rate = patterns.get("success_rate", 0.5)
 
             if success_rate < 0.4:
-                adjustments.append("Low success rate — system needs strategy adjustment")
+                adjustments.append("Low success rate — strategy adjustment needed")
             if success_rate > 0.7:
                 adjustments.append("High success rate — continue current approach")
 
-            # Apply weight adjustments from patterns
+            # Apply weight adjustments from patterns → these feed back to scoring
             for p in patterns.get("patterns", []):
-                if p.get("pattern") == "score_range":
-                    avg_success_score = safe_float(p.get("avg", p.get("min", 0)))
-                    if avg_success_score > 7:
-                        IntelligenceLoop._weight_adjustments["margin"] = 0.30
-                        adjustments.append(f"Boosted margin weight — high scores ({avg_success_score:.1f}) correlate with success")
-                    elif avg_success_score < 4:
-                        IntelligenceLoop._weight_adjustments["demand"] = 0.30
+                if p.get("pattern") == "score_range" and p.get("correlation") == "confirmed":
+                    avg = safe_float(p.get("avg"))
+                    if avg > 7:
+                        _learned_weights["margin"] = 0.05
+                        adjustments.append(f"Boosted margin weight — high scores ({avg:.1f}) drive success")
+                    elif avg < 4:
+                        _learned_weights["demand"] = 0.05
                         adjustments.append("Boosted demand weight — margin alone not enough")
+
+                if p.get("pattern") == "high_confidence_wins":
+                    _learned_weights["confidence_boost"] = 0.1
+                    adjustments.append("High-confidence decisions outperform — boosting confidence weighting")
+
+                if p.get("pattern") == "quality_matters":
+                    _learned_weights["quality_gate"] = 50
+                    adjustments.append("Data quality predicts success — raising quality threshold")
 
             advice_result = ot.should_proceed("intelligence_loop", decision)
 
@@ -516,7 +568,7 @@ class IntelligenceLoop:
                 "adjustments": adjustments,
                 "advice": advice_result.get("reasons", ["No past data — first run"]),
                 "patterns": patterns.get("patterns", []),
-                "weight_adjustments": dict(IntelligenceLoop._weight_adjustments),
+                "weight_adjustments": dict(_learned_weights),
             }
         except Exception:
             return {"past_outcomes": 0, "adjustments_made": False, "advice": ["Learning system initializing"]}
@@ -524,24 +576,21 @@ class IntelligenceLoop:
     # ── Helpers ──────────────────────────────────────────────
 
     def _get_past_learning(self, goal: str) -> dict[str, Any]:
-        """Get accumulated learning from past runs."""
         try:
             from core.learning.outcome_tracker import OutcomeTracker
             patterns = OutcomeTracker().get_winning_patterns("intelligence_loop")
             result = {"success_rate": patterns.get("success_rate", 0)}
             for p in patterns.get("patterns", []):
-                if "avoid" in p.get("detail", "").lower():
-                    import re
-                    nums = re.findall(r'[\d.]+', p.get("detail", ""))
-                    if nums:
-                        result["avoid_below_score"] = safe_float(nums[-1])
+                if p.get("pattern") == "avoid_low_scores":
+                    result["avoid_below_score"] = safe_float(p.get("threshold"))
+                if p.get("pattern") == "quality_matters":
+                    result["min_quality"] = 50
             return result
         except Exception:
             return {}
 
     @staticmethod
     def _calc_opportunity(analysis: dict) -> int:
-        """Calculate overall opportunity score 0-100."""
         score = 50
         products = analysis.get("products", {})
         if products.get("viable", 0) > 0:
@@ -562,11 +611,12 @@ class IntelligenceLoop:
     def _summarize(decision, plan, execution, learning, elapsed) -> str:
         lines = [
             f"Decision: {decision['recommended_action'][:80]}",
-            f"Confidence: {decision['confidence']}",
+            f"Confidence: {decision['confidence']} ({decision['confidence_score']}/100)",
+            f"Options: {decision.get('options_evaluated', 1)} evaluated",
             f"Actions: {plan['total']} planned, {len(execution['ready'])} ready",
         ]
         if learning.get("past_outcomes", 0) > 0:
-            lines.append(f"Learning: {learning['past_outcomes']} past outcomes, success rate {learning.get('success_rate', 0):.0%}")
+            lines.append(f"Learning: {learning['past_outcomes']} past outcomes, success {learning.get('success_rate', 0):.0%}")
         lines.append(f"Time: {elapsed:.3f}s")
         return "\n".join(lines)
 
