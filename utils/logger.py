@@ -1,9 +1,11 @@
 import logging
+import os
 import sys
 from typing import Optional
 
 
 _loggers: dict[str, logging.Logger] = {}
+_log_level = getattr(logging, os.environ.get("SHOPAI_LOG_LEVEL", "WARNING").upper(), logging.WARNING)
 
 
 def get_logger(name: str, level: Optional[int] = None) -> logging.Logger:
@@ -11,10 +13,7 @@ def get_logger(name: str, level: Optional[int] = None) -> logging.Logger:
         return _loggers[name]
 
     logger = logging.getLogger(f"shopai.{name}")
-    if level is not None:
-        logger.setLevel(level)
-    elif not logger.level:
-        logger.setLevel(logging.INFO)
+    logger.setLevel(level if level is not None else _log_level)
 
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
