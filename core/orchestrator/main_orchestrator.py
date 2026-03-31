@@ -86,6 +86,8 @@ class MainOrchestrator:
         self._product_pipeline = None
         self._marketing_pipeline = None
         self._analytics_pipeline = None
+        self._kpi_tracker = None
+        self._system_health = None
         self._running = False
 
     def initialize(self, config_override: dict[str, Any] | None = None) -> None:
@@ -443,6 +445,25 @@ class MainOrchestrator:
         self._message_bus.publish(topic, payload, sender)
         return True
 
+    @property
+    def kpi_tracker(self):
+        return self._kpi_tracker
+
+    def get_system_health(self) -> dict[str, Any]:
+        """Generate comprehensive system health report."""
+        if self._system_health is None:
+            return {"status": "unavailable"}
+        return self._system_health.generate()
+
+    def get_kpi_summary(self) -> dict[str, Any]:
+        """Get decision quality and revenue KPIs."""
+        if self._kpi_tracker is None:
+            return {"status": "unavailable"}
+        return {
+            "decisions": self._kpi_tracker.get_decision_kpis(),
+            "revenue": self._kpi_tracker.get_revenue_kpis(),
+        }
+
     # -- internal helpers --
 
     def _init_modules(self) -> None:
@@ -498,6 +519,16 @@ class MainOrchestrator:
             logger.info("Data pipelines initialized (product, marketing, analytics)")
         except Exception as exc:
             logger.warning("Data pipelines not available: %s", exc)
+
+        # Initialize KPI + health monitoring
+        try:
+            from core.intelligence.kpi_tracker import KPITracker
+            from core.intelligence.system_health import SystemHealthReport
+            self._kpi_tracker = KPITracker()
+            self._system_health = SystemHealthReport()
+            logger.info("KPI tracker and system health monitor initialized")
+        except Exception as exc:
+            logger.warning("KPI/Health not available: %s", exc)
 
         # Wire execution bridge to real executors
         self._wire_executors()
