@@ -127,6 +127,44 @@ class PreProcessor:
             if isinstance(subject, str) and len(subject) > 5:
                 data["_email_intel"] = _get_email().score_subject_line(subject)
 
+            # Products + suppliers → AutoDS dropship scoring
+            suppliers = data.get("suppliers", data.get("supplier_data", []))
+            if isinstance(products, list) and products and isinstance(suppliers, list) and suppliers:
+                from core.intelligence.autods_intelligence import AutoDSIntelligence
+                ds = AutoDSIntelligence()
+                dropship_scores = []
+                for p in products[:5]:
+                    if isinstance(p, dict):
+                        score = ds.score_product_for_dropship(p, suppliers)
+                        dropship_scores.append({"product": p.get("name", ""), "score": score.get("score", 0),
+                                                "viable": score.get("viable", False), "margin": score.get("financials", {}).get("margin_pct", 0)})
+                if dropship_scores:
+                    data["_dropship_intel"] = dropship_scores
+
+            # Financial unit economics for any product with cost data
+            if isinstance(products, list) and products and isinstance(products[0], dict):
+                p = products[0]
+                if float(p.get("cost", 0)) > 0:
+                    from core.intelligence.financial_intelligence import FinancialIntelligence
+                    fi = FinancialIntelligence()
+                    ad_spend = float(data.get("ad_spend", data.get("marketing_spend", 0)))
+                    orders_count = int(data.get("order_count", data.get("total_orders", 0)))
+                    data["_financial_intel"] = fi.unit_economics(p, ad_spend=ad_spend, orders=max(orders_count, 1))
+
+            # Competitor analysis if competitor data present
+            if isinstance(comps, list) and comps and isinstance(products, list) and products:
+                from core.intelligence.competitor_intelligence import CompetitorIntelligence
+                ci = CompetitorIntelligence()
+                data["_competitor_analysis"] = ci.price_comparison(products, comps)
+
+            # Time series → forecasting
+            for ts_key in ("revenue", "sales", "orders_daily", "daily_revenue"):
+                ts = data.get(ts_key, [])
+                if isinstance(ts, list) and len(ts) >= 5 and isinstance(ts[0], (int, float)):
+                    from core.intelligence.forecasting import Forecasting
+                    data["_forecast_intel"] = Forecasting().forecast([float(v) for v in ts], periods=7)
+                    break
+
         except Exception as exc:
             logger.warning("Intelligence injection failed (non-critical): %s", exc)
 
