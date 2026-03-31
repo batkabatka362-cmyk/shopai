@@ -210,6 +210,22 @@ class MainOrchestrator:
                 self._event_bus.emit(EventType.ENGINE_FAILED, task_type, {"task_id": task_id, "error": error_msg})
                 self._error_patterns.record(task_type, str(error_msg), severity="high")
 
+            # Record KPI for decision quality tracking
+            if self._kpi_tracker is not None:
+                try:
+                    self._kpi_tracker.record_decision_outcome(
+                        decision_id=task_id,
+                        decision_type=task_type,
+                        confidence=result.get("confidence", "unknown"),
+                        confidence_score=result.get("confidence_score", 50),
+                        success=status == "completed",
+                        data_quality=result.get("data_quality", 50),
+                        execution_results={"dispatched": 1, "success_count": 1 if status == "completed" else 0,
+                                           "fail_count": 0 if status == "completed" else 1},
+                    )
+                except Exception:
+                    pass
+
             return result
 
         except Exception as exc:

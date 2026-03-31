@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .engine_chain import EngineChain, OutputTransform
+from .transforms import get_transform
 
 
 class ChainBuilder:
@@ -22,7 +23,10 @@ class ChainBuilder:
         required: bool = True,
         description: str = "",
     ) -> "ChainBuilder":
-        """Add next engine in the chain."""
+        """Add next engine in the chain. Auto-selects smart transform if none given."""
+        if transform is None and self._chain._steps:
+            prev_engine = self._chain._steps[-1].engine_name
+            transform = get_transform(prev_engine, engine_name)
         self._chain.add_step(engine_name, transform, required, description)
         return self
 
