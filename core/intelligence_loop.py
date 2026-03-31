@@ -158,6 +158,31 @@ class IntelligenceLoop:
                 del data[key]
                 fixes.append(f"{key}: removed empty")
 
+        # Business logic validation — detect bad data BEFORE scoring
+        biz_issues = []
+        for key in ("products", "product_data"):
+            items = data.get(key, [])
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    price = None
+                    for pk in ("price", "cost"):
+                        if pk in item:
+                            try:
+                                price = float(item[pk])
+                            except (ValueError, TypeError):
+                                pass
+                            if price is not None and price < 0:
+                                biz_issues.append(f"{item.get('name', '?')}: negative {pk} ({price})")
+                                issues.append(f"Negative {pk}: {price}")
+                    # Cost > price (losing money)
+                    item_price = float(item.get("price", 0)) if isinstance(item.get("price"), (int, float)) else 0
+                    item_cost = float(item.get("cost", 0)) if isinstance(item.get("cost"), (int, float)) else 0
+                    if item_cost > 0 and item_price > 0 and item_cost > item_price:
+                        biz_issues.append(f"{item.get('name', '?')}: cost ({item_cost}) > price ({item_price})")
+                        issues.append(f"Cost exceeds price: {item_cost} > {item_price}")
+
         # Quality score
         total_fields = len([k for k in data if not k.startswith("_")])
         non_empty = sum(1 for k, v in data.items() if not k.startswith("_") and v)
@@ -173,6 +198,11 @@ class IntelligenceLoop:
             quality += 15
         if not issues:
             quality += 15
+
+        # Penalize for business logic violations
+        if biz_issues:
+            penalty = min(50, len(biz_issues) * 25)  # Each violation costs 25 points
+            quality = max(0, quality - penalty)
 
         return {
             "data": data,
@@ -398,9 +428,9 @@ class IntelligenceLoop:
             }
 
             # Add execution details per target
-            if target == "pricing_engine" and "products" in str(data.keys()):
+            if target == "pricing_engine":
                 products = data.get("products", data.get("product_data", []))
-                if products:
+                if isinstance(products, list) and products and isinstance(products[0], dict):
                     formatted["payload"] = {"engine": "pricing", "data": {"products": products[:10]}}
 
             elif target == "email_engine":
@@ -410,15 +440,15 @@ class IntelligenceLoop:
                 formatted["estimated_impact"] = flow.get("estimated_recovery", "3-8%")
 
             elif target == "seo_engine":
-                products = data.get("products", [])
-                if products:
+                products = data.get("products", data.get("product_data", []))
+                if isinstance(products, list) and products and isinstance(products[0], dict):
                     from core.intelligence.seo_intelligence import SEOIntelligence
                     audit = SEOIntelligence().audit_page({"title": products[0].get("name", ""), "keyword": products[0].get("category", "product")})
                     formatted["payload"] = {"audit_score": audit["score"], "issues": audit["issue_count"]}
 
             elif target == "content_engine":
-                products = data.get("products", [])
-                if products:
+                products = data.get("products", data.get("product_data", []))
+                if isinstance(products, list) and products and isinstance(products[0], dict):
                     from core.intelligence.content_generator import ContentGenerator
                     desc = ContentGenerator().product_description(products[0])
                     formatted["payload"] = {"headline": desc["headline"][:60], "bullets": len(desc["bullet_points"])}

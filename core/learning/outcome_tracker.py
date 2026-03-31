@@ -49,7 +49,7 @@ class OutcomeTracker:
                 return True
         return False
 
-    def get_winning_patterns(self, engine: str, min_success: int = 3) -> dict[str, Any]:
+    def get_winning_patterns(self, engine: str, min_success: int = 1) -> dict[str, Any]:
         """Analyze outcomes to find what works."""
         entries = self._load(engine)
         outcomes = [e for e in entries if e.get("outcome") is not None]
