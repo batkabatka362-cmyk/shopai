@@ -23,12 +23,47 @@ from utils.helpers import generate_id, safe_float, safe_int, safe_dict
 logger = get_logger("intelligence_loop")
 
 
-# Persistent learned weights — survives across instances within same process
+# Persistent learned weights — saved to disk, survives restarts
+_WEIGHTS_PATH = "/tmp/shopai_learned_weights.json"
 _learned_weights: dict[str, float] = {}
+_weights_loaded = False
+
+
+def _load_weights() -> None:
+    """Load learned weights from disk on first access."""
+    global _learned_weights, _weights_loaded
+    if _weights_loaded:
+        return
+    _weights_loaded = True
+    try:
+        import json
+        import os
+        if os.path.exists(_WEIGHTS_PATH):
+            with open(_WEIGHTS_PATH) as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    _learned_weights.update(data)
+                    logger.info("Loaded %d learned weights from disk", len(data))
+    except Exception as exc:
+        logger.warning("Failed to load learned weights: %s", exc)
+
+
+def _save_weights() -> None:
+    """Save learned weights to disk (atomic write)."""
+    try:
+        import json
+        import os
+        tmp = _WEIGHTS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_learned_weights, f)
+        os.replace(tmp, _WEIGHTS_PATH)
+    except Exception as exc:
+        logger.warning("Failed to save learned weights: %s", exc)
 
 
 def get_learned_weights() -> dict[str, float]:
     """Get current learned scoring weight adjustments."""
+    _load_weights()
     return dict(_learned_weights)
 
 
@@ -357,6 +392,14 @@ class IntelligenceLoop:
         options.sort(key=lambda o: o["total_score"], reverse=True)
         best = options[0]
 
+        # A/B testing: occasionally test alternative strategy
+        ab_variant = None
+        if len(options) >= 2:
+            ab_variant = self._ab_test_decision(options, goal)
+
+        if ab_variant is not None:
+            best = ab_variant["selected"]
+
         # Apply past learning adjustment
         if past_advice.get("avoid_below_score"):
             threshold = past_advice["avoid_below_score"]
@@ -375,6 +418,8 @@ class IntelligenceLoop:
             reason_parts.append(f"Past success rate: {past_advice['success_rate']:.0%}")
         if len(options) > 1:
             reason_parts.append(f"Best of {len(options)} options (score: {best['total_score']})")
+        if ab_variant:
+            reason_parts.append(f"A/B test: variant {ab_variant['variant_name']}")
 
         return {
             "recommended_action": best["action"],
@@ -559,6 +604,10 @@ class IntelligenceLoop:
                     _learned_weights["quality_gate"] = 50
                     adjustments.append("Data quality predicts success — raising quality threshold")
 
+            # Persist weights to disk after any adjustment
+            if adjustments:
+                _save_weights()
+
             advice_result = ot.should_proceed("intelligence_loop", decision)
 
             return {
@@ -574,6 +623,56 @@ class IntelligenceLoop:
             return {"past_outcomes": 0, "adjustments_made": False, "advice": ["Learning system initializing"]}
 
     # ── Helpers ──────────────────────────────────────────────
+
+    @staticmethod
+    def _ab_test_decision(options: list[dict], goal: str) -> dict[str, Any] | None:
+        """Occasionally A/B test the second-best option against the best.
+
+        Returns None (use best) or a dict with the selected variant.
+        Uses ABFramework if available, falls back to simple random.
+        """
+        if len(options) < 2:
+            return None
+        try:
+            from core.intelligence.ab_framework import ABFramework
+            ab = ABFramework()
+
+            exp_name = f"decision_{goal}"
+
+            # Check if experiment exists, create if not
+            existing = [e for e in ab._experiments.values() if e.get("name") == exp_name and e.get("status") == "running"]
+            if existing:
+                exp = existing[0]
+            else:
+                exp = ab.create_experiment(
+                    name=exp_name,
+                    test_type="decision_strategy",
+                    variants=[
+                        {"name": "best_score", "strategy": "highest_score"},
+                        {"name": "second_best", "strategy": "explore_alternative"},
+                    ],
+                    traffic_pct=100,
+                    min_samples=20,
+                )
+
+            # Assign variant based on timestamp (deterministic per cycle)
+            import time
+            assignment = ab.assign_variant(exp["id"], str(int(time.time())))
+
+            if assignment.get("assigned") and assignment.get("variant_index") == 1:
+                # A/B test: use second-best option
+                ab.record_impression(exp["id"], 1)
+                return {
+                    "selected": options[1],
+                    "variant_name": "explore_alternative",
+                    "experiment_id": exp["id"],
+                }
+            else:
+                ab.record_impression(exp["id"], 0)
+                return None  # Use best (default)
+
+        except Exception:
+            return None
 
     def _get_past_learning(self, goal: str) -> dict[str, Any]:
         try:

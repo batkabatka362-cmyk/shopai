@@ -210,11 +210,16 @@ class ShopifyBridge:
     @staticmethod
     def _mock_products() -> list[dict[str, Any]]:
         return [
-            {"id": "1", "name": "Wireless Earbuds Pro", "price": 49.99, "cost": 15, "weight": 0.1, "category": "electronics", "inventory_quantity": 150, "compare_at_price": 69.99},
-            {"id": "2", "name": "Premium Yoga Mat", "price": 39.99, "cost": 12, "weight": 2.0, "category": "fitness", "inventory_quantity": 80, "compare_at_price": 0},
-            {"id": "3", "name": "LED Desk Lamp", "price": 34.99, "cost": 18, "weight": 1.5, "category": "home", "inventory_quantity": 45, "compare_at_price": 44.99},
-            {"id": "4", "name": "Phone Case Ultra", "price": 19.99, "cost": 3, "weight": 0.05, "category": "accessories", "inventory_quantity": 300, "compare_at_price": 0},
-            {"id": "5", "name": "Resistance Bands Set", "price": 24.99, "cost": 5, "weight": 0.3, "category": "fitness", "inventory_quantity": 200, "compare_at_price": 34.99},
+            {"id": "1", "name": "Wireless Earbuds Pro", "price": 49.99, "cost": 15, "weight": 0.1, "category": "electronics",
+             "inventory_quantity": 150, "compare_at_price": 69.99, "rating": 4.6, "reviews": 280, "search_volume": 12000, "competition": 4},
+            {"id": "2", "name": "Premium Yoga Mat", "price": 39.99, "cost": 12, "weight": 2.0, "category": "fitness",
+             "inventory_quantity": 80, "compare_at_price": 0, "rating": 4.3, "reviews": 150, "search_volume": 8500, "competition": 6},
+            {"id": "3", "name": "LED Desk Lamp", "price": 34.99, "cost": 18, "weight": 1.5, "category": "home",
+             "inventory_quantity": 45, "compare_at_price": 44.99, "rating": 4.1, "reviews": 95, "search_volume": 6200, "competition": 5},
+            {"id": "4", "name": "Phone Case Ultra", "price": 19.99, "cost": 3, "weight": 0.05, "category": "accessories",
+             "inventory_quantity": 300, "compare_at_price": 0, "rating": 4.0, "reviews": 420, "search_volume": 15000, "competition": 8},
+            {"id": "5", "name": "Resistance Bands Set", "price": 24.99, "cost": 5, "weight": 0.3, "category": "fitness",
+             "inventory_quantity": 200, "compare_at_price": 34.99, "rating": 4.7, "reviews": 310, "search_volume": 9800, "competition": 3},
         ]
 
     @staticmethod
@@ -230,8 +235,12 @@ class ShopifyBridge:
     @staticmethod
     def _mock_customers() -> list[dict[str, Any]]:
         return [
-            {"id": "c1", "name": "Alice Kim", "email": "alice@example.com", "orders": 8, "total_spent": 650, "tags": ["vip", "repeat"]},
-            {"id": "c2", "name": "Bob Park", "email": "bob@example.com", "orders": 1, "total_spent": 49.99, "tags": ["new"]},
-            {"id": "c3", "name": "Carol Lee", "email": "carol@example.com", "orders": 3, "total_spent": 180, "tags": ["returning"]},
-            {"id": "c4", "name": "Dave Song", "email": "dave@example.com", "orders": 0, "total_spent": 0, "tags": ["lead"]},
+            {"id": "c1", "name": "Alice Kim", "email": "alice@example.com", "orders": 8, "total_spent": 650,
+             "days_since_last_order": 5, "tags": ["vip", "repeat"], "created_at": "2024-01-15"},
+            {"id": "c2", "name": "Bob Park", "email": "bob@example.com", "orders": 1, "total_spent": 49.99,
+             "days_since_last_order": 90, "tags": ["new"], "created_at": "2025-11-20"},
+            {"id": "c3", "name": "Carol Lee", "email": "carol@example.com", "orders": 3, "total_spent": 180,
+             "days_since_last_order": 35, "tags": ["returning"], "created_at": "2025-06-10"},
+            {"id": "c4", "name": "Dave Song", "email": "dave@example.com", "orders": 0, "total_spent": 0,
+             "days_since_last_order": 0, "tags": ["lead"], "created_at": "2026-03-01"},
         ]
