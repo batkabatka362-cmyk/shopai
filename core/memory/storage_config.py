@@ -51,3 +51,15 @@ def engine_memory_dir() -> str:
 
 def learned_weights_path() -> str:
     return os.path.join(get_path("learning"), "learned_weights.json")
+
+
+def episodes_dir() -> str:
+    return get_path("episodes")
+
+
+def goals_dir() -> str:
+    return get_path("goals")
+
+
+def journal_dir() -> str:
+    return get_path("journal")
