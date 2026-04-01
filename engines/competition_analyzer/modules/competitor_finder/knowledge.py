@@ -3,91 +3,33 @@ Competitor Finder — Domain Knowledge
 Expert heuristics, difficulty rules, discovery strategies, and guidance.
 """
 MARKET_DIFFICULTY_RULES = [
-    {
-        "id": "very_hard_market",
-        "condition": "10+ competitors with 4.5+ average rating",
-        "verdict": "very_hard",
-        "guidance": (
-            "This market is extremely competitive. Competitors maintain "
-            "excellent customer satisfaction. Differentiation must come from "
-            "branding, unique features, or underserved sub-niches."
-        ),
-    },
-    {
-        "id": "hard_market_leader_dominance",
-        "condition": "Top 3 competitors hold >60% market share",
-        "verdict": "hard",
-        "guidance": (
-            "A few dominant players control most of the revenue. Competing "
-            "on price alone is not viable. Look for gaps in their product "
-            "lines or customer complaints to exploit."
-        ),
-    },
-    {
-        "id": "moderate_market",
-        "condition": "5-9 competitors with mixed ratings (3.5-4.5)",
-        "verdict": "moderate",
-        "guidance": (
-            "The market is competitive but not locked down. There is room "
-            "for a well-positioned entrant with better quality or pricing."
-        ),
-    },
-    {
-        "id": "easy_low_competition",
-        "condition": "Fewer than 5 direct competitors with <4.0 avg rating",
-        "verdict": "easy",
-        "guidance": (
-            "Limited competition with room for quality improvement. A strong "
-            "product with good reviews can capture share quickly."
-        ),
-    },
-    {
-        "id": "beatable_low_reviews",
-        "condition": "Competitors with <50 reviews",
-        "verdict": "beatable",
-        "guidance": (
-            "Competitors with fewer than 50 reviews have not built a moat. "
-            "A targeted launch campaign can surpass them in weeks."
-        ),
-    },
-    {
-        "id": "established_moat",
-        "condition": "Store age >3 years with 1000+ reviews",
-        "verdict": "entrenched",
-        "guidance": (
-            "Stores older than 3 years with substantial reviews are deeply "
-            "entrenched. Direct competition is costly; consider flanking "
-            "strategies or different marketplace channels."
-        ),
-    },
+    {"id": "very_hard_market", "condition": "10+ competitors with 4.5+ average rating",
+     "verdict": "very_hard",
+     "guidance": "Extremely competitive. Differentiate via branding, unique features, or sub-niches."},
+    {"id": "hard_market_leader_dominance", "condition": "Top 3 competitors hold >60% market share",
+     "verdict": "hard",
+     "guidance": "Dominant players control revenue. Find gaps in their lines or exploit complaints."},
+    {"id": "moderate_market", "condition": "5-9 competitors with mixed ratings (3.5-4.5)",
+     "verdict": "moderate",
+     "guidance": "Competitive but not locked down. Room for a well-positioned entrant."},
+    {"id": "easy_low_competition", "condition": "Fewer than 5 direct competitors with <4.0 avg rating",
+     "verdict": "easy",
+     "guidance": "Limited competition. A strong product with good reviews can capture share quickly."},
+    {"id": "beatable_low_reviews", "condition": "Competitors with <50 reviews",
+     "verdict": "beatable",
+     "guidance": "Competitors lack social proof moat. A targeted launch can surpass them in weeks."},
+    {"id": "established_moat", "condition": "Store age >3 years with 1000+ reviews",
+     "verdict": "entrenched",
+     "guidance": "Deeply entrenched players. Consider flanking strategies or different channels."},
 ]
 
 COMPETITIVE_INSIGHTS = {
-    "review_velocity": (
-        "Review velocity (reviews per month) is a stronger sales signal than "
-        "total review count. A product gaining 50 reviews/month is more "
-        "threatening than one with 2000 total but only 5/month."
-    ),
-    "price_anchoring": (
-        "The market leader's price sets the anchor. Pricing 15-20% below the "
-        "leader can capture price-sensitive shoppers without signaling low quality."
-    ),
-    "rating_threshold": (
-        "Products below 4.0 stars see significant conversion drops. A 4.3+ "
-        "rating is the sweet spot where customers feel confident buying."
-    ),
-    "listing_quality": (
-        "Competitors with poor images, thin descriptions, or missing A+ "
-        "content are vulnerable even if they have strong sales numbers."
-    ),
-    "seasonal_patterns": (
-        "Some competitors spike during seasonal events (Q4, Prime Day). Their "
-        "annual revenue may look strong but steady-state share is lower."
-    ),
-    "private_label_risk": (
-        "If the marketplace itself (e.g., AmazonBasics) sells in your "
-        "category, expect aggressive pricing and prominent placement."
-    ),
+    "review_velocity": "Review velocity (reviews/month) matters more than total count. 50/month beats 2000 total at 5/month.",
+    "price_anchoring": "The leader's price is the anchor. Price 15-20% below to capture price-sensitive buyers.",
+    "rating_threshold": "Below 4.0 stars conversion drops sharply. 4.3+ is the sweet spot for buyer confidence.",
+    "listing_quality": "Poor images, thin descriptions, or missing A+ content = vulnerable even with strong sales.",
+    "seasonal_patterns": "Some competitors spike in Q4/Prime Day. Steady-state share may be much lower.",
+    "private_label_risk": "If the marketplace itself (e.g. AmazonBasics) sells here, expect aggressive pricing.",
 }
 
 COMPETITOR_DISCOVERY_SOURCES = {
