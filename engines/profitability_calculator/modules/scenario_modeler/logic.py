@@ -1,12 +1,11 @@
 """
 Scenario Modeler — Decision logic.
-
-Comparison, risk adjustment, key driver identification, and
-go/no-go recommendation functions that operate on scenario results.
+Comparison, risk adjustment, key driver identification, and go/no-go recommendations.
 """
 
 import math
-from . import SCENARIO_WEIGHTS
+
+SCENARIO_WEIGHTS = {"pessimistic": 0.25, "expected": 0.50, "optimistic": 0.25}
 
 
 def compare_scenarios(scenarios):
@@ -18,13 +17,9 @@ def compare_scenarios(scenarios):
     for s in scenarios:
         weight = SCENARIO_WEIGHTS.get(s["label"], 0.10)
         attractiveness = s["profit"] * weight + s["margin"] * weight * 100
-        scored.append({
-            "label": s["label"],
-            "profit": s["profit"],
-            "margin": s["margin"],
-            "weight": weight,
-            "score": round(attractiveness, 2),
-        })
+        scored.append({"label": s["label"], "profit": s["profit"],
+                       "margin": s["margin"], "weight": weight,
+                       "score": round(attractiveness, 2)})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return {
@@ -110,12 +105,7 @@ def identify_key_drivers(scenarios):
 
 
 def recommend_go_no_go(scenarios, budget=None, risk_tolerance=None):
-    """
-    Synthesize scenario analysis into GO / CONDITIONAL / NO_GO recommendation.
-    GO: expected profitable AND pessimistic survivable.
-    CONDITIONAL: expected profitable BUT pessimistic risky.
-    NO_GO: expected unprofitable OR pessimistic catastrophic.
-    """
+    """Synthesize scenario analysis into GO / CONDITIONAL / NO_GO recommendation."""
     if not scenarios:
         return {"recommendation": "NO_GO", "reasons": ["No scenarios provided"]}
 

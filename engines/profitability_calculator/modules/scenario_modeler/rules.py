@@ -1,51 +1,37 @@
 """
 Scenario Modeler — Validation rules.
 
-Enforces guardrails on scenario results: survivability in pessimistic
-case, expected profitability, and risk tolerance boundaries.
+Enforces guardrails: survivability in pessimistic case, expected
+profitability, and risk tolerance boundaries.
 """
 
 
 def validate_scenario_survivability(scenarios, budget):
-    """
-    Rule: pessimistic scenario loss must be less than 50% of total budget.
-    A loss exceeding half the budget threatens business survival.
-
-    Returns validation result with pass/fail, details, and threshold.
-    """
+    """Rule: pessimistic loss must be < 50% of total budget."""
     pessimistic = next((s for s in scenarios if s["label"] == "pessimistic"), None)
     if not pessimistic:
-        return {
-            "rule": "survivability",
-            "passed": False,
-            "reason": "No pessimistic scenario found",
-            "details": {},
-        }
+        return {"rule": "survivability", "passed": False,
+                "reason": "No pessimistic scenario found", "details": {}}
 
     max_tolerable_loss = budget * 0.50
     actual_loss = abs(pessimistic["profit"]) if pessimistic["profit"] < 0 else 0
     passed = actual_loss <= max_tolerable_loss
-
     headroom = max_tolerable_loss - actual_loss
     headroom_pct = (headroom / max_tolerable_loss * 100) if max_tolerable_loss > 0 else 0
 
-    severity = "safe"
     if not passed:
         overshoot_pct = (actual_loss - max_tolerable_loss) / max_tolerable_loss * 100
-        if overshoot_pct > 100:
-            severity = "critical"
-        elif overshoot_pct > 50:
-            severity = "severe"
-        else:
-            severity = "warning"
+        severity = "critical" if overshoot_pct > 100 else ("severe" if overshoot_pct > 50 else "warning")
+    else:
+        severity = "safe"
 
     return {
         "rule": "survivability",
         "passed": passed,
         "reason": (
-            f"Pessimistic loss ${actual_loss:,.2f} is within budget threshold ${max_tolerable_loss:,.2f}"
-            if passed
-            else f"Pessimistic loss ${actual_loss:,.2f} exceeds 50% of budget ${max_tolerable_loss:,.2f}"
+            f"Pessimistic loss ${actual_loss:,.2f} within threshold ${max_tolerable_loss:,.2f}"
+            if passed else
+            f"Pessimistic loss ${actual_loss:,.2f} exceeds 50% of budget ${max_tolerable_loss:,.2f}"
         ),
         "details": {
             "pessimistic_profit": pessimistic["profit"],
@@ -60,38 +46,23 @@ def validate_scenario_survivability(scenarios, budget):
 
 
 def validate_expected_profitability(scenarios):
-    """
-    Rule: the expected (base) scenario must show positive profit.
-    If the most likely outcome is unprofitable, the venture is not viable.
-
-    Returns validation result with margin and cash flow details.
-    """
+    """Rule: expected (base) scenario must show positive profit."""
     expected = next((s for s in scenarios if s["label"] == "expected"), None)
     if not expected:
-        return {
-            "rule": "expected_profitability",
-            "passed": False,
-            "reason": "No expected scenario found",
-            "details": {},
-        }
+        return {"rule": "expected_profitability", "passed": False,
+                "reason": "No expected scenario found", "details": {}}
 
     passed = expected["profit"] > 0
     margin_healthy = expected["margin"] > 10
-
-    if passed and margin_healthy:
-        grade = "strong"
-    elif passed:
-        grade = "marginal"
-    else:
-        grade = "unprofitable"
+    grade = "strong" if (passed and margin_healthy) else ("marginal" if passed else "unprofitable")
 
     return {
         "rule": "expected_profitability",
         "passed": passed,
         "reason": (
             f"Expected profit ${expected['profit']:,.2f} with {expected['margin']:.1f}% margin"
-            if passed
-            else f"Expected scenario shows loss of ${abs(expected['profit']):,.2f}"
+            if passed else
+            f"Expected scenario shows loss of ${abs(expected['profit']):,.2f}"
         ),
         "details": {
             "profit": expected["profit"],
@@ -106,19 +77,10 @@ def validate_expected_profitability(scenarios):
 
 
 def validate_risk_tolerance(scenarios, risk_tolerance):
-    """
-    Rule: maximum downside across ALL scenarios must be within the
-    stated risk tolerance. Includes custom scenarios if present.
-
-    Returns validation with per-scenario risk breakdown.
-    """
+    """Rule: max downside across ALL scenarios must be within risk tolerance."""
     if not scenarios:
-        return {
-            "rule": "risk_tolerance",
-            "passed": False,
-            "reason": "No scenarios to evaluate",
-            "details": {},
-        }
+        return {"rule": "risk_tolerance", "passed": False,
+                "reason": "No scenarios to evaluate", "details": {}}
 
     worst = min(scenarios, key=lambda s: s["profit"])
     max_downside = abs(worst["profit"]) if worst["profit"] < 0 else 0
@@ -128,11 +90,8 @@ def validate_risk_tolerance(scenarios, risk_tolerance):
     for s in scenarios:
         loss = abs(s["profit"]) if s["profit"] < 0 else 0
         if loss > risk_tolerance:
-            breaches.append({
-                "scenario": s["label"],
-                "loss": loss,
-                "overshoot": round(loss - risk_tolerance, 2),
-            })
+            breaches.append({"scenario": s["label"], "loss": loss,
+                             "overshoot": round(loss - risk_tolerance, 2)})
 
     utilization = (max_downside / risk_tolerance * 100) if risk_tolerance > 0 else 0
 
@@ -141,8 +100,8 @@ def validate_risk_tolerance(scenarios, risk_tolerance):
         "passed": passed,
         "reason": (
             f"Max downside ${max_downside:,.2f} within tolerance ${risk_tolerance:,.2f}"
-            if passed
-            else f"Max downside ${max_downside:,.2f} exceeds tolerance ${risk_tolerance:,.2f}"
+            if passed else
+            f"Max downside ${max_downside:,.2f} exceeds tolerance ${risk_tolerance:,.2f}"
         ),
         "details": {
             "worst_scenario": worst["label"],
@@ -156,16 +115,7 @@ def validate_risk_tolerance(scenarios, risk_tolerance):
 
 
 def run_all_validations(scenarios, budget=None, risk_tolerance=None):
-    """
-    Run all validation rules and return an aggregate pass/fail with details.
-
-    Parameters:
-        scenarios: list of scenario dicts from model_scenarios()
-        budget: total available budget for survivability check
-        risk_tolerance: maximum acceptable loss for risk check
-
-    Returns aggregate result with individual rule outcomes.
-    """
+    """Run all validation rules and return aggregate pass/fail."""
     results = []
     all_passed = True
 
@@ -193,8 +143,7 @@ def run_all_validations(scenarios, budget=None, risk_tolerance=None):
         "rules_failed": len(failed),
         "results": results,
         "summary": (
-            "All scenario rules passed"
-            if all_passed
+            "All scenario rules passed" if all_passed
             else f"{len(failed)} rule(s) failed: {', '.join(r['rule'] for r in failed)}"
         ),
     }

@@ -2,13 +2,9 @@
 Scenario Modeler — Reference data.
 
 Probability distributions by product type, typical variance ranges,
-and correlation factors between business variables for realistic
-scenario generation.
+and correlation factors between business variables.
 """
 
-# Scenario probability distributions by product type.
-# Each entry defines how likely each scenario tier is and the
-# typical multiplier range for that product category.
 SCENARIO_DISTRIBUTIONS = {
     "physical_product": {
         "pessimistic": {"probability": 0.20, "multiplier_range": (0.40, 0.60)},
@@ -47,8 +43,7 @@ SCENARIO_DISTRIBUTIONS = {
     },
 }
 
-# Typical variance ranges for key business variables.
-# Expressed as (lower_bound_pct, upper_bound_pct) relative to base.
+# Variance ranges: (lower_bound_pct, upper_bound_pct) relative to base
 VARIANCE_RANGES = {
     "volume": {
         "range_pct": (-50, 50),
@@ -80,17 +75,9 @@ VARIANCE_RANGES = {
         "confidence_80": (-20, 20),
         "confidence_95": (-35, 35),
     },
-    "churn_rate": {
-        "range_pct": (-25, 60),
-        "description": "Churn can spike sharply but rarely drops much",
-        "confidence_80": (-15, 35),
-        "confidence_95": (-25, 60),
-    },
 }
 
-# Correlation factors between variables.
-# Positive = variables move together; negative = inverse relationship.
-# Values range from -1.0 to 1.0.
+# Correlation factors between variables (-1.0 to 1.0)
 CORRELATION_FACTORS = {
     ("price", "volume"):              -0.60,
     ("ad_spend", "volume"):            0.45,
@@ -98,70 +85,41 @@ CORRELATION_FACTORS = {
     ("price", "margin"):               0.70,
     ("volume", "costs"):               0.85,
     ("volume", "revenue"):             0.95,
-    ("churn_rate", "volume"):         -0.50,
     ("price", "churn_rate"):           0.35,
     ("ad_spend", "revenue"):           0.55,
     ("conversion_rate", "revenue"):    0.80,
     ("costs", "margin"):              -0.75,
-    ("volume", "margin"):              0.40,
 }
 
 
 def get_distribution_for_product_type(product_type):
-    """
-    Look up the scenario distribution for a given product type.
-    Falls back to physical_product defaults if type is unknown.
-
-    Returns dict with pessimistic/expected/optimistic probability
-    distributions and volatility metadata.
-    """
-    if product_type in SCENARIO_DISTRIBUTIONS:
-        return SCENARIO_DISTRIBUTIONS[product_type]
-    return SCENARIO_DISTRIBUTIONS["physical_product"]
+    """Look up scenario distribution for a product type. Falls back to physical_product."""
+    return SCENARIO_DISTRIBUTIONS.get(product_type, SCENARIO_DISTRIBUTIONS["physical_product"])
 
 
 def get_variance_range(variable, confidence=80):
-    """
-    Get the variance range for a variable at a given confidence level.
-
-    Parameters:
-        variable: one of the VARIANCE_RANGES keys
-        confidence: 80 or 95 (percent confidence interval)
-
-    Returns tuple (lower_pct, upper_pct) or default (-30, 30).
-    """
+    """Get variance range for a variable at 80 or 95 percent confidence."""
     entry = VARIANCE_RANGES.get(variable)
     if not entry:
         return (-30, 30)
-    if confidence >= 95:
-        return tuple(entry["confidence_95"])
-    return tuple(entry["confidence_80"])
+    key = "confidence_95" if confidence >= 95 else "confidence_80"
+    return tuple(entry[key])
 
 
 def get_correlation(var_a, var_b):
-    """
-    Look up the correlation factor between two variables.
-    Checks both orderings. Returns 0.0 if no correlation data exists.
-    """
-    key = (var_a, var_b)
-    if key in CORRELATION_FACTORS:
-        return CORRELATION_FACTORS[key]
-    reverse_key = (var_b, var_a)
-    if reverse_key in CORRELATION_FACTORS:
-        return CORRELATION_FACTORS[reverse_key]
+    """Look up correlation factor between two variables. Returns 0.0 if unknown."""
+    if (var_a, var_b) in CORRELATION_FACTORS:
+        return CORRELATION_FACTORS[(var_a, var_b)]
+    if (var_b, var_a) in CORRELATION_FACTORS:
+        return CORRELATION_FACTORS[(var_b, var_a)]
     return 0.0
 
 
 def apply_correlation_adjustment(base_value, change_pct, correlated_var_change, correlation):
     """
-    Adjust a variable's projected change based on its correlation
-    with another variable that has already changed.
-
-    For example, if volume drops 30% and volume-cost correlation is 0.85,
-    costs should also decrease by 30% * 0.85 = 25.5%.
-
-    Returns the adjusted value.
+    Adjust a variable's projected change based on its correlation with another
+    variable. E.g., if volume drops 30% and volume-cost correlation is 0.85,
+    costs decrease by 30% * 0.85 = 25.5%.
     """
-    correlated_adjustment = correlated_var_change * correlation
-    total_change = change_pct + correlated_adjustment
+    total_change = change_pct + (correlated_var_change * correlation)
     return base_value * (1 + total_change / 100)

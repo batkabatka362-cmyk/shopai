@@ -14,6 +14,24 @@ Core capabilities:
 - Go/no-go recommendations based on scenario outcomes
 """
 
+MODULE_NAME = "scenario_modeler"
+MODULE_VERSION = "1.0.0"
+MODULE_DESCRIPTION = "What-if scenario modeling for business decisions"
+
+SCENARIO_WEIGHTS = {
+    "pessimistic": 0.25,
+    "expected": 0.50,
+    "optimistic": 0.25,
+}
+
+DEFAULT_SCENARIOS = ["pessimistic", "expected", "optimistic"]
+
+SCENARIO_MULTIPLIERS = {
+    "pessimistic": 0.50,
+    "expected": 1.00,
+    "optimistic": 1.50,
+}
+
 from .code import model_scenarios
 from .logic import (
     compare_scenarios,
@@ -61,21 +79,3 @@ __all__ = [
     "get_all_principles",
     "get_principles_for_context",
 ]
-
-MODULE_NAME = "scenario_modeler"
-MODULE_VERSION = "1.0.0"
-MODULE_DESCRIPTION = "What-if scenario modeling for business decisions"
-
-SCENARIO_WEIGHTS = {
-    "pessimistic": 0.25,
-    "expected": 0.50,
-    "optimistic": 0.25,
-}
-
-DEFAULT_SCENARIOS = ["pessimistic", "expected", "optimistic"]
-
-SCENARIO_MULTIPLIERS = {
-    "pessimistic": 0.50,
-    "expected": 1.00,
-    "optimistic": 1.50,
-}

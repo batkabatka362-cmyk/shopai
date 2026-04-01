@@ -1,9 +1,6 @@
 """
 Scenario Modeler — Domain knowledge and planning principles.
-
-Encodes expert heuristics for scenario-based decision making,
-risk management, and sensitivity analysis. Each principle includes
-rationale, application guidance, and severity/priority metadata.
+Expert heuristics for scenario-based decision making and risk management.
 """
 
 SCENARIO_PLANNING_PRINCIPLES = [
@@ -11,14 +8,10 @@ SCENARIO_PLANNING_PRINCIPLES = [
         "id": "plan_for_pessimistic",
         "title": "Always plan for the pessimistic scenario",
         "description": (
-            "Build your operating plan assuming the pessimistic case will happen. "
-            "If you can survive the worst case, you can thrive in the expected case. "
-            "Optimism bias is the number one killer of new ventures."
+            "Build your plan assuming the pessimistic case. If you survive the "
+            "worst case, you thrive in expected. Optimism bias kills ventures."
         ),
-        "application": (
-            "Set cash reserves to cover pessimistic scenario for at least 6 months. "
-            "Size your team and fixed costs so they are sustainable even at 50% volume."
-        ),
+        "application": "Set cash reserves for 6 months at pessimistic. Size fixed costs for 50% volume.",
         "severity": "critical",
         "category": "risk_management",
         "priority": 1,
@@ -27,15 +20,10 @@ SCENARIO_PLANNING_PRINCIPLES = [
         "id": "bankruptcy_check",
         "title": "If pessimistic equals bankruptcy, don't do it",
         "description": (
-            "No opportunity is worth risking the entire business. If the downside "
-            "scenario leads to insolvency or unrecoverable debt, the risk-reward "
-            "ratio is fundamentally broken regardless of the upside."
+            "No opportunity is worth risking the entire business. If downside "
+            "leads to insolvency, the risk-reward ratio is fundamentally broken."
         ),
-        "application": (
-            "Before any major investment, calculate the pessimistic scenario. If the "
-            "resulting loss exceeds your total available reserves plus credit lines, "
-            "the venture is a no-go. Restructure the deal to cap downside first."
-        ),
+        "application": "If pessimistic loss exceeds reserves plus credit, it's a no-go. Cap downside first.",
         "severity": "critical",
         "category": "risk_management",
         "priority": 2,
@@ -44,15 +32,10 @@ SCENARIO_PLANNING_PRINCIPLES = [
         "id": "key_driver_analysis",
         "title": "Change one variable at a time to find what matters most",
         "description": (
-            "Key driver analysis isolates the impact of each variable on profitability. "
-            "Hold all other inputs constant and vary one by its expected range. The "
-            "variable that produces the largest profit swing is your key driver."
+            "Isolate each variable's impact on profit. Hold others constant, vary "
+            "one by its range. The largest profit swing reveals your key driver."
         ),
-        "application": (
-            "Run sensitivity analysis on price, volume, COGS, ad spend, and conversion "
-            "rate independently. Rank by absolute profit impact. Focus management "
-            "attention and resources on controlling the top 2-3 drivers."
-        ),
+        "application": "Run sensitivity on price, volume, COGS, ad spend independently. Control top 2-3.",
         "severity": "high",
         "category": "analysis",
         "priority": 3,
@@ -61,17 +44,10 @@ SCENARIO_PLANNING_PRINCIPLES = [
         "id": "monte_carlo_thinking",
         "title": "Monte Carlo thinking: run 100 scenarios, not just 3",
         "description": (
-            "Three scenarios (pessimistic/expected/optimistic) are a useful mental "
-            "model but oversimplify reality. True outcomes follow probability "
-            "distributions. Running many randomized scenarios reveals the shape "
-            "of the outcome distribution and tail risks."
+            "Three scenarios oversimplify reality. Outcomes follow distributions. "
+            "Many randomized scenarios reveal the true shape and tail risks."
         ),
-        "application": (
-            "For high-stakes decisions, generate 100+ scenarios with randomized "
-            "inputs drawn from historical variance ranges. Plot the distribution "
-            "of outcomes to understand probability of profit vs loss and the "
-            "expected value with confidence intervals."
-        ),
+        "application": "Generate 100+ scenarios with randomized inputs. Plot distribution for confidence intervals.",
         "severity": "high",
         "category": "analysis",
         "priority": 4,
@@ -81,8 +57,8 @@ SCENARIO_PLANNING_PRINCIPLES = [
         "title": "Variables are correlated, not independent",
         "description": (
             "In a downturn, volume drops AND prices fall AND costs may rise. "
-            "Scenarios that only adjust one variable understate real risk. "
-            "Correlated moves amplify both gains and losses."
+            "Single-variable scenarios understate real risk. Correlated moves "
+            "amplify both gains and losses."
         ),
         "application": (
             "When building pessimistic scenarios, apply correlation factors: if "
@@ -98,13 +74,12 @@ SCENARIO_PLANNING_PRINCIPLES = [
         "title": "Require a margin of safety on expected returns",
         "description": (
             "Even the expected scenario contains estimation error. Require that "
-            "the expected return exceeds your hurdle rate by at least 20% to "
-            "account for unknowns and model imprecision."
+            "expected return exceeds your hurdle rate by at least 20% to account "
+            "for unknowns and model imprecision."
         ),
         "application": (
-            "If your required return is 15%, only proceed if the expected scenario "
-            "shows at least 18% return. This buffer absorbs forecast errors without "
-            "pushing the project into loss territory."
+            "If your required return is 15%, only proceed if expected scenario "
+            "shows at least 18%. This buffer absorbs forecast errors."
         ),
         "severity": "medium",
         "category": "decision_making",
@@ -116,13 +91,11 @@ SCENARIO_PLANNING_PRINCIPLES = [
         "description": (
             "When the spread between pessimistic and optimistic is wide, favor "
             "decisions that can be unwound. Lease vs buy, contract vs hire, "
-            "pilot vs full launch. Irreversible bets require much higher "
-            "confidence in the expected scenario."
+            "pilot vs full launch."
         ),
         "application": (
-            "Calculate the scenario spread (optimistic profit minus pessimistic). "
-            "If the spread exceeds 3x the expected profit, structure the decision "
-            "as a staged commitment with exit points between stages."
+            "If scenario spread exceeds 3x expected profit, structure as a "
+            "staged commitment with exit points between stages."
         ),
         "severity": "medium",
         "category": "decision_making",
@@ -132,14 +105,12 @@ SCENARIO_PLANNING_PRINCIPLES = [
         "id": "time_horizon_matters",
         "title": "Short-term pessimism, long-term expected value",
         "description": (
-            "Plan cash flow and operations for the pessimistic case in the first "
-            "6-12 months. Over longer horizons, outcomes tend to regress toward "
-            "the expected value as variance averages out."
+            "Plan cash flow for the pessimistic case in months 1-12. Over longer "
+            "horizons, outcomes regress toward expected value as variance averages out."
         ),
         "application": (
             "Use pessimistic projections for months 1-6 and expected projections "
-            "for months 7-24. This protects near-term survival while allowing "
-            "realistic long-term planning."
+            "for months 7-24. Protects survival while allowing realistic planning."
         ),
         "severity": "medium",
         "category": "planning",
@@ -162,28 +133,15 @@ def get_all_principles():
 
 
 def get_principles_for_context(context):
-    """
-    Return principles relevant to a given context string.
-
-    Matches context keywords against principle categories and IDs.
-    Useful for surfacing the right guidance at decision time.
-
-    Parameters:
-        context: one of 'risk_management', 'analysis', 'decision_making',
-                 'planning', or a principle ID.
-
-    Returns list of matching principles sorted by priority.
-    """
-    matches = []
+    """Return principles matching a context keyword (category, ID, or text search)."""
     context_lower = context.lower()
-    for p in SCENARIO_PLANNING_PRINCIPLES:
-        if (
-            p["category"] == context_lower
+    matches = [
+        p for p in SCENARIO_PLANNING_PRINCIPLES
+        if (p["category"] == context_lower
             or context_lower in p["id"]
             or context_lower in p["title"].lower()
-            or context_lower in p["description"].lower()
-        ):
-            matches.append(p)
+            or context_lower in p["description"].lower())
+    ]
     return sorted(matches, key=lambda p: p["priority"])
 
 
@@ -193,5 +151,5 @@ def get_critical_principles():
 
 
 def format_principle_summary(principle):
-    """Format a principle as a concise one-line summary for logs or UI."""
+    """Format a principle as a concise one-line summary."""
     return f"[{principle['severity'].upper()}] {principle['title']} (priority {principle['priority']})"

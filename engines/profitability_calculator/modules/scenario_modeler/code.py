@@ -7,7 +7,9 @@ volume, and ad spend. Returns engine-contract response.
 """
 
 import time
-from . import SCENARIO_WEIGHTS, SCENARIO_MULTIPLIERS
+
+SCENARIO_WEIGHTS = {"pessimistic": 0.25, "expected": 0.50, "optimistic": 0.25}
+SCENARIO_MULTIPLIERS = {"pessimistic": 0.50, "expected": 1.00, "optimistic": 1.50}
 
 
 def _calculate_scenario(base, multiplier, label, overrides=None):
