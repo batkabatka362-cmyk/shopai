@@ -15,7 +15,7 @@ class TestCoreOrchestratorInit:
         c = CoreOrchestrator()
         status = c.status()
         assert status["initialized"] is True
-        assert status["modules_count"] == 16
+        assert status["modules_count"] == 22
 
     def test_expected_modules_present(self):
         c = CoreOrchestrator()
@@ -103,7 +103,7 @@ class TestRunCycle:
         summary = result["summary"]
         for key in ["decision", "confidence", "confidence_score", "data_quality", "modules_active"]:
             assert key in summary
-        assert summary["modules_active"] == 16
+        assert summary["modules_active"] == 22
 
     def test_different_goals(self):
         c = CoreOrchestrator()
@@ -689,3 +689,310 @@ class TestSupplyChain:
         result = sc.detect_dead_stock(products)
         assert result["dead_stock_items"] >= 1
         assert result["total_capital_tied_up"] > 0
+
+
+# ── Thinking Layers ──
+
+class TestGoalManager:
+    def test_default_goal(self):
+        from core.goals.goal_manager import GoalManager
+        gm = GoalManager()
+        result = gm.select_goal({})
+        assert result["goal"] == "maximize_profit"
+
+    def test_crisis_goal(self):
+        from core.goals.goal_manager import GoalManager
+        gm = GoalManager()
+        situation = {"financial": {"health_grade": "F", "critical_alerts": 3}}
+        result = gm.select_goal(situation)
+        assert result["goal"] == "survive_crisis"
+        assert result["priority"] == 1
+
+    def test_churn_goal(self):
+        from core.goals.goal_manager import GoalManager
+        gm = GoalManager()
+        situation = {"customers": {"churn_risk_pct": 55}}
+        result = gm.select_goal(situation)
+        assert result["goal"] == "grow_customers"
+
+    def test_hysteresis(self):
+        from core.goals.goal_manager import GoalManager
+        gm = GoalManager()
+        gm.select_goal({}, cycle_number=1)
+        # Try to switch to increase_aov too soon (within 5 cycles)
+        # aov_below_median is priority 4, should be blocked by hysteresis
+        result = gm.select_goal({"financial": {"aov": 20}}, cycle_number=3)
+        assert result["goal"] == "maximize_profit"  # Hysteresis keeps current
+
+    def test_urgent_overrides_hysteresis(self):
+        from core.goals.goal_manager import GoalManager
+        gm = GoalManager()
+        gm.select_goal({}, cycle_number=1)
+        # Crisis overrides hysteresis (priority 1)
+        result = gm.select_goal({"financial": {"health_grade": "F", "critical_alerts": 2}}, cycle_number=2)
+        assert result["goal"] == "survive_crisis"
+        assert result["switched"] is True
+
+    def test_alternatives_included(self):
+        from core.goals.goal_manager import GoalManager
+        gm = GoalManager()
+        result = gm.select_goal({})
+        assert "alternatives" in result
+
+
+class TestEpisodicMemory:
+    def test_record_and_recall(self):
+        import tempfile
+        from core.memory.episodic_memory import EpisodicMemory
+        mem = EpisodicMemory(episodes_dir=tempfile.mkdtemp())
+        mem.record_episode(
+            decision_type="pricing",
+            action="increase_price",
+            context={"health_grade": "B", "churn_pct": 10, "confidence_score": 70},
+            outcome={"success": True},
+        )
+        similar = mem.recall_similar({"health_grade": "B", "churn_pct": 12, "confidence_score": 65})
+        assert len(similar) >= 1
+
+    def test_get_failures(self):
+        import tempfile
+        from core.memory.episodic_memory import EpisodicMemory
+        mem = EpisodicMemory(episodes_dir=tempfile.mkdtemp())
+        mem.record_episode("pricing", "increase", {"health_grade": "C"}, {"success": False})
+        mem.record_episode("pricing", "decrease", {"health_grade": "B"}, {"success": True})
+        failures = mem.get_failures("pricing")
+        assert len(failures) == 1
+        assert failures[0]["action"] == "increase"
+
+    def test_get_lessons(self):
+        import tempfile
+        from core.memory.episodic_memory import EpisodicMemory
+        mem = EpisodicMemory(episodes_dir=tempfile.mkdtemp())
+        mem.record_episode("launch", "new_product", {}, {"success": True})
+        lessons = mem.get_lessons("launch")
+        assert len(lessons) == 1
+        assert "succeeded" in lessons[0]["lesson"]
+
+    def test_success_rate(self):
+        import tempfile
+        from core.memory.episodic_memory import EpisodicMemory
+        mem = EpisodicMemory(episodes_dir=tempfile.mkdtemp())
+        for i in range(7):
+            mem.record_episode("test", "action", {}, {"success": i < 5})
+        rate = mem.get_success_rate("test")
+        assert rate["success_rate"] == pytest.approx(71.4, abs=0.1)
+
+    def test_persist_and_load(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        from core.memory.episodic_memory import EpisodicMemory
+        mem = EpisodicMemory(episodes_dir=d)
+        mem.record_episode("test", "action", {"x": 1}, {"success": True})
+        # Load fresh
+        mem2 = EpisodicMemory(episodes_dir=d)
+        assert mem2.get_stats()["total_episodes"] == 1
+
+
+class TestJudgmentAdvisor:
+    def test_proceed_on_good_conditions(self):
+        from core.judgment.judgment_advisor import JudgmentAdvisor
+        advisor = JudgmentAdvisor()
+        decision = {"action": "Launch Widget", "confidence_score": 75, "options_evaluated": 4}
+        situation = {"health": {"overall_grade": "B"}, "financial": {"health_grade": "B"}, "events": []}
+        result = advisor.evaluate(decision, situation)
+        assert result["verdict"] == "proceed"
+
+    def test_risk_score_increases_with_bad_conditions(self):
+        from core.judgment.judgment_advisor import JudgmentAdvisor
+        advisor = JudgmentAdvisor()
+        # Good conditions
+        good = advisor.evaluate(
+            {"action": "test", "confidence_score": 90, "options_evaluated": 5},
+            {"health": {"overall_grade": "A"}, "financial": {"health_grade": "A"}, "events": []},
+        )
+        # Bad conditions
+        bad = advisor.evaluate(
+            {"action": "Big pricing change", "confidence_score": 25, "options_evaluated": 1},
+            {"health": {"overall_grade": "D"}, "financial": {"health_grade": "D", "critical_alerts": 2}, "events": ["competitor"]},
+        )
+        assert bad["risk_score"] > good["risk_score"]
+        assert bad["risk_score"] > 0.3
+
+    def test_checks_present(self):
+        from core.judgment.judgment_advisor import JudgmentAdvisor
+        advisor = JudgmentAdvisor()
+        decision = {"action": "test", "confidence_score": 50}
+        result = advisor.evaluate(decision, {})
+        assert len(result["checks"]) == 6
+        check_names = [c["check"] for c in result["checks"]]
+        assert "magnitude" in check_names
+        assert "system_stability" in check_names
+
+
+class TestFailurePrevention:
+    def test_no_veto_without_failures(self):
+        import tempfile
+        from core.memory.episodic_memory import EpisodicMemory
+        from core.judgment.failure_prevention import FailureContextPrevention
+        mem = EpisodicMemory(episodes_dir=tempfile.mkdtemp())
+        fp = FailureContextPrevention(episodic_memory=mem)
+        result = fp.check("pricing", {"health_grade": "B"})
+        assert result["vetoed"] is False
+
+    def test_veto_on_matching_failure(self):
+        import tempfile
+        from core.memory.episodic_memory import EpisodicMemory
+        from core.judgment.failure_prevention import FailureContextPrevention
+        mem = EpisodicMemory(episodes_dir=tempfile.mkdtemp())
+        # Record a failure
+        mem.record_episode(
+            "pricing", "increase_price",
+            context={"health_grade": "C", "churn_pct": 40, "stockout_risk": True, "confidence_score": 50, "net_margin": 5},
+            outcome={"success": False},
+        )
+        fp = FailureContextPrevention(episodic_memory=mem)
+        # Check with very similar context
+        result = fp.check("pricing", {
+            "health_grade": "C", "churn_pct": 42, "stockout_risk": True, "confidence_score": 48, "net_margin": 6,
+        })
+        assert result["match_score"] > 0.7
+        assert result["vetoed"] is True
+
+    def test_no_veto_different_context(self):
+        import tempfile
+        from core.memory.episodic_memory import EpisodicMemory
+        from core.judgment.failure_prevention import FailureContextPrevention
+        mem = EpisodicMemory(episodes_dir=tempfile.mkdtemp())
+        mem.record_episode("pricing", "increase", {"health_grade": "F", "churn_pct": 80}, {"success": False})
+        fp = FailureContextPrevention(episodic_memory=mem)
+        result = fp.check("pricing", {"health_grade": "A", "churn_pct": 5})
+        assert result["vetoed"] is False
+
+
+class TestDecisionNarrator:
+    def test_narrate_cycle(self):
+        from core.intelligence.decision_narrator import DecisionNarrator
+        narrator = DecisionNarrator()
+        cycle_result = {
+            "goal": "maximize_profit",
+            "summary": {
+                "decision": "Launch Widget X",
+                "confidence": "high",
+                "confidence_score": 85,
+                "strategy_goal": "maximize_profit",
+                "decision_reason": "High demand, good margins",
+                "health_grade": "A",
+                "net_profit": 500,
+                "data_quality": 90,
+            },
+            "phases": {"judgment": {"verdict": "proceed"}},
+            "priorities": [],
+        }
+        narrative = narrator.narrate(cycle_result)
+        assert "Launch Widget X" in narrative
+        assert "Maximize profitability" in narrative
+        assert "85/100" in narrative
+
+    def test_explain_decision(self):
+        from core.intelligence.decision_narrator import DecisionNarrator
+        narrator = DecisionNarrator()
+        explanation = narrator.explain_decision(
+            {"action": "Raise price", "confidence": "medium", "confidence_score": 60, "options_evaluated": 3},
+            goal="maximize_profit",
+        )
+        assert "Raise price" in explanation
+        assert "60/100" in explanation
+
+    def test_summarize_situation(self):
+        from core.intelligence.decision_narrator import DecisionNarrator
+        narrator = DecisionNarrator()
+        summary = narrator.summarize_situation({
+            "financial": {"gross_revenue": 10000, "net_profit": 3000, "health_grade": "B"},
+            "inventory": {"total_products": 50, "out_of_stock_count": 2, "low_stock_count": 5},
+            "customers": {"total": 200, "churn_risk_pct": 15},
+            "health": {},
+            "alerts": [{"severity": "high", "message": "2 products out of stock"}],
+        })
+        assert "$10,000" in summary
+        assert "2 products out of stock" in summary
+
+
+class TestLegalCompliance:
+    def test_supplement_detection(self):
+        from core.intelligence.legal_compliance import LegalCompliance
+        lc = LegalCompliance()
+        result = lc.check_product({"title": "Vitamin C Supplement 1000mg", "category": "supplements"})
+        assert result["category"] == "supplements"
+        assert result["agency"] == "FDA"
+        assert len(result["requirements"]) > 0
+
+    def test_children_product_critical(self):
+        from core.intelligence.legal_compliance import LegalCompliance
+        lc = LegalCompliance()
+        result = lc.check_product({"title": "Baby Toy Rattle"})
+        assert result["category"] == "children"
+        assert result["risk_level"] == "critical"
+
+    def test_ad_prohibited_claims(self):
+        from core.intelligence.legal_compliance import LegalCompliance
+        lc = LegalCompliance()
+        result = lc.check_advertising("This supplement can cure headaches and treat pain!")
+        assert result["compliant"] is False
+        assert len(result["violations"]) >= 1
+
+    def test_ad_endorsement_disclosure(self):
+        from core.intelligence.legal_compliance import LegalCompliance
+        lc = LegalCompliance()
+        result = lc.check_advertising("Our influencer ambassador says this product is amazing!")
+        assert result["compliant"] is False
+        assert any("disclosure" in v.lower() for v in result["violations"])
+
+    def test_privacy_gdpr(self):
+        from core.intelligence.legal_compliance import LegalCompliance
+        lc = LegalCompliance()
+        result = lc.check_privacy(sells_to_eu=True)
+        assert "gdpr" in result["applicable_regulations"]
+        assert len(result["requirements"]) > 5
+
+    def test_full_audit(self):
+        from core.intelligence.legal_compliance import LegalCompliance
+        lc = LegalCompliance()
+        result = lc.full_audit(
+            products=[{"title": "Vitamin C Supplement"}],
+            ad_content=["Buy our cure-all supplement!"],
+        )
+        assert result["violation_count"] > 0
+        assert result["overall_compliant"] is False
+
+
+# ── Thinking Layer Integration ──
+
+class TestThinkingLayerIntegration:
+    def test_all_new_phases_present(self):
+        c = CoreOrchestrator()
+        result = c.run_cycle()
+        assert "compliance" in result["phases"]
+        assert "judgment" in result["phases"]
+        assert "narrative" in result
+
+    def test_judgment_verdict_in_cycle(self):
+        c = CoreOrchestrator()
+        result = c.run_cycle()
+        judgment = result["phases"]["judgment"]
+        assert judgment["verdict"] in ("proceed", "delay", "modify", "escalate_to_human")
+
+    def test_episode_recorded(self):
+        c = CoreOrchestrator()
+        c.run_cycle()
+        mem = c.get_module("episodic_memory")
+        assert mem.get_stats()["total_episodes"] >= 1
+
+    def test_goal_auto_selection(self):
+        c = CoreOrchestrator()
+        result = c.run_cycle(goal=None)
+        assert result["goal"] in ("maximize_profit", "grow_customers", "increase_aov", "survive_crisis", "capture_opportunity")
+
+    def test_narrative_generated(self):
+        c = CoreOrchestrator()
+        result = c.run_cycle()
+        assert len(result.get("narrative", "")) > 20

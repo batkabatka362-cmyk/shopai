@@ -1,0 +1,307 @@
+"""JudgmentAdvisor — "Is NOW the right time to execute this decision?"
+
+Pre-execution gate that sits between DECIDE and EXECUTE.
+Checks 6 factors before allowing a decision to proceed:
+
+1. Magnitude check: big change + low confidence → escalate
+2. Competitor activity: recent competitor moves → delay pricing
+3. Past failure match: similar conditions failed before → delay/modify
+4. System stability: unhealthy system → restrict to low-risk
+5. Financial constraint: no cash → don't spend
+6. Cooldown: too soon since similar action → delay
+
+Verdict: proceed | delay | modify | escalate_to_human
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from utils.logger import get_logger
+
+logger = get_logger("judgment.advisor")
+
+
+# Verdict thresholds
+PROCEED_THRESHOLD = 0.70    # Risk score below this → proceed
+DELAY_THRESHOLD = 0.85      # Between proceed and delay → delay
+# Above delay → escalate
+
+
+class JudgmentAdvisor:
+    """Pre-execution judgment gate.
+
+    Usage:
+        advisor = JudgmentAdvisor(
+            episodic_memory=memory,
+            failure_prevention=failure_prev,
+            action_coordinator=coordinator,
+        )
+        verdict = advisor.evaluate(decision, snapshot_situation)
+        if verdict["verdict"] != "proceed":
+            # don't execute
+    """
+
+    def __init__(
+        self,
+        episodic_memory: Any = None,
+        failure_prevention: Any = None,
+        action_coordinator: Any = None,
+    ) -> None:
+        self._memory = episodic_memory
+        self._failure_prevention = failure_prevention
+        self._action_coordinator = action_coordinator
+
+    def evaluate(
+        self,
+        decision: dict[str, Any],
+        situation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Evaluate whether to proceed with a decision.
+
+        Args:
+            decision: From IntelligenceLoop (action, confidence, confidence_score, etc.)
+            situation: From StoreSnapshot.get_situation()
+
+        Returns:
+            {
+                "verdict": "proceed" | "delay" | "modify" | "escalate_to_human",
+                "risk_score": float (0-1),
+                "checks": [...],
+                "reason": str,
+                "recommendations": [...],
+            }
+        """
+        checks = []
+
+        # 1. Magnitude check
+        checks.append(self._check_magnitude(decision))
+
+        # 2. Competitor activity
+        checks.append(self._check_competitor_activity(decision, situation))
+
+        # 3. Past failure match
+        checks.append(self._check_past_failures(decision, situation))
+
+        # 4. System stability
+        checks.append(self._check_system_stability(situation))
+
+        # 5. Financial constraint
+        checks.append(self._check_financial_constraint(decision, situation))
+
+        # 6. Cooldown
+        checks.append(self._check_cooldown(decision))
+
+        # Compute weighted risk score
+        total_weight = sum(c["weight"] for c in checks)
+        risk_score = sum(c["risk"] * c["weight"] for c in checks) / max(total_weight, 0.01)
+
+        # Determine verdict
+        if any(c.get("veto") for c in checks):
+            verdict = "escalate_to_human"
+            reason = next(c["reason"] for c in checks if c.get("veto"))
+        elif risk_score >= DELAY_THRESHOLD:
+            verdict = "escalate_to_human"
+            top_risks = sorted(checks, key=lambda c: c["risk"], reverse=True)[:2]
+            reason = "; ".join(c["reason"] for c in top_risks if c["risk"] > 0.5)
+        elif risk_score >= PROCEED_THRESHOLD:
+            verdict = "delay"
+            top_risks = sorted(checks, key=lambda c: c["risk"], reverse=True)[:2]
+            reason = "; ".join(c["reason"] for c in top_risks if c["risk"] > 0.3)
+        else:
+            verdict = "proceed"
+            reason = "All checks passed"
+
+        recommendations = [c.get("recommendation", "") for c in checks if c.get("recommendation")]
+
+        logger.info(
+            "Judgment: %s (risk=%.2f) for action '%s'",
+            verdict, risk_score, decision.get("action", "?")[:50],
+        )
+
+        return {
+            "verdict": verdict,
+            "risk_score": round(risk_score, 3),
+            "checks": checks,
+            "reason": reason,
+            "recommendations": [r for r in recommendations if r],
+        }
+
+    def _check_magnitude(self, decision: dict[str, Any]) -> dict[str, Any]:
+        """Big change + low confidence → high risk."""
+        confidence = decision.get("confidence_score", 50)
+        options_evaluated = decision.get("options_evaluated", 1)
+
+        risk = 0
+        reason = "Normal magnitude"
+
+        # Low confidence + few options = risky
+        if confidence < 40:
+            risk = 0.8
+            reason = f"Very low confidence ({confidence}/100)"
+        elif confidence < 60 and options_evaluated <= 2:
+            risk = 0.5
+            reason = f"Low confidence ({confidence}/100) with only {options_evaluated} options"
+        elif confidence < 50:
+            risk = 0.4
+            reason = f"Below-average confidence ({confidence}/100)"
+
+        return {
+            "check": "magnitude",
+            "risk": risk,
+            "weight": 0.20,
+            "reason": reason,
+            "recommendation": "Collect more data before deciding" if risk > 0.5 else "",
+        }
+
+    def _check_competitor_activity(self, decision: dict[str, Any], situation: dict[str, Any]) -> dict[str, Any]:
+        """Recent competitor activity → delay pricing decisions."""
+        competitive = situation.get("competitive", {})
+        alerts = competitive.get("alerts", []) if isinstance(competitive, dict) else []
+        events = situation.get("events", [])
+
+        risk = 0
+        reason = "No competitor activity"
+
+        competitor_events = [e for e in events if "competitor" in str(e).lower() or "price_change" in str(e).lower()]
+        if competitor_events or alerts:
+            action = decision.get("action", "")
+            if "pric" in action.lower():
+                risk = 0.7
+                reason = f"Competitor activity detected ({len(competitor_events) + len(alerts)} signals) — risky to change prices now"
+            else:
+                risk = 0.3
+                reason = f"Competitor activity detected but decision is not pricing-related"
+
+        return {
+            "check": "competitor_activity",
+            "risk": risk,
+            "weight": 0.15,
+            "reason": reason,
+        }
+
+    def _check_past_failures(self, decision: dict[str, Any], situation: dict[str, Any]) -> dict[str, Any]:
+        """Check if similar decision failed before in similar conditions."""
+        if self._failure_prevention is None:
+            return {"check": "past_failures", "risk": 0, "weight": 0.25, "reason": "No failure data"}
+
+        # Build context for matching
+        financial = situation.get("financial", {})
+        inventory = situation.get("inventory", {})
+        customers = situation.get("customers", {})
+        health = situation.get("health", {})
+
+        context = {
+            "health_grade": financial.get("health_grade", health.get("overall_grade", "B")),
+            "churn_pct": customers.get("churn_risk_pct", 0),
+            "stockout_risk": inventory.get("stockout_risk", False),
+            "confidence_score": decision.get("confidence_score", 50),
+            "net_margin": financial.get("net_margin", 0),
+            "critical_alerts": financial.get("critical_alerts", 0),
+        }
+
+        # Determine decision type from action string
+        action = decision.get("action", "")
+        decision_type = "general"
+        if "pric" in action.lower():
+            decision_type = "pricing"
+        elif "launch" in action.lower():
+            decision_type = "launch"
+        elif "campaign" in action.lower() or "ad" in action.lower():
+            decision_type = "marketing"
+
+        result = self._failure_prevention.check(decision_type, context, action)
+
+        risk = result.get("match_score", 0)
+        if result.get("vetoed"):
+            return {
+                "check": "past_failures",
+                "risk": 1.0,
+                "weight": 0.25,
+                "reason": result["reason"],
+                "veto": True,
+                "recommendation": "Avoid this action — past failure in similar conditions",
+            }
+
+        return {
+            "check": "past_failures",
+            "risk": risk,
+            "weight": 0.25,
+            "reason": result.get("reason", "No matching failures"),
+            "recommendation": result.get("recommendation", ""),
+        }
+
+    def _check_system_stability(self, situation: dict[str, Any]) -> dict[str, Any]:
+        """Unhealthy system → restrict to low-risk actions."""
+        health = situation.get("health", {})
+        grade = health.get("overall_grade", "B")
+
+        risk = 0
+        reason = f"System health: {grade}"
+
+        if grade in ("D", "F"):
+            risk = 0.7
+            reason = f"System health is {grade} — only low-risk actions recommended"
+        elif grade == "C":
+            risk = 0.3
+            reason = f"System health is {grade} — proceed with caution"
+
+        return {
+            "check": "system_stability",
+            "risk": risk,
+            "weight": 0.15,
+            "reason": reason,
+            "recommendation": "Fix system health issues first" if risk > 0.5 else "",
+        }
+
+    def _check_financial_constraint(self, decision: dict[str, Any], situation: dict[str, Any]) -> dict[str, Any]:
+        """No cash → don't spend money."""
+        financial = situation.get("financial", {})
+        health_grade = financial.get("health_grade", "B")
+        critical = financial.get("critical_alerts", 0)
+
+        action = decision.get("action", "")
+        costs_money = any(kw in action.lower() for kw in ("ad", "campaign", "spend", "buy", "launch", "reorder"))
+
+        risk = 0
+        reason = "Financial position OK"
+
+        if costs_money and (health_grade in ("D", "F") or critical > 0):
+            risk = 0.8
+            reason = f"Action requires spending but financial health is {health_grade} with {critical} critical alerts"
+        elif health_grade in ("D", "F"):
+            risk = 0.4
+            reason = f"Financial health is {health_grade}"
+
+        return {
+            "check": "financial_constraint",
+            "risk": risk,
+            "weight": 0.15,
+            "reason": reason,
+            "recommendation": "Improve margins before spending" if risk > 0.5 else "",
+        }
+
+    def _check_cooldown(self, decision: dict[str, Any]) -> dict[str, Any]:
+        """Check action cooldowns."""
+        if self._action_coordinator is None:
+            return {"check": "cooldown", "risk": 0, "weight": 0.10, "reason": "No coordinator"}
+
+        action = decision.get("action", "")
+        # Map decision action to action_coordinator types
+        action_type = "product_update"  # default
+        if "pric" in action.lower() and "increase" in action.lower():
+            action_type = "price_increase"
+        elif "pric" in action.lower():
+            action_type = "price_decrease"
+        elif "ad" in action.lower() or "campaign" in action.lower():
+            action_type = "ad_launch"
+
+        verdict = self._action_coordinator.check(action_type)
+        if not verdict["allowed"]:
+            return {
+                "check": "cooldown",
+                "risk": 0.9,
+                "weight": 0.10,
+                "reason": f"Cooldown active: {verdict['reason']}",
+            }
+
+        return {"check": "cooldown", "risk": 0, "weight": 0.10, "reason": "No cooldown issues"}

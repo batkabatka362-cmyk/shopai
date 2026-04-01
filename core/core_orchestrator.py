@@ -72,6 +72,11 @@ class CoreOrchestrator:
             "marketing_tactics": ("core.intelligence.marketing_tactics", "MarketingTactics", {}),
             "customer_journey": ("core.intelligence.customer_journey", "CustomerJourney", {}),
             "supply_chain": ("core.intelligence.supply_chain", "SupplyChainIntelligence", {}),
+            # Thinking layers
+            "goal_manager": ("core.goals.goal_manager", "GoalManager", {}),
+            "episodic_memory": ("core.memory.episodic_memory", "EpisodicMemory", {}),
+            "decision_narrator": ("core.intelligence.decision_narrator", "DecisionNarrator", {}),
+            "legal_compliance": ("core.intelligence.legal_compliance", "LegalCompliance", {}),
         }
 
         for name, (module_path, class_name, kwargs) in module_specs.items():
@@ -84,10 +89,26 @@ class CoreOrchestrator:
             except Exception as exc:
                 logger.warning("Module %s failed to load: %s", name, exc)
 
+        # Initialize thinking layers that need cross-references
+        try:
+            from core.judgment.failure_prevention import FailureContextPrevention
+            from core.judgment.judgment_advisor import JudgmentAdvisor
+            self._modules["failure_prevention"] = FailureContextPrevention(
+                episodic_memory=self._modules.get("episodic_memory"),
+            )
+            self._modules["judgment_advisor"] = JudgmentAdvisor(
+                episodic_memory=self._modules.get("episodic_memory"),
+                failure_prevention=self._modules.get("failure_prevention"),
+                action_coordinator=self.action_coordinator,
+            )
+            logger.info("Thinking layers initialized (judgment_advisor, failure_prevention)")
+        except Exception as exc:
+            logger.warning("Thinking layers failed: %s", exc)
+
         self._initialized = True
         logger.info(
             "CoreOrchestrator initialized: %d/%d modules loaded",
-            len(self._modules), len(module_specs),
+            len(self._modules), len(module_specs) + 2,  # +2 for thinking layers
         )
 
     def get_module(self, name: str) -> Any | None:
@@ -117,6 +138,17 @@ class CoreOrchestrator:
         self._cycle_count += 1
         start = time.monotonic()
         cfg = config or {}
+
+        # ── Phase 0: GOAL SELECTION ──
+        goal_mgr = self._modules.get("goal_manager")
+        if goal_mgr and goal is None:
+            goal_result = goal_mgr.select_goal(
+                self.snapshot.get_situation(), cycle_number=self._cycle_count,
+            )
+            goal = goal_result["goal"]
+        elif goal is None:
+            goal = "maximize_profit"
+
         results: dict[str, Any] = {
             "cycle_id": cycle_id,
             "cycle_number": self._cycle_count,
@@ -180,6 +212,14 @@ class CoreOrchestrator:
         supply = self._phase_supply_chain(data)
         results["phases"]["supply_chain"] = supply
 
+        # ── Phase 13: LEGAL COMPLIANCE ──
+        compliance = self._phase_compliance(data)
+        results["phases"]["compliance"] = compliance
+
+        # ── Phase 14: JUDGMENT ──
+        judgment = self._phase_judgment(intel, data)
+        results["phases"]["judgment"] = judgment
+
         # ── Update StoreSnapshot ──
         self.snapshot.update_financial(financial)
         self.snapshot.update_products(intel)
@@ -212,6 +252,17 @@ class CoreOrchestrator:
         elapsed = time.monotonic() - start
         results["elapsed_seconds"] = round(elapsed, 3)
         results["summary"] = self._compute_summary(results)
+
+        # ── Narrative ──
+        narrator = self._modules.get("decision_narrator")
+        if narrator:
+            try:
+                results["narrative"] = narrator.narrate(results)
+            except Exception:
+                results["narrative"] = ""
+
+        # ── Record Episode ──
+        self._record_episode(results)
 
         # ── Journal ──
         self.journal.record_cycle(results)
@@ -494,6 +545,66 @@ class CoreOrchestrator:
         except Exception as exc:
             logger.warning("Supply chain failed: %s", exc)
             return {"status": "error", "error": str(exc)}
+
+    def _phase_compliance(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Run legal compliance checks on products."""
+        compliance = self._modules.get("legal_compliance")
+        if compliance is None:
+            return {"status": "unavailable"}
+        try:
+            products = data.get("products", [])
+            return compliance.full_audit(products=products if products else None)
+        except Exception as exc:
+            logger.warning("Compliance check failed: %s", exc)
+            return {"status": "error", "error": str(exc)}
+
+    def _phase_judgment(self, intel: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        """Run JudgmentAdvisor — check if decision should proceed."""
+        advisor = self._modules.get("judgment_advisor")
+        if advisor is None:
+            return {"verdict": "proceed", "reason": "No judgment advisor"}
+        try:
+            decision = intel.get("decision", {})
+            situation = self.snapshot.get_situation()
+            return advisor.evaluate(decision, situation)
+        except Exception as exc:
+            logger.warning("Judgment failed: %s", exc)
+            return {"verdict": "proceed", "reason": f"Judgment error: {exc}"}
+
+    def _record_episode(self, results: dict[str, Any]) -> None:
+        """Record this cycle as an episode in episodic memory."""
+        memory = self._modules.get("episodic_memory")
+        if memory is None:
+            return
+        try:
+            summary = results.get("summary", {})
+            financial = results.get("phases", {}).get("financial", {})
+            intel = results.get("phases", {}).get("intelligence", {})
+            decision = intel.get("decision", {})
+
+            context = {
+                "health_grade": summary.get("health_grade", "?"),
+                "churn_pct": self.snapshot.customers.get("churn_risk_pct", 0),
+                "stockout_risk": self.snapshot.inventory.get("stockout_risk", False),
+                "confidence_score": summary.get("confidence_score", 0),
+                "net_margin": financial.get("pnl", {}).get("net_margin_pct", 0),
+                "critical_alerts": self.snapshot.financial.get("critical_alerts", 0),
+            }
+
+            memory.record_episode(
+                decision_type=decision.get("action", "cycle").split()[0].lower() if decision.get("action") else "cycle",
+                action=summary.get("decision", "none"),
+                context=context,
+                outcome={
+                    "success": intel.get("stages_completed", 0) == 7,
+                    "confidence": summary.get("confidence_score", 0),
+                    "data_quality": summary.get("data_quality", 0),
+                },
+                goal=results.get("goal", ""),
+                confidence_score=summary.get("confidence_score", 0),
+            )
+        except Exception as exc:
+            logger.debug("Episode recording failed: %s", exc)
 
     # ── Helper methods ──
 
