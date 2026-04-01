@@ -91,6 +91,11 @@ class CoreOrchestrator:
             "growth_intelligence": ("core.intelligence.growth_intelligence", "GrowthIntelligence", {}),
             "human_communicator": ("core.intelligence.human_communicator", "HumanCommunicator", {}),
             "growth_planner": ("core.strategy.growth_planner", "GrowthPlanner", {}),
+            # Final layers — completing 27-layer plan
+            "reasoning_forum": ("core.intelligence.reasoning_forum", "ReasoningForum", {}),
+            "compute_superior": ("core.intelligence.compute_superior", "ComputeSuperior", {}),
+            "operational_mastery": ("core.intelligence.operational_mastery", "OperationalMastery", {}),
+            "multi_store": ("core.multi_store.store_manager", "MultiStoreManager", {}),
         }
 
         for name, (module_path, class_name, kwargs) in module_specs.items():
