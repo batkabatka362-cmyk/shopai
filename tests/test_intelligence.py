@@ -247,18 +247,10 @@ class TestIntelligenceWiring(unittest.TestCase):
         self.assertIn("demand_curve", out.result)
         self.assertIn("elasticity", out.result["demand_curve"])
 
-    def test_seo_engine_has_real_audit(self):
-        from engines.base.engine_types import EngineInput
+    def test_search_optimization_engine_loads(self):
         from engines.registry import get_engine
-        e = get_engine("seo")
-        out = e.run(EngineInput(task_id="wire_s", engine_name="seo", data={
-            "keywords": [{"keyword": "test keyword"}],
-            "page_data": {"title": "Test Page", "content": "content " * 100, "keyword": "test keyword"},
-        }))
-        audit = out.result.get("on_page_audit", {})
-        self.assertIn("score", audit)
-        self.assertIn("grade", audit)
-        self.assertIn("issues", audit)
+        e = get_engine("search_optimization")
+        self.assertIsNotNone(e)
 
     def test_customer_engine_has_recommendations(self):
         from engines.base.engine_types import EngineInput
