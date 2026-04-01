@@ -85,6 +85,12 @@ class CoreOrchestrator:
             "proactive_preparation": ("core.intelligence.proactive_preparation", "ProactivePreparation", {}),
             "self_diagnostics": ("core.self_monitor.self_diagnostics", "SelfDiagnostics", {}),
             "strategy_planner": ("core.strategy.strategy_planner", "StrategyPlanner", {}),
+            # Expert layers
+            "offer_architect": ("core.intelligence.offer_architect", "OfferArchitect", {}),
+            "compounding_optimizer": ("core.intelligence.compounding_optimizer", "CompoundingOptimizer", {}),
+            "growth_intelligence": ("core.intelligence.growth_intelligence", "GrowthIntelligence", {}),
+            "human_communicator": ("core.intelligence.human_communicator", "HumanCommunicator", {}),
+            "growth_planner": ("core.strategy.growth_planner", "GrowthPlanner", {}),
         }
 
         for name, (module_path, class_name, kwargs) in module_specs.items():
