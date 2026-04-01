@@ -68,15 +68,15 @@ class CoreOrchestrator:
             "event_reactor": ("core.reactor", "EventReactor", {}),
             "scheduler": ("core.scheduling", "SmartScheduler", {}),
             # New intelligence modules from research
-            "financial_depth": ("core.intelligence.financial_depth", "FinancialDepth", {}),
-            "marketing_tactics": ("core.intelligence.marketing_tactics", "MarketingTactics", {}),
-            "customer_journey": ("core.intelligence.customer_journey", "CustomerJourney", {}),
-            "supply_chain": ("core.intelligence.supply_chain", "SupplyChainIntelligence", {}),
+            "financial_depth": ("core.intelligence.financial", "FinancialDepth", {}),
+            "marketing_tactics": ("core.intelligence.marketing", "MarketingTactics", {}),
+            "customer_journey": ("core.intelligence.customer", "CustomerJourney", {}),
+            "supply_chain": ("core.intelligence.supply", "SupplyChainIntelligence", {}),
             # Thinking layers
             "goal_manager": ("core.goals.goal_manager", "GoalManager", {}),
             "episodic_memory": ("core.memory.episodic_memory", "EpisodicMemory", {}),
             "decision_narrator": ("core.intelligence.decision_narrator", "DecisionNarrator", {}),
-            "legal_compliance": ("core.intelligence.legal_compliance", "LegalCompliance", {}),
+            "legal_compliance": ("core.intelligence.compliance", "LegalCompliance", {}),
             # Feedback loop closers
             "causal_graph": ("core.causal.causal_graph", "CausalGraph", {}),
             "root_cause_analyzer": ("core.learning.root_cause_analyzer", "RootCauseAnalyzer", {}),
