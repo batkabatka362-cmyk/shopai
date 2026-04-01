@@ -12,98 +12,64 @@ from typing import Any
 # Core compliance knowledge organized by topic
 COMPLIANCE_KNOWLEDGE = {
     "supplements": {
-        "key_rule": (
-            "Supplements need the FDA disclaimer on all product pages and labels. "
-            "You CANNOT claim a supplement treats, cures, or prevents any disease."
-        ),
+        "key_rule": "Supplements need the FDA disclaimer. Cannot claim to treat, cure, or prevent disease.",
         "details": [
-            "Structure/function claims are allowed (e.g., 'supports immune health')",
-            "Disease claims are illegal without FDA drug approval (e.g., 'cures cancer')",
-            "The required disclaimer must appear near any health claim",
-            "GMP compliance (21 CFR Part 111) is required for manufacturing",
-            "Adverse event reporting is mandatory under DSHEA",
+            "Structure/function claims OK (e.g., 'supports immune health')",
+            "Disease claims illegal without FDA drug approval",
+            "GMP compliance (21 CFR Part 111) required for manufacturing",
         ],
         "common_violations": [
-            "Using before/after photos implying medical results",
-            "Claiming a supplement replaces prescription medication",
-            "Importing supplements without verifying ingredient legality",
-            "Failing to include the FDA disclaimer on product listings",
+            "Before/after photos implying medical results",
+            "Claiming supplement replaces prescription medication",
+            "Missing FDA disclaimer on product listings",
         ],
     },
     "cosmetics": {
-        "key_rule": (
-            "Cosmetics that claim to alter body structure or function are "
-            "classified as drugs by the FDA and require full drug approval."
-        ),
+        "key_rule": "Cosmetics claiming to alter body structure/function = drugs by FDA. Need drug approval.",
         "details": [
-            "'Makes skin look younger' = cosmetic claim (OK)",
-            "'Reduces wrinkles by 50%' = drug claim (NOT OK without approval)",
-            "'Anti-aging' is borderline — context determines classification",
-            "EU has stricter ingredient bans (1,300+ banned vs FDA's ~30)",
-            "Cosmetics do not need FDA pre-market approval but must be safe",
+            "'Makes skin look younger' = cosmetic (OK). 'Reduces wrinkles 50%' = drug (NOT OK)",
+            "EU bans 1,300+ ingredients vs FDA's ~30",
+            "Cosmetics do NOT need FDA pre-market approval but must be safe",
         ],
         "common_violations": [
-            "Making drug claims in product descriptions or ads",
-            "Using EU-banned ingredients while selling to EU customers",
-            "Not listing all ingredients on product labels",
-            "Claiming products are 'FDA approved' (cosmetics are not approved by FDA)",
+            "Drug claims in descriptions or ads",
+            "Claiming products are 'FDA approved' (cosmetics are never FDA approved)",
         ],
     },
     "counterfeit": {
-        "key_rule": (
-            "Selling counterfeit goods results in immediate account termination, "
-            "legal action from brand owners, and potential criminal prosecution."
-        ),
+        "key_rule": "Counterfeit goods = immediate account termination, legal action, criminal prosecution.",
         "details": [
-            "Even 'inspired by' products can trigger IP complaints if too similar",
-            "Using brand names in SEO keywords or product titles is infringement",
-            "Brand owners actively monitor platforms with automated tools",
-            "First-time offenses on Amazon often result in permanent suspension",
+            "'Inspired by' products can still trigger IP complaints",
+            "Brand names in SEO keywords = trademark infringement",
             "Customs can seize counterfeit imports at the border",
         ],
         "common_violations": [
             "Listing 'Nike style' or 'Gucci inspired' products",
-            "Using brand logos or trademarked patterns in product images",
-            "Dropshipping unbranded products that arrive with fake logos",
-            "Using brand names as hidden keywords for search optimization",
+            "Dropshipping products that arrive with fake brand logos",
         ],
     },
     "platform_policies": {
-        "key_rule": (
-            "Each platform has its own restricted product policies on top of "
-            "legal requirements. Violating either can result in account suspension."
-        ),
+        "key_rule": "Each platform has its own restrictions on top of legal requirements.",
         "details": [
-            "Shopify Payments restricts high-risk categories (use alt payment processor)",
+            "Shopify Payments restricts high-risk categories",
             "Amazon requires category approval for 20+ restricted categories",
-            "Facebook Ads rejects products with before/after imagery or bold health claims",
-            "Google Shopping requires structured data and policy compliance for approval",
-            "TikTok Shop has the strictest listing review process of all platforms",
+            "Facebook Ads rejects before/after imagery and bold health claims",
         ],
         "common_violations": [
-            "Running Facebook ads for supplements without proper disclaimers",
-            "Listing restricted products on Amazon without category approval",
+            "Running Facebook ads for supplements without disclaimers",
             "Using Shopify Payments for CBD or adult products",
-            "Advertising gambling-related products on Google",
         ],
     },
     "international_selling": {
-        "key_rule": (
-            "Selling internationally means complying with BOTH origin and "
-            "destination country regulations. Ignorance is not a defense."
-        ),
+        "key_rule": "Must comply with BOTH origin and destination country regulations.",
         "details": [
-            "EU CE marking is required for electronics, toys, and medical devices",
-            "Canada requires bilingual (EN/FR) product labeling",
-            "Australia has strict biosecurity — plant/animal products need permits",
-            "UK post-Brexit requires separate UKCA marking from EU CE",
-            "California Prop 65 warnings needed for products with listed chemicals",
+            "EU CE marking required for electronics, toys, medical devices",
+            "Canada requires bilingual (EN/FR) labels",
+            "California Prop 65 warnings for products with listed chemicals",
         ],
         "common_violations": [
             "Shipping electronics to EU without CE marking",
-            "Selling supplements in Australia without TGA compliance",
-            "Ignoring Prop 65 requirements for California customers",
-            "Not providing GDPR-compliant privacy notices for EU data",
+            "Ignoring Prop 65 for California customers",
         ],
     },
 }

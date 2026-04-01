@@ -1,10 +1,7 @@
 """Blacklist checker — screen products against compliance blacklists.
 
-Checks products for: restricted categories, banned substances,
-trademark keywords, and platform-specific policy violations.
-
-Input contract:  {status, data: {product_name, category, description, ingredients?, platform?}, meta, error}
-Output contract: {status, data: {result, violations, risk_assessment}, meta: {engine, confidence, timestamp}, error}
+Input:  {status, data: {product_name, category, description, ingredients?, platform?}, meta, error}
+Output: {status, data: {result, violations, risk_assessment}, meta, error}
 """
 from __future__ import annotations
 
@@ -18,14 +15,7 @@ from .logic import assess_risk_level, check_platform_compliance
 
 
 def check_blacklist(input_payload: dict[str, Any]) -> dict[str, Any]:
-    """Check a product against all blacklists — engine contract entry point.
-
-    Args:
-        input_payload: Engine contract dict with product data.
-
-    Returns:
-        Engine contract dict with pass/fail result and violation details.
-    """
+    """Check a product against all blacklists — engine contract entry point."""
     validation = _validate_input(input_payload)
     if not validation["valid"]:
         return _error_output(validation["reason"])
@@ -58,21 +48,12 @@ def check_blacklist(input_payload: dict[str, Any]) -> dict[str, Any]:
             "violation_count": len(violations),
             "risk_assessment": risk,
             "platform_compliance": platform_result,
-            "checked_against": [
-                "restricted_categories",
-                "banned_substances",
-                "trademark_keywords",
-                "platform_policies",
-            ],
         },
         "meta": {
             "engine": "blacklist_checker",
             "confidence": 0.90 if violations else 0.95,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "note": (
-                "Automated check — not a substitute for legal counsel. "
-                "Consult a compliance professional for regulated products."
-            ),
+            "note": "Automated check — not a substitute for legal counsel.",
         },
         "error": None,
     }

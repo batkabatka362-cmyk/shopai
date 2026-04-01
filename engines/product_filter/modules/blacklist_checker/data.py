@@ -119,44 +119,25 @@ COUNTRY_RESTRICTIONS = {
         "requires_fda": ["supplements", "cosmetics", "food", "medical devices"],
         "requires_fcc": ["electronics with radio/wifi"],
         "requires_cpsc": ["children's products", "consumer goods"],
-        "prop_65": "California requires Prop 65 warnings for products with listed chemicals",
+        "prop_65": "California requires Prop 65 warnings for listed chemicals",
     },
     "eu": {
         "requires_ce": ["electronics", "toys", "machinery", "medical devices"],
-        "gdpr": "Digital products must comply with GDPR for EU customers",
-        "reach": "Chemicals in products must comply with EU REACH regulation",
+        "reach": "Chemicals must comply with EU REACH regulation",
         "cosmetics_notification": "Cosmetics must be notified via CPNP portal",
     },
     "uk": {
         "requires_ukca": ["electronics", "toys", "machinery"],
         "post_brexit": "Separate compliance from EU since Jan 2021",
-        "cosmetics": "Must register with UK SCPN (post-Brexit equivalent of CPNP)",
     },
     "canada": {
-        "requires_nsc": ["consumer chemicals", "cosmetics"],
         "bilingual": "Product labels must be in English and French",
-        "cannabis": "Strictly regulated federally, different from US state laws",
+        "cannabis": "Strictly regulated federally",
     },
     "australia": {
-        "requires_accc": ["consumer goods with safety standards"],
-        "tga": "Therapeutic goods (supplements, skincare with claims) need TGA approval",
+        "tga": "Supplements and skincare with claims need TGA approval",
         "quarantine": "Strict biosecurity for plant/animal-derived products",
     },
-}
-
-# Platform policy reference URLs
-PLATFORM_POLICY_LINKS = {
-    "shopify_aup": "https://www.shopify.com/legal/aup",
-    "shopify_payments_tos": "https://www.shopify.com/legal/terms-payments-us",
-    "amazon_restricted": "https://sellercentral.amazon.com/gp/help/G200164330",
-    "amazon_ip_policy": "https://sellercentral.amazon.com/gp/help/G201361070",
-    "facebook_commerce": "https://www.facebook.com/policies/commerce",
-    "facebook_ads": "https://www.facebook.com/policies/ads/",
-    "tiktok_seller": "https://seller.tiktok.com/university/policy",
-    "google_shopping": "https://support.google.com/merchants/answer/6149970",
-    "fda_cosmetics": "https://www.fda.gov/cosmetics",
-    "fda_supplements": "https://www.fda.gov/food/dietary-supplements",
-    "cpsc_recalls": "https://www.cpsc.gov/Recalls",
 }
 
 

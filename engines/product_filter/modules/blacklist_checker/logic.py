@@ -1,9 +1,4 @@
-"""Blacklist decision logic — risk assessment, alternatives, platform compliance.
-
-Functions that interpret raw blacklist check results and provide
-actionable guidance: overall risk level, legal alternatives for
-blocked products, and platform-specific compliance details.
-"""
+"""Blacklist decision logic — risk assessment, alternatives, platform compliance."""
 from __future__ import annotations
 
 from typing import Any
@@ -46,14 +41,7 @@ _ALTERNATIVE_MAP = {
 
 
 def assess_risk_level(violations: list[dict[str, Any]]) -> dict[str, Any]:
-    """Assess overall risk based on all detected violations.
-
-    Args:
-        violations: List of violation dicts with keys: category, severity, detail
-
-    Returns:
-        Overall risk assessment with recommendation.
-    """
+    """Assess overall risk based on all detected violations."""
     if not violations:
         return {
             "risk_level": "clear",
@@ -105,14 +93,7 @@ def assess_risk_level(violations: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def suggest_alternatives(blocked_product: str) -> dict[str, Any]:
-    """Suggest legal alternatives for a blocked or restricted product.
-
-    Args:
-        blocked_product: The product description or category that was blocked.
-
-    Returns:
-        Dict with alternatives and pivot strategy advice.
-    """
+    """Suggest legal alternatives for a blocked or restricted product."""
     product_lower = blocked_product.lower()
     suggestions = []
     matched_category = None
@@ -146,19 +127,8 @@ def suggest_alternatives(blocked_product: str) -> dict[str, Any]:
     }
 
 
-def check_platform_compliance(
-    product: dict[str, Any],
-    platform: str,
-) -> dict[str, Any]:
-    """Check product compliance for a specific platform.
-
-    Args:
-        product: Product dict with keys like name, category, description.
-        platform: Target platform (shopify, amazon, facebook, google, tiktok).
-
-    Returns:
-        Platform-specific compliance result.
-    """
+def check_platform_compliance(product: dict[str, Any], platform: str) -> dict[str, Any]:
+    """Check product compliance for a specific platform (shopify, amazon, etc.)."""
     platform_key = platform.lower().strip()
     platform_rules = PLATFORM_RESTRICTIONS.get(platform_key)
 
