@@ -133,7 +133,7 @@ def recommend_supplier(scored_list: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_supplier_shortlist(suppliers: list[dict[str, Any]], max: int = 3) -> dict[str, Any]:
+def build_supplier_shortlist(suppliers: list[dict[str, Any]], max_suppliers: int = 3) -> dict[str, Any]:
     """Build a shortlist of top suppliers with geographic diversity.
 
     Ensures not all selected suppliers are from the same country,
@@ -147,11 +147,11 @@ def build_supplier_shortlist(suppliers: list[dict[str, Any]], max: int = 3) -> d
 
     selected: list[dict[str, Any]] = []
     countries_used: dict[str, int] = {}
-    max_same_country = max(1, max - 1)  # At least one slot reserved for diversity
+    max_same_country = max(1, max_suppliers - 1)  # At least one slot reserved for diversity
 
     # First pass: greedy selection with diversity constraint
     for supplier in viable:
-        if len(selected) >= max:
+        if len(selected) >= max_suppliers:
             break
         country = supplier.get("country", "unknown")
         if countries_used.get(country, 0) >= max_same_country:
@@ -160,9 +160,9 @@ def build_supplier_shortlist(suppliers: list[dict[str, Any]], max: int = 3) -> d
         countries_used[country] = countries_used.get(country, 0) + 1
 
     # Second pass: fill remaining slots if diversity prevented filling
-    if len(selected) < max:
+    if len(selected) < max_suppliers:
         for supplier in viable:
-            if len(selected) >= max:
+            if len(selected) >= max_suppliers:
                 break
             if supplier not in selected:
                 selected.append(supplier)
