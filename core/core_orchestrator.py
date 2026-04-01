@@ -56,7 +56,7 @@ class CoreOrchestrator:
                 "shop_url": os.getenv("SHOPAI_SHOPIFY_URL", ""),
                 "api_key": os.getenv("SHOPAI_SHOPIFY_KEY", ""),
             }),
-            "intelligence_loop": ("core.intelligence_loop", "IntelligenceLoop", {}),
+            "intelligence_loop": ("core.intelligence.loop", "IntelligenceLoop", {}),
             "financial_brain": ("core.intelligence.financial_brain", "FinancialBrain", {}),
             "campaign_optimizer": ("core.intelligence.campaign_optimizer", "CampaignOptimizer", {}),
             "ads_intelligence": ("core.intelligence.ads_intelligence", "AdsIntelligence", {}),
