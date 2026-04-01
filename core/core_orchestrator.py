@@ -3,11 +3,14 @@
 Unlike MainOrchestrator (which routes tasks to engines), CoreOrchestrator
 connects the ~17 real intelligence modules into one coordinated decision cycle:
 
-    Fetch Data → Financial Analysis → Campaign Analysis → Intelligence Loop
-    → Strategy Optimization → Event Processing → Health Report
+    Fetch Data → Snapshot → Prioritize → Financial Analysis → Campaign Analysis
+    → Intelligence Loop → Strategy Optimization → Event Processing → Health Report
+    → Journal
 
 Each cycle produces a unified result with insights from all subsystems.
 Outcomes feed back into learning, closing the loop.
+
+New in v2: StoreSnapshot, PriorityEngine, ActionCoordinator, CycleJournal
 """
 from __future__ import annotations
 
@@ -17,6 +20,10 @@ from typing import Any
 
 from utils.logger import get_logger
 from utils.helpers import generate_id
+from core.orchestrator.store_snapshot import StoreSnapshot
+from core.orchestrator.priority_engine import PriorityEngine
+from core.orchestrator.action_coordinator import ActionCoordinator
+from core.orchestrator.cycle_journal import CycleJournal
 
 logger = get_logger("core_orchestrator")
 
@@ -27,6 +34,7 @@ class CoreOrchestrator:
     Usage:
         orchestrator = CoreOrchestrator()
         result = orchestrator.run_cycle(goal="maximize_profit")
+        situation = orchestrator.get_situation()
     """
 
     def __init__(self) -> None:
@@ -34,6 +42,11 @@ class CoreOrchestrator:
         self._cycle_count = 0
         self._history: list[dict[str, Any]] = []
         self._initialized = False
+        # New coordination components
+        self.snapshot = StoreSnapshot.load()
+        self.priority_engine = PriorityEngine()
+        self.action_coordinator = ActionCoordinator()
+        self.journal = CycleJournal()
         self._init_modules()
 
     def _init_modules(self) -> None:
@@ -146,6 +159,31 @@ class CoreOrchestrator:
         health = self._phase_health()
         results["phases"]["health"] = health
 
+        # ── Update StoreSnapshot ──
+        self.snapshot.update_financial(financial)
+        self.snapshot.update_products(intel)
+        self.snapshot.update_inventory(data.get("products", []))
+        self.snapshot.update_customers(data.get("customers", []), data.get("orders", []))
+        self.snapshot.update_marketing(campaigns)
+        self.snapshot.update_health(health)
+        self.snapshot.update_events(events)
+
+        # ── Compute Priorities ──
+        strategy_weights = None
+        opt = self._modules.get("strategy_optimizer")
+        if opt:
+            try:
+                strategy_weights = opt.get_adjusted_weights(goal)
+            except Exception:
+                pass
+        priorities = self.priority_engine.compute(
+            self.snapshot.get_situation(), goal=goal, strategy_weights=strategy_weights,
+        )
+        self.snapshot.set_priorities(priorities)
+        self.snapshot.finalize(cycle_id)
+        self.snapshot.persist()
+        results["priorities"] = priorities
+
         # ── Record KPIs ──
         self._record_kpis(cycle_id, intel, goal)
 
@@ -153,6 +191,9 @@ class CoreOrchestrator:
         elapsed = time.monotonic() - start
         results["elapsed_seconds"] = round(elapsed, 3)
         results["summary"] = self._compute_summary(results)
+
+        # ── Journal ──
+        self.journal.record_cycle(results)
 
         self._history.append({
             "cycle_id": cycle_id,
@@ -163,10 +204,11 @@ class CoreOrchestrator:
         })
 
         logger.info(
-            "Cycle %s completed in %.2fs — decision: %s, confidence: %s",
+            "Cycle %s completed in %.2fs — decision: %s, confidence: %s, top_priority: %s",
             cycle_id, elapsed,
             results["summary"].get("decision", "none"),
             results["summary"].get("confidence", "unknown"),
+            priorities[0]["domain"] if priorities else "none",
         )
 
         return results
@@ -464,8 +506,60 @@ class CoreOrchestrator:
             "modules_count": len(self._modules),
             "cycles_completed": self._cycle_count,
             "last_cycle": self._history[-1] if self._history else None,
+            "snapshot_age": round(time.time() - self.snapshot.last_updated, 1) if self.snapshot.last_updated else None,
+            "journal_entries": self.journal.get_stats().get("total_entries", 0),
+            "actions_in_flight": len(self.action_coordinator.get_in_flight()),
         }
+
+    def get_situation(self) -> dict[str, Any]:
+        """Get current store situation without running a cycle."""
+        situation = self.snapshot.get_situation()
+        situation["alerts"] = self.snapshot.get_alerts()
+        situation["patterns"] = self.journal.detect_patterns()
+        return situation
+
+    def check_action(self, action_type: str, target_id: str = "") -> dict[str, Any]:
+        """Check if an action is allowed (no conflicts, no cooldowns)."""
+        return self.action_coordinator.check(action_type, target_id)
+
+    def execute_action(self, action_type: str, target_id: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute an action with coordination (conflict check + record)."""
+        verdict = self.action_coordinator.check(action_type, target_id)
+        if not verdict["allowed"]:
+            return {"status": "blocked", **verdict}
+
+        action_id = self.action_coordinator.start_action(action_type, target_id)
+        # Actual execution would go here via ExecutionBridge
+        self.action_coordinator.finish_action(action_type, target_id, "success", metadata)
+        return {"status": "executed", "action_id": action_id, "action_type": action_type}
+
+    def react(self, event_type: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Handle a real-time event. Critical events trigger immediate mini-cycle."""
+        reactor = self._modules.get("event_reactor")
+        if reactor:
+            try:
+                reactor.fire(event_type, data)
+            except Exception as exc:
+                logger.warning("Event reactor failed: %s", exc)
+
+        self.journal.record_event(event_type, data)
+
+        # Critical events trigger immediate cycle
+        critical_events = {"revenue.drop", "product.out_of_stock", "order.cancelled"}
+        if event_type in critical_events:
+            logger.info("Critical event %s — triggering immediate cycle", event_type)
+            return self.run_cycle()
+
+        return {"status": "processed", "event_type": event_type}
 
     def get_history(self, limit: int = 10) -> list[dict[str, Any]]:
         """Get recent cycle history."""
         return self._history[-limit:]
+
+    def get_journal_stats(self) -> dict[str, Any]:
+        """Get journal statistics and patterns."""
+        return {
+            "stats": self.journal.get_stats(),
+            "patterns": self.journal.detect_patterns(),
+            "recent_decisions": self.journal.get_decisions(limit=5),
+        }
