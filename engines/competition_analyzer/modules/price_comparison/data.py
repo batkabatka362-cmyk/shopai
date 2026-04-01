@@ -1,105 +1,64 @@
 """
 Price Comparison — Reference Data
 ===================================
-Contains price distribution benchmarks by category, typical price ranges,
+Price distribution benchmarks by category, typical price ranges,
 price-to-review correlation data, and price war indicator thresholds.
-These serve as defaults when live market data is unavailable or incomplete.
 """
 
-# --- Percentile Labels ---
-
-PERCENTILE_LABELS = {
-    "p25": 25,
-    "p50": 50,
-    "p75": 75,
-}
-
-# --- Category Price Benchmarks ---
+PERCENTILE_LABELS = {"p25": 25, "p50": 50, "p75": 75}
 
 CATEGORY_PRICE_BENCHMARKS = {
     "electronics": {
-        "typical_median": 49.99,
-        "budget_ceiling": 25.00,
-        "premium_floor": 99.99,
-        "avg_margin_pct": 25,
-        "price_sensitivity": "high",
-        "charm_pricing_effective": True,
+        "typical_median": 49.99, "budget_ceiling": 25.00,
+        "premium_floor": 99.99, "avg_margin_pct": 25,
+        "price_sensitivity": "high", "charm_pricing_effective": True,
     },
     "home_garden": {
-        "typical_median": 34.99,
-        "budget_ceiling": 15.00,
-        "premium_floor": 79.99,
-        "avg_margin_pct": 35,
-        "price_sensitivity": "moderate",
-        "charm_pricing_effective": True,
+        "typical_median": 34.99, "budget_ceiling": 15.00,
+        "premium_floor": 79.99, "avg_margin_pct": 35,
+        "price_sensitivity": "moderate", "charm_pricing_effective": True,
     },
     "beauty": {
-        "typical_median": 24.99,
-        "budget_ceiling": 10.00,
-        "premium_floor": 59.99,
-        "avg_margin_pct": 50,
-        "price_sensitivity": "moderate",
-        "charm_pricing_effective": True,
+        "typical_median": 24.99, "budget_ceiling": 10.00,
+        "premium_floor": 59.99, "avg_margin_pct": 50,
+        "price_sensitivity": "moderate", "charm_pricing_effective": True,
     },
     "clothing": {
-        "typical_median": 29.99,
-        "budget_ceiling": 12.00,
-        "premium_floor": 69.99,
-        "avg_margin_pct": 45,
-        "price_sensitivity": "moderate",
-        "charm_pricing_effective": True,
+        "typical_median": 29.99, "budget_ceiling": 12.00,
+        "premium_floor": 69.99, "avg_margin_pct": 45,
+        "price_sensitivity": "moderate", "charm_pricing_effective": True,
     },
     "toys_games": {
-        "typical_median": 22.99,
-        "budget_ceiling": 10.00,
-        "premium_floor": 49.99,
-        "avg_margin_pct": 40,
-        "price_sensitivity": "high",
-        "charm_pricing_effective": True,
+        "typical_median": 22.99, "budget_ceiling": 10.00,
+        "premium_floor": 49.99, "avg_margin_pct": 40,
+        "price_sensitivity": "high", "charm_pricing_effective": True,
     },
     "sports_outdoors": {
-        "typical_median": 39.99,
-        "budget_ceiling": 15.00,
-        "premium_floor": 89.99,
-        "avg_margin_pct": 30,
-        "price_sensitivity": "moderate",
-        "charm_pricing_effective": True,
+        "typical_median": 39.99, "budget_ceiling": 15.00,
+        "premium_floor": 89.99, "avg_margin_pct": 30,
+        "price_sensitivity": "moderate", "charm_pricing_effective": True,
     },
     "health_wellness": {
-        "typical_median": 27.99,
-        "budget_ceiling": 12.00,
-        "premium_floor": 59.99,
-        "avg_margin_pct": 55,
-        "price_sensitivity": "low",
-        "charm_pricing_effective": False,
+        "typical_median": 27.99, "budget_ceiling": 12.00,
+        "premium_floor": 59.99, "avg_margin_pct": 55,
+        "price_sensitivity": "low", "charm_pricing_effective": False,
     },
     "pet_supplies": {
-        "typical_median": 19.99,
-        "budget_ceiling": 8.00,
-        "premium_floor": 44.99,
-        "avg_margin_pct": 40,
-        "price_sensitivity": "moderate",
-        "charm_pricing_effective": True,
+        "typical_median": 19.99, "budget_ceiling": 8.00,
+        "premium_floor": 44.99, "avg_margin_pct": 40,
+        "price_sensitivity": "moderate", "charm_pricing_effective": True,
     },
     "office_products": {
-        "typical_median": 18.99,
-        "budget_ceiling": 7.00,
-        "premium_floor": 49.99,
-        "avg_margin_pct": 35,
-        "price_sensitivity": "high",
-        "charm_pricing_effective": True,
+        "typical_median": 18.99, "budget_ceiling": 7.00,
+        "premium_floor": 49.99, "avg_margin_pct": 35,
+        "price_sensitivity": "high", "charm_pricing_effective": True,
     },
     "luxury": {
-        "typical_median": 149.99,
-        "budget_ceiling": 75.00,
-        "premium_floor": 299.99,
-        "avg_margin_pct": 60,
-        "price_sensitivity": "low",
-        "charm_pricing_effective": False,
+        "typical_median": 149.99, "budget_ceiling": 75.00,
+        "premium_floor": 299.99, "avg_margin_pct": 60,
+        "price_sensitivity": "low", "charm_pricing_effective": False,
     },
 }
-
-# --- Typical Price Ranges ---
 
 TYPICAL_PRICE_RANGES = {
     "impulse_buy": {"min": 1.00, "max": 20.00, "decision_time": "seconds"},
@@ -108,8 +67,6 @@ TYPICAL_PRICE_RANGES = {
     "significant_purchase": {"min": 150.00, "max": 500.00, "decision_time": "days"},
     "major_purchase": {"min": 500.00, "max": 5000.00, "decision_time": "weeks"},
 }
-
-# --- Price-to-Review Correlation Data ---
 
 PRICE_REVIEW_CORRELATION = {
     "strong_negative": {
@@ -120,21 +77,19 @@ PRICE_REVIEW_CORRELATION = {
     "moderate_negative": {
         "coefficient_range": (-0.5, -0.2),
         "meaning": "Some relationship between lower price and more sales.",
-        "implication": "Price matters but is not the only factor. Balance price and value.",
+        "implication": "Price matters but is not the only factor.",
     },
     "neutral": {
         "coefficient_range": (-0.2, 0.2),
         "meaning": "Price has little correlation with review volume.",
-        "implication": "Other factors drive sales. Focus on product quality and marketing.",
+        "implication": "Other factors drive sales. Focus on quality and marketing.",
     },
     "positive": {
         "coefficient_range": (0.2, 1.0),
         "meaning": "Higher prices correlate with more reviews/sales.",
-        "implication": "Prestige market. Higher price may signal quality to buyers.",
+        "implication": "Prestige market. Higher price may signal quality.",
     },
 }
-
-# --- Price War Indicators ---
 
 PRICE_WAR_INDICATORS = {
     "severity_thresholds": {
@@ -155,22 +110,14 @@ PRICE_WAR_INDICATORS = {
         "differentiate": "Add features, bundles, or services competitors lack.",
         "retreat": "Exit the price segment and reposition upmarket.",
     },
-    "typical_duration_weeks": {
-        "mild": 4,
-        "moderate": 8,
-        "severe": 16,
-    },
+    "typical_duration_weeks": {"mild": 4, "moderate": 8, "severe": 16},
 }
-
-# --- Price Bucketing for Gap Analysis ---
 
 PRICE_GAP_THRESHOLDS = {
     "significant_gap_pct": 15.0,
     "major_gap_pct": 30.0,
     "opportunity_gap_pct": 20.0,
 }
-
-# --- Margin Benchmarks by Business Model ---
 
 MARGIN_BENCHMARKS = {
     "private_label": {"healthy": 40, "acceptable": 25, "critical": 15},
