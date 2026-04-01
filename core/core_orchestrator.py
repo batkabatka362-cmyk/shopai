@@ -77,6 +77,10 @@ class CoreOrchestrator:
             "episodic_memory": ("core.memory.episodic_memory", "EpisodicMemory", {}),
             "decision_narrator": ("core.intelligence.decision_narrator", "DecisionNarrator", {}),
             "legal_compliance": ("core.intelligence.legal_compliance", "LegalCompliance", {}),
+            # Feedback loop closers
+            "causal_graph": ("core.causal.causal_graph", "CausalGraph", {}),
+            "root_cause_analyzer": ("core.learning.root_cause_analyzer", "RootCauseAnalyzer", {}),
+            "capability_assessor": ("core.self_monitor.capability_assessor", "CapabilityAssessor", {}),
         }
 
         for name, (module_path, class_name, kwargs) in module_specs.items():
@@ -101,7 +105,14 @@ class CoreOrchestrator:
                 failure_prevention=self._modules.get("failure_prevention"),
                 action_coordinator=self.action_coordinator,
             )
-            logger.info("Thinking layers initialized (judgment_advisor, failure_prevention)")
+            # Wire cross-references for modules that need episodic memory
+            rca = self._modules.get("root_cause_analyzer")
+            if rca:
+                rca._memory = self._modules.get("episodic_memory")
+            cap = self._modules.get("capability_assessor")
+            if cap:
+                cap._memory = self._modules.get("episodic_memory")
+            logger.info("Thinking layers initialized (judgment, failure_prevention, root_cause, capability)")
         except Exception as exc:
             logger.warning("Thinking layers failed: %s", exc)
 
@@ -219,7 +230,11 @@ class CoreOrchestrator:
         events = self._phase_events(results)
         results["phases"]["events"] = events
 
-        # ── Phase 14: JUDGMENT ──
+        # ── Phase 11: CAUSAL ANALYSIS ──
+        causal = self._phase_causal(events)
+        results["phases"]["causal"] = causal
+
+        # ── Phase 12: JUDGMENT ──
         judgment = self._phase_judgment(intel, data)
         results["phases"]["judgment"] = judgment
 
@@ -233,6 +248,16 @@ class CoreOrchestrator:
             results["delayed"] = True
             results["delay_reason"] = judgment.get("reason", "Conditions not optimal")
             logger.info("Cycle %s DELAYED by judgment: %s", cycle_id, judgment.get("reason"))
+
+        # ── Phase 15: EXECUTION (only if not blocked/delayed) ──
+        if not results.get("blocked") and not results.get("delayed"):
+            execution = self._phase_execution(intel, data)
+            results["phases"]["execution"] = execution
+        else:
+            results["phases"]["execution"] = {
+                "status": "skipped",
+                "reason": results.get("block_reason") or results.get("delay_reason", "judgment blocked"),
+            }
 
         # ── Update StoreSnapshot ──
         self.snapshot.update_financial(financial)
@@ -560,6 +585,115 @@ class CoreOrchestrator:
             logger.warning("Supply chain failed: %s", exc)
             return {"status": "error", "error": str(exc)}
 
+    def _phase_causal(self, events: dict[str, Any]) -> dict[str, Any]:
+        """Run causal analysis on events to detect cause-effect chains."""
+        cg = self._modules.get("causal_graph")
+        if cg is None:
+            return {"status": "unavailable"}
+        try:
+            event_list = []
+            for detail in events.get("details", []):
+                if isinstance(detail, str) and ":" in detail:
+                    event_type = detail.split(":")[0]
+                    event_list.append({"type": event_type, "days_ago": 0})
+
+            # Also check snapshot for metrics
+            metrics = {
+                "revenue_change": self.snapshot.financial.get("net_profit", 0),
+                "health_grade": self.snapshot.financial.get("health_grade", "?"),
+            }
+            return cg.analyze(event_list, metrics)
+        except Exception as exc:
+            logger.warning("Causal analysis failed: %s", exc)
+            return {"status": "error", "error": str(exc)}
+
+    def _phase_execution(self, intel: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        """Execute approved actions via ExecutionBridge.
+
+        Converts IntelligenceLoop output into ExecutionBridge format,
+        registers executors, auto-approves low/medium risk, executes.
+        """
+        try:
+            from core.bridge.execution_bridge import ExecutionBridge
+
+            eb = ExecutionBridge()
+
+            # Register available executors
+            try:
+                from execution.shopify.product_creator import ProductCreator
+                from execution.shopify.product_updater import ProductUpdater
+                eb.register_executor("shopify", "product.create_listing", ProductCreator())
+                eb.register_executor("shopify", "pricing.update", ProductUpdater())
+            except Exception:
+                pass
+
+            # Convert IntelligenceLoop output to ExecutionBridge format
+            decision = intel.get("decision", {})
+            execution = intel.get("execution", {})
+            products = data.get("products", [])
+
+            # Build execution-ready payload
+            bridge_input: dict[str, Any] = {}
+
+            # Map scored products as selected products
+            analysis = intel.get("analysis", {})
+            if isinstance(analysis, dict):
+                scored = analysis.get("products", {}).get("scored", [])
+                viable = [p for p in scored if isinstance(p, dict) and p.get("viable")]
+                if viable:
+                    bridge_input["selected_products"] = viable[:5]
+
+            # Map pricing decisions
+            action_str = decision.get("action", "")
+            if "pric" in action_str.lower():
+                recs = []
+                for p in products[:5]:
+                    if isinstance(p, dict):
+                        recs.append({
+                            "product_id": p.get("id"),
+                            "action": "increase_price" if "increase" in action_str.lower() or "optim" in action_str.lower() else "can_discount",
+                            "current_price": p.get("price"),
+                        })
+                if recs:
+                    bridge_input["pricing_recommendations"] = recs
+
+            # Map customer churn risks
+            customers = data.get("customers", [])
+            churn_risks = [
+                {"customer_id": c.get("id"), "risk_level": "high"}
+                for c in customers
+                if isinstance(c, dict) and c.get("orders_count", 0) == 0
+            ]
+            if churn_risks:
+                bridge_input["churn_risks"] = churn_risks
+
+            # Plan actions
+            planned = eb.plan_actions("core_orchestrator", bridge_input)
+
+            # Auto-approve low/medium priority actions
+            for action in eb.get_queue():
+                if action.get("priority") in ("low", "medium"):
+                    eb.approve_action(action["action_id"])
+
+            # Execute approved actions
+            executed = eb.execute_approved()
+
+            # Record outcomes
+            success_count = sum(1 for e in executed if e.get("status") == "executed")
+            fail_count = sum(1 for e in executed if e.get("status") == "failed")
+
+            return {
+                "status": "executed",
+                "planned": len(planned),
+                "executed": len(executed),
+                "success_count": success_count,
+                "fail_count": fail_count,
+                "details": executed[:10],
+            }
+        except Exception as exc:
+            logger.warning("Execution phase failed: %s", exc)
+            return {"status": "error", "error": str(exc)}
+
     def _phase_compliance(self, data: dict[str, Any]) -> dict[str, Any]:
         """Run legal compliance checks on products."""
         compliance = self._modules.get("legal_compliance")
@@ -646,18 +780,38 @@ class CoreOrchestrator:
                 "critical_alerts": self.snapshot.financial.get("critical_alerts", 0),
             }
 
-            memory.record_episode(
-                decision_type=decision.get("action", "cycle").split()[0].lower() if decision.get("action") else "cycle",
+            success = intel.get("stages_completed", 0) == 7 and not results.get("blocked", False)
+            dt = decision.get("action", "cycle").split()[0].lower() if decision.get("action") else "cycle"
+
+            episode_id = memory.record_episode(
+                decision_type=dt,
                 action=summary.get("decision", "none"),
                 context=context,
                 outcome={
-                    "success": intel.get("stages_completed", 0) == 7,
+                    "success": success,
                     "confidence": summary.get("confidence_score", 0),
                     "data_quality": summary.get("data_quality", 0),
+                    "blocked": results.get("blocked", False),
                 },
                 goal=results.get("goal", ""),
                 confidence_score=summary.get("confidence_score", 0),
             )
+
+            # Run RootCauseAnalyzer on failures
+            if not success:
+                rca = self._modules.get("root_cause_analyzer")
+                if rca:
+                    try:
+                        episode = {
+                            "episode_id": episode_id,
+                            "decision_type": dt,
+                            "action": summary.get("decision", "none"),
+                            "context": context,
+                        }
+                        rca_result = rca.analyze_failure(episode)
+                        logger.info("Root cause analysis: %s", rca_result.get("lesson", "")[:100])
+                    except Exception:
+                        pass
         except Exception as exc:
             logger.debug("Episode recording failed: %s", exc)
 

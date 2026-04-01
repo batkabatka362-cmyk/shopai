@@ -15,7 +15,7 @@ class TestCoreOrchestratorInit:
         c = CoreOrchestrator()
         status = c.status()
         assert status["initialized"] is True
-        assert status["modules_count"] == 22
+        assert status["modules_count"] == 25
 
     def test_expected_modules_present(self):
         c = CoreOrchestrator()
@@ -103,7 +103,7 @@ class TestRunCycle:
         summary = result["summary"]
         for key in ["decision", "confidence", "confidence_score", "data_quality", "modules_active"]:
             assert key in summary
-        assert summary["modules_active"] == 22
+        assert summary["modules_active"] == 25
 
     def test_different_goals(self):
         c = CoreOrchestrator()
