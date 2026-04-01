@@ -1,8 +1,15 @@
 """IntelligenceLoop — the BRAIN of ShopAI.
 
-Flow file only — calls stage functions, contains no logic.
+ONE connected loop: Data -> Decision -> Execution -> Result -> Learning -> Better Decision
 
-Stages: Clean → Analyze → Decide → Plan → Execute → Track → Learn
+Stages:
+  1. CLEAN   — validate, fix, score data quality
+  2. ANALYZE — compute scores, detect patterns, assess opportunity
+  3. DECIDE  — rank multiple options, apply learning, calculate real confidence
+  4. PLAN    — create specific executable actions
+  5. EXECUTE — format for target systems (Shopify, email, ads)
+  6. TRACK   — record what was decided and why
+  7. LEARN   — compare outcomes, adjust weights, feed back to stage 3
 """
 from __future__ import annotations
 
@@ -24,9 +31,23 @@ from .helpers import summarize, abort
 
 logger = get_logger("intelligence_loop")
 
+# Learning hyperparameters — exposed as module-level constants
+LEARNABLE_FACTORS = ("margin", "demand", "competition", "shipping", "rating", "review", "price", "velocity")
+MAX_ADJUSTMENT = 0.30  # Maximum deviation from base weight
+RATE = 0.05            # How fast to adjust (small = stable, large = reactive)
+DECAY = 0.95           # How fast old learning fades (0.95 = 5% decay per cycle)
+
+__all__ = ["IntelligenceLoop", "get_learned_weights"]
+
 
 class IntelligenceLoop:
-    """7-stage intelligence loop — flow orchestrator."""
+    """Complete closed intelligence loop with multi-factor confidence and adaptive learning."""
+
+    # Expose constants as class attributes
+    LEARNABLE_FACTORS = LEARNABLE_FACTORS
+    MAX_ADJUSTMENT = MAX_ADJUSTMENT
+    LEARNING_RATE = RATE
+    DECAY = DECAY
 
     def __init__(self) -> None:
         self._history: list[dict[str, Any]] = []
@@ -47,7 +68,7 @@ class IntelligenceLoop:
         analysis = stage_analyze(clean_result["data"], goal)
         context["analysis"] = analysis
 
-        # Stage 3: DECIDE
+        # Stage 3: DECIDE — multi-option with real confidence
         decision = stage_decide(analysis, clean_result, goal)
         context["decision"] = decision
 
