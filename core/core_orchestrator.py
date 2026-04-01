@@ -67,6 +67,11 @@ class CoreOrchestrator:
             "system_health": ("core.intelligence.system_health", "SystemHealthReport", {}),
             "event_reactor": ("core.reactor", "EventReactor", {}),
             "scheduler": ("core.scheduling", "SmartScheduler", {}),
+            # New intelligence modules from research
+            "financial_depth": ("core.intelligence.financial_depth", "FinancialDepth", {}),
+            "marketing_tactics": ("core.intelligence.marketing_tactics", "MarketingTactics", {}),
+            "customer_journey": ("core.intelligence.customer_journey", "CustomerJourney", {}),
+            "supply_chain": ("core.intelligence.supply_chain", "SupplyChainIntelligence", {}),
         }
 
         for name, (module_path, class_name, kwargs) in module_specs.items():
@@ -158,6 +163,22 @@ class CoreOrchestrator:
         # ── Phase 8: HEALTH REPORT ──
         health = self._phase_health()
         results["phases"]["health"] = health
+
+        # ── Phase 9: FINANCIAL DEPTH (expert-level) ──
+        fin_depth = self._phase_financial_depth(data, cfg)
+        results["phases"]["financial_depth"] = fin_depth
+
+        # ── Phase 10: MARKETING TACTICS ──
+        mkt_tactics = self._phase_marketing_tactics(data, cfg)
+        results["phases"]["marketing_tactics"] = mkt_tactics
+
+        # ── Phase 11: CUSTOMER JOURNEY ──
+        journey = self._phase_customer_journey(data)
+        results["phases"]["customer_journey"] = journey
+
+        # ── Phase 12: SUPPLY CHAIN ──
+        supply = self._phase_supply_chain(data)
+        results["phases"]["supply_chain"] = supply
 
         # ── Update StoreSnapshot ──
         self.snapshot.update_financial(financial)
@@ -413,6 +434,65 @@ class CoreOrchestrator:
             return health.generate()
         except Exception as exc:
             logger.warning("Health report failed: %s", exc)
+            return {"status": "error", "error": str(exc)}
+
+    def _phase_financial_depth(self, data: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+        """Run expert-level financial analysis: tax nexus, BNPL, dim shipping, working capital."""
+        depth = self._modules.get("financial_depth")
+        if depth is None:
+            return {"status": "unavailable"}
+        try:
+            return depth.full_analysis(
+                products=data.get("products", []),
+                orders=data.get("orders", []),
+                revenue_by_state=cfg.get("revenue_by_state"),
+                current_processor=cfg.get("payment_processor", "shopify_payments"),
+            )
+        except Exception as exc:
+            logger.warning("Financial depth failed: %s", exc)
+            return {"status": "error", "error": str(exc)}
+
+    def _phase_marketing_tactics(self, data: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+        """Run marketing tactics analysis: creative fatigue, retargeting, influencer strategy."""
+        tactics = self._modules.get("marketing_tactics")
+        if tactics is None:
+            return {"status": "unavailable"}
+        try:
+            return tactics.full_analysis(
+                campaigns=cfg.get("campaigns"),
+                products=data.get("products", []),
+                customers=data.get("customers", []),
+            )
+        except Exception as exc:
+            logger.warning("Marketing tactics failed: %s", exc)
+            return {"status": "error", "error": str(exc)}
+
+    def _phase_customer_journey(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Run customer journey analysis: lifecycle segmentation, winback, surprise & delight."""
+        journey = self._modules.get("customer_journey")
+        if journey is None:
+            return {"status": "unavailable"}
+        try:
+            return journey.full_analysis(
+                customers=data.get("customers", []),
+                orders=data.get("orders", []),
+            )
+        except Exception as exc:
+            logger.warning("Customer journey failed: %s", exc)
+            return {"status": "error", "error": str(exc)}
+
+    def _phase_supply_chain(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Run supply chain analysis: reorder points, dead stock, shipping, returns."""
+        supply = self._modules.get("supply_chain")
+        if supply is None:
+            return {"status": "unavailable"}
+        try:
+            return supply.full_analysis(
+                products=data.get("products", []),
+                orders=data.get("orders", []),
+            )
+        except Exception as exc:
+            logger.warning("Supply chain failed: %s", exc)
             return {"status": "error", "error": str(exc)}
 
     # ── Helper methods ──

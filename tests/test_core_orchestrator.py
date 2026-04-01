@@ -15,7 +15,7 @@ class TestCoreOrchestratorInit:
         c = CoreOrchestrator()
         status = c.status()
         assert status["initialized"] is True
-        assert status["modules_count"] == 12
+        assert status["modules_count"] == 16
 
     def test_expected_modules_present(self):
         c = CoreOrchestrator()
@@ -103,7 +103,7 @@ class TestRunCycle:
         summary = result["summary"]
         for key in ["decision", "confidence", "confidence_score", "data_quality", "modules_active"]:
             assert key in summary
-        assert summary["modules_active"] == 12
+        assert summary["modules_active"] == 16
 
     def test_different_goals(self):
         c = CoreOrchestrator()
@@ -498,3 +498,194 @@ class TestCycleIntegration:
         c.run_cycle()
         assert c.status()["cycles_completed"] == 3
         assert c.status()["journal_entries"] >= 3
+
+    def test_new_phases_present(self):
+        c = CoreOrchestrator()
+        result = c.run_cycle()
+        for phase in ["financial_depth", "marketing_tactics", "customer_journey", "supply_chain"]:
+            assert phase in result["phases"], f"Phase {phase} missing"
+            assert result["phases"][phase].get("status") != "error", f"Phase {phase} errored"
+
+
+# ── New Intelligence Modules ──
+
+class TestFinancialDepth:
+    def test_bnpl_analysis(self):
+        from core.intelligence.financial_depth import FinancialDepth
+        fd = FinancialDepth()
+        products = [{"id": 1, "price": 75, "cost": 30}]
+        orders = [{"total": 75}, {"total": 100}]
+        result = fd.analyze_bnpl(products, orders)
+        assert result["suitable_for_bnpl"] is True
+        assert len(result["providers"]) == 4
+        assert result["recommendation"] in ("afterpay", "klarna", "affirm", "shop_pay_installments")
+
+    def test_tax_nexus(self):
+        from core.intelligence.financial_depth import FinancialDepth
+        fd = FinancialDepth()
+        result = fd.analyze_tax_nexus({"CA": 600000, "TX": 50000})
+        assert result["states_with_nexus"] == 1
+        assert result["total_estimated_tax"] > 0
+        assert result["action_needed"] is True
+
+    def test_chargeback_risk(self):
+        from core.intelligence.financial_depth import FinancialDepth
+        fd = FinancialDepth()
+        orders = [{"total": 50, "financial_status": "paid"} for _ in range(100)]
+        result = fd.assess_chargeback_risk(orders)
+        assert result["risk_level"] == "low"
+        assert result["total_orders"] == 100
+
+    def test_payment_processor_comparison(self):
+        from core.intelligence.financial_depth import FinancialDepth
+        fd = FinancialDepth()
+        orders = [{"total": 50} for _ in range(100)]
+        result = fd.optimize_payment_processor(orders)
+        assert len(result["comparisons"]) == 4
+        assert "cheapest" in result
+
+    def test_contribution_margin(self):
+        from core.intelligence.financial_depth import FinancialDepth
+        fd = FinancialDepth()
+        products = [{"id": "1", "title": "Widget", "price": 50, "cost": 15}]
+        orders = [{"line_items": [{"product_id": "1", "price": 50, "quantity": 2, "cost": 15}]}]
+        result = fd.contribution_margin_by_sku(products, orders)
+        assert result["skus_analyzed"] == 1
+        assert result["details"][0]["contribution_margin"] > 0
+
+    def test_working_capital(self):
+        from core.intelligence.financial_depth import FinancialDepth
+        fd = FinancialDepth()
+        orders = [{"total": 100} for _ in range(30)]
+        result = fd.analyze_working_capital(orders)
+        assert "cash_conversion_cycle_days" in result
+        assert "daily_revenue" in result
+
+
+class TestMarketingTactics:
+    def test_creative_fatigue_detection(self):
+        from core.intelligence.marketing_tactics import MarketingTactics
+        mt = MarketingTactics()
+        campaigns = [
+            {"name": "camp1", "days_running": 25, "ctr": 0.5, "ctr_7d_ago": 1.5, "frequency": 4, "cpa": 20, "cpa_7d_ago": 10},
+        ]
+        result = mt.detect_creative_fatigue(campaigns)
+        assert result["fatigued_campaigns"] == 1
+
+    def test_social_proof_audit(self):
+        from core.intelligence.marketing_tactics import MarketingTactics
+        mt = MarketingTactics()
+        products = [
+            {"title": "A", "review_count": 0, "rating": 0},
+            {"title": "B", "review_count": 20, "rating": 4.5, "has_photo_reviews": True},
+        ]
+        result = mt.audit_social_proof(products)
+        assert result["weak_social_proof"] >= 1
+
+    def test_influencer_strategy(self):
+        from core.intelligence.marketing_tactics import MarketingTactics
+        mt = MarketingTactics()
+        products = [{"price": 50}]
+        result = mt.plan_influencer_strategy(products)
+        assert result["recommended_tier"] in ("nano", "micro", "mid", "macro")
+
+    def test_referral_opportunity(self):
+        from core.intelligence.marketing_tactics import MarketingTactics
+        mt = MarketingTactics()
+        customers = [{"orders_count": 3}, {"orders_count": 1}, {"orders_count": 5}]
+        result = mt.analyze_referral_opportunity(customers)
+        assert result["total_customers"] == 3
+        assert result["repeat_customers"] == 2
+
+    def test_email_segments(self):
+        from core.intelligence.marketing_tactics import MarketingTactics
+        mt = MarketingTactics()
+        result = mt.recommend_email_segments([])
+        assert len(result["segments"]) == 7
+
+
+class TestCustomerJourney:
+    def test_lifecycle_segmentation(self):
+        from core.intelligence.customer_journey import CustomerJourney
+        cj = CustomerJourney()
+        customers = [
+            {"id": 1, "orders_count": 0},
+            {"id": 2, "orders_count": 1, "days_since_last_order": 5},
+            {"id": 3, "orders_count": 3, "days_since_last_order": 10},
+            {"id": 4, "orders_count": 6, "days_since_last_order": 15},
+            {"id": 5, "orders_count": 2, "days_since_last_order": 75},
+        ]
+        result = cj.segment_by_lifecycle(customers)
+        segs = result["segments"]
+        assert segs["prospect"]["count"] == 1
+        assert segs["loyal"]["count"] == 1
+        assert segs["at_risk"]["count"] == 1
+
+    def test_journey_funnel(self):
+        from core.intelligence.customer_journey import CustomerJourney
+        cj = CustomerJourney()
+        customers = [
+            {"orders_count": 0}, {"orders_count": 1}, {"orders_count": 2},
+            {"orders_count": 3}, {"orders_count": 6},
+        ]
+        result = cj.map_customer_journeys(customers)
+        assert len(result["funnel"]) == 4
+        assert "biggest_dropoff" in result
+
+    def test_landing_page_strategy(self):
+        from core.intelligence.customer_journey import CustomerJourney
+        cj = CustomerJourney()
+        result = cj.recommend_landing_pages()
+        assert "facebook_ad" in result["strategy"]
+        assert "google_search" in result["strategy"]
+
+
+class TestSupplyChain:
+    def test_reorder_points(self):
+        from core.intelligence.supply_chain import SupplyChainIntelligence
+        sc = SupplyChainIntelligence()
+        products = [
+            {"id": "1", "title": "Widget", "inventory_quantity": 5, "cost": 10},
+        ]
+        orders = [
+            {"line_items": [{"product_id": "1", "quantity": 2}]},
+            {"line_items": [{"product_id": "1", "quantity": 3}]},
+        ]
+        result = sc.analyze_reorder_points(products, orders)
+        assert result["products_analyzed"] == 1
+        details = result["details"][0]
+        assert details["reorder_point"] > 0
+
+    def test_shipping_threshold(self):
+        from core.intelligence.supply_chain import SupplyChainIntelligence
+        sc = SupplyChainIntelligence()
+        orders = [{"total": 50}, {"total": 70}, {"total": 80}]
+        result = sc.optimize_shipping_threshold([], orders)
+        assert result["recommended_threshold"] > result["current_aov"]
+
+    def test_returns_analysis(self):
+        from core.intelligence.supply_chain import SupplyChainIntelligence
+        sc = SupplyChainIntelligence()
+        orders = [{"total": 50, "financial_status": "paid"} for _ in range(10)]
+        orders.append({"total": 60, "financial_status": "refunded"})
+        result = sc.analyze_returns(orders)
+        assert result["return_rate"] > 0
+        assert result["true_cost_per_return"] > 0
+
+    def test_fulfillment_recommendation(self):
+        from core.intelligence.supply_chain import SupplyChainIntelligence
+        sc = SupplyChainIntelligence()
+        orders = [{"total": 50} for _ in range(30)]
+        result = sc.recommend_fulfillment_model(orders)
+        assert result["recommendation"] in ("self_fulfillment", "3pl")
+
+    def test_dead_stock_detection(self):
+        from core.intelligence.supply_chain import SupplyChainIntelligence
+        sc = SupplyChainIntelligence()
+        products = [
+            {"id": "1", "title": "Active", "inventory_quantity": 10, "cost": 5, "days_since_last_sale": 10},
+            {"id": "2", "title": "Dead", "inventory_quantity": 50, "cost": 8, "days_since_last_sale": 200},
+        ]
+        result = sc.detect_dead_stock(products)
+        assert result["dead_stock_items"] >= 1
+        assert result["total_capital_tied_up"] > 0
