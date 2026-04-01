@@ -81,6 +81,10 @@ class CoreOrchestrator:
             "causal_graph": ("core.causal.causal_graph", "CausalGraph", {}),
             "root_cause_analyzer": ("core.learning.root_cause_analyzer", "RootCauseAnalyzer", {}),
             "capability_assessor": ("core.self_monitor.capability_assessor", "CapabilityAssessor", {}),
+            # Proactive + strategy
+            "proactive_preparation": ("core.intelligence.proactive_preparation", "ProactivePreparation", {}),
+            "self_diagnostics": ("core.self_monitor.self_diagnostics", "SelfDiagnostics", {}),
+            "strategy_planner": ("core.strategy.strategy_planner", "StrategyPlanner", {}),
         }
 
         for name, (module_path, class_name, kwargs) in module_specs.items():
