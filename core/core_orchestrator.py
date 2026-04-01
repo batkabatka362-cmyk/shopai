@@ -178,47 +178,61 @@ class CoreOrchestrator:
         competitive = self._phase_competitive(data)
         results["phases"]["competitive"] = competitive
 
-        # ── Phase 5: INTELLIGENCE LOOP (core decision-making) ──
-        # Enrich data with insights from phases 2-4
-        enriched_data = self._enrich_data(data, financial, campaigns, competitive)
-        intel = self._phase_intelligence(enriched_data, goal)
-        results["phases"]["intelligence"] = intel
-
-        # ── Phase 6: STRATEGY OPTIMIZATION ──
-        strategy = self._phase_strategy(intel, goal)
-        results["phases"]["strategy"] = strategy
-
-        # ── Phase 7: EVENT PROCESSING ──
-        events = self._phase_events(results)
-        results["phases"]["events"] = events
-
-        # ── Phase 8: HEALTH REPORT ──
+        # ── Phase 5: HEALTH REPORT ──
         health = self._phase_health()
         results["phases"]["health"] = health
 
-        # ── Phase 9: FINANCIAL DEPTH (expert-level) ──
+        # ── Phase 6: EXPERT ANALYSIS (runs BEFORE intelligence to feed context) ──
         fin_depth = self._phase_financial_depth(data, cfg)
         results["phases"]["financial_depth"] = fin_depth
 
-        # ── Phase 10: MARKETING TACTICS ──
         mkt_tactics = self._phase_marketing_tactics(data, cfg)
         results["phases"]["marketing_tactics"] = mkt_tactics
 
-        # ── Phase 11: CUSTOMER JOURNEY ──
         journey = self._phase_customer_journey(data)
         results["phases"]["customer_journey"] = journey
 
-        # ── Phase 12: SUPPLY CHAIN ──
         supply = self._phase_supply_chain(data)
         results["phases"]["supply_chain"] = supply
 
-        # ── Phase 13: LEGAL COMPLIANCE ──
         compliance = self._phase_compliance(data)
         results["phases"]["compliance"] = compliance
+
+        # ── Phase 7: EPISODIC MEMORY RECALL ──
+        past_episodes = self._recall_episodes()
+
+        # ── Phase 8: INTELLIGENCE LOOP (core decision-making) ──
+        # Enrich data with ALL insights from phases 2-7
+        enriched_data = self._enrich_data(data, financial, campaigns, competitive)
+        enriched_data["_expert"] = self._build_expert_context(
+            fin_depth, mkt_tactics, journey, supply, compliance,
+        )
+        enriched_data["_episodes"] = past_episodes
+        intel = self._phase_intelligence(enriched_data, goal)
+        results["phases"]["intelligence"] = intel
+
+        # ── Phase 9: STRATEGY OPTIMIZATION ──
+        strategy = self._phase_strategy(intel, goal)
+        results["phases"]["strategy"] = strategy
+
+        # ── Phase 10: EVENT PROCESSING ──
+        events = self._phase_events(results)
+        results["phases"]["events"] = events
 
         # ── Phase 14: JUDGMENT ──
         judgment = self._phase_judgment(intel, data)
         results["phases"]["judgment"] = judgment
+
+        # ── ENFORCE JUDGMENT VERDICT ──
+        verdict = judgment.get("verdict", "proceed")
+        if verdict == "escalate_to_human":
+            results["blocked"] = True
+            results["block_reason"] = judgment.get("reason", "Risk too high")
+            logger.warning("Cycle %s BLOCKED by judgment: %s", cycle_id, judgment.get("reason"))
+        elif verdict == "delay":
+            results["delayed"] = True
+            results["delay_reason"] = judgment.get("reason", "Conditions not optimal")
+            logger.info("Cycle %s DELAYED by judgment: %s", cycle_id, judgment.get("reason"))
 
         # ── Update StoreSnapshot ──
         self.snapshot.update_financial(financial)
@@ -439,7 +453,7 @@ class CoreOrchestrator:
             margin_alerts = financial.get("margin_alerts", [])
             for alert in margin_alerts:
                 if alert.get("severity") == "critical":
-                    reactor.fire("revenue.drop", {
+                    reactor.react("revenue.drop", {
                         "product": alert.get("product", "unknown"),
                         "margin": alert.get("margin", 0),
                         "alert": "critical_margin",
@@ -449,7 +463,7 @@ class CoreOrchestrator:
             # Check competitive alerts
             competitive = cycle_results.get("phases", {}).get("competitive", {})
             for alert in competitive.get("alerts", []):
-                reactor.fire("product.price_change", {
+                reactor.react("product.price_change", {
                     "source": "competitor",
                     "alert": alert,
                 })
@@ -460,7 +474,7 @@ class CoreOrchestrator:
             optimization = campaigns.get("optimization", {})
             for action in optimization.get("actions", []):
                 if action.get("action") == "pause":
-                    reactor.fire("campaign.underperform", {
+                    reactor.react("campaign.underperform", {
                         "campaign": action.get("campaign_id", "unknown"),
                         "reason": action.get("reason", "low_roas"),
                     })
@@ -570,6 +584,47 @@ class CoreOrchestrator:
         except Exception as exc:
             logger.warning("Judgment failed: %s", exc)
             return {"verdict": "proceed", "reason": f"Judgment error: {exc}"}
+
+    def _recall_episodes(self) -> list[dict[str, Any]]:
+        """Recall similar past episodes BEFORE making decisions."""
+        memory = self._modules.get("episodic_memory")
+        if memory is None:
+            return []
+        try:
+            context = {
+                "health_grade": self.snapshot.financial.get("health_grade", "?"),
+                "churn_pct": self.snapshot.customers.get("churn_risk_pct", 0),
+                "stockout_risk": self.snapshot.inventory.get("stockout_risk", False),
+                "confidence_score": 50,
+                "net_margin": self.snapshot.financial.get("net_margin", 0),
+            }
+            return memory.recall_similar(context, limit=3)
+        except Exception:
+            return []
+
+    def _build_expert_context(
+        self,
+        fin_depth: dict[str, Any],
+        mkt_tactics: dict[str, Any],
+        journey: dict[str, Any],
+        supply: dict[str, Any],
+        compliance: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build expert context dict for IntelligenceLoop enrichment."""
+        return {
+            "bnpl_recommendation": fin_depth.get("bnpl_opportunity", {}).get("recommendation"),
+            "chargeback_risk": fin_depth.get("chargeback_risk", {}).get("risk_level"),
+            "working_capital_days": fin_depth.get("working_capital", {}).get("cash_conversion_cycle_days"),
+            "creative_fatigue_count": mkt_tactics.get("creative_fatigue", {}).get("fatigued_campaigns", 0),
+            "weak_social_proof": mkt_tactics.get("social_proof_audit", {}).get("weak_social_proof", 0),
+            "influencer_tier": mkt_tactics.get("influencer_strategy", {}).get("recommended_tier"),
+            "lifecycle_action": journey.get("lifecycle_segments", {}).get("top_action"),
+            "biggest_dropoff": journey.get("journey_map", {}).get("biggest_dropoff"),
+            "reorder_urgent": supply.get("reorder_analysis", {}).get("urgent_reorders", 0),
+            "dead_stock_value": supply.get("dead_stock", {}).get("total_capital_tied_up", 0),
+            "free_shipping_threshold": supply.get("shipping_optimization", {}).get("recommended_threshold"),
+            "compliance_violations": compliance.get("violation_count", 0),
+        }
 
     def _record_episode(self, results: dict[str, Any]) -> None:
         """Record this cycle as an episode in episodic memory."""

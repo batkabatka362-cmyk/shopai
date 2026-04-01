@@ -325,6 +325,46 @@ class IntelligenceLoop:
             except Exception:
                 pass
 
+        # ── Consume enriched context from CoreOrchestrator ──
+        financial_ctx = data.get("_financial", {})
+        if financial_ctx.get("net_margin", 100) < 10:
+            analysis["findings"].append("WARNING: Net margin below 10% — pricing decisions critical")
+            analysis["financial_pressure"] = True
+        if financial_ctx.get("margin_alerts_count", 0) > 0:
+            analysis["findings"].append(f"Financial: {financial_ctx['margin_alerts_count']} margin alerts active")
+
+        competitive_ctx = data.get("_competitive", {})
+        if isinstance(competitive_ctx, dict) and competitive_ctx.get("alerts"):
+            alerts = competitive_ctx["alerts"]
+            if isinstance(alerts, list) and alerts:
+                analysis["findings"].append(f"Competitor activity: {len(alerts)} alerts detected")
+                analysis["competitor_active"] = True
+
+        expert_ctx = data.get("_expert", {})
+        if isinstance(expert_ctx, dict):
+            if expert_ctx.get("reorder_urgent", 0) > 0:
+                analysis["findings"].append(f"URGENT: {expert_ctx['reorder_urgent']} products need immediate reorder")
+            if expert_ctx.get("creative_fatigue_count", 0) > 0:
+                analysis["findings"].append(f"Marketing: {expert_ctx['creative_fatigue_count']} campaigns showing creative fatigue")
+            if expert_ctx.get("compliance_violations", 0) > 0:
+                analysis["findings"].append(f"Legal: {expert_ctx['compliance_violations']} compliance violations detected")
+            if expert_ctx.get("dead_stock_value", 0) > 100:
+                analysis["findings"].append(f"Inventory: ${expert_ctx['dead_stock_value']:,.0f} tied up in dead stock")
+            lifecycle_action = expert_ctx.get("lifecycle_action")
+            if lifecycle_action:
+                analysis["findings"].append(f"Customer: {lifecycle_action}")
+
+        # ── Past episodes (similar decisions) ──
+        episodes = data.get("_episodes", [])
+        if episodes:
+            failures = [ep for ep in episodes if not ep.get("success", True)]
+            if failures:
+                for ep in failures[:2]:
+                    lesson = ep.get("lesson", "")
+                    if lesson:
+                        analysis["findings"].append(f"HISTORY: {lesson}")
+                analysis["past_failure_risk"] = True
+
         analysis["opportunity_score"] = self._calc_opportunity(analysis)
         return analysis
 
