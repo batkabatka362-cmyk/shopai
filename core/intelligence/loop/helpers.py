@@ -7,8 +7,71 @@ from typing import Any
 from utils.helpers import safe_float, safe_int
 
 
-def calc_opportunity(analysis: dict) -> int:
-    """Calculate opportunity score (0-100) from analysis data."""
+def _ab_test_decision(options: list[dict], goal: str) -> dict[str, Any] | None:
+    """Occasionally A/B test the second-best option against the best.
+
+    Returns None (use best) or a dict with the selected variant.
+    Uses ABFramework if available, falls back to simple random.
+    """
+    if len(options) < 2:
+        return None
+    try:
+        from core.intelligence.ab_framework import ABFramework
+        ab = ABFramework()
+
+        exp_name = f"decision_{goal}"
+
+        # Check if experiment exists, create if not
+        existing = [e for e in ab._experiments.values() if e.get("name") == exp_name and e.get("status") == "running"]
+        if existing:
+            exp = existing[0]
+        else:
+            exp = ab.create_experiment(
+                name=exp_name,
+                test_type="decision_strategy",
+                variants=[
+                    {"name": "best_score", "strategy": "highest_score"},
+                    {"name": "second_best", "strategy": "explore_alternative"},
+                ],
+                traffic_pct=100,
+                min_samples=20,
+            )
+
+        # Assign variant based on timestamp (deterministic per cycle)
+        assignment = ab.assign_variant(exp["id"], str(int(time.time())))
+
+        if assignment.get("assigned") and assignment.get("variant_index") == 1:
+            # A/B test: use second-best option
+            ab.record_impression(exp["id"], 1)
+            return {
+                "selected": options[1],
+                "variant_name": "explore_alternative",
+                "experiment_id": exp["id"],
+            }
+        else:
+            ab.record_impression(exp["id"], 0)
+            return None  # Use best (default)
+
+    except Exception:
+        return None
+
+
+def _get_past_learning(goal: str) -> dict[str, Any]:
+    try:
+        from core.learning.outcome_tracker import OutcomeTracker
+        patterns = OutcomeTracker().get_winning_patterns("intelligence_loop")
+        result: dict[str, Any] = {"success_rate": patterns.get("success_rate", 0)}
+        for p in patterns.get("patterns", []):
+            if p.get("pattern") == "avoid_low_scores":
+                result["avoid_below_score"] = safe_float(p.get("threshold"))
+            if p.get("pattern") == "quality_matters":
+                result["min_quality"] = 50
+        return result
+    except Exception:
+        return {}
+
+
+def _calc_opportunity(analysis: dict) -> int:
     score = 50
     products = analysis.get("products", {})
     if products.get("viable", 0) > 0:
@@ -25,73 +88,8 @@ def calc_opportunity(analysis: dict) -> int:
         score += 10
     return max(0, min(100, score))
 
-# Alias for backward compatibility
-_calc_opportunity = calc_opportunity
 
-
-def get_past_learning(goal: str) -> dict[str, Any]:
-    """Get past learning insights from outcome tracker."""
-    try:
-        from core.learning.outcome_tracker import OutcomeTracker
-        patterns = OutcomeTracker().get_winning_patterns("intelligence_loop")
-        result: dict[str, Any] = {"success_rate": patterns.get("success_rate", 0)}
-        for p in patterns.get("patterns", []):
-            if p.get("pattern") == "avoid_low_scores":
-                result["avoid_below_score"] = safe_float(p.get("threshold"))
-            if p.get("pattern") == "quality_matters":
-                result["min_quality"] = 50
-        return result
-    except Exception:
-        return {}
-
-# Alias
-_get_past_learning = get_past_learning
-
-
-def ab_test_decision(options: list[dict], goal: str) -> dict[str, Any] | None:
-    """Occasionally A/B test the second-best option against the best."""
-    if len(options) < 2:
-        return None
-    try:
-        from core.intelligence.ab_framework import ABFramework
-        ab = ABFramework()
-
-        exp_name = f"decision_{goal}"
-        existing = [e for e in ab._experiments.values() if e.get("name") == exp_name and e.get("status") == "running"]
-        if existing:
-            exp = existing[0]
-        else:
-            exp = ab.create_experiment(
-                name=exp_name,
-                test_type="decision_strategy",
-                variants=[
-                    {"name": "best_score", "strategy": "highest_score"},
-                    {"name": "second_best", "strategy": "explore_alternative"},
-                ],
-                traffic_pct=100,
-                min_samples=20,
-            )
-
-        assignment = ab.assign_variant(exp["id"], str(int(time.time())))
-        if assignment.get("assigned") and assignment.get("variant_index") == 1:
-            ab.record_impression(exp["id"], 1)
-            return {
-                "selected": options[1],
-                "variant_name": "explore_alternative",
-                "experiment_id": exp["id"],
-            }
-        else:
-            ab.record_impression(exp["id"], 0)
-            return None
-    except Exception:
-        return None
-
-# Alias
-_ab_test_decision = ab_test_decision
-
-
-def summarize(decision: dict, plan: dict, execution: dict, learning: dict, elapsed: float) -> str:
-    """Generate one-line summary of intelligence loop results."""
+def summarize(decision, plan, execution, learning, elapsed) -> str:
     lines = [
         f"Decision: {decision['recommended_action'][:80]}",
         f"Confidence: {decision['confidence']} ({decision['confidence_score']}/100)",
@@ -103,9 +101,11 @@ def summarize(decision: dict, plan: dict, execution: dict, learning: dict, elaps
     lines.append(f"Time: {elapsed:.3f}s")
     return "\n".join(lines)
 
+# Alias
+_summarize = summarize
 
-def abort(loop_id: str, reason: str, clean_result: dict, start_time: float) -> dict[str, Any]:
-    """Abort the loop with reason."""
+
+def abort(loop_id, reason, clean_result, start_time):
     elapsed = time.monotonic() - start_time
     return {
         "loop_id": loop_id, "status": "aborted", "reason": reason,
@@ -116,14 +116,9 @@ def abort(loop_id: str, reason: str, clean_result: dict, start_time: float) -> d
         "summary": f"ABORTED: {reason}. Fix data quality first.",
     }
 
+# Alias
+_abort = abort
 
-def avg_decision_field(entries: list[dict], field: str) -> float | None:
-    """Average a numeric field from decision data in outcome entries."""
-    values = []
-    for e in entries:
-        d = e.get("decision", {})
-        if isinstance(d, dict):
-            v = d.get(field)
-            if isinstance(v, (int, float)):
-                values.append(float(v))
-    return sum(values) / len(values) if values else None
+
+def get_history(history: list[dict[str, Any]], limit: int = 20) -> list[dict[str, Any]]:
+    return list(history[-limit:])
