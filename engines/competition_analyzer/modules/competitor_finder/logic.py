@@ -1,8 +1,6 @@
 """
 Competitor Finder — Business Logic
-====================================
-Functions for assessing the competitive landscape, identifying vulnerable
-competitors, and estimating market share distribution.
+Landscape assessment, vulnerable competitor detection, market share estimation.
 """
 
 from .data import (
@@ -13,12 +11,7 @@ from .data import (
 
 
 def assess_competitive_landscape(competitors):
-    """
-    Determine whether the market is crowded, moderate, or open based on
-    competitor count, average strength, and direct competitor density.
-
-    Returns a dict with assessment label, reasoning, and metrics.
-    """
+    """Determine whether the market is crowded, moderate, or open."""
     if not competitors:
         return {"assessment": "unknown", "reasoning": "No competitor data", "metrics": {}}
 
@@ -65,12 +58,7 @@ def assess_competitive_landscape(competitors):
 
 
 def identify_vulnerable_competitors(competitors):
-    """
-    Identify competitors that show signs of weakness: low rating, old listings
-    with few reviews, poor product count, or declining signals.
-
-    Returns a list of competitor dicts with vulnerability reasons.
-    """
+    """Find competitors showing weakness: low rating, stagnation, poor catalog."""
     vulnerable = []
 
     for comp in competitors:
@@ -120,51 +108,30 @@ def identify_vulnerable_competitors(competitors):
 
 
 def estimate_market_share_distribution(competitors):
-    """
-    Estimate market share percentages based on estimated revenue.
-    Returns a list of competitors with their estimated share and a summary
-    showing concentration among top players.
-    """
+    """Estimate market share percentages based on estimated revenue."""
     total_revenue = sum(c.get("estimated_revenue", 0) for c in competitors)
 
     if total_revenue == 0:
         equal_share = round(100.0 / len(competitors), 2) if competitors else 0
         return {
-            "distribution": [
-                {"name": c.get("name", "Unknown"), "share_pct": equal_share}
-                for c in competitors
-            ],
-            "summary": {
-                "method": "equal_distribution",
-                "top3_combined_share": round(equal_share * min(3, len(competitors)), 2),
-                "total_revenue_estimated": 0,
-            },
+            "distribution": [{"name": c.get("name", "Unknown"), "share_pct": equal_share} for c in competitors],
+            "summary": {"method": "equal_distribution", "top3_combined_share": round(equal_share * min(3, len(competitors)), 2)},
         }
 
-    distribution = []
-    for comp in competitors:
-        revenue = comp.get("estimated_revenue", 0)
-        share = (revenue / total_revenue) * 100
-        distribution.append({
-            "name": comp.get("name", "Unknown"),
-            "share_pct": round(share, 2),
-            "estimated_revenue": revenue,
-            "classification": comp.get("classification", "unknown"),
-        })
-
-    distribution.sort(key=lambda d: d["share_pct"], reverse=True)
-
+    distribution = sorted(
+        [{"name": c.get("name", "Unknown"), "share_pct": round((c.get("estimated_revenue", 0) / total_revenue) * 100, 2),
+          "estimated_revenue": c.get("estimated_revenue", 0), "classification": c.get("classification", "unknown")}
+         for c in competitors],
+        key=lambda d: d["share_pct"], reverse=True,
+    )
     top3_share = sum(d["share_pct"] for d in distribution[:3])
-    top5_share = sum(d["share_pct"] for d in distribution[:5])
-    bottom_half = distribution[len(distribution) // 2:]
-    bottom_half_share = sum(d["share_pct"] for d in bottom_half)
+    bottom_half_share = sum(d["share_pct"] for d in distribution[len(distribution) // 2:])
 
     return {
         "distribution": distribution,
         "summary": {
             "method": "revenue_based",
             "top3_combined_share": round(top3_share, 2),
-            "top5_combined_share": round(top5_share, 2),
             "bottom_half_combined_share": round(bottom_half_share, 2),
             "total_revenue_estimated": total_revenue,
             "leader_name": distribution[0]["name"] if distribution else None,

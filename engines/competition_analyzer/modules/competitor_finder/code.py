@@ -1,8 +1,6 @@
 """
 Competitor Finder — Main Entry Point
-=====================================
-Identifies competitors selling similar products, scores their strength,
-classifies them by threat level, and computes market concentration metrics.
+Identifies competitors, scores strength, classifies threat level, computes HHI.
 """
 
 from .rules import (
@@ -22,12 +20,7 @@ from .logic import (
 
 
 def find_competitors(input_payload):
-    """
-    Main engine contract function. Accepts an input payload describing the
-    seller's product and returns a structured analysis of competitors.
-
-    Returns dict with keys: status, data, meta, error.
-    """
+    """Engine contract function. Returns {status, data, meta, error}."""
     try:
         product_category = input_payload.get("product_category")
         price = input_payload.get("price")
@@ -62,29 +55,18 @@ def find_competitors(input_payload):
 
         concentration_label = _label_concentration(hhi)
 
-        return {
-            "status": "success",
-            "data": {
-                "competitors": classified,
-                "market_leaders": leaders,
-                "total_competitor_count": len(classified),
-                "hhi_index": round(hhi, 2),
-                "concentration_label": concentration_label,
-                "landscape_assessment": landscape,
-                "vulnerable_competitors": vulnerable,
-                "market_share_distribution": share_dist,
-            },
-            "meta": {
-                "module": "competitor_finder",
-                "version": "1.0.0",
-                "competitors_analyzed": len(classified),
-                "competitors_raw_received": len(competitors_raw),
-                "marketplace": marketplace,
-                "reference_price": price,
-                "reference_category": product_category,
-            },
-            "error": None,
+        data = {
+            "competitors": classified, "market_leaders": leaders,
+            "total_competitor_count": len(classified), "hhi_index": round(hhi, 2),
+            "concentration_label": concentration_label, "landscape_assessment": landscape,
+            "vulnerable_competitors": vulnerable, "market_share_distribution": share_dist,
         }
+        meta = {
+            "module": "competitor_finder", "version": "1.0.0",
+            "competitors_analyzed": len(classified), "competitors_raw_received": len(competitors_raw),
+            "marketplace": marketplace, "reference_price": price, "reference_category": product_category,
+        }
+        return {"status": "success", "data": data, "meta": meta, "error": None}
     except Exception as exc:
         return _error_response(f"Unexpected error: {str(exc)}")
 
@@ -138,32 +120,18 @@ def _classify_competitors(competitors, category, price, keywords):
 def _detect_market_leaders(competitors):
     """Return the top 3 competitors by strength score."""
     sorted_comps = sorted(competitors, key=lambda c: c.get("strength_score", 0), reverse=True)
-    leaders = []
-    for comp in sorted_comps[:3]:
-        leaders.append({
-            "name": comp.get("name", "Unknown"),
-            "strength_score": comp.get("strength_score", 0),
-            "estimated_revenue": comp.get("estimated_revenue", 0),
-            "review_count": comp.get("review_count", 0),
-            "classification": comp.get("classification", "unknown"),
-        })
-    return leaders
+    return [
+        {k: c.get(k, "Unknown") for k in ("name", "strength_score", "estimated_revenue", "review_count", "classification")}
+        for c in sorted_comps[:3]
+    ]
 
 
 def _compute_hhi(competitors):
-    """
-    Compute the Herfindahl-Hirschman Index based on estimated revenue.
-    HHI = sum of squared market share percentages.
-    """
+    """Compute Herfindahl-Hirschman Index from estimated revenue shares."""
     total_revenue = sum(c.get("estimated_revenue", 0) for c in competitors)
     if total_revenue == 0:
         return 0.0
-
-    hhi = 0.0
-    for comp in competitors:
-        share = (comp.get("estimated_revenue", 0) / total_revenue) * 100
-        hhi += share ** 2
-    return hhi
+    return sum(((c.get("estimated_revenue", 0) / total_revenue) * 100) ** 2 for c in competitors)
 
 
 def _label_concentration(hhi):
