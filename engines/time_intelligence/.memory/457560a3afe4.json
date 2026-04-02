@@ -1,0 +1,43 @@
+{
+  "record_id": "457560a3afe4",
+  "timestamp": "2026-04-02T11:33:55Z",
+  "input_hash": "6b9135c737c2e328",
+  "task_types": [
+    "launch_ad",
+    "send_email",
+    "update_inventory"
+  ],
+  "task_count": 3,
+  "scheduled_count": 3,
+  "blocked_count": 0,
+  "delayed_count": 0,
+  "execution_order": [
+    "launch_ad_9e7809fe",
+    "update_inventory_2fee04de",
+    "send_email_00640a49"
+  ],
+  "timing_plan": {
+    "total_estimated_duration": "76.5s",
+    "next_execution": "2026-04-02T12:00:00Z",
+    "slots_used": 3,
+    "capacity_remaining": 47
+  },
+  "elapsed_seconds": 0.0005,
+  "executions": [
+    {
+      "task_type": "launch_ad",
+      "duration_seconds": 53.0,
+      "priority_score": 0.9525
+    },
+    {
+      "task_type": "update_inventory",
+      "duration_seconds": 36.0,
+      "priority_score": 0.565
+    },
+    {
+      "task_type": "send_email",
+      "duration_seconds": 18.5,
+      "priority_score": 0.3575
+    }
+  ]
+}
