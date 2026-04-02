@@ -1,0 +1,59 @@
+{
+  "record_id": "54eaa35c7628",
+  "timestamp": "2026-04-02T11:45:08Z",
+  "source_engine": "marketing_engine",
+  "action_type": "launch_ad",
+  "activity_id": "d0728630a55c",
+  "decision": "rejected",
+  "issues": [
+    "[critical] no_action_on_inactive_store: Spending action 'launch_ad' attempted on inactive store",
+    "[validation] goal_consistency: Spending while store is not active contradicts growth goals"
+  ],
+  "risks": [
+    {
+      "risk_type": "financial",
+      "level": "medium",
+      "score": 0.3,
+      "detail": "Financial risk score 0.30; action budget=$100.00; daily remaining=$600.00/600.00"
+    },
+    {
+      "risk_type": "reputation",
+      "level": "low",
+      "score": 0.2,
+      "detail": "Reputation risk score 0.20 for 'launch_ad'"
+    },
+    {
+      "risk_type": "operational",
+      "level": "medium",
+      "score": 0.3,
+      "detail": "Operational risk score 0.30 for 'launch_ad'"
+    },
+    {
+      "risk_type": "compliance",
+      "level": "medium",
+      "score": 0.25,
+      "detail": "Compliance risk score 0.25 \u2014 1 violations, 0 policy failures"
+    }
+  ],
+  "risk_score": 0.265,
+  "violations": [
+    {
+      "rule_id": "ACT-001",
+      "rule_name": "no_action_on_inactive_store",
+      "severity": "critical",
+      "detail": "Spending action 'launch_ad' attempted on inactive store",
+      "field": "store_status"
+    }
+  ],
+  "override_applied": true,
+  "modifications": {},
+  "validation_score": 0.6946,
+  "feedback_summary": {
+    "recommendations": [
+      "Action was rejected \u2014 address violations before retrying",
+      "Suggested fix: Activate the store before performing spending actions"
+    ],
+    "governance_confidence": 0.7305
+  },
+  "elapsed_seconds": 0.0
+}

@@ -1,0 +1,39 @@
+{
+  "entry_id": "de03f9cfb1c7",
+  "timestamp": "2026-04-02T11:45:08Z",
+  "activity_id": "8236f109124c",
+  "source_engine": "admin",
+  "action_type": "bulk_price_change",
+  "decision": "rejected",
+  "violations": [],
+  "risks": [
+    {
+      "risk_type": "financial",
+      "level": "low",
+      "score": 0.1,
+      "detail": "Financial risk score 0.10"
+    },
+    {
+      "risk_type": "reputation",
+      "level": "low",
+      "score": 0.05,
+      "detail": "Reputation risk score 0.05 for 'bulk_price_change'"
+    },
+    {
+      "risk_type": "operational",
+      "level": "medium",
+      "score": 0.25,
+      "detail": "Operational risk score 0.25 for 'bulk_price_change'"
+    },
+    {
+      "risk_type": "compliance",
+      "level": "high",
+      "score": 0.55,
+      "detail": "Compliance risk score 0.55 \u2014 0 violations, 1 policy failures"
+    }
+  ],
+  "risk_score": 0.2075,
+  "override_applied": true,
+  "modifications": {},
+  "elapsed_seconds": 0.0
+}

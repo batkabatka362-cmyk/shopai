@@ -1,0 +1,49 @@
+{
+  "entry_id": "04b26c021b4a",
+  "timestamp": "2026-04-02T11:45:21Z",
+  "activity_id": "3c84cb3426ff",
+  "source_engine": "decision_intelligence",
+  "action_type": "launch_ad",
+  "decision": "modified",
+  "violations": [
+    {
+      "rule_id": "BUD-002",
+      "rule_name": "daily_budget_headroom",
+      "severity": "warning",
+      "detail": "After action only 8.3% of daily budget remains (min 10% recommended)",
+      "field": "budget"
+    }
+  ],
+  "risks": [
+    {
+      "risk_type": "financial",
+      "level": "high",
+      "score": 0.55,
+      "detail": "Financial risk score 0.55; action budget=$150.00; daily remaining=$200.00/600.00"
+    },
+    {
+      "risk_type": "reputation",
+      "level": "low",
+      "score": 0.2,
+      "detail": "Reputation risk score 0.20 for 'launch_ad'"
+    },
+    {
+      "risk_type": "operational",
+      "level": "low",
+      "score": 0.05,
+      "detail": "Operational risk score 0.05 for 'launch_ad'"
+    },
+    {
+      "risk_type": "compliance",
+      "level": "low",
+      "score": 0.1,
+      "detail": "Compliance risk score 0.10 \u2014 1 violations, 0 policy failures"
+    }
+  ],
+  "risk_score": 0.2725,
+  "override_applied": true,
+  "modifications": {
+    "budget": 140.0
+  },
+  "elapsed_seconds": 0.0
+}

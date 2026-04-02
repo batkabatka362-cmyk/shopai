@@ -1,0 +1,115 @@
+{
+  "record_id": "550365eabfae",
+  "timestamp": "2026-04-02T11:45:17Z",
+  "input_hash": "3f9e7bfeda8e7dc2",
+  "action_types": [
+    "update_inventory",
+    "create_product",
+    "generate_content",
+    "launch_ad",
+    "send_email"
+  ],
+  "total_tasks": 5,
+  "success_count": 5,
+  "fail_count": 0,
+  "overall_status": "success",
+  "success_rate": 1.0,
+  "results": [
+    {
+      "task_id": "task_8350e9c7",
+      "result": {
+        "product_id": "p123",
+        "inventory_item_id": "inv_432eca47",
+        "quantity_adjusted": 500,
+        "api_endpoint": "/admin/api/2024-01/inventory_levels/adjust.json",
+        "api_method": "POST"
+      }
+    },
+    {
+      "task_id": "task_06175885",
+      "result": {
+        "product_id": "shp_4f9556bba2",
+        "title": "Widget",
+        "price": 15.0,
+        "description": "",
+        "status": "draft",
+        "created": true,
+        "handle": "widget",
+        "api_endpoint": "/admin/api/2024-01/products.json",
+        "api_method": "CREATE"
+      }
+    },
+    {
+      "task_id": "task_84deaf25",
+      "result": {
+        "content_id": "cnt_17737756",
+        "content_type": "ad_copy",
+        "tone": "professional",
+        "generated_text": "Ready to upgrade? The Product is here. Shop now and see the difference quality makes.",
+        "word_count": 15,
+        "model_used": "llama"
+      }
+    },
+    {
+      "task_id": "task_21b36920",
+      "result": {
+        "campaign_id": "gads_9bbe974bb9",
+        "ad_group_id": "ag_23dbbc3d",
+        "platform": "google",
+        "budget_daily_micros": 100000000,
+        "currency": "USD",
+        "targeting": {
+          "age_min": 25,
+          "age_max": 55,
+          "interests": [
+            "business",
+            "productivity",
+            "career"
+          ],
+          "demographics": "professionals"
+        },
+        "status": "ENABLED",
+        "campaign_type": "SEARCH",
+        "api_service": "CampaignService",
+        "api_method": "mutate"
+      }
+    },
+    {
+      "task_id": "task_990d733d",
+      "result": {
+        "message_id": "msg_b48dbd6da2",
+        "recipient": "user@example.com",
+        "subject": "New Product",
+        "template": "default",
+        "delivery_status": "queued",
+        "api_endpoint": "/v3/mail/send",
+        "api_method": "POST"
+      }
+    }
+  ],
+  "logs": [
+    "Parsed action 'create_product' at index 0 -> task_06175885 (priority=2)",
+    "Parsed action 'launch_ad' at index 1 -> task_21b36920 (priority=3)",
+    "Parsed action 'send_email' at index 2 -> task_990d733d (priority=4)",
+    "Parsed action 'generate_content' at index 3 -> task_84deaf25 (priority=4)",
+    "Parsed action 'update_inventory' at index 4 -> task_8350e9c7 (priority=1)",
+    "Task task_8350e9c7 (update_inventory): VALID (10 checks passed)",
+    "Task task_06175885 (create_product): VALID (9 checks passed)",
+    "Task task_21b36920 (launch_ad): VALID (11 checks passed)",
+    "Task task_990d733d (send_email): VALID (8 checks passed)",
+    "Task task_84deaf25 (generate_content): VALID (7 checks passed)",
+    "Tool selected for task_8350e9c7 (update_inventory): shopify_api [sync]",
+    "Tool selected for task_06175885 (create_product): shopify_api [sync]",
+    "Tool selected for task_21b36920 (launch_ad): google_ads [async]",
+    "Tool selected for task_990d733d (send_email): email_service [async]",
+    "Tool selected for task_84deaf25 (generate_content): content_generator [sync]",
+    "Batch 0: parallel \u2014 3 task(s): task_8350e9c7, task_06175885, task_84deaf25",
+    "Batch 1: parallel \u2014 2 task(s): task_21b36920, task_990d733d",
+    "Task update_inventory (task_8350e9c7) executed successfully via shopify_api in 0.000s",
+    "Task create_product (task_06175885) executed successfully via shopify_api in 0.000s",
+    "Task generate_content (task_84deaf25) executed successfully via content_generator in 0.000s",
+    "Task launch_ad (task_21b36920) executed successfully via google_ads in 0.000s",
+    "Task send_email (task_990d733d) executed successfully via email_service in 0.000s",
+    "Execution complete: 5 succeeded, 0 failed, 0 partial out of 5 tasks (100.0% success rate, 0.001s total)"
+  ]
+}
