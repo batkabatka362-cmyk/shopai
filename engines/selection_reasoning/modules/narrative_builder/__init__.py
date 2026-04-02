@@ -1,8 +1,8 @@
-"""Narrative Builder Module — plain-language explanation of the selection decision.
+"""Narrative Builder Module — builds plain-language selection explanations.
 
-Constructs a structured narrative that explains what was selected, why it
-was selected, and how the decision was reached, using template-based
-generation with no AI dependency.
+Generates a structured narrative explaining why a product was selected,
+including a one-sentence summary, multi-paragraph explanation, and
+bullet-point key factors.
 """
 
 from .code import build_narrative
@@ -16,8 +16,8 @@ __all__ = [
     "generate_summary",
     "generate_explanation",
     "generate_key_points",
-    "validate_narrative",
     "NARRATIVE_RULES",
+    "validate_narrative",
     "NARRATIVE_TEMPLATES",
     "TRANSITION_PHRASES",
     "FORMATTING_RULES",

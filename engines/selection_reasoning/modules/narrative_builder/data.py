@@ -1,123 +1,132 @@
-"""Reference data for narrative generation.
+"""Narrative Builder — reference data: templates, phrases, and formatting rules.
 
-Templates per decision type, transition phrases, score descriptors,
-and formatting rules used by the narrative builder module.
+Templates are organized by decision type and score tier. Transition phrases
+keep narratives flowing naturally. Formatting rules define structural
+constraints for the output.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Score descriptors — maps minimum score to human-readable label
-# ---------------------------------------------------------------------------
-SCORE_DESCRIPTORS: dict[int, str] = {
-    80: "excellent",
-    65: "strong",
-    50: "solid",
-    35: "moderate",
-    20: "weak",
-    0: "very weak",
-}
 
 # ---------------------------------------------------------------------------
-# Risk descriptors — maps risk level to readable phrase
+# Narrative templates by score tier and section
 # ---------------------------------------------------------------------------
-RISK_DESCRIPTORS: dict[str, str] = {
-    "critical": "critical risk — significant chance of loss",
-    "high": "high risk — proceed with caution and tight stop-losses",
-    "moderate": "moderate risk — manageable with proper mitigation",
-    "low": "low risk — favorable conditions with standard precautions",
-    "minimal": "minimal risk — strong fundamentals across all dimensions",
-    "unknown": "unknown risk — insufficient data to assess",
-}
-
-# ---------------------------------------------------------------------------
-# Confidence descriptors
-# ---------------------------------------------------------------------------
-CONFIDENCE_DESCRIPTORS: dict[str, str] = {
-    "high": "high confidence backed by comprehensive data",
-    "moderate": "moderate confidence with some data gaps",
-    "low": "low confidence — critical data is missing",
-    "unknown": "unknown confidence level",
-}
-
-# ---------------------------------------------------------------------------
-# Narrative templates by section
-# ---------------------------------------------------------------------------
-NARRATIVE_TEMPLATES: dict[str, Any] = {
+NARRATIVE_TEMPLATES: dict[str, dict[str, str]] = {
     "summary": {
-        "profit": (
-            "We recommend {product_name} (score: {score}/100, {score_desc}) "
-            "as the top profit-optimized selection with {risk_desc} and {conf_desc}."
+        "strong_pick": (
+            "{product_name} is a strong recommendation (score: {score:.1f}/100) "
+            "for a {goal}-focused strategy, backed by {confidence} confidence."
         ),
-        "growth": (
-            "We recommend {product_name} (score: {score}/100, {score_desc}) "
-            "as the top growth-optimized selection with {risk_desc} and {conf_desc}."
+        "solid_pick": (
+            "{product_name} is a solid choice (score: {score:.1f}/100) "
+            "for a {goal}-focused approach, with {confidence} confidence in the data."
         ),
-        "balanced": (
-            "We recommend {product_name} (score: {score}/100, {score_desc}) "
-            "as the top balanced selection with {risk_desc} and {conf_desc}."
+        "cautious_pick": (
+            "{product_name} is the best available option (score: {score:.1f}/100) "
+            "for a {goal} strategy, though confidence is {confidence} — proceed with caution."
         ),
-    },
-    "what": (
-        "{product_name} scored {score}/100 after evaluating {alt_count} "
-        "alternative products. It offers a projected margin of {margin}% "
-        "and a demand score of {demand_score}/100, making it the strongest "
-        "candidate in this evaluation."
-    ),
-    "why": {
-        "profit": (
-            "This product was selected because it maximizes profitability. "
-            "With a {margin}% margin and a {score}/100 unified score, it "
-            "outperforms alternatives on the metrics that matter most for "
-            "your profit-focused goal. The risk profile is {risk_desc}, and "
-            "our analysis has {conf_desc}."
-        ),
-        "growth": (
-            "This product was selected for its growth potential. "
-            "With a {score}/100 unified score and strong demand signals, it "
-            "aligns with your growth-focused strategy. The risk profile is "
-            "{risk_desc}, and our analysis has {conf_desc}."
-        ),
-        "balanced": (
-            "This product was selected for its well-rounded performance. "
-            "Scoring {score}/100 across profitability, demand, competition, "
-            "and risk dimensions, it represents the best all-around choice. "
-            "The risk profile is {risk_desc}, and our analysis has {conf_desc}."
+        "weak_pick": (
+            "{product_name} scored {score:.1f}/100, which is below ideal for a "
+            "{goal} strategy — consider gathering more data or exploring alternatives."
         ),
     },
-    "how": (
-        "This recommendation was generated by analyzing data from {engine_count} "
-        "specialized engines covering {coverage}% of our evaluation criteria. "
-        "Each engine independently assessed {product_name} on its own dimension, "
-        "and the scores were aggregated using goal-weighted normalization. "
-        "The risk level ({risk_level}) was applied as a multiplier to ensure "
-        "high-risk products are not overvalued."
-    ),
+    "explanation": {
+        "what": (
+            "{product_name} achieved a unified score of {score:.1f} out of 100, "
+            "reflecting a {margin:.1f}% profit margin, demand score of "
+            "{demand_score:.0f}/100, and {competition_level}. This product stood "
+            "out from the evaluated candidates across multiple dimensions."
+        ),
+        "why_strong": (
+            "The selection is driven by strong fundamentals: the combination of "
+            "healthy margins and solid demand creates a favorable risk-reward "
+            "profile. The competitive landscape is manageable, suggesting room "
+            "for a new entrant to capture share."
+        ),
+        "why_moderate": (
+            "While not the highest-scoring option on every dimension, this product "
+            "offers the best balance across profitability, demand, and risk. "
+            "Trade-offs were made deliberately to align with the stated goal."
+        ),
+        "how_actionable": (
+            "Execution is key: start with a small test order to validate margins, "
+            "monitor early sales velocity to confirm demand projections, and be "
+            "ready to adjust pricing within the first two weeks."
+        ),
+    },
+    "decision_type": {
+        "clear_winner": (
+            "This was a clear decision — {product_name} outperformed alternatives "
+            "by a significant margin across most evaluation criteria."
+        ),
+        "close_call": (
+            "This was a close decision between {product_name} and the runner-up. "
+            "The margin of difference was narrow, and the alternative should be "
+            "kept as a backup option."
+        ),
+        "best_of_limited": (
+            "{product_name} was selected from a limited pool of candidates. "
+            "Consider expanding the product search if initial results "
+            "underperform projections."
+        ),
+    },
 }
 
 # ---------------------------------------------------------------------------
-# Transition phrases between narrative sections
+# Transition phrases for connecting paragraphs and ideas
 # ---------------------------------------------------------------------------
 TRANSITION_PHRASES: dict[str, str] = {
-    "what": "Here is what we found:",
-    "why": "The reasoning behind this selection is clear.",
-    "how": "This conclusion was reached through a systematic process.",
-    "risk": "However, it is important to consider the risks.",
-    "alternatives": "Other products were also evaluated.",
-    "action": "To move forward, here are the recommended next steps.",
+    "supporting": "Additionally,",
+    "contrasting": "However,",
+    "building": "Building on this,",
+    "concluding": "In summary,",
+    "qualifying": "It is worth noting that",
+    "emphasizing": "Importantly,",
+    "risk_intro": "On the risk side,",
+    "data_intro": "The data shows that",
+    "action_intro": "Moving forward,",
+    "caveat": "That said,",
 }
 
 # ---------------------------------------------------------------------------
-# Formatting rules
+# Formatting rules for narrative structure
 # ---------------------------------------------------------------------------
 FORMATTING_RULES: dict[str, Any] = {
-    "max_words": 500,
+    "max_word_count": 500,
+    "min_word_count": 50,
+    "min_data_points": 3,
+    "max_paragraphs": 5,
     "min_key_points": 3,
     "max_key_points": 10,
-    "paragraph_separator": "\n\n",
-    "bullet_prefix": "  - ",
-    "number_format": "Use specific numbers, not vague adjectives",
-    "tone": "Professional, balanced, data-driven",
+    "summary_max_sentences": 2,
+    "paragraph_max_sentences": 5,
+    "avoid_words": [
+        "guaranteed", "perfect", "flawless", "risk-free",
+        "absolutely", "definitely", "impossible",
+    ],
+    "preferred_number_format": "Use specific numbers (72.3, not 'about 70')",
+    "tone": "confident but honest — acknowledge uncertainty",
+}
+
+# ---------------------------------------------------------------------------
+# Score tier labels for narrative use
+# ---------------------------------------------------------------------------
+SCORE_TIER_LABELS: dict[str, dict[str, Any]] = {
+    "excellent": {"min_score": 75, "label": "strong recommendation", "emoji": None},
+    "good": {"min_score": 55, "label": "solid choice", "emoji": None},
+    "marginal": {"min_score": 40, "label": "acceptable but limited", "emoji": None},
+    "weak": {"min_score": 0, "label": "below threshold — proceed with caution", "emoji": None},
+}
+
+# ---------------------------------------------------------------------------
+# Risk narrative fragments
+# ---------------------------------------------------------------------------
+RISK_NARRATIVE_FRAGMENTS: dict[str, str] = {
+    "minimal": "The risk profile is minimal, with no significant threats identified.",
+    "low": "Risk is low and well-contained within normal operating parameters.",
+    "moderate": "There are moderate risks that require monitoring but are manageable.",
+    "high": "High-level risks have been identified that could materially impact returns.",
+    "critical": "Critical risks are present — this selection carries significant downside exposure.",
 }

@@ -1,106 +1,104 @@
-"""Narrative constraint rules for quality and completeness.
+"""Narrative Builder — constraint rules for narrative quality.
 
-These rules enforce that generated narratives are informative,
-honest, and backed by data. Violations are flagged but do not
-block output — they indicate quality degradation.
+Defines guardrails ensuring narratives are concise, data-driven,
+and transparent about risk. Violating critical rules means the
+narrative needs revision before being shown to the user.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+
 # ---------------------------------------------------------------------------
 # Narrative rule definitions
 # ---------------------------------------------------------------------------
 NARRATIVE_RULES: dict[str, dict[str, Any]] = {
     "max_word_count": {
-        "description": "Narrative must be under 500 words to remain digestible",
+        "description": "Narrative must be under 500 words to stay readable",
         "threshold": 500,
-        "severity": "warning",
-        "action": "Trim verbose sections; prioritize data over filler",
+        "severity": "critical",
+        "action": "Trim narrative — remove redundant phrases and weak qualifiers",
     },
     "min_data_points": {
-        "description": "Must include at least 3 supporting data points for credibility",
+        "description": "Must include at least 3 supporting data points with numbers",
         "threshold": 3,
         "severity": "critical",
-        "action": "Add more engine results as supporting evidence",
+        "action": "Add more quantitative evidence — score, margin, demand numbers",
     },
     "must_mention_risk": {
-        "description": "Every narrative must mention risk — hiding it destroys trust",
+        "description": "Narrative must explicitly mention risk level or risk factors",
         "severity": "critical",
-        "action": "Include risk level and at least one specific risk factor",
+        "action": "Add risk disclosure — hiding risks destroys trust",
     },
-    "must_start_with_conclusion": {
-        "description": "Lead with the decision, then explain — do not bury the lede",
+    "must_include_score": {
+        "description": "Narrative must include the unified score",
         "severity": "warning",
-        "action": "Ensure summary appears before explanation paragraphs",
+        "action": "Include the product score to ground the recommendation",
     },
-    "no_unsubstantiated_claims": {
-        "description": "Every claim must be backed by a data point or engine result",
+    "must_include_margin": {
+        "description": "Narrative should include profit margin when available",
         "severity": "warning",
-        "action": "Replace vague adjectives with specific numbers",
+        "action": "Add margin data — it is the most important number for sellers",
     },
-    "must_include_confidence_level": {
-        "description": "Always state how confident we are in this recommendation",
+    "no_unsupported_superlatives": {
+        "description": "Avoid 'best', 'perfect', 'guaranteed' without data backing",
         "severity": "warning",
-        "action": "Include confidence level and data coverage percentage",
+        "action": "Replace superlatives with specific numbers",
     },
-    "balanced_tone": {
-        "description": "Tone must be balanced — not overly optimistic or pessimistic",
+    "must_state_confidence": {
+        "description": "Narrative must disclose the confidence level of the recommendation",
+        "severity": "warning",
+        "action": "Add confidence disclosure so the reader knows how reliable this is",
+    },
+    "conclusion_first": {
+        "description": "Start with the conclusion (selection), then explain",
         "severity": "info",
-        "action": "Present both strengths and weaknesses of the selection",
-    },
-    "actionable_language": {
-        "description": "Use language that guides the reader toward next steps",
-        "severity": "info",
-        "action": "End with a forward-looking statement or call to action",
+        "action": "Restructure narrative to lead with the recommendation",
     },
 }
 
 
 def validate_narrative(
-    narrative: str,
-    key_points: list[dict[str, str]],
+    narrative_text: str, data_points: dict[str, Any],
 ) -> dict[str, Any]:
-    """Validate a generated narrative against quality rules.
+    """Validate a narrative against all narrative rules.
 
     Args:
-        narrative: The full narrative text.
-        key_points: List of key factor dicts with 'label' and 'value'.
+        narrative_text: The full assembled narrative string.
+        data_points: The data points used in generation.
 
     Returns:
-        Dict with violations, warnings, passed rules, and overall valid flag.
+        Dict with valid flag, violations, warnings, and passed rules.
     """
     violations: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     passed: list[str] = []
 
-    words = narrative.split()
+    words = narrative_text.split()
     word_count = len(words)
-    narrative_lower = narrative.lower()
+    text_lower = narrative_text.lower()
 
     # --- Max word count ---
     rule = NARRATIVE_RULES["max_word_count"]
     if word_count > rule["threshold"]:
-        warnings.append({
+        violations.append({
             "rule": "max_word_count",
             "severity": rule["severity"],
-            "word_count": word_count,
-            "threshold": rule["threshold"],
+            "detail": f"Narrative is {word_count} words (max {rule['threshold']})",
             "action": rule["action"],
         })
     else:
         passed.append("max_word_count")
 
-    # --- Min data points ---
+    # --- Minimum data points ---
     rule = NARRATIVE_RULES["min_data_points"]
-    data_point_count = len(key_points)
-    if data_point_count < rule["threshold"]:
+    numeric_mentions = _count_numeric_mentions(narrative_text)
+    if numeric_mentions < rule["threshold"]:
         violations.append({
             "rule": "min_data_points",
             "severity": rule["severity"],
-            "data_points": data_point_count,
-            "threshold": rule["threshold"],
+            "detail": f"Found {numeric_mentions} data points (min {rule['threshold']})",
             "action": rule["action"],
         })
     else:
@@ -108,51 +106,72 @@ def validate_narrative(
 
     # --- Must mention risk ---
     rule = NARRATIVE_RULES["must_mention_risk"]
-    risk_mentioned = "risk" in narrative_lower
-    if not risk_mentioned:
+    risk_keywords = ("risk", "downside", "threat", "vulnerability", "danger")
+    mentions_risk = any(kw in text_lower for kw in risk_keywords)
+    if not mentions_risk:
         violations.append({
             "rule": "must_mention_risk",
             "severity": rule["severity"],
+            "detail": "Narrative does not mention risk",
             "action": rule["action"],
         })
     else:
         passed.append("must_mention_risk")
 
-    # --- Must include confidence ---
-    rule = NARRATIVE_RULES["must_include_confidence_level"]
-    confidence_mentioned = "confidence" in narrative_lower or "confident" in narrative_lower
-    if not confidence_mentioned:
+    # --- Must include score ---
+    rule = NARRATIVE_RULES["must_include_score"]
+    score = data_points.get("unified_score", 0)
+    if str(int(score)) not in narrative_text and f"{score}" not in narrative_text:
         warnings.append({
-            "rule": "must_include_confidence_level",
+            "rule": "must_include_score",
             "severity": rule["severity"],
             "action": rule["action"],
         })
     else:
-        passed.append("must_include_confidence_level")
+        passed.append("must_include_score")
 
-    # --- Must start with conclusion ---
-    rule = NARRATIVE_RULES["must_start_with_conclusion"]
-    first_line = narrative.split("\n")[0] if narrative else ""
-    starts_with_selection = (
-        "selected" in first_line.lower()
-        or "recommend" in first_line.lower()
-        or "pick" in first_line.lower()
-    )
-    if not starts_with_selection:
+    # --- No unsupported superlatives ---
+    rule = NARRATIVE_RULES["no_unsupported_superlatives"]
+    bad_words = ("guaranteed", "perfect", "flawless", "risk-free", "can't fail")
+    found_bad = [w for w in bad_words if w in text_lower]
+    if found_bad:
         warnings.append({
-            "rule": "must_start_with_conclusion",
+            "rule": "no_unsupported_superlatives",
+            "severity": rule["severity"],
+            "detail": f"Found: {', '.join(found_bad)}",
+            "action": rule["action"],
+        })
+    else:
+        passed.append("no_unsupported_superlatives")
+
+    # --- Must state confidence ---
+    rule = NARRATIVE_RULES["must_state_confidence"]
+    confidence_keywords = ("confidence", "confident", "certainty", "reliability")
+    mentions_confidence = any(kw in text_lower for kw in confidence_keywords)
+    if not mentions_confidence:
+        warnings.append({
+            "rule": "must_state_confidence",
             "severity": rule["severity"],
             "action": rule["action"],
         })
     else:
-        passed.append("must_start_with_conclusion")
+        passed.append("must_state_confidence")
+
+    has_violations = len(violations) > 0
 
     return {
-        "valid": len(violations) == 0,
+        "valid": not has_violations,
         "violations": violations,
         "warnings": warnings,
         "passed_rules": passed,
         "word_count": word_count,
-        "data_points": data_point_count,
-        "risk_mentioned": risk_mentioned,
+        "data_points_found": numeric_mentions,
     }
+
+
+def _count_numeric_mentions(text: str) -> int:
+    """Count distinct numeric data points in the narrative."""
+    import re
+    # Match numbers like 72.3, 45%, $1500, 100
+    matches = re.findall(r'\d+\.?\d*[%]?', text)
+    return len(set(matches))
