@@ -1,0 +1,61 @@
+{
+  "record_id": "0d045b19016e",
+  "timestamp": "2026-04-02T11:55:39Z",
+  "profit_metrics": {
+    "gross_revenue": 100.0,
+    "refund_loss": 0.0,
+    "net_revenue": 100.0,
+    "cogs": 50.0,
+    "gross_profit": 50.0,
+    "gross_margin": 0.5,
+    "ad_spend": 0.0,
+    "shipping": 0.0,
+    "platform_fees": 0.0,
+    "tools": 0.0,
+    "labor": 0.0,
+    "total_operating_costs": 0.0,
+    "total_cost": 50.0,
+    "net_profit": 50.0,
+    "net_margin": 0.5,
+    "revenue_per_unit": 10.0,
+    "cost_per_unit": 5.0,
+    "profit_per_unit": 5.0,
+    "break_even_units": 0,
+    "break_even_revenue": 0.0
+  },
+  "kpis": {
+    "roas": 0.0,
+    "cpa": 0.0,
+    "clv_estimate": 12.5,
+    "aov": 10.0,
+    "conversion_rate": 0.0,
+    "cart_abandonment": 0.0,
+    "return_rate": 0.0,
+    "cost_per_click": 0.0,
+    "click_through_rate": 0.0,
+    "ad_conversion_rate": 0.0,
+    "margin_health": "healthy",
+    "roas_health": "unprofitable",
+    "cpa_health": "efficient",
+    "conversion_health": "poor",
+    "abandonment_health": "good",
+    "overall_health": "needs_attention",
+    "health_score": 0.565
+  },
+  "selected_strategy": {
+    "strategy_id": "none",
+    "name": "None",
+    "description": "No optimizations available",
+    "optimization_ids": [],
+    "expected_total_profit_change": 0.0,
+    "expected_total_revenue_change": 0.0,
+    "risk_level": "unknown",
+    "confidence": 0.0,
+    "reasoning": [
+      "No optimizations available"
+    ]
+  },
+  "recommended_actions": [],
+  "confidence": 0.0,
+  "outcome_actual": null
+}

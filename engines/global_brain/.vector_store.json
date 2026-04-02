@@ -1,0 +1,153 @@
+{
+  "entries": [
+    {
+      "entry_id": "k_b20fd4b62e51",
+      "content": "Instagram ads convert 2x better than Facebook for young adults",
+      "tf": {
+        "instagram": 1.0,
+        "ads": 1.0,
+        "convert": 1.0,
+        "2x": 1.0,
+        "better": 1.0,
+        "facebook": 1.0,
+        "young": 1.0,
+        "adults": 1.0
+      },
+      "tokens": [
+        "2x",
+        "adults",
+        "facebook",
+        "young",
+        "ads",
+        "convert",
+        "better",
+        "instagram"
+      ],
+      "metadata": {
+        "knowledge_type": "correlation",
+        "category": "customer",
+        "subcategory": "acquisition",
+        "source_engine": "learning_loop",
+        "confidence": 0.8,
+        "score": 0.89,
+        "tags": [
+          "customer",
+          "learning_loop",
+          "insight",
+          "conversion",
+          "marketing"
+        ]
+      },
+      "timestamp": "2026-04-02T11:55:52Z"
+    },
+    {
+      "entry_id": "k_46a61e8fb975",
+      "content": "low_conversion: Landing page bounce rate 80%",
+      "tf": {
+        "low": 1.0,
+        "conversion": 1.0,
+        "landing": 1.0,
+        "page": 1.0,
+        "bounce": 1.0,
+        "rate": 1.0,
+        "80": 1.0
+      },
+      "tokens": [
+        "rate",
+        "landing",
+        "page",
+        "conversion",
+        "bounce",
+        "80",
+        "low"
+      ],
+      "metadata": {
+        "knowledge_type": "insight",
+        "category": "operational",
+        "subcategory": "conversion",
+        "source_engine": "learning_loop",
+        "confidence": 0.8,
+        "score": 0.785,
+        "tags": [
+          "conversion",
+          "error",
+          "learning_loop"
+        ]
+      },
+      "timestamp": "2026-04-02T11:55:52Z"
+    },
+    {
+      "entry_id": "k_7b30c8792e95",
+      "content": "seasonal: Sales spike on weekends",
+      "tf": {
+        "seasonal": 1.0,
+        "sales": 1.0,
+        "spike": 1.0,
+        "weekends": 1.0
+      },
+      "tokens": [
+        "seasonal",
+        "weekends",
+        "sales",
+        "spike"
+      ],
+      "metadata": {
+        "knowledge_type": "insight",
+        "category": "financial",
+        "subcategory": "revenue",
+        "source_engine": "learning_loop",
+        "confidence": 0.55,
+        "score": 0.695,
+        "tags": [
+          "seasonal",
+          "pattern",
+          "revenue",
+          "learning_loop"
+        ]
+      },
+      "timestamp": "2026-04-02T11:55:52Z"
+    }
+  ],
+  "vocabulary": {
+    "2x": 0,
+    "adults": 1,
+    "facebook": 2,
+    "young": 3,
+    "ads": 4,
+    "convert": 5,
+    "better": 6,
+    "instagram": 7,
+    "rate": 8,
+    "landing": 9,
+    "page": 10,
+    "conversion": 11,
+    "bounce": 12,
+    "80": 13,
+    "low": 14,
+    "seasonal": 15,
+    "weekends": 16,
+    "sales": 17,
+    "spike": 18
+  },
+  "doc_freq": {
+    "2x": 1,
+    "adults": 1,
+    "facebook": 1,
+    "young": 1,
+    "ads": 1,
+    "convert": 1,
+    "better": 1,
+    "instagram": 1,
+    "rate": 1,
+    "landing": 1,
+    "page": 1,
+    "conversion": 1,
+    "bounce": 1,
+    "80": 1,
+    "low": 1,
+    "seasonal": 1,
+    "weekends": 1,
+    "sales": 1,
+    "spike": 1
+  }
+}

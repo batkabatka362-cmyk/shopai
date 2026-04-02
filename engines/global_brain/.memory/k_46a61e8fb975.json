@@ -1,0 +1,30 @@
+{
+  "entry_id": "k_46a61e8fb975",
+  "knowledge": {
+    "knowledge_id": "k_46a61e8fb975",
+    "content": "low_conversion: Landing page bounce rate 80%",
+    "knowledge_type": "insight",
+    "category": "operational",
+    "subcategory": "conversion",
+    "source_engine": "learning_loop",
+    "confidence": 0.8,
+    "tags": [
+      "conversion",
+      "error",
+      "learning_loop"
+    ],
+    "timestamp": "2026-04-02T11:55:52Z",
+    "structured_at": "2026-04-02T11:55:52Z",
+    "score": 0.785,
+    "score_breakdown": {
+      "reliability": 0.95,
+      "recency": 1.0,
+      "relevance": 0.6,
+      "impact": 0.5
+    }
+  },
+  "score": 0.785,
+  "stored_at": "2026-04-02T11:55:52Z",
+  "access_count": 0,
+  "last_accessed": "2026-04-02T11:55:52Z"
+}
