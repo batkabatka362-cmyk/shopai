@@ -13,7 +13,7 @@ from typing import Any, TypedDict
 # ---------------------------------------------------------------------------
 
 class Transaction(TypedDict, total=False):
-    """Single transaction record."""
+    """Single financial transaction."""
     id: str
     date: str
     type: str
@@ -49,7 +49,7 @@ class AccountingInput(TypedDict, total=False):
 class JournalLine(TypedDict):
     """Single line in a journal entry (one debit or credit)."""
     account: str
-    account_code: int
+    account_name: str
     type: str  # "debit" or "credit"
     amount: float
 
@@ -63,72 +63,56 @@ class JournalEntry(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# Intermediate types — account balances
+# Intermediate types — account balance
 # ---------------------------------------------------------------------------
 
 class AccountBalance(TypedDict):
-    """Balance state for a single account."""
-    account_code: int
-    account_name: str
-    balance: float
-    normal_side: str  # "debit" or "credit"
+    """Balance state for all accounts."""
+    balances: dict[str, float]
+    total_debits: float
+    total_credits: float
+    is_balanced: bool
 
 
 # ---------------------------------------------------------------------------
 # Intermediate types — reconciliation
 # ---------------------------------------------------------------------------
 
-class ReconciliationDiscrepancy(TypedDict):
-    """A mismatch between internal and bank records."""
+class Discrepancy(TypedDict, total=False):
+    """Single reconciliation discrepancy."""
     internal: dict[str, Any]
     bank: dict[str, Any]
     difference: float
 
 
 class ReconciliationResult(TypedDict):
-    """Result of bank reconciliation."""
+    """Result from bank reconciliation."""
     matched_count: int
     unmatched_internal: int
     unmatched_bank: int
-    discrepancies: list[ReconciliationDiscrepancy]
+    discrepancies: list[Discrepancy]
     status: str
 
 
 # ---------------------------------------------------------------------------
-# Intermediate types — financial reports
+# Intermediate types — financial report
 # ---------------------------------------------------------------------------
 
-class ProfitAndLossReport(TypedDict, total=False):
-    """Profit and Loss report data."""
+class FinancialReport(TypedDict, total=False):
+    """Generated financial report."""
     type: str
     period: dict[str, str]
     revenue: float
-    cost_of_goods_sold: float
+    cogs: float
     gross_profit: float
-    gross_margin_pct: float
     operating_expenses: float
     net_profit: float
+    gross_margin_pct: float
     net_margin_pct: float
-    expense_breakdown: dict[str, float]
-
-
-class BalanceSheetReport(TypedDict, total=False):
-    """Balance Sheet report data."""
-    type: str
-    period: dict[str, str]
-    total_assets: float
-    total_liabilities: float
-    total_equity: float
-    is_balanced: bool
-    assets: dict[str, float]
-    liabilities: dict[str, float]
-    equity: dict[str, float]
-
-
-class FinancialReport(TypedDict, total=False):
-    """Generic financial report wrapper."""
-    type: str
-    period: dict[str, str]
+    assets: float
+    liabilities: float
+    equity: float
+    entries: list[JournalEntry]
 
 
 # ---------------------------------------------------------------------------
@@ -136,13 +120,11 @@ class FinancialReport(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 class AccountingOutputData(TypedDict, total=False):
-    """The 'data' block of engine output."""
+    """The 'data' block of the engine output."""
     journal_entries: list[JournalEntry]
-    balances: dict[str, float]
+    balances: AccountBalance
     reconciliation: ReconciliationResult | None
-    report: dict[str, Any]
-    transaction_count: int
-    is_balanced: bool
+    report: FinancialReport
 
 
 class AccountingMeta(TypedDict):
