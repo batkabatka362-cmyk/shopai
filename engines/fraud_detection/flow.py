@@ -4,18 +4,20 @@ This is the FLOW file. It ONLY orchestrates — no business logic here.
 Calls modules in sequence, passes data between them, returns unified result.
 
 Pipeline:
-  Memory Reader → Risk Scorer → Velocity Checker → Address Verifier →
-  Pattern Detector → Blacklist Checker → Device Fingerprinter →
-  Decision Maker → Alert Generator → Memory Writer → Output
+  Validate → Memory Reader → Risk Scorer → Velocity Checker →
+  Address Verifier → Pattern Detector → Blacklist Checker →
+  Device Fingerprinter → Decision Maker → Alert Generator →
+  Memory Writer → Output
 
 Engine contract:
   Input:  {status, data: {order, device}, meta, error}
-  Output: {status, data: {order_id, verdict, risk_score, risk_level, confidence, signals, alert}, meta: {engine}, error}
+  Output: {status, data: {order_id, verdict, risk_score, risk_level, confidence, signals, recommended_actions, alert}, meta: {engine}, error}
 """
 from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import time
 from typing import Any
 
@@ -27,7 +29,7 @@ from .blacklist_checker import check_blacklists
 from .device_fingerprinter import analyze_device
 from .decision_maker import make_decision
 from .alert_generator import generate_alert
-from .memory_reader import read_fraud_history
+from .memory_reader import read_fraud_history, read_past_orders
 from .memory_writer import write_fraud_decision
 
 
@@ -66,34 +68,40 @@ class FraudDetectionEngine:
             return self._fail("Input 'data' must be a dict", 0.0)
 
         order = data.get("order", {})
+        if not isinstance(order, dict) or not order:
+            return self._fail("Order data is required", 0.0)
+
         device = data.get("device", {})
-
-        if not order:
-            return self._fail("order is required", 0.0)
-
         order_id = str(order.get("id", "unknown"))
         email = str(order.get("email", ""))
         ip_address = str(order.get("ip_address", ""))
-        phone = str(order.get("phone", ""))
-        total_price = float(order.get("total_price", 0))
-        shipping_address = order.get("shipping_address", {})
-        billing_address = order.get("billing_address", {})
+        phone = str(order.get("customer", {}).get("phone", ""))
         customer = order.get("customer", {})
+        if not isinstance(customer, dict):
+            customer = {}
+        shipping = order.get("shipping_address", {})
+        billing = order.get("billing_address", {})
 
         # ---- Stage 1: Memory Reader (non-blocking) ----
-        history = read_fraud_history(email=email, limit=50)
-        past_orders = history.get("records", [])
+        _history = read_fraud_history(email=email, limit=50)
+        past_orders = read_past_orders(email=email, ip=ip_address, limit=50)
 
-        # ---- Stage 2: Risk Scorer (Mistral) ----
-        risk_result = score_base_risk(order=order, customer=customer)
-        if risk_result.get("status") == "error":
+        # ---- Stage 2: Risk Scorer ----
+        base_risk_result = score_base_risk(
+            order=order,
+            customer=customer,
+        )
+        if base_risk_result.get("status") == "error":
             return self._fail(
-                f"Risk scoring failed: {risk_result.get('error', 'unknown')}",
+                f"Base risk scoring failed: {base_risk_result.get('error', 'unknown')}",
                 time.monotonic() - start,
             )
 
         # ---- Stage 3: Velocity Checker ----
-        velocity_result = check_velocity(order=order, past_orders=past_orders)
+        velocity_result = check_velocity(
+            order=order,
+            past_orders=past_orders,
+        )
         if velocity_result.get("status") == "error":
             return self._fail(
                 f"Velocity check failed: {velocity_result.get('error', 'unknown')}",
@@ -102,8 +110,8 @@ class FraudDetectionEngine:
 
         # ---- Stage 4: Address Verifier ----
         address_result = verify_address(
-            shipping=shipping_address,
-            billing=billing_address,
+            shipping=shipping,
+            billing=billing,
         )
         if address_result.get("status") == "error":
             return self._fail(
@@ -111,7 +119,7 @@ class FraudDetectionEngine:
                 time.monotonic() - start,
             )
 
-        # ---- Stage 5: Pattern Detector (Mistral) ----
+        # ---- Stage 5: Pattern Detector ----
         pattern_result = detect_patterns(
             order=order,
             customer=customer,
@@ -124,7 +132,7 @@ class FraudDetectionEngine:
             )
 
         # ---- Stage 6: Blacklist Checker ----
-        address_hash = _hash_address(shipping_address)
+        address_hash = _compute_address_hash(shipping)
         blacklist_result = check_blacklists(
             email=email,
             ip=ip_address,
@@ -138,16 +146,18 @@ class FraudDetectionEngine:
             )
 
         # ---- Stage 7: Device Fingerprinter ----
-        device_result = analyze_device(device=device)
+        device_result = analyze_device(
+            device=device,
+        )
         if device_result.get("status") == "error":
             return self._fail(
                 f"Device analysis failed: {device_result.get('error', 'unknown')}",
                 time.monotonic() - start,
             )
 
-        # ---- Stage 8: Decision Maker (Qwen) ----
+        # ---- Stage 8: Decision Maker ----
         signals = {
-            "base_risk": risk_result,
+            "base_risk": base_risk_result,
             "velocity": velocity_result,
             "address": address_result,
             "pattern": pattern_result,
@@ -171,27 +181,37 @@ class FraudDetectionEngine:
         alert_result = generate_alert(
             verdict=verdict,
             risk_score=risk_score,
-            risk_level=risk_level,
             signals=signals,
             order_id=order_id,
         )
-        alert = alert_result.get("alert")
+        if alert_result.get("status") == "error":
+            return self._fail(
+                f"Alert generation failed: {alert_result.get('error', 'unknown')}",
+                time.monotonic() - start,
+            )
 
-        # Build recommended actions
-        recommended_actions: list[str] = []
-        if alert and isinstance(alert, dict):
-            recommended_actions = alert.get("recommended_actions", [])
+        alert = alert_result.get("alert")
+        recommended_actions = (
+            alert.get("recommended_actions", []) if alert else []
+        )
 
         # ---- Stage 10: Memory Writer (non-fatal) ----
-        _write = write_fraud_decision(
+        order_summary = {
+            "id": order_id,
+            "email": email,
+            "ip_address": ip_address,
+            "total_price": order.get("total_price", 0.0),
+            "shipping_address": shipping,
+            "created_at": order.get("created_at", ""),
+        }
+
+        _write_result = write_fraud_decision(
             order_id=order_id,
-            email=email,
-            ip_address=ip_address,
             verdict=verdict,
             risk_score=risk_score,
-            risk_level=risk_level,
             signals=signals,
-            total_price=total_price,
+            order_summary=order_summary,
+            alert=alert,
         )
 
         # ---- Stage 11: Assemble output ----
@@ -206,42 +226,12 @@ class FraudDetectionEngine:
                 "risk_level": risk_level,
                 "confidence": confidence,
                 "signals": {
-                    "base_risk": {
-                        "score": risk_result.get("score", 0.0),
-                        "factors": risk_result.get("factors", []),
-                    },
-                    "velocity": {
-                        "score": velocity_result.get("score", 0.0),
-                        "orders_1h": velocity_result.get("orders_1h", 0),
-                        "orders_24h": velocity_result.get("orders_24h", 0),
-                        "orders_7d": velocity_result.get("orders_7d", 0),
-                        "flag": velocity_result.get("flag"),
-                    },
-                    "address": {
-                        "score": address_result.get("score", 0.0),
-                        "billing_shipping_match": address_result.get("billing_shipping_match", True),
-                        "is_po_box": address_result.get("is_po_box", False),
-                        "is_freight_forwarder": address_result.get("is_freight_forwarder", False),
-                        "country_risk": address_result.get("country_risk", "low"),
-                    },
-                    "pattern": {
-                        "score": pattern_result.get("score", 0.0),
-                        "detected_patterns": pattern_result.get("detected_patterns", []),
-                        "model_note": pattern_result.get("model_note", ""),
-                    },
-                    "blacklist": {
-                        "score": blacklist_result.get("score", 0.0),
-                        "email_listed": blacklist_result.get("email_listed", False),
-                        "ip_listed": blacklist_result.get("ip_listed", False),
-                        "address_listed": blacklist_result.get("address_listed", False),
-                        "phone_listed": blacklist_result.get("phone_listed", False),
-                    },
-                    "device": {
-                        "score": device_result.get("score", 0.0),
-                        "is_bot": device_result.get("is_bot", False),
-                        "timezone_consistent": device_result.get("timezone_consistent", True),
-                        "fingerprint_hash": device_result.get("fingerprint_hash", ""),
-                    },
+                    "base_risk": base_risk_result,
+                    "velocity": velocity_result,
+                    "address": address_result,
+                    "pattern": pattern_result,
+                    "blacklist": blacklist_result,
+                    "device": device_result,
                 },
                 "recommended_actions": recommended_actions,
                 "alert": alert,
@@ -272,13 +262,21 @@ class FraudDetectionEngine:
         }
 
 
-def _hash_address(address: dict[str, Any]) -> str:
-    """Create a stable hash of an address for blacklist comparison."""
-    parts = [
-        str(address.get("address1", "")).lower().strip(),
-        str(address.get("city", "")).lower().strip(),
-        str(address.get("province", "")).lower().strip(),
-        str(address.get("zip", "")).lower().strip(),
-        str(address.get("country_code", "")).lower().strip(),
-    ]
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+# ---------------------------------------------------------------------------
+# Module-level helpers (used only by flow)
+# ---------------------------------------------------------------------------
+
+def _compute_address_hash(address: dict[str, Any]) -> str:
+    """Compute a deterministic hash of an address for blacklist lookup."""
+    try:
+        parts = [
+            str(address.get("line1", "")).lower().strip(),
+            str(address.get("city", "")).lower().strip(),
+            str(address.get("state", "")).lower().strip(),
+            str(address.get("zip", "")).strip(),
+            str(address.get("country", "")).upper().strip(),
+        ]
+        raw = "|".join(parts)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""

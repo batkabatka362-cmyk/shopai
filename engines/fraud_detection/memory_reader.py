@@ -1,63 +1,54 @@
 """Fraud Detection Engine — memory reader.
 
-Reads past fraud decisions and order history from .memory/fraud_detection/
-for velocity checking and pattern detection.
+Reads past fraud decision records from memory storage.
+Used to provide historical context for velocity checks and pattern detection.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 from typing import Any
 
-
-_MEMORY_DIR = os.path.join(".memory", "fraud_detection")
-_DECISIONS_FILE = os.path.join(_MEMORY_DIR, "decisions.json")
+_MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory", "fraud_detection")
 
 
 def read_fraud_history(
     email: str | None = None,
-    ip: str | None = None,
-    limit: int = 50,
+    limit: int = 10,
 ) -> dict[str, Any]:
-    """Read past fraud decisions, optionally filtered by email or IP.
+    """Read past fraud decision records from memory.
 
     Args:
-        email: Filter by customer email.
-        ip: Filter by IP address.
-        limit: Maximum records to return.
+        email: Optional email to filter records by.
+        limit: Max records to return.
 
     Returns:
-        Dict with status, records, count.
+        Structured dict with past records and count.
     """
     try:
-        records: list[dict[str, Any]] = []
+        records = _load_records()
 
-        if os.path.isfile(_DECISIONS_FILE):
-            with open(_DECISIONS_FILE, "r") as fh:
-                all_records = json.load(fh)
-            if not isinstance(all_records, list):
-                all_records = []
-        else:
-            all_records = []
+        # Filter by email if provided
+        if email:
+            email_norm = email.lower().strip()
+            records = [
+                r for r in records
+                if str(r.get("email", "")).lower().strip() == email_norm
+            ]
 
-        # Filter
-        for rec in all_records:
-            if email and rec.get("email", "").lower() != email.lower():
-                continue
-            if ip and rec.get("ip_address", "") != ip:
-                continue
-            records.append(rec)
-
-        # Sort by timestamp descending and limit
-        records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
-        records = records[:limit]
+        # Sort by timestamp descending (most recent first)
+        records = sorted(
+            records,
+            key=lambda r: r.get("timestamp", ""),
+            reverse=True,
+        )[:limit]
 
         return {
             "status": "success",
-            "records": records,
+            "records": copy.deepcopy(records),
             "count": len(records),
         }
-
     except Exception as exc:
         return {
             "status": "success",
@@ -65,3 +56,72 @@ def read_fraud_history(
             "count": 0,
             "note": f"Memory read warning: {exc}",
         }
+
+
+def read_past_orders(
+    email: str | None = None,
+    ip: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Read past order summaries for velocity and pattern checks.
+
+    Args:
+        email: Optional email filter.
+        ip: Optional IP filter.
+        limit: Max records to return.
+
+    Returns:
+        List of simplified order dicts from past fraud records.
+    """
+    try:
+        records = _load_records()
+        orders: list[dict[str, Any]] = []
+
+        for record in records:
+            order_summary = record.get("order_summary", {})
+            if not order_summary:
+                continue
+
+            rec_email = str(order_summary.get("email", "")).lower().strip()
+            rec_ip = str(order_summary.get("ip_address", "")).strip()
+
+            match = False
+            if email and rec_email == email.lower().strip():
+                match = True
+            if ip and rec_ip == ip.strip():
+                match = True
+            if not email and not ip:
+                match = True
+
+            if match:
+                orders.append(copy.deepcopy(order_summary))
+
+        # Sort by timestamp descending
+        orders.sort(key=lambda o: o.get("created_at", ""), reverse=True)
+        return orders[:limit]
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _load_records() -> list[dict[str, Any]]:
+    """Load all fraud decision records from the memory directory."""
+    if not os.path.isdir(_MEMORY_DIR):
+        return []
+
+    records: list[dict[str, Any]] = []
+    for fname in os.listdir(_MEMORY_DIR):
+        if not fname.endswith(".json") or fname == "blacklists.json":
+            continue
+        fpath = os.path.join(_MEMORY_DIR, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+                if isinstance(data, dict):
+                    records.append(data)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return records

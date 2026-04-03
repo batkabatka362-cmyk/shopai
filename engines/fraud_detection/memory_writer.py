@@ -1,95 +1,91 @@
 """Fraud Detection Engine — memory writer.
 
-Persists fraud decision records to .memory/fraud_detection/decisions.json.
+Persists fraud decisions to disk for future reference.
+Each run is stored as a separate JSON file keyed by record_id.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
 import uuid
 from typing import Any
 
-
-_MEMORY_DIR = os.path.join(".memory", "fraud_detection")
-_DECISIONS_FILE = os.path.join(_MEMORY_DIR, "decisions.json")
-_MAX_RECORDS = 1000
+_MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory", "fraud_detection")
 
 
 def write_fraud_decision(
     order_id: str,
-    email: str,
-    ip_address: str,
     verdict: str,
     risk_score: float,
-    risk_level: str,
     signals: dict[str, Any],
-    total_price: float = 0.0,
+    order_summary: dict[str, Any] | None = None,
+    alert: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Persist a fraud decision record.
+    """Write a fraud decision record to memory.
 
     Args:
-        order_id: The evaluated order ID.
-        email: Customer email.
-        ip_address: Customer IP.
-        verdict: Final verdict (approve/review/reject).
-        risk_score: Overall risk score.
-        risk_level: Risk level string.
-        signals: All signal results.
-        total_price: Order total.
+        order_id: The order identifier.
+        verdict: The fraud verdict (approve, review, reject).
+        risk_score: The final risk score (0.0-1.0).
+        signals: Dict of all signal results.
+        order_summary: Simplified order data for future velocity checks.
+        alert: Alert dict if one was generated, else None.
 
     Returns:
-        Dict with status, record_id, path.
+        Structured dict confirming the write.
     """
     try:
-        os.makedirs(_MEMORY_DIR, exist_ok=True)
-
         record_id = uuid.uuid4().hex[:12]
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         record: dict[str, Any] = {
-            "id": record_id,
+            "record_id": record_id,
             "timestamp": timestamp,
             "order_id": order_id,
-            "email": email,
-            "ip_address": ip_address,
-            "total_price": total_price,
             "verdict": verdict,
-            "risk_score": risk_score,
-            "risk_level": risk_level,
-            "signal_scores": {
-                name: data.get("score", 0.0) if isinstance(data, dict) else 0.0
-                for name, data in signals.items()
-            },
+            "risk_score": round(risk_score, 4),
+            "signals_summary": _summarize_signals(signals),
+            "order_summary": copy.deepcopy(order_summary) if order_summary else {},
+            "alert": copy.deepcopy(alert) if alert else None,
         }
 
-        # Load existing records
-        records: list[dict[str, Any]] = []
-        if os.path.isfile(_DECISIONS_FILE):
-            with open(_DECISIONS_FILE, "r") as fh:
-                records = json.load(fh)
-            if not isinstance(records, list):
-                records = []
-
-        records.append(record)
-
-        # Trim to max records
-        if len(records) > _MAX_RECORDS:
-            records = records[-_MAX_RECORDS:]
-
-        with open(_DECISIONS_FILE, "w") as fh:
-            json.dump(records, fh, indent=2)
+        _ensure_memory_dir()
+        fpath = os.path.join(_MEMORY_DIR, f"{record_id}.json")
+        with open(fpath, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, indent=2, default=str)
 
         return {
             "status": "success",
             "record_id": record_id,
-            "path": _DECISIONS_FILE,
+            "path": fpath,
         }
-
     except Exception as exc:
         return {
-            "status": "success",
-            "record_id": "",
-            "path": "",
-            "note": f"Memory write warning: {exc}",
+            "status": "warning",
+            "record_id": None,
+            "path": None,
+            "note": f"Memory write failed (non-fatal): {exc}",
         }
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _summarize_signals(signals: dict[str, Any]) -> dict[str, Any]:
+    """Create a compact summary of signal scores for storage."""
+    summary: dict[str, Any] = {}
+    for name, data in signals.items():
+        if isinstance(data, dict):
+            summary[name] = {
+                "score": data.get("score", 0.0),
+                "status": data.get("status", "unknown"),
+            }
+    return summary
+
+
+def _ensure_memory_dir() -> None:
+    """Create the memory directory if it doesn't exist."""
+    os.makedirs(_MEMORY_DIR, exist_ok=True)
