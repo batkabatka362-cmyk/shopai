@@ -1,10 +1,10 @@
 """Product Variant Engine — variant validator.
 
-Validates the complete variant set for consistency:
-  - No duplicate SKUs
-  - All prices > 0
-  - All option combinations are covered (no gaps)
-  - No orphan variants (variants without SKUs or prices)
+Validates consistency across variants, SKUs, and prices:
+- No duplicate SKUs
+- All prices > 0
+- All option combos are covered (no orphans)
+- No orphan variants (variants without SKU or price)
 
 All math is real. No faking, no random numbers.
 """
@@ -19,12 +19,12 @@ def validate_variants(
     skus: list[dict[str, Any]],
     prices: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Validate consistency of the generated variant set.
+    """Validate variant data for consistency.
 
     Args:
-        variants: List of GeneratedVariant dicts.
-        skus: List of VariantSKU dicts from sku_builder.
-        prices: List of VariantPrice dicts from price_mapper.
+        variants: List of variant dicts from variant_generator.
+        skus: List of SKU dicts from sku_builder.
+        prices: List of price dicts from price_mapper.
 
     Returns:
         Structured dict with validation results.
@@ -39,67 +39,57 @@ def validate_variants(
         warnings: list[str] = []
 
         # --- Check 1: Duplicate SKUs ---
-        sku_counts: dict[str, int] = {}
-        for entry in skus:
-            sku_str = str(entry.get("sku", ""))
-            sku_counts[sku_str] = sku_counts.get(sku_str, 0) + 1
+        sku_strings: list[str] = []
+        seen_skus: set[str] = set()
+        for sku_rec in skus:
+            s = str(sku_rec.get("sku", ""))
+            sku_strings.append(s)
+            if s in seen_skus:
+                duplicate_skus.append(s)
+            seen_skus.add(s)
 
-        for sku_str, count in sku_counts.items():
-            if count > 1:
-                duplicate_skus.append(sku_str)
-
-        # --- Check 2: Price anomalies ---
-        price_by_index: dict[int, float] = {}
-        for entry in prices:
-            idx = entry.get("variant_index", -1)
-            price_val = entry.get("price", 0.0)
-            price_by_index[idx] = price_val
-
+        # --- Check 2: Price anomalies (price <= 0) ---
+        for price_rec in prices:
+            idx = price_rec.get("variant_index", -1)
+            price_val = price_rec.get("price", 0.0)
             if price_val <= 0:
                 price_anomalies.append(
-                    f"Variant {idx}: price is {price_val} (must be > 0)"
+                    f"Variant {idx}: price {price_val} <= 0"
                 )
 
-            compare_at = entry.get("compare_at_price")
-            if compare_at is not None and compare_at <= price_val:
-                warnings.append(
-                    f"Variant {idx}: compare_at_price ({compare_at}) "
-                    f"<= price ({price_val})"
-                )
-
-        # --- Check 3: Orphan variants (missing SKU or price) ---
-        sku_indices = {entry.get("variant_index", -1) for entry in skus}
-        price_indices = {entry.get("variant_index", -1) for entry in prices}
-
+        # --- Check 3: Coverage — every variant has a SKU ---
+        sku_indices = {rec.get("variant_index") for rec in skus}
         for idx in range(len(variants)):
             if idx not in sku_indices:
-                warnings.append(f"Variant {idx}: no SKU assigned")
+                warnings.append(f"Variant {idx}: missing SKU record")
+
+        # --- Check 4: Coverage — every variant has a price ---
+        price_indices = {rec.get("variant_index") for rec in prices}
+        for idx in range(len(variants)):
             if idx not in price_indices:
-                warnings.append(f"Variant {idx}: no price assigned")
+                warnings.append(f"Variant {idx}: missing price record")
 
-        # --- Check 4: SKU/price entries for non-existent variants ---
-        variant_count = len(variants)
-        for entry in skus:
-            vi = entry.get("variant_index", -1)
-            if vi < 0 or vi >= variant_count:
+        # --- Check 5: Orphan SKUs (SKU index beyond variant count) ---
+        for sku_rec in skus:
+            idx = sku_rec.get("variant_index", -1)
+            if idx < 0 or idx >= len(variants):
                 warnings.append(
-                    f"SKU entry references non-existent variant index {vi}"
-                )
-        for entry in prices:
-            vi = entry.get("variant_index", -1)
-            if vi < 0 or vi >= variant_count:
-                warnings.append(
-                    f"Price entry references non-existent variant index {vi}"
+                    f"SKU '{sku_rec.get('sku', '')}' references "
+                    f"invalid variant index {idx}"
                 )
 
-        # --- Check 5: Variant count sanity ---
-        if variant_count == 0:
-            warnings.append("No variants were generated")
+        # --- Check 6: Orphan prices (price index beyond variant count) ---
+        for price_rec in prices:
+            idx = price_rec.get("variant_index", -1)
+            if idx < 0 or idx >= len(variants):
+                warnings.append(
+                    f"Price record references invalid variant index {idx}"
+                )
 
         is_valid = (
             len(duplicate_skus) == 0
             and len(price_anomalies) == 0
-            and variant_count > 0
+            and len(warnings) == 0
         )
 
         return {
@@ -110,7 +100,7 @@ def validate_variants(
             "warnings": warnings,
         }
     except Exception as exc:
-        return _fail(f"Variant validation failed: {exc}")
+        return _fail(f"Validation failed: {exc}")
 
 
 # ---------------------------------------------------------------------------

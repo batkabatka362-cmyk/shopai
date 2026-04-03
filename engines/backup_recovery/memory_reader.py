@@ -1,10 +1,10 @@
 """Backup/Recovery Engine — memory reader.
 
-Lists past backup metadata from .memory/backup_recovery/ directory.
+Lists past backup records from the engine's .memory/ directory.
+Used to provide backup history and inform decisions.
 """
 from __future__ import annotations
 
-import copy
 import json
 import os
 from typing import Any
@@ -15,10 +15,10 @@ _MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory")
 def read_backup_history(
     limit: int = 10,
 ) -> dict[str, Any]:
-    """List past backups from memory storage.
+    """Read past backup metadata records.
 
     Args:
-        limit: Max number of backup records to return.
+        limit: Max number of records to return.
 
     Returns:
         Structured dict with backup history entries.
@@ -33,13 +33,13 @@ def read_backup_history(
             reverse=True,
         )[:limit]
 
-        # Map to summary entries
+        # Project to summary entries
         backups: list[dict[str, Any]] = []
         for record in records:
             backups.append({
                 "backup_id": record.get("backup_id", ""),
                 "timestamp": record.get("timestamp", ""),
-                "size": record.get("size_bytes", 0),
+                "size": record.get("final_size_bytes", 0),
                 "records": record.get("total_records", 0),
             })
 
@@ -62,7 +62,7 @@ def read_backup_history(
 # ---------------------------------------------------------------------------
 
 def _load_records() -> list[dict[str, Any]]:
-    """Load all backup metadata records from the memory directory."""
+    """Load all JSON records from the memory directory."""
     if not os.path.isdir(_MEMORY_DIR):
         return []
 

@@ -1,9 +1,9 @@
 """Product Variant Engine — SKU builder.
 
-Builds deterministic SKU codes and EAN-13 barcodes for each variant.
+Builds SKU strings and EAN-13 barcodes for each variant.
 
 SKU format: {PRODUCT_CODE}-{OPT1_3CHARS}-{OPT2_3CHARS}-...
-Barcode format: EAN-13 (country_code(3) + product(4) + variant(5) + check(1))
+Barcode: EAN-13 (country_code(3) + product(4) + variant(5) + check(1))
 
 All math is real. No faking, no random numbers.
 """
@@ -13,65 +13,56 @@ import copy
 from typing import Any
 
 
+# Default country code prefix for EAN-13
+_DEFAULT_COUNTRY_CODE = "012"
+
+
 def build_skus(
     product_code: str,
     variants: list[dict[str, Any]],
-    country_code: str = "012",
 ) -> dict[str, Any]:
     """Build SKU strings and EAN-13 barcodes for all variants.
 
     Args:
-        product_code: Short product identifier (e.g. "TSH001").
-        variants: List of GeneratedVariant dicts from variant_generator.
-        country_code: 3-digit country/system prefix for EAN-13 barcodes.
+        product_code: Base product code string.
+        variants: List of variant dicts from variant_generator.
 
     Returns:
-        Structured dict with SKU and barcode per variant.
+        Structured dict with SKU and barcode records.
     """
     try:
         variants = copy.deepcopy(variants)
 
-        if not product_code or not product_code.strip():
-            return _fail("product_code is required")
-
+        if not product_code:
+            return _fail("Product code is required")
         if not variants:
-            return _fail("No variants provided")
+            return _fail("No variants to build SKUs for")
 
-        # Sanitize country code: ensure exactly 3 digits
-        cc = str(country_code).zfill(3)[:3]
-        if not cc.isdigit():
-            cc = "012"
+        product_code_clean = product_code.strip().upper()
 
-        # Derive a 4-digit product number from product_code hash
-        product_num = str(abs(hash(product_code)) % 10000).zfill(4)
+        # Derive a 4-digit product number from the product code
+        product_num = _product_code_to_digits(product_code_clean, 4)
 
         skus: list[dict[str, Any]] = []
-        seen_skus: set[str] = set()
 
         for idx, variant in enumerate(variants):
             options = variant.get("options", {})
 
-            # Build SKU: product_code + 3-char abbreviations of each option value
-            parts = [product_code.upper()]
-            for _axis_name, value in sorted(options.items()):
-                abbrev = str(value).upper().replace(" ", "")[:3]
-                parts.append(abbrev)
+            # Build SKU: PRODUCT_CODE-OPT1-OPT2-...
+            option_parts = []
+            for _key in sorted(options.keys()):
+                val = str(options[_key]).upper()
+                # Take first 3 characters, pad if needed
+                abbr = val[:3].ljust(3, "X")
+                option_parts.append(abbr)
 
-            sku = "-".join(parts)
-
-            # Handle duplicates by appending index suffix
-            base_sku = sku
-            suffix = 2
-            while sku in seen_skus:
-                sku = f"{base_sku}-{suffix}"
-                suffix += 1
-            seen_skus.add(sku)
+            sku = "-".join([product_code_clean] + option_parts)
 
             # Build EAN-13 barcode
-            variant_num = str(idx % 100000).zfill(5)
-            barcode_body = f"{cc}{product_num}{variant_num}"
+            variant_num = str(idx + 1).zfill(5)
+            barcode_body = _DEFAULT_COUNTRY_CODE + product_num + variant_num
             check_digit = _ean13_check_digit(barcode_body)
-            barcode = f"{barcode_body}{check_digit}"
+            barcode = barcode_body + str(check_digit)
 
             skus.append({
                 "variant_index": idx,
@@ -91,23 +82,34 @@ def build_skus(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _ean13_check_digit(body: str) -> str:
-    """Calculate the EAN-13 check digit for a 12-digit string.
+def _product_code_to_digits(code: str, length: int) -> str:
+    """Convert a product code to a fixed-length digit string.
 
-    The check digit is computed so that the weighted sum (alternating 1 and 3)
-    of all 13 digits is a multiple of 10.
+    Uses ordinal sum modulo to derive a reproducible numeric code.
     """
-    if len(body) != 12 or not body.isdigit():
-        # Pad/truncate to 12 digits
-        body = body.ljust(12, "0")[:12]
+    num = 0
+    for ch in code:
+        num = (num * 31 + ord(ch)) % (10 ** length)
+    return str(num).zfill(length)
+
+
+def _ean13_check_digit(body: str) -> int:
+    """Calculate EAN-13 check digit for a 12-digit string.
+
+    The check digit is calculated so that the weighted sum of all 13 digits
+    (alternating weights 1 and 3) is a multiple of 10.
+    """
+    if len(body) != 12:
+        raise ValueError(f"EAN-13 body must be 12 digits, got {len(body)}")
 
     total = 0
     for i, ch in enumerate(body):
+        digit = int(ch)
         weight = 1 if i % 2 == 0 else 3
-        total += int(ch) * weight
+        total += digit * weight
 
-    check = (10 - (total % 10)) % 10
-    return str(check)
+    remainder = total % 10
+    return (10 - remainder) % 10
 
 
 def _fail(reason: str) -> dict[str, Any]:

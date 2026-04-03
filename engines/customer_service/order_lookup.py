@@ -1,17 +1,18 @@
 """Customer Service Engine — order lookup.
 
-Reads from order_management .memory directory to find order details.
-Returns order status, tracking info, and lateness calculations.
+Reads order data from the order_management engine's .memory directory
+to find and return order details for a given order ID.
 
-All logic is real. No faking, no random numbers.
+All logic is real file reading and matching. No faking.
 """
 from __future__ import annotations
 
 import copy
 import json
 import os
-import time
+from datetime import datetime, timezone
 from typing import Any
+
 
 _ORDER_MEMORY_DIR = os.path.join(
     os.path.dirname(__file__), "..", "order_management", ".memory",
@@ -22,48 +23,37 @@ def lookup_order(
     order_id: str,
     customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """Look up an order by ID in the order management memory.
+    """Look up an order by ID, optionally scoped to a customer.
 
     Args:
-        order_id: Order identifier (e.g. "ord_5001" or "#5001").
+        order_id: Order identifier (e.g. "ord_5001").
         customer_id: Optional customer ID to verify ownership.
 
     Returns:
-        Structured dict with order details or not-found.
+        Structured dict with order data or not-found.
     """
     try:
-        if not order_id or not order_id.strip():
-            return _fail("Order ID is required")
+        if not order_id or not isinstance(order_id, str):
+            return _fail("order_id must be a non-empty string")
 
-        normalized_id = _normalize_order_id(order_id)
+        normalised = _normalise_order_id(order_id)
+
         records = _load_order_records()
+        match = _find_order(records, normalised, customer_id)
 
-        # Search for matching order
-        matched_record: dict[str, Any] | None = None
-        for record in records:
-            rec_order_id = str(record.get("order_id", ""))
-            if rec_order_id == normalized_id or rec_order_id == order_id:
-                # If customer_id provided, verify ownership
-                if customer_id:
-                    rec_customer_id = str(record.get("customer_id", ""))
-                    if rec_customer_id != customer_id:
-                        continue
-                matched_record = record
-                break
-
-        if matched_record is None:
+        if match is None:
             return {
                 "status": "success",
                 "found": False,
                 "order": None,
             }
 
-        order_details = _build_order_details(matched_record)
+        order_info = _build_order_info(match)
 
         return {
             "status": "success",
             "found": True,
-            "order": order_details,
+            "order": order_info,
         }
     except Exception as exc:
         return _fail(f"Order lookup failed: {exc}")
@@ -73,16 +63,18 @@ def lookup_order(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _normalize_order_id(order_id: str) -> str:
-    """Normalize order ID to the canonical form (ord_NNNN)."""
-    oid = order_id.strip()
-    if oid.startswith("#"):
-        return f"ord_{oid[1:]}"
-    return oid
+def _normalise_order_id(raw: str) -> str:
+    """Normalise order ID formats: '#5001' -> 'ord_5001', etc."""
+    cleaned = raw.strip().lstrip("#")
+    if cleaned.startswith("ord_"):
+        return cleaned
+    if cleaned.isdigit():
+        return f"ord_{cleaned}"
+    return f"ord_{cleaned}"
 
 
 def _load_order_records() -> list[dict[str, Any]]:
-    """Load all order records from memory directory."""
+    """Load all order records from the order_management memory dir."""
     mem_dir = os.path.normpath(_ORDER_MEMORY_DIR)
     if not os.path.isdir(mem_dir):
         return []
@@ -102,83 +94,63 @@ def _load_order_records() -> list[dict[str, Any]]:
     return records
 
 
-def _build_order_details(record: dict[str, Any]) -> dict[str, Any]:
-    """Build a clean order details dict from a raw memory record."""
-    record = copy.deepcopy(record)
+def _find_order(
+    records: list[dict[str, Any]],
+    order_id: str,
+    customer_id: str | None,
+) -> dict[str, Any] | None:
+    """Find a record matching the given order_id (and optionally customer_id)."""
+    for record in records:
+        rec_order_id = str(record.get("order_id", ""))
+        if rec_order_id != order_id:
+            continue
+        if customer_id and str(record.get("customer_id", "")) != customer_id:
+            continue
+        return copy.deepcopy(record)
+    return None
 
+
+def _build_order_info(record: dict[str, Any]) -> dict[str, Any]:
+    """Build a clean order info dict from a raw order record."""
     order_id = str(record.get("order_id", ""))
     status = str(record.get("status", "unknown"))
 
-    # Tracking information
-    tracking = record.get("tracking", {})
-    tracking_number = str(tracking.get("carrier_tracking_number", ""))
-    tracking_url = str(tracking.get("tracking_url", ""))
+    # Tracking info
+    tracking_block = record.get("tracking", {})
+    tracking_number = str(tracking_block.get("carrier_tracking_number", ""))
+    shipping_block = record.get("shipping", {})
+    carrier = str(shipping_block.get("carrier", ""))
+    estimated_delivery = str(shipping_block.get("estimated_delivery", ""))
 
-    # Shipping information
-    shipping = record.get("shipping", {})
-    carrier = str(shipping.get("carrier", ""))
-    estimated_delivery = str(shipping.get("estimated_delivery", ""))
-
-    # Determine if the order is late
+    # Late calculation
     is_late = False
     days_late = 0
     if estimated_delivery:
         try:
-            # Parse estimated delivery date
-            parts = estimated_delivery.split("-")
-            if len(parts) == 3:
-                year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-                # Convert to epoch for comparison
-                delivery_epoch = _date_to_epoch(year, month, day)
-                now_epoch = time.time()
-                if now_epoch > delivery_epoch:
-                    diff_days = int((now_epoch - delivery_epoch) / 86400)
-                    # Only late if status is not "delivered"
-                    tracking_status = str(tracking.get("tracking_status", ""))
-                    if tracking_status not in ("delivered", "completed"):
-                        is_late = True
-                        days_late = diff_days
-        except (ValueError, IndexError):
+            est_dt = datetime.strptime(estimated_delivery, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc,
+            )
+            now = datetime.now(timezone.utc)
+            delta = (now - est_dt).days
+            if delta > 0 and status not in ("delivered", "cancelled"):
+                is_late = True
+                days_late = delta
+        except (ValueError, TypeError):
             pass
-
-    # Inventory / items info
-    inventory = record.get("inventory", {})
-    reservations = inventory.get("reservations", [])
-    items = [
-        {
-            "sku": str(r.get("sku", "")),
-            "quantity": int(r.get("quantity", 0)),
-        }
-        for r in reservations
-    ]
-
-    # Total from notification body or zero
-    total = float(record.get("total", 0.0))
 
     return {
         "id": order_id,
         "status": status,
         "tracking_number": tracking_number,
-        "tracking_url": tracking_url,
         "carrier": carrier,
         "estimated_delivery": estimated_delivery,
         "is_late": is_late,
         "days_late": days_late,
-        "items": items,
-        "total": total,
     }
 
 
-def _date_to_epoch(year: int, month: int, day: int) -> float:
-    """Convert a date to epoch seconds (UTC midnight)."""
-    import calendar
-    import datetime
-    dt = datetime.datetime(year, month, day, tzinfo=datetime.timezone.utc)
-    return calendar.timegm(dt.timetuple())
-
-
 def _fail(reason: str) -> dict[str, Any]:
-    """Return a standardized error result."""
+    """Return a standardised error result."""
     return {
         "status": "error",
         "found": False,

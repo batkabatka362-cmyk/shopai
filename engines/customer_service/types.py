@@ -13,20 +13,22 @@ from typing import Any, TypedDict
 # ---------------------------------------------------------------------------
 
 class CustomerInfo(TypedDict, total=False):
-    """Customer information provided with a service request."""
+    """Customer profile information."""
     customer_id: str
     name: str
     email: str
     loyalty_tier: str          # bronze, silver, gold, platinum
     lifetime_value: float
-    contact_count_30d: int     # number of contacts in last 30 days
+    open_tickets: int
+    last_contact_date: str
 
 
 class CustomerServiceInputData(TypedDict, total=False):
     """The 'data' block of engine input."""
     message: str
     customer: CustomerInfo
-    context: dict[str, Any]    # optional prior conversation context
+    channel: str               # chat, email, phone, social
+    session_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -34,16 +36,15 @@ class CustomerServiceInputData(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 class ExtractedEntities(TypedDict, total=False):
-    """Entities extracted from customer message."""
+    """Entities extracted from the customer message."""
     order_ids: list[str]
     product_names: list[str]
     dates: list[str]
-    dollar_amounts: list[float]
+    amounts: list[float]
 
 
 class IntentResult(TypedDict):
-    """Result from intent_classifier."""
-    status: str
+    """Result of intent classification."""
     primary: str
     secondary: str | None
     confidence: float
@@ -54,8 +55,8 @@ class IntentResult(TypedDict):
 # Intermediate types — order lookup
 # ---------------------------------------------------------------------------
 
-class OrderDetails(TypedDict, total=False):
-    """Order information returned by order_lookup."""
+class OrderInfo(TypedDict, total=False):
+    """Order information from order lookup."""
     id: str
     status: str
     tracking_number: str
@@ -63,15 +64,12 @@ class OrderDetails(TypedDict, total=False):
     estimated_delivery: str
     is_late: bool
     days_late: int
-    items: list[dict[str, Any]]
-    total: float
 
 
 class OrderLookupResult(TypedDict):
-    """Result from order_lookup."""
-    status: str
+    """Result of order lookup."""
     found: bool
-    order: OrderDetails | None
+    order: OrderInfo | None
 
 
 # ---------------------------------------------------------------------------
@@ -79,17 +77,11 @@ class OrderLookupResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 class KnowledgeArticle(TypedDict):
-    """Single FAQ/knowledge base article."""
+    """A single knowledge-base article result."""
     article_id: str
     title: str
     snippet: str
     relevance_score: float
-
-
-class KnowledgeSearchResult(TypedDict):
-    """Result from knowledge_search."""
-    status: str
-    results: list[KnowledgeArticle]
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +89,7 @@ class KnowledgeSearchResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 class SuggestedAction(TypedDict, total=False):
-    """Action suggested to the customer."""
+    """A single suggested action for the customer."""
     action: str
     label: str
     url: str
@@ -105,20 +97,18 @@ class SuggestedAction(TypedDict, total=False):
 
 
 class ResponseResult(TypedDict):
-    """Result from response_builder."""
-    status: str
+    """Result of response building."""
     message: str
     tone: str
     suggested_actions: list[SuggestedAction]
 
 
 # ---------------------------------------------------------------------------
-# Intermediate types — escalation routing
+# Intermediate types — escalation router
 # ---------------------------------------------------------------------------
 
 class EscalationResult(TypedDict):
-    """Result from escalation_router."""
-    status: str
+    """Result of escalation routing."""
     needed: bool
     reason: str | None
     assigned_team: str | None
@@ -135,15 +125,9 @@ class InteractionRecord(TypedDict, total=False):
     timestamp: str
     customer_id: str
     intent: str
+    channel: str
     resolution: str
-    satisfaction: str
-
-
-class InteractionHistoryResult(TypedDict):
-    """Result from memory_reader."""
-    status: str
-    records: list[InteractionRecord]
-    count: int
+    escalated: bool
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +138,7 @@ class CustomerServiceData(TypedDict):
     """The 'data' block of the engine output."""
     intent: IntentResult
     order_info: OrderLookupResult | None
+    knowledge_results: list[KnowledgeArticle]
     response: ResponseResult
     escalation: EscalationResult
 

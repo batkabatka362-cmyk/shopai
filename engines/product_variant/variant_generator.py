@@ -1,7 +1,7 @@
 """Product Variant Engine — variant generator.
 
 Generates all valid variant combinations from option axes,
-applying exclusion rules to filter out forbidden combos.
+applying exclusion rules to filter out invalid combos.
 
 All math is real. No faking, no random numbers.
 """
@@ -15,14 +15,15 @@ from typing import Any
 def generate_variants(
     product: dict[str, Any],
     options: list[dict[str, Any]],
-    exclusions: list[dict[str, Any]] | None = None,
+    exclusions: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Generate all valid variant combinations from option axes.
 
     Args:
-        product: Product dict with product_id, title, etc.
-        options: List of OptionAxis dicts, each with name and values.
-        exclusions: Optional list of ExclusionRule dicts to filter combos.
+        product: Product dict with id, title, etc.
+        options: List of option axis dicts, each with 'name' and 'values'.
+        exclusions: Optional list of dicts describing combos to exclude.
+            Each dict maps option names to values that should be skipped.
 
     Returns:
         Structured dict with generated variants.
@@ -32,37 +33,33 @@ def generate_variants(
         exclusions = copy.deepcopy(exclusions) if exclusions else []
 
         if not options:
-            return _fail("At least one option axis is required")
+            return _fail("No option axes provided")
 
-        # Validate each axis has a name and at least one value
-        for idx, axis in enumerate(options):
-            name = axis.get("name", "")
-            values = axis.get("values", [])
+        # Validate option axes
+        axis_names: list[str] = []
+        axis_values: list[list[str]] = []
+        for opt in options:
+            name = opt.get("name", "")
+            values = opt.get("values", [])
             if not name:
-                return _fail(f"Option axis at index {idx} has no name")
+                return _fail("Option axis missing 'name'")
             if not values:
                 return _fail(f"Option axis '{name}' has no values")
+            axis_names.append(name)
+            axis_values.append(values)
 
-        # Build axis names and value lists for cartesian product
-        axis_names = [axis["name"] for axis in options]
-        axis_values = [axis["values"] for axis in options]
-
-        # Check for duplicate axis names
-        if len(set(axis_names)) != len(axis_names):
-            return _fail("Duplicate option axis names detected")
-
-        # Generate all combinations via cartesian product
+        # Generate all combinations using itertools.product
         all_combos = list(itertools.product(*axis_values))
 
-        # Apply exclusion rules
-        excluded_count = 0
         variants: list[dict[str, Any]] = []
+        excluded_count = 0
         position = 1
 
         for combo in all_combos:
             combo_dict = dict(zip(axis_names, combo))
 
-            if _is_excluded(combo_dict, exclusions):
+            # Check exclusion rules
+            if _matches_exclusion(combo_dict, exclusions):
                 excluded_count += 1
                 continue
 
@@ -86,33 +83,24 @@ def generate_variants(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _is_excluded(
+def _matches_exclusion(
     combo: dict[str, str],
-    exclusions: list[dict[str, Any]],
+    exclusions: list[dict[str, str]],
 ) -> bool:
-    """Check if a combination matches any exclusion rule.
+    """Check if a combo matches any exclusion rule.
 
-    An exclusion rule matches when ALL its conditions match the combo.
+    An exclusion rule matches if ALL keys in the rule match the combo.
     """
     for rule in exclusions:
-        conditions = rule.get("conditions", rule)
-        # If the rule is a flat dict without 'conditions' key, treat entire dict
-        # as conditions (supports both {"conditions": {...}} and plain {...}).
-        if not isinstance(conditions, dict):
+        if not rule:
             continue
-
-        if not conditions:
-            continue
-
         match = True
-        for key, value in conditions.items():
+        for key, value in rule.items():
             if combo.get(key) != value:
                 match = False
                 break
-
         if match:
             return True
-
     return False
 
 

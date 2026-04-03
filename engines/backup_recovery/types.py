@@ -31,7 +31,7 @@ class SourceCollection(TypedDict):
     size_bytes: int
 
 
-class CollectedData(TypedDict):
+class DataCollectionResult(TypedDict):
     """Result from data_collector."""
     status: str
     collected: dict[str, SourceCollection]
@@ -93,7 +93,7 @@ class RecoveryTestResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 class BackupHistoryEntry(TypedDict, total=False):
-    """Single backup history entry."""
+    """Single entry in backup history."""
     backup_id: str
     timestamp: str
     size: int
@@ -108,10 +108,10 @@ class BackupHistoryResult(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# Intermediate types — metadata write
+# Intermediate types — memory write
 # ---------------------------------------------------------------------------
 
-class MetadataWriteResult(TypedDict):
+class MemoryWriteResult(TypedDict):
     """Result from memory_writer."""
     status: str
     record_id: str
@@ -123,19 +123,18 @@ class MetadataWriteResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 class BackupSummary(TypedDict):
-    """Backup summary in engine output."""
+    """Summary of the backup operation."""
     backup_id: str
     sources_backed_up: list[str]
     total_records: int
-    checksum_sha256: str
+    raw_size_bytes: int
+    final_size_bytes: int
     compressed: bool
-    size_bytes: int
-    compressed_size_bytes: int
     storage_path: str
 
 
 class IntegritySummary(TypedDict):
-    """Integrity summary in engine output."""
+    """Summary of integrity verification."""
     verified: bool
     checksum_match: bool
     records_verified: int
@@ -143,30 +142,30 @@ class IntegritySummary(TypedDict):
 
 
 class RecoverySummary(TypedDict):
-    """Recovery test summary in engine output."""
+    """Summary of recovery test."""
     dry_run_success: bool
     records_restorable: int
     estimated_restore_seconds: float
 
 
-class BackupRecoveryData(TypedDict):
-    """The 'data' block of the engine output."""
+class BackupOutputData(TypedDict):
+    """The 'data' block of engine output."""
     backup: BackupSummary
     integrity: IntegritySummary
     recovery: RecoverySummary
-    history_count: int
+    checksum_sha256: str
 
 
-class BackupRecoveryMeta(TypedDict):
+class BackupMeta(TypedDict):
     """The 'meta' block of the engine output."""
     engine: str
     timestamp: str
     elapsed_seconds: float
 
 
-class BackupRecoveryOutput(TypedDict):
+class BackupOutput(TypedDict):
     """Final output of the backup/recovery engine."""
     status: str
-    data: BackupRecoveryData | None
-    meta: BackupRecoveryMeta
+    data: BackupOutputData | None
+    meta: BackupMeta
     error: str | None

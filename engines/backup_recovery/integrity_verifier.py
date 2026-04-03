@@ -1,13 +1,14 @@
 """Backup/Recovery Engine — integrity verifier.
 
-Re-reads backup files, recomputes SHA-256 checksums, and verifies
-record counts match expectations.
+Re-reads a backup file from disk, recomputes its SHA-256 checksum,
+and compares against the expected checksum and record count.
 """
 from __future__ import annotations
 
 import gzip
 import hashlib
 import json
+import os
 from typing import Any
 
 
@@ -16,15 +17,12 @@ def verify_integrity(
     expected_checksum: str,
     expected_records: int,
 ) -> dict[str, Any]:
-    """Verify integrity of a backup file.
-
-    Re-reads the file, recomputes SHA-256 on the raw JSON, and compares
-    with the expected checksum. Also counts records and compares.
+    """Verify the integrity of a written backup file.
 
     Args:
-        path: Path to the backup file (.json or .json.gz).
-        expected_checksum: Expected SHA-256 hex digest of the raw JSON.
-        expected_records: Expected total record count.
+        path: Absolute path to the backup file.
+        expected_checksum: Expected SHA-256 hex digest of the raw JSON data.
+        expected_records: Expected total number of records across all sources.
 
     Returns:
         Structured dict with verification results.
@@ -32,28 +30,7 @@ def verify_integrity(
     try:
         errors: list[str] = []
 
-        if not path:
-            return {
-                "status": "error",
-                "verified": False,
-                "checksum_match": False,
-                "records_verified": 0,
-                "errors": ["Path is required"],
-                "error": "Path is required",
-            }
-
-        # Read the file — decompress if gzipped
-        is_gzipped = path.endswith(".gz")
-        try:
-            if is_gzipped:
-                with open(path, "rb") as fh:
-                    compressed = fh.read()
-                json_bytes = gzip.decompress(compressed)
-            else:
-                with open(path, "r", encoding="utf-8") as fh:
-                    raw = fh.read()
-                json_bytes = raw.encode("utf-8")
-        except FileNotFoundError:
+        if not os.path.isfile(path):
             return {
                 "status": "error",
                 "verified": False,
@@ -62,17 +39,14 @@ def verify_integrity(
                 "errors": [f"Backup file not found: {path}"],
                 "error": f"Backup file not found: {path}",
             }
-        except Exception as read_exc:
-            return {
-                "status": "error",
-                "verified": False,
-                "checksum_match": False,
-                "records_verified": 0,
-                "errors": [f"Failed to read backup: {read_exc}"],
-                "error": f"Failed to read backup: {read_exc}",
-            }
 
-        # Recompute SHA-256 on the raw JSON bytes
+        # Read the file
+        raw_bytes = _read_backup_bytes(path)
+
+        # Decompress if gzipped
+        json_bytes = _decompress_if_needed(raw_bytes)
+
+        # Compute SHA-256 on raw JSON bytes
         actual_checksum = hashlib.sha256(json_bytes).hexdigest()
         checksum_match = actual_checksum == expected_checksum
 
@@ -82,20 +56,8 @@ def verify_integrity(
                 f"got {actual_checksum[:16]}..."
             )
 
-        # Parse JSON and count records
-        try:
-            payload = json.loads(json_bytes)
-        except json.JSONDecodeError as je:
-            return {
-                "status": "error",
-                "verified": False,
-                "checksum_match": checksum_match,
-                "records_verified": 0,
-                "errors": errors + [f"JSON parse error: {je}"],
-                "error": f"JSON parse error: {je}",
-            }
-
-        records_verified = _count_records(payload)
+        # Parse and count records
+        records_verified = _count_records(json_bytes)
 
         if records_verified != expected_records:
             errors.append(
@@ -127,13 +89,28 @@ def verify_integrity(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _count_records(payload: dict) -> int:
-    """Count total records across all sources in the backup payload."""
-    sources = payload.get("sources", {})
-    total = 0
-    for _source_name, source_data in sources.items():
-        if isinstance(source_data, dict):
+def _read_backup_bytes(path: str) -> bytes:
+    """Read the raw bytes of a backup file."""
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _decompress_if_needed(data: bytes) -> bytes:
+    """Decompress gzip data if the magic bytes are present."""
+    if len(data) >= 2 and data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data)
+    return data
+
+
+def _count_records(json_bytes: bytes) -> int:
+    """Parse JSON envelope and count total records across all sources."""
+    try:
+        envelope = json.loads(json_bytes.decode("utf-8"))
+        sources = envelope.get("sources", {})
+        total = 0
+        for source_data in sources.values():
             records = source_data.get("records", [])
-            if isinstance(records, list):
-                total += len(records)
-    return total
+            total += len(records)
+        return total
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return 0

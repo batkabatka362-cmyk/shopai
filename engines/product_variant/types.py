@@ -20,10 +20,9 @@ class OptionAxis(TypedDict, total=False):
 
 
 class ExclusionRule(TypedDict, total=False):
-    """A rule to exclude specific variant combinations."""
-    # Keys are option names, values are option values to exclude together.
-    # e.g. {"size": "XXL", "color": "white"} excludes XXL-white.
-    conditions: dict[str, str]
+    """A rule describing an invalid variant combination to exclude."""
+    # Keys are option names, values are option values to match.
+    # e.g. {"size": "XXL", "color": "white"}
 
 
 class ProductInput(TypedDict, total=False):
@@ -32,20 +31,18 @@ class ProductInput(TypedDict, total=False):
     product_code: str
     title: str
     base_price: float
-    compare_at_price: float
-    country_code: str
 
 
-class ImageRecord(TypedDict, total=False):
-    """An image available for mapping to variants."""
+class ImageInput(TypedDict, total=False):
+    """Image record for variant image mapping."""
     image_id: str
-    src: str
-    alt: str
+    url: str
+    alt_text: str
     filename: str
 
 
 class InventoryRecord(TypedDict, total=False):
-    """An existing inventory record that can be linked to a variant."""
+    """Existing inventory record to link against."""
     sku: str
     stock: int
     warehouse: str
@@ -55,8 +52,8 @@ class VariantInputData(TypedDict, total=False):
     """The 'data' block of engine input."""
     product: ProductInput
     options: list[OptionAxis]
-    exclusions: list[ExclusionRule]
-    images: list[ImageRecord]
+    exclusions: list[dict[str, str]]
+    images: list[ImageInput]
     inventory_data: list[InventoryRecord]
 
 
@@ -74,8 +71,8 @@ class GeneratedVariant(TypedDict):
 # Intermediate types — SKU building
 # ---------------------------------------------------------------------------
 
-class VariantSKU(TypedDict):
-    """SKU and barcode for a variant."""
+class SKURecord(TypedDict):
+    """SKU and barcode for a single variant."""
     variant_index: int
     sku: str
     barcode: str
@@ -85,20 +82,20 @@ class VariantSKU(TypedDict):
 # Intermediate types — price mapping
 # ---------------------------------------------------------------------------
 
-class VariantPrice(TypedDict):
-    """Price info for a variant."""
+class PriceRecord(TypedDict):
+    """Price data for a single variant."""
     variant_index: int
     price: float
     adjustment: float
-    compare_at_price: float | None
+    compare_at_price: float
 
 
 # ---------------------------------------------------------------------------
 # Intermediate types — inventory linking
 # ---------------------------------------------------------------------------
 
-class VariantInventory(TypedDict):
-    """Inventory link for a variant."""
+class InventoryLink(TypedDict):
+    """Inventory link for a single variant."""
     sku: str
     stock: int
     linked: bool
@@ -109,7 +106,7 @@ class VariantInventory(TypedDict):
 # ---------------------------------------------------------------------------
 
 class ImageMapping(TypedDict):
-    """Image-to-variant mapping."""
+    """Image mapping for a single variant."""
     variant_index: int
     image_id: str
     matched_by: str
@@ -120,7 +117,7 @@ class ImageMapping(TypedDict):
 # ---------------------------------------------------------------------------
 
 class ValidationResult(TypedDict):
-    """Validation result for the variant set."""
+    """Validation result for all variants."""
     is_valid: bool
     duplicate_skus: list[str]
     price_anomalies: list[str]
@@ -132,15 +129,15 @@ class ValidationResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 class VariantOutputData(TypedDict):
-    """The 'data' block of engine output."""
-    product_id: str
-    product_code: str
+    """The 'data' block of the engine output."""
+    variants: list[GeneratedVariant]
+    skus: list[SKURecord]
+    prices: list[PriceRecord]
+    inventory: list[InventoryLink]
+    image_mappings: list[ImageMapping]
+    validation: ValidationResult
     total_variants: int
     excluded_count: int
-    variants: list[dict]
-    validation: ValidationResult
-    linked_inventory: int
-    unlinked_inventory: int
 
 
 class VariantMeta(TypedDict):

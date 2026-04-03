@@ -1,7 +1,8 @@
 """Backup/Recovery Engine — data collector.
 
 Collects data from .memory/ directories for each requested source.
-Reads JSON files from engine memory directories (products, orders, customers, settings).
+Scans engine memory directories (products, orders, customers, settings)
+and gathers all JSON records for backup.
 """
 from __future__ import annotations
 
@@ -10,15 +11,26 @@ import json
 import os
 from typing import Any
 
-# Base path: project root .memory/ directories live alongside engines
-_PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# Base path: project root
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# Map source names to their .memory/ directories
-_SOURCE_DIRS: dict[str, str] = {
-    "products": os.path.join(_PROJECT_ROOT, "engines", "inventory", ".memory"),
-    "orders": os.path.join(_PROJECT_ROOT, "engines", "orders", ".memory"),
-    "customers": os.path.join(_PROJECT_ROOT, "engines", "customers", ".memory"),
-    "settings": os.path.join(_PROJECT_ROOT, "engines", "settings", ".memory"),
+# Mapping of source names to their .memory/ directory locations
+_SOURCE_PATHS: dict[str, list[str]] = {
+    "products": [
+        os.path.join(_PROJECT_ROOT, "engines", "inventory", ".memory"),
+        os.path.join(_PROJECT_ROOT, ".memory", "products"),
+    ],
+    "orders": [
+        os.path.join(_PROJECT_ROOT, "engines", "orders", ".memory"),
+        os.path.join(_PROJECT_ROOT, ".memory", "orders"),
+    ],
+    "customers": [
+        os.path.join(_PROJECT_ROOT, "engines", "customers", ".memory"),
+        os.path.join(_PROJECT_ROOT, ".memory", "customers"),
+    ],
+    "settings": [
+        os.path.join(_PROJECT_ROOT, ".memory", "settings"),
+    ],
 }
 
 
@@ -30,7 +42,7 @@ def collect_data(
 
     Args:
         sources: List of source names to collect (e.g. ["products", "orders"]).
-        options: Optional dict with collection options.
+        options: Optional collection options (reserved for future use).
 
     Returns:
         Structured dict with collected data per source.
@@ -47,35 +59,13 @@ def collect_data(
                 "error": "No sources specified for collection",
             }
 
-        collected: dict[str, dict[str, Any]] = {}
+        collected: dict[str, Any] = {}
         total_records = 0
 
         for source in sources:
-            source_dir = _SOURCE_DIRS.get(source)
-
-            # Allow custom source directories via options
-            if source_dir is None and "source_dirs" in options:
-                source_dir = options["source_dirs"].get(source)
-
-            if source_dir is None:
-                # Unknown source — collect empty with a note
-                collected[source] = {
-                    "records": [],
-                    "count": 0,
-                    "size_bytes": 0,
-                    "note": f"No known directory for source '{source}'",
-                }
-                continue
-
-            records, size_bytes = _read_source_dir(source_dir)
-            count = len(records)
-            total_records += count
-
-            collected[source] = {
-                "records": records,
-                "count": count,
-                "size_bytes": size_bytes,
-            }
+            source_result = _collect_source(source)
+            collected[source] = source_result
+            total_records += source_result["count"]
 
         return {
             "status": "success",
@@ -95,32 +85,46 @@ def collect_data(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _read_source_dir(directory: str) -> tuple[list[dict[str, Any]], int]:
-    """Read all JSON files from a directory.
-
-    Returns:
-        Tuple of (list of records, total size in bytes).
-    """
-    if not os.path.isdir(directory):
-        return [], 0
-
+def _collect_source(source: str) -> dict[str, Any]:
+    """Collect all JSON records from a single source's memory directories."""
     records: list[dict[str, Any]] = []
     total_size = 0
 
-    for fname in sorted(os.listdir(directory)):
-        if not fname.endswith(".json"):
-            continue
-        fpath = os.path.join(directory, fname)
-        try:
-            file_size = os.path.getsize(fpath)
-            total_size += file_size
-            with open(fpath, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-                if isinstance(data, dict):
-                    records.append(data)
-                elif isinstance(data, list):
-                    records.extend(data)
-        except (json.JSONDecodeError, OSError):
+    search_paths = _SOURCE_PATHS.get(source, [
+        os.path.join(_PROJECT_ROOT, ".memory", source),
+    ])
+
+    for dir_path in search_paths:
+        if not os.path.isdir(dir_path):
             continue
 
-    return records, total_size
+        for fname in sorted(os.listdir(dir_path)):
+            if not fname.endswith(".json"):
+                continue
+
+            fpath = os.path.join(dir_path, fname)
+            try:
+                file_size = os.path.getsize(fpath)
+                with open(fpath, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+
+                if isinstance(data, dict):
+                    data["_source_file"] = fname
+                    data["_source_path"] = dir_path
+                    records.append(data)
+                    total_size += file_size
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            item["_source_file"] = fname
+                            item["_source_path"] = dir_path
+                            records.append(item)
+                    total_size += file_size
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    return {
+        "records": records,
+        "count": len(records),
+        "size_bytes": total_size,
+    }

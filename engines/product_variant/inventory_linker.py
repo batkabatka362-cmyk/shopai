@@ -1,8 +1,7 @@
 """Product Variant Engine — inventory linker.
 
-Matches generated variants (by SKU) to existing inventory records.
-Reports linked vs. unlinked counts so downstream systems know
-which variants need new inventory entries.
+Matches generated variant SKUs against existing inventory records.
+Links each variant to its inventory stock level if a matching SKU is found.
 
 All math is real. No faking, no random numbers.
 """
@@ -17,52 +16,46 @@ def link_inventory(
     skus: list[dict[str, Any]],
     inventory_data: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Match variants to existing inventory records by SKU.
+    """Match variant SKUs to existing inventory records.
 
     Args:
-        variants: List of GeneratedVariant dicts.
-        skus: List of VariantSKU dicts from sku_builder.
-        inventory_data: List of existing InventoryRecord dicts.
+        variants: List of variant dicts from variant_generator.
+        skus: List of SKU dicts from sku_builder.
+        inventory_data: List of existing inventory records with 'sku' and 'stock'.
 
     Returns:
-        Structured dict with per-SKU inventory link status.
+        Structured dict with inventory link records and counts.
     """
     try:
         skus = copy.deepcopy(skus)
         inventory_data = copy.deepcopy(inventory_data) if inventory_data else []
 
-        # Build lookup from sku string -> inventory record
-        inv_by_sku: dict[str, dict[str, Any]] = {}
+        # Build inventory lookup by SKU (case-insensitive)
+        inv_map: dict[str, dict[str, Any]] = {}
         for record in inventory_data:
             sku_key = str(record.get("sku", "")).strip().upper()
             if sku_key:
-                # If multiple records share a SKU, sum their stock
-                if sku_key in inv_by_sku:
-                    inv_by_sku[sku_key]["stock"] += int(record.get("stock", 0))
-                else:
-                    inv_by_sku[sku_key] = {
-                        "stock": int(record.get("stock", 0)),
-                        "warehouse": str(record.get("warehouse", "")),
-                    }
+                inv_map[sku_key] = record
 
         inventory_links: list[dict[str, Any]] = []
         linked_count = 0
         unlinked_count = 0
 
-        for sku_entry in skus:
-            sku_str = str(sku_entry.get("sku", "")).strip().upper()
-            inv_match = inv_by_sku.get(sku_str)
+        for sku_record in skus:
+            sku_str = str(sku_record.get("sku", "")).strip().upper()
+            inv_match = inv_map.get(sku_str)
 
-            if inv_match is not None:
+            if inv_match:
+                stock = int(inv_match.get("stock", 0))
                 inventory_links.append({
-                    "sku": sku_entry.get("sku", ""),
-                    "stock": inv_match["stock"],
+                    "sku": sku_record.get("sku", ""),
+                    "stock": stock,
                     "linked": True,
                 })
                 linked_count += 1
             else:
                 inventory_links.append({
-                    "sku": sku_entry.get("sku", ""),
+                    "sku": sku_record.get("sku", ""),
                     "stock": 0,
                     "linked": False,
                 })

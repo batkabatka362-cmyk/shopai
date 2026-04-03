@@ -1,59 +1,39 @@
 """Backup/Recovery Engine — recovery tester.
 
-Performs a dry-run recovery: reads a backup, deserializes it,
-validates schema compatibility, and checks all sources are present and parseable.
+Performs a dry-run recovery: reads a backup file, deserializes it,
+validates schema compatibility, and checks that all expected sources
+are present and parseable.
 """
 from __future__ import annotations
 
 import gzip
 import json
+import os
 import time
 from typing import Any
 
+
 _SUPPORTED_SCHEMA_VERSIONS = {"1.0"}
 
-# Estimated seconds per record for restore operations
-_SECONDS_PER_RECORD = 0.002
+# Rough estimate: seconds per 1000 records for restore operations
+_SECONDS_PER_1000_RECORDS = 0.5
 
 
 def test_recovery(
     path: str,
     sources: list[str],
 ) -> dict[str, Any]:
-    """Perform a dry-run recovery test.
-
-    Reads the backup file, deserializes, validates schema compatibility,
-    and checks that all requested sources are present and parseable.
+    """Perform a dry-run recovery test on a backup file.
 
     Args:
-        path: Path to the backup file (.json or .json.gz).
-        sources: List of source names that should be present.
+        path: Absolute path to the backup file.
+        sources: List of source names expected in the backup.
 
     Returns:
-        Structured dict with recovery test results.
+        Structured dict with dry-run results.
     """
     try:
-        if not path:
-            return {
-                "status": "error",
-                "dry_run_success": False,
-                "records_restorable": 0,
-                "estimated_restore_seconds": 0.0,
-                "error": "Path is required",
-            }
-
-        # ---- Step 1: Read and decompress ----
-        is_gzipped = path.endswith(".gz")
-        try:
-            if is_gzipped:
-                with open(path, "rb") as fh:
-                    compressed = fh.read()
-                json_bytes = gzip.decompress(compressed)
-            else:
-                with open(path, "r", encoding="utf-8") as fh:
-                    raw = fh.read()
-                json_bytes = raw.encode("utf-8")
-        except FileNotFoundError:
+        if not os.path.isfile(path):
             return {
                 "status": "error",
                 "dry_run_success": False,
@@ -62,29 +42,25 @@ def test_recovery(
                 "error": f"Backup file not found: {path}",
             }
 
-        # ---- Step 2: Deserialize ----
+        # Read and decompress
+        start = time.monotonic()
+        raw_bytes = _read_file(path)
+        json_bytes = _decompress_if_needed(raw_bytes)
+
+        # Parse JSON
         try:
-            payload = json.loads(json_bytes)
-        except json.JSONDecodeError as je:
+            envelope = json.loads(json_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             return {
                 "status": "error",
                 "dry_run_success": False,
                 "records_restorable": 0,
                 "estimated_restore_seconds": 0.0,
-                "error": f"JSON parse error: {je}",
+                "error": f"Failed to parse backup data: {exc}",
             }
 
-        if not isinstance(payload, dict):
-            return {
-                "status": "error",
-                "dry_run_success": False,
-                "records_restorable": 0,
-                "estimated_restore_seconds": 0.0,
-                "error": "Backup payload is not a dict",
-            }
-
-        # ---- Step 3: Validate schema version ----
-        schema_version = payload.get("schema_version", "unknown")
+        # Validate schema version
+        schema_version = envelope.get("schema_version", "unknown")
         if schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
             return {
                 "status": "error",
@@ -94,24 +70,20 @@ def test_recovery(
                 "error": f"Unsupported schema version: {schema_version}",
             }
 
-        # ---- Step 4: Check all sources are present and parseable ----
-        backup_sources = payload.get("sources", {})
+        # Check all expected sources are present
+        backup_sources = envelope.get("sources", {})
         missing_sources: list[str] = []
         records_restorable = 0
 
         for source in sources:
             if source not in backup_sources:
                 missing_sources.append(source)
-                continue
-            source_data = backup_sources[source]
-            if not isinstance(source_data, dict):
-                missing_sources.append(source)
-                continue
-            records = source_data.get("records", [])
-            if not isinstance(records, list):
-                missing_sources.append(source)
-                continue
-            records_restorable += len(records)
+            else:
+                source_data = backup_sources[source]
+                records = source_data.get("records", [])
+                # Validate each record is a dict (parseable)
+                valid_records = sum(1 for r in records if isinstance(r, dict))
+                records_restorable += valid_records
 
         if missing_sources:
             return {
@@ -122,14 +94,17 @@ def test_recovery(
                 "error": f"Missing sources in backup: {missing_sources}",
             }
 
-        # ---- Step 5: Estimate restore time ----
-        estimated_seconds = round(records_restorable * _SECONDS_PER_RECORD, 3)
+        # Estimate restore time based on record count and measured read time
+        read_time = time.monotonic() - start
+        estimated_restore = read_time + (
+            records_restorable / 1000.0 * _SECONDS_PER_1000_RECORDS
+        )
 
         return {
             "status": "success",
             "dry_run_success": True,
             "records_restorable": records_restorable,
-            "estimated_restore_seconds": estimated_seconds,
+            "estimated_restore_seconds": round(estimated_restore, 3),
         }
     except Exception as exc:
         return {
@@ -139,3 +114,20 @@ def test_recovery(
             "estimated_restore_seconds": 0.0,
             "error": f"Recovery test failed: {exc}",
         }
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _read_file(path: str) -> bytes:
+    """Read raw bytes from a file."""
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _decompress_if_needed(data: bytes) -> bytes:
+    """Decompress gzip data if magic bytes are present."""
+    if len(data) >= 2 and data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data)
+    return data
