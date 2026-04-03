@@ -1,7 +1,6 @@
 """Autonomous Control Engine — governor.
 
-Governs execution rate and scope. Applies throttling to prevent
-system overload and ensures actions are dispatched at safe intervals.
+Governs execution rate and scope to prevent runaway autonomous operations.
 """
 from __future__ import annotations
 
@@ -9,18 +8,8 @@ import copy
 from typing import Any
 
 
-# Max actions per minute by risk level
-_RATE_LIMITS = {
-    "low": 60,
-    "medium": 20,
-    "high": 5,
-    "critical": 1,
-}
-
-
 def govern_execution(
     actions: list[dict[str, Any]],
-    safety_results: list[dict[str, Any]],
     safety_limits: dict[str, Any],
     resource_usage: dict[str, Any],
 ) -> dict[str, Any]:
@@ -28,84 +17,49 @@ def govern_execution(
 
     Args:
         actions: List of ActionItem dicts.
-        safety_results: Safety check results per action.
-        safety_limits: SafetyLimits configuration.
-        resource_usage: Current resource usage.
+        safety_limits: SafetyLimits dict.
+        resource_usage: Current resource usage from resource_monitor.
 
     Returns:
         Structured dict with governor decisions per action.
     """
     try:
         items = copy.deepcopy(actions)
-        safe_map = {r.get("action_id", ""): r for r in safety_results}
-
-        max_per_min = int(safety_limits.get("max_actions_per_minute", 30))
-        headroom = float(resource_usage.get("headroom_pct", 100.0))
+        max_per_minute = int(safety_limits.get("max_actions_per_minute", 60))
+        within_budget = resource_usage.get("within_budget", True)
 
         decisions: list[dict[str, Any]] = []
-        actions_this_minute = 0
+        action_count = len(items)
 
-        for action in items:
+        for idx, action in enumerate(items):
             action_id = str(action.get("id", "unknown"))
-            risk_level = str(action.get("risk_level", "low"))
-
-            safety = safe_map.get(action_id, {})
-            if not safety.get("safe", False):
-                decisions.append({
-                    "action_id": action_id,
-                    "allowed": False,
-                    "throttled": False,
-                    "delay_seconds": 0.0,
-                    "reason": "Blocked by safety checker",
-                })
-                continue
-
-            rate_limit = _RATE_LIMITS.get(risk_level, 30)
-            effective_limit = min(rate_limit, max_per_min)
-
-            actions_this_minute += 1
+            allowed = True
             throttled = False
-            delay = 0.0
-            reason = "approved"
+            delay_seconds = 0.0
+            reason = "Approved by governor"
 
-            # Throttle if approaching rate limit
-            if actions_this_minute > effective_limit:
+            if action_count > max_per_minute:
+                if idx >= max_per_minute:
+                    allowed = False
+                    reason = f"Rate limit exceeded ({max_per_minute}/min)"
+                elif idx >= max_per_minute * 0.8:
+                    throttled = True
+                    delay_seconds = round((idx - max_per_minute * 0.8) * 0.5, 1)
+                    reason = "Approaching rate limit, throttled"
+
+            if not within_budget:
                 throttled = True
-                delay = 60.0 / effective_limit
-                reason = f"Throttled: {actions_this_minute}/{effective_limit} per minute"
-
-            # Throttle if low resource headroom
-            if headroom < 20.0:
-                throttled = True
-                delay = max(delay, 5.0)
-                reason = f"Low resource headroom ({headroom:.1f}%)"
-
-            # Block if no headroom
-            if headroom <= 0:
-                decisions.append({
-                    "action_id": action_id,
-                    "allowed": False,
-                    "throttled": False,
-                    "delay_seconds": 0.0,
-                    "reason": "Resource budget exhausted",
-                })
-                continue
+                delay_seconds = max(delay_seconds, 2.0)
+                reason = "Resource budget pressure, throttled"
 
             decisions.append({
                 "action_id": action_id,
-                "allowed": True,
+                "allowed": allowed,
                 "throttled": throttled,
-                "delay_seconds": round(delay, 1),
+                "delay_seconds": delay_seconds,
                 "reason": reason,
             })
 
-        return {
-            "status": "success",
-            "decisions": decisions,
-        }
+        return {"status": "success", "decisions": decisions}
     except Exception as exc:
-        return {
-            "status": "error",
-            "decisions": [],
-            "error": f"Governor failed: {exc}",
-        }
+        return {"status": "error", "decisions": [], "error": f"Governor failed: {exc}"}

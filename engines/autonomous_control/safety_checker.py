@@ -1,7 +1,7 @@
 """Autonomous Control Engine — safety checker.
 
-Verifies each action is within configured safety bounds.
-Checks cost limits, blocked targets, risk levels, and rate constraints.
+Verifies each action is within safety bounds: allowed types,
+forbidden targets, and risk-level classification.
 """
 from __future__ import annotations
 
@@ -17,18 +17,15 @@ def check_safety(
 
     Args:
         actions: List of ActionItem dicts.
-        safety_limits: SafetyLimits configuration.
+        safety_limits: SafetyLimits dict.
 
     Returns:
         Structured dict with per-action safety results.
     """
     try:
         items = copy.deepcopy(actions)
-        limits = copy.deepcopy(safety_limits)
-
-        blocked_targets = set(limits.get("blocked_targets", []))
-        max_cost = float(limits.get("max_cost_per_action", float("inf")))
-        approval_threshold = float(limits.get("require_approval_above", float("inf")))
+        allowed_types = safety_limits.get("allowed_action_types", [])
+        forbidden_targets = safety_limits.get("forbidden_targets", [])
 
         results: list[dict[str, Any]] = []
 
@@ -36,63 +33,33 @@ def check_safety(
             action_id = str(action.get("id", "unknown"))
             action_type = str(action.get("type", ""))
             target = str(action.get("target", ""))
-            params = action.get("params", {})
-            risk_level = str(action.get("risk_level", "low"))
 
-            violations: list[str] = []
-            risk_score = _compute_risk_score(risk_level, params)
+            safe = True
+            reason = "Within safety bounds"
+            risk_level = "low"
 
-            # Check blocked targets
-            if target in blocked_targets:
-                violations.append(f"Target '{target}' is blocked")
-
-            # Check cost limit
-            action_cost = float(params.get("estimated_cost", 0.0))
-            if action_cost > max_cost:
-                violations.append(
-                    f"Cost ${action_cost:.2f} exceeds limit ${max_cost:.2f}"
-                )
-
-            # Check approval threshold
-            if action_cost > approval_threshold:
-                violations.append(
-                    f"Cost ${action_cost:.2f} requires approval (threshold ${approval_threshold:.2f})"
-                )
-
-            # Check risk level
-            if risk_level == "critical" and not params.get("force", False):
-                violations.append("Critical risk actions require force=true")
-
-            safe = len(violations) == 0
+            if allowed_types and action_type not in allowed_types:
+                safe = False
+                reason = f"Action type '{action_type}' not in allowed types"
+                risk_level = "high"
+            elif target in forbidden_targets:
+                safe = False
+                reason = f"Target '{target}' is forbidden"
+                risk_level = "critical"
+            else:
+                if action_type in ("delete", "drop", "destroy"):
+                    risk_level = "high"
+                elif action_type in ("update", "modify", "write"):
+                    risk_level = "medium"
 
             results.append({
                 "action_id": action_id,
                 "action_type": action_type,
                 "safe": safe,
-                "violations": violations,
-                "risk_score": risk_score,
+                "reason": reason,
+                "risk_level": risk_level,
             })
 
-        return {
-            "status": "success",
-            "results": results,
-        }
+        return {"status": "success", "checks": results}
     except Exception as exc:
-        return {
-            "status": "error",
-            "results": [],
-            "error": f"Safety check failed: {exc}",
-        }
-
-
-def _compute_risk_score(risk_level: str, params: dict[str, Any]) -> float:
-    """Compute a 0.0-1.0 risk score."""
-    base_scores = {
-        "low": 0.1,
-        "medium": 0.4,
-        "high": 0.7,
-        "critical": 0.95,
-    }
-    base = base_scores.get(risk_level, 0.5)
-    cost_factor = min(float(params.get("estimated_cost", 0)) / 10000.0, 0.3)
-    return round(min(base + cost_factor, 1.0), 3)
+        return {"status": "error", "checks": [], "error": f"Safety check failed: {exc}"}

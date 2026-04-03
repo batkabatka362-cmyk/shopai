@@ -1,2 +1,7 @@
-"""Demand Estimator Engine — estimate product demand from multiple signals."""
-from .engine import DemandEstimatorEngine
+"""DemandEstimator Engine — public API.
+
+Exports only the DemandEstimatorEngine orchestrator class.
+"""
+from .flow import DemandEstimatorEngine
+
+__all__ = ["DemandEstimatorEngine"]

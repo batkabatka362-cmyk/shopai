@@ -1,2 +1,7 @@
-"""Trend Discovery Engine — detect trending products and categories."""
-from .engine import TrendDiscoveryEngine
+"""TrendDiscovery Engine — public API.
+
+Exports only the TrendDiscoveryEngine orchestrator class.
+"""
+from .flow import TrendDiscoveryEngine
+
+__all__ = ["TrendDiscoveryEngine"]

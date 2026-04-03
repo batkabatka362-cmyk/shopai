@@ -1,11 +1,11 @@
 """Autonomous Control Engine — memory reader.
 
 Reads past autonomous control records from memory storage.
-Used to inform current decisions with historical execution context.
 """
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from typing import Any
@@ -13,48 +13,29 @@ from typing import Any
 _MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory")
 
 
-def read_past_controls(
-    limit: int = 10,
-) -> dict[str, Any]:
-    """Read past autonomous control records.
-
-    Args:
-        limit: Max records to return.
-
-    Returns:
-        Structured dict with past records and summary.
-    """
+def read_past_controls(limit: int = 10) -> dict[str, Any]:
+    """Read past autonomous control records."""
     try:
         records = _load_records()
-        records = sorted(
-            records,
-            key=lambda r: r.get("timestamp", ""),
-            reverse=True,
-        )[:limit]
-
+        records = sorted(records, key=lambda r: r.get("timestamp", ""), reverse=True)[:limit]
         summary = _compute_summary(records)
-
-        return {
-            "status": "success",
-            "records": copy.deepcopy(records),
-            "count": len(records),
-            "summary": summary,
-        }
+        return {"status": "success", "records": copy.deepcopy(records), "count": len(records), "summary": summary}
     except Exception as exc:
-        return {
-            "status": "success",
-            "records": [],
-            "count": 0,
-            "summary": {},
-            "note": f"Memory read warning: {exc}",
-        }
+        return {"status": "success", "records": [], "count": 0, "summary": {}, "note": f"Memory read warning: {exc}"}
+
+
+def compute_input_hash(input_data: dict[str, Any]) -> str:
+    """Produce a deterministic hash for an input payload."""
+    try:
+        serialised = json.dumps(input_data, sort_keys=True, default=str)
+        return hashlib.sha256(serialised.encode()).hexdigest()[:16]
+    except Exception:
+        return "unknown"
 
 
 def _load_records() -> list[dict[str, Any]]:
-    """Load all records from the memory directory."""
     if not os.path.isdir(_MEMORY_DIR):
         return []
-
     records: list[dict[str, Any]] = []
     for fname in os.listdir(_MEMORY_DIR):
         if not fname.endswith(".json"):
@@ -71,20 +52,13 @@ def _load_records() -> list[dict[str, Any]]:
 
 
 def _compute_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Compute summary statistics over past control records."""
     if not records:
-        return {
-            "avg_approved": 0.0,
-            "avg_blocked": 0.0,
-            "total_runs": 0,
-        }
-
-    approved = [r.get("approved_count", 0) for r in records]
-    blocked = [r.get("blocked_count", 0) for r in records]
+        return {"avg_approved": 0.0, "avg_blocked": 0.0, "total_runs": 0}
     n = len(records)
-
+    approved_counts = [r.get("approved_count", 0) for r in records]
+    blocked_counts = [r.get("blocked_count", 0) for r in records]
     return {
-        "avg_approved": round(sum(approved) / n, 1) if n else 0.0,
-        "avg_blocked": round(sum(blocked) / n, 1) if n else 0.0,
+        "avg_approved": round(sum(approved_counts) / n, 1) if n else 0.0,
+        "avg_blocked": round(sum(blocked_counts) / n, 1) if n else 0.0,
         "total_runs": n,
     }
