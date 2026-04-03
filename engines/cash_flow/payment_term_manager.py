@@ -3,8 +3,6 @@
 Manages receivables and payables: categorizes into aging buckets,
 flags overdue items, and computes net receivables position.
 
-Aging buckets: current (0-30), 30-day (31-60), 60-day (61-90), 90+ (91+).
-
 All math is real. No faking, no random numbers.
 """
 from __future__ import annotations
@@ -18,21 +16,22 @@ def manage_payment_terms(
     receivables: list[dict[str, Any]],
     payables: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Analyze receivables and payables with aging classification.
+    """Manage payment terms for receivables and payables.
 
-    Categorizes each item into aging buckets based on days since
-    issue_date (or days past due_date for overdue detection).
+    Categorizes items into aging buckets (current, 30-day, 60-day, 90+)
+    and flags overdue items past their due date.
 
     Args:
         receivables: List of Receivable dicts.
         payables: List of Payable dicts.
 
     Returns:
-        Structured dict with totals, aging breakdown, and overdue count.
+        Structured dict with aging analysis and overdue counts.
     """
     try:
-        receivables = copy.deepcopy(receivables)
-        payables = copy.deepcopy(payables)
+        safe_receivables = copy.deepcopy(receivables)
+        safe_payables = copy.deepcopy(payables)
+
         today = datetime.utcnow()
 
         # Process receivables
@@ -40,50 +39,80 @@ def manage_payment_terms(
         aging_receivables = {"current": 0.0, "30_day": 0.0, "60_day": 0.0, "90_plus": 0.0}
         overdue_count = 0
 
-        for item in receivables:
+        for item in safe_receivables:
             amount = float(item.get("amount", 0.0))
             total_receivables += amount
 
             due_date = _parse_date(item.get("due_date", ""))
-            issue_date = _parse_date(item.get("issue_date", ""))
+            if due_date is None:
+                aging_receivables["current"] += amount
+                continue
 
-            # Overdue check
-            if due_date and due_date < today:
+            days_outstanding = (today - due_date).days
+
+            if days_outstanding > 0:
+                # Past due
                 overdue_count += 1
-
-            # Aging bucket based on days since issue
-            ref_date = issue_date or due_date
-            if ref_date:
-                days_aged = (today - ref_date).days
+                if days_outstanding > 90:
+                    aging_receivables["90_plus"] += amount
+                elif days_outstanding > 60:
+                    aging_receivables["60_day"] += amount
+                elif days_outstanding > 30:
+                    aging_receivables["30_day"] += amount
+                else:
+                    aging_receivables["current"] += amount
             else:
-                days_aged = 0
-
-            bucket = _aging_bucket(days_aged)
-            aging_receivables[bucket] += amount
+                # Not yet due — bucket by days until due
+                days_until_due = abs(days_outstanding)
+                if days_until_due <= 30:
+                    aging_receivables["current"] += amount
+                elif days_until_due <= 60:
+                    aging_receivables["30_day"] += amount
+                elif days_until_due <= 90:
+                    aging_receivables["60_day"] += amount
+                else:
+                    aging_receivables["90_plus"] += amount
 
         # Process payables
         total_payables = 0.0
         aging_payables = {"current": 0.0, "30_day": 0.0, "60_day": 0.0, "90_plus": 0.0}
 
-        for item in payables:
+        for item in safe_payables:
             amount = float(item.get("amount", 0.0))
             total_payables += amount
 
             due_date = _parse_date(item.get("due_date", ""))
-            issue_date = _parse_date(item.get("issue_date", ""))
+            if due_date is None:
+                aging_payables["current"] += amount
+                continue
 
-            # Overdue payables also count
-            if due_date and due_date < today:
+            days_outstanding = (today - due_date).days
+
+            if days_outstanding > 0:
+                # Past due
                 overdue_count += 1
-
-            ref_date = issue_date or due_date
-            if ref_date:
-                days_aged = (today - ref_date).days
+                if days_outstanding > 90:
+                    aging_payables["90_plus"] += amount
+                elif days_outstanding > 60:
+                    aging_payables["60_day"] += amount
+                elif days_outstanding > 30:
+                    aging_payables["30_day"] += amount
+                else:
+                    aging_payables["current"] += amount
             else:
-                days_aged = 0
+                days_until_due = abs(days_outstanding)
+                if days_until_due <= 30:
+                    aging_payables["current"] += amount
+                elif days_until_due <= 60:
+                    aging_payables["30_day"] += amount
+                elif days_until_due <= 90:
+                    aging_payables["60_day"] += amount
+                else:
+                    aging_payables["90_plus"] += amount
 
-            bucket = _aging_bucket(days_aged)
-            aging_payables[bucket] += amount
+        # Round all values
+        aging_receivables = {k: round(v, 2) for k, v in aging_receivables.items()}
+        aging_payables = {k: round(v, 2) for k, v in aging_payables.items()}
 
         net_receivables = round(total_receivables - total_payables, 2)
 
@@ -92,12 +121,15 @@ def manage_payment_terms(
             "total_receivables": round(total_receivables, 2),
             "total_payables": round(total_payables, 2),
             "net_receivables": net_receivables,
-            "aging_receivables": {k: round(v, 2) for k, v in aging_receivables.items()},
-            "aging_payables": {k: round(v, 2) for k, v in aging_payables.items()},
+            "aging_receivables": aging_receivables,
+            "aging_payables": aging_payables,
             "overdue_count": overdue_count,
         }
     except Exception as exc:
-        return _fail(f"Payment term management failed: {exc}")
+        return {
+            "status": "error",
+            "error": f"Payment term management failed: {exc}",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -112,23 +144,3 @@ def _parse_date(date_str: str) -> datetime | None:
         return datetime.strptime(date_str, "%Y-%m-%d")
     except (ValueError, TypeError):
         return None
-
-
-def _aging_bucket(days: int) -> str:
-    """Classify a number of days into an aging bucket."""
-    if days <= 30:
-        return "current"
-    elif days <= 60:
-        return "30_day"
-    elif days <= 90:
-        return "60_day"
-    else:
-        return "90_plus"
-
-
-def _fail(reason: str) -> dict[str, Any]:
-    """Return a standardized module-level failure."""
-    return {
-        "status": "error",
-        "error": reason,
-    }

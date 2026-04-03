@@ -1,15 +1,13 @@
 """Cash Flow Engine — runway calculator.
 
-Calculates cash runway: months until zero cash, burn rate,
-risk classification, and projected zero-cash date.
-
-Risk levels: healthy (>6mo), moderate (3-6mo), critical (<3mo).
+Calculates how many months of runway remain based on current balance,
+fixed costs, and average revenue. Determines risk level and estimates
+zero-cash date.
 
 All math is real. No faking, no random numbers.
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -19,38 +17,46 @@ def calculate_runway(
     monthly_fixed_costs: float,
     avg_monthly_revenue: float,
 ) -> dict[str, Any]:
-    """Calculate cash runway and burn metrics.
+    """Calculate cash runway.
 
-    Net monthly burn = fixed_costs - revenue. If revenue exceeds costs,
-    runway is effectively infinite (reported as -1).
+    Net monthly burn = fixed_costs - revenue. If revenue exceeds costs
+    (negative burn), runway is infinite.
+
+    Risk levels:
+        >6 months  = healthy
+        3-6 months = moderate
+        <3 months  = critical
 
     Args:
-        current_balance: Current cash on hand.
-        monthly_fixed_costs: Total monthly fixed costs.
+        current_balance: Current cash balance.
+        monthly_fixed_costs: Monthly fixed cost amount.
         avg_monthly_revenue: Average monthly revenue.
 
     Returns:
-        Structured dict with burn rate, runway, risk level, and zero-cash date.
+        Structured dict with runway calculations.
     """
     try:
-        monthly_burn_rate = float(monthly_fixed_costs)
-        net_monthly_burn = monthly_burn_rate - float(avg_monthly_revenue)
+        monthly_burn_rate = round(monthly_fixed_costs, 2)
+        net_monthly_burn = round(monthly_fixed_costs - avg_monthly_revenue, 2)
 
-        # If net burn is zero or negative (profitable), runway is infinite
+        # If revenue covers costs, runway is infinite
         if net_monthly_burn <= 0:
             return {
                 "status": "success",
-                "monthly_burn_rate": round(monthly_burn_rate, 2),
-                "net_monthly_burn": round(net_monthly_burn, 2),
+                "monthly_burn_rate": monthly_burn_rate,
+                "net_monthly_burn": net_monthly_burn,
                 "months_of_runway": float("inf"),
                 "runway_risk": "healthy",
                 "zero_cash_date": None,
             }
 
         # Calculate months of runway
-        months_of_runway = current_balance / net_monthly_burn
+        if current_balance <= 0:
+            months_of_runway = 0.0
+        else:
+            months_of_runway = round(current_balance / net_monthly_burn, 1)
 
-        # Risk classification
+        # Determine risk level
         if months_of_runway > 6:
             runway_risk = "healthy"
         elif months_of_runway >= 3:
@@ -58,26 +64,24 @@ def calculate_runway(
         else:
             runway_risk = "critical"
 
-        # Estimate zero-cash date
-        days_until_zero = months_of_runway * 30.44  # average days per month
-        zero_cash_dt = datetime.utcnow() + timedelta(days=days_until_zero)
-        zero_cash_date = zero_cash_dt.strftime("%Y-%m-%d")
+        # Estimate zero cash date
+        if months_of_runway > 0:
+            days_until_zero = int(months_of_runway * 30.44)  # avg days per month
+            zero_date = datetime.utcnow() + timedelta(days=days_until_zero)
+            zero_cash_date = zero_date.strftime("%Y-%m-%d")
+        else:
+            zero_cash_date = datetime.utcnow().strftime("%Y-%m-%d")
 
         return {
             "status": "success",
-            "monthly_burn_rate": round(monthly_burn_rate, 2),
-            "net_monthly_burn": round(net_monthly_burn, 2),
-            "months_of_runway": round(months_of_runway, 2),
+            "monthly_burn_rate": monthly_burn_rate,
+            "net_monthly_burn": net_monthly_burn,
+            "months_of_runway": months_of_runway,
             "runway_risk": runway_risk,
             "zero_cash_date": zero_cash_date,
         }
     except Exception as exc:
-        return _fail(f"Runway calculation failed: {exc}")
-
-
-def _fail(reason: str) -> dict[str, Any]:
-    """Return a standardized module-level failure."""
-    return {
-        "status": "error",
-        "error": reason,
-    }
+        return {
+            "status": "error",
+            "error": f"Runway calculation failed: {exc}",
+        }

@@ -37,8 +37,8 @@ class Receivable(TypedDict, total=False):
     id: str
     customer: str
     amount: float
-    issue_date: str
     due_date: str
+    issued_date: str
     status: str
 
 
@@ -47,8 +47,8 @@ class Payable(TypedDict, total=False):
     id: str
     vendor: str
     amount: float
-    issue_date: str
     due_date: str
+    issued_date: str
     status: str
 
 
@@ -69,7 +69,7 @@ class CashFlowInput(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 class CashPosition(TypedDict):
-    """Result from cash_position_tracker."""
+    """Cash position tracking result."""
     current_balance: float
     period_inflows: float
     period_outflows: float
@@ -82,7 +82,7 @@ class CashPosition(TypedDict):
 # ---------------------------------------------------------------------------
 
 class RunwayCalc(TypedDict):
-    """Result from runway_calculator."""
+    """Runway calculation result."""
     monthly_burn_rate: float
     net_monthly_burn: float
     months_of_runway: float
@@ -95,13 +95,13 @@ class RunwayCalc(TypedDict):
 # ---------------------------------------------------------------------------
 
 class ForecastPeriod(TypedDict):
-    """Single period forecast."""
+    """Forecast for a single horizon period."""
     projected_balance: float
     confidence: float
 
 
 class CashForecast(TypedDict):
-    """Result from forecast_generator."""
+    """Cash flow forecast result."""
     day_30: ForecastPeriod
     day_60: ForecastPeriod
     day_90: ForecastPeriod
@@ -113,7 +113,7 @@ class CashForecast(TypedDict):
 # ---------------------------------------------------------------------------
 
 class CashAlert(TypedDict):
-    """Single alert from alert_generator."""
+    """Single cash flow alert."""
     alert_type: str
     severity: str
     message: str
