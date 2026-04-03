@@ -1,4 +1,4 @@
-"""Operations Agent executor — runs engines in sequence per plan.
+"""Customer Agent executor — runs engines in sequence per plan.
 
 Executor only calls engines. No business logic here.
 Runs engines in the order specified by the plan.
@@ -99,12 +99,13 @@ def _run_engine_with_retry(engine_name: str, engine_input: dict[str, Any]) -> di
 def _get_engine(engine_name: str) -> Any:
     """Load engine by name. Returns engine instance or None."""
     engine_map = {
-        "inventory": "engines.inventory.InventoryEngine",
-        "stock_prediction": "engines.stock_prediction.StockPredictionEngine",
-        "supplier": "engines.supplier.SupplierEngine",
-        "supplier_discovery": "engines.supplier_discovery.SupplierDiscoveryEngine",
-        "shipping_optimization": "engines.shipping_optimization.ShippingOptimizationEngine",
-        "returns_management": "engines.returns_management.ReturnsManagementEngine",
+        "customer_segmentation": "engines.customer_segmentation.CustomerSegmentationEngine",
+        "churn_prediction": "engines.churn_prediction.ChurnPredictionEngine",
+        "sentiment_analysis": "engines.sentiment_analysis.SentimentAnalysisEngine",
+        "review_management": "engines.review_management.ReviewManagementEngine",
+        "customer_support": "engines.customer_support.CustomerSupportEngine",
+        "chatbot": "engines.chatbot.ChatbotEngine",
+        "audience_targeting": "engines.audience_targeting.AudienceTargetingEngine",
     }
 
     module_path = engine_map.get(engine_name)
@@ -128,7 +129,7 @@ def _enrich_from_dependencies(
 ) -> dict[str, Any]:
     """Enrich engine input with results from previous engine runs.
 
-    Example: Stock Prediction can use Inventory's stockout risk data.
+    Example: Churn Prediction can use Segmentation's RFM data.
     """
     import copy
     enriched = copy.deepcopy(engine_input)
@@ -141,19 +142,17 @@ def _enrich_from_dependencies(
 
         dep_data = dep_result.get("data", {})
 
-        # Inventory → Stock Prediction enrichment
-        if dep_name == "inventory":
-            if dep_data.get("stockout_risks"):
-                data["_stockout_risks"] = dep_data["stockout_risks"]
-            if dep_data.get("reorder_plan"):
-                data["_reorder_plan"] = dep_data["reorder_plan"]
-            if dep_data.get("inventory_health"):
-                data["_inventory_health"] = dep_data["inventory_health"]
+        # Customer Segmentation → Churn Prediction / Audience Targeting enrichment
+        if dep_name == "customer_segmentation":
+            if dep_data.get("segments"):
+                data["_segments"] = dep_data["segments"]
+            if dep_data.get("rfm_analysis"):
+                data["_rfm_analysis"] = dep_data["rfm_analysis"]
 
-        # Supplier → Supplier Discovery enrichment
-        if dep_name == "supplier":
-            if dep_data.get("supplier_scores"):
-                data["_supplier_scores"] = dep_data["supplier_scores"]
+        # Sentiment Analysis → Review Management enrichment
+        if dep_name == "sentiment_analysis":
+            if dep_data.get("sentiment_scores"):
+                data["_sentiment_scores"] = dep_data["sentiment_scores"]
 
     enriched["data"] = data
     return enriched

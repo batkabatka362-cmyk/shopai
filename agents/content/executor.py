@@ -1,4 +1,4 @@
-"""Operations Agent executor — runs engines in sequence per plan.
+"""Content Agent executor — runs engines in sequence per plan.
 
 Executor only calls engines. No business logic here.
 Runs engines in the order specified by the plan.
@@ -99,12 +99,12 @@ def _run_engine_with_retry(engine_name: str, engine_input: dict[str, Any]) -> di
 def _get_engine(engine_name: str) -> Any:
     """Load engine by name. Returns engine instance or None."""
     engine_map = {
-        "inventory": "engines.inventory.InventoryEngine",
-        "stock_prediction": "engines.stock_prediction.StockPredictionEngine",
-        "supplier": "engines.supplier.SupplierEngine",
-        "supplier_discovery": "engines.supplier_discovery.SupplierDiscoveryEngine",
-        "shipping_optimization": "engines.shipping_optimization.ShippingOptimizationEngine",
-        "returns_management": "engines.returns_management.ReturnsManagementEngine",
+        "product_description": "engines.product_description.ProductDescriptionEngine",
+        "content_generation": "engines.content_generation.ContentGenerationEngine",
+        "search_optimization": "engines.search_optimization.SearchOptimizationEngine",
+        "image_optimization": "engines.image_optimization.ImageOptimizationEngine",
+        "video_marketing": "engines.video_marketing.VideoMarketingEngine",
+        "tag_management": "engines.tag_management.TagManagementEngine",
     }
 
     module_path = engine_map.get(engine_name)
@@ -128,7 +128,7 @@ def _enrich_from_dependencies(
 ) -> dict[str, Any]:
     """Enrich engine input with results from previous engine runs.
 
-    Example: Stock Prediction can use Inventory's stockout risk data.
+    Example: Search Optimization can use Product Description's generated copy.
     """
     import copy
     enriched = copy.deepcopy(engine_input)
@@ -141,19 +141,19 @@ def _enrich_from_dependencies(
 
         dep_data = dep_result.get("data", {})
 
-        # Inventory → Stock Prediction enrichment
-        if dep_name == "inventory":
-            if dep_data.get("stockout_risks"):
-                data["_stockout_risks"] = dep_data["stockout_risks"]
-            if dep_data.get("reorder_plan"):
-                data["_reorder_plan"] = dep_data["reorder_plan"]
-            if dep_data.get("inventory_health"):
-                data["_inventory_health"] = dep_data["inventory_health"]
+        # Product Description → Search Optimization / Video Marketing enrichment
+        if dep_name == "product_description":
+            if dep_data.get("descriptions"):
+                data["_descriptions"] = dep_data["descriptions"]
+            if dep_data.get("bullet_points"):
+                data["_bullet_points"] = dep_data["bullet_points"]
 
-        # Supplier → Supplier Discovery enrichment
-        if dep_name == "supplier":
-            if dep_data.get("supplier_scores"):
-                data["_supplier_scores"] = dep_data["supplier_scores"]
+        # Content Generation → Search Optimization enrichment
+        if dep_name == "content_generation":
+            if dep_data.get("blog_posts"):
+                data["_blog_posts"] = dep_data["blog_posts"]
+            if dep_data.get("ad_copy"):
+                data["_ad_copy"] = dep_data["ad_copy"]
 
     enriched["data"] = data
     return enriched

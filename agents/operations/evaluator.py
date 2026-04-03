@@ -1,9 +1,9 @@
 """Operations Agent evaluator — assess quality of operations results.
 
 Evaluates:
-  - Stock health (are inventory levels healthy?)
-  - Supplier reliability (are suppliers performing well?)
-  - Shipping efficiency (are shipments on time and cost-effective?)
+  - Stock health (are inventory levels optimal?)
+  - Supplier reliability (are suppliers dependable?)
+  - Shipping efficiency (is fulfillment on track?)
   - Forecast accuracy (are predictions reliable?)
 """
 from __future__ import annotations
@@ -24,37 +24,37 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
     issues: list[str] = []
     strengths: list[str] = []
 
-    # 1. Stock health (0-25): Are inventory levels healthy?
+    # 1. Stock health (0-25): Is inventory in good shape?
     stock_health = _score_stock_health(engine_results)
     scores["stock_health"] = stock_health
     if stock_health >= 20:
         strengths.append("Inventory levels are healthy with minimal stockout risk")
     elif stock_health < 10:
-        issues.append("Critical inventory issues — stockout risks detected")
+        issues.append("Inventory health is poor — stockout risks detected")
 
-    # 2. Supplier reliability (0-25): Are suppliers performing?
+    # 2. Supplier reliability (0-25): Are suppliers dependable?
     supplier_reliability = _score_supplier_reliability(engine_results)
     scores["supplier_reliability"] = supplier_reliability
     if supplier_reliability >= 20:
-        strengths.append("Supplier performance is strong and reliable")
+        strengths.append("Suppliers are reliable with strong performance scores")
     elif supplier_reliability < 10:
-        issues.append("Supplier reliability concerns — consider backup suppliers")
+        issues.append("Supplier reliability is low — consider backup suppliers")
 
-    # 3. Shipping efficiency (0-25): Are shipments optimized?
+    # 3. Shipping efficiency (0-25): Is fulfillment optimized?
     shipping_efficiency = _score_shipping_efficiency(engine_results)
     scores["shipping_efficiency"] = shipping_efficiency
     if shipping_efficiency >= 20:
         strengths.append("Shipping operations are efficient and cost-effective")
     elif shipping_efficiency < 10:
-        issues.append("Shipping inefficiencies detected — review carrier strategy")
+        issues.append("Shipping efficiency needs improvement")
 
     # 4. Forecast accuracy (0-25): Are predictions reliable?
     forecast_accuracy = _score_forecast_accuracy(engine_results)
     scores["forecast_accuracy"] = forecast_accuracy
     if forecast_accuracy >= 20:
-        strengths.append("Demand forecasting is accurate and actionable")
+        strengths.append("Demand forecasts are accurate and actionable")
     elif forecast_accuracy < 10:
-        issues.append("Forecast data insufficient — predictions may be unreliable")
+        issues.append("Forecast data is thin — predictions may be unreliable")
 
     total_score = sum(scores.values())
     total_score = max(0, min(100, round(total_score)))
@@ -72,7 +72,7 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
 
 
 def _score_stock_health(results: dict[str, Any]) -> float:
-    """Score inventory health status."""
+    """Score inventory health."""
     score = 0
 
     inv = results.get("inventory", {})
@@ -82,11 +82,11 @@ def _score_stock_health(results: dict[str, Any]) -> float:
             score += 8
         if inv_data.get("reorder_plan"):
             score += 7
-        if inv_data.get("stockout_risks") is not None:
-            risks = inv_data["stockout_risks"]
-            if isinstance(risks, list) and len(risks) == 0:
+        stockout_risks = inv_data.get("stockout_risks", [])
+        if isinstance(stockout_risks, list):
+            if len(stockout_risks) == 0:
                 score += 10
-            elif isinstance(risks, list) and len(risks) <= 3:
+            elif len(stockout_risks) < 5:
                 score += 5
             else:
                 score += 2
@@ -95,7 +95,7 @@ def _score_stock_health(results: dict[str, Any]) -> float:
 
 
 def _score_supplier_reliability(results: dict[str, Any]) -> float:
-    """Score supplier performance."""
+    """Score supplier dependability."""
     score = 0
 
     sup = results.get("supplier", {})
@@ -117,7 +117,7 @@ def _score_supplier_reliability(results: dict[str, Any]) -> float:
 
 
 def _score_shipping_efficiency(results: dict[str, Any]) -> float:
-    """Score shipping optimization quality."""
+    """Score shipping and fulfillment."""
     score = 0
 
     ship = results.get("shipping_optimization", {})
@@ -126,28 +126,31 @@ def _score_shipping_efficiency(results: dict[str, Any]) -> float:
         if ship_data.get("shipping_plan"):
             score += 15
             plan = ship_data["shipping_plan"]
-            if isinstance(plan, dict) and plan.get("optimized"):
-                score += 10
+            if isinstance(plan, dict) and plan.get("optimized_routes"):
+                score += 5
+            if isinstance(plan, dict) and plan.get("cost_savings"):
+                score += 5
 
     return min(25, score)
 
 
 def _score_forecast_accuracy(results: dict[str, Any]) -> float:
-    """Score stock forecast quality."""
+    """Score stock forecast reliability."""
     score = 0
 
     sp = results.get("stock_prediction", {})
     if sp.get("status") == "success":
         sp_data = sp.get("data", {})
         if sp_data.get("stock_forecast"):
-            score += 15
+            score += 12
             forecast = sp_data["stock_forecast"]
-            if isinstance(forecast, dict) and forecast.get("confidence"):
-                confidence = forecast["confidence"]
-                if confidence >= 0.8:
-                    score += 10
-                elif confidence >= 0.5:
+            if isinstance(forecast, dict):
+                if forecast.get("confidence"):
                     score += 5
+                if forecast.get("horizon_days"):
+                    score += 4
+                if forecast.get("seasonal_adjustment"):
+                    score += 4
 
     return min(25, score)
 
@@ -162,10 +165,10 @@ def _overall_recommendation(score: int, results: dict[str, Any]) -> str:
 
     if score >= 70:
         if has_stockout_risks:
-            return "Operations are generally healthy but reorder actions needed for at-risk items."
+            return "Operations are strong overall but reorders should be placed for at-risk items."
         return "Operations are running smoothly. Continue monitoring and optimizing."
 
     if score >= 40:
-        return "Operations show mixed signals. Review supplier reliability and inventory levels."
+        return "Operations show some gaps. Review supplier reliability and inventory levels."
 
-    return "Operations need attention. Recommend immediate inventory audit and supplier review."
+    return "Operations need attention. Recommend immediate review of stock levels and supplier performance."

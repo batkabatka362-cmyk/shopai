@@ -1,4 +1,4 @@
-"""Operations Agent — orchestrates inventory, shipping, and supplier engines.
+"""Operations Agent — orchestrates Inventory, Shipping, and Supplier engines.
 
 This is the AGENT file. It ONLY orchestrates — delegates to:
   - planner.py → decides what to do
@@ -20,10 +20,10 @@ from .evaluator import evaluate_results
 
 
 class OperationsAgent(BaseAgent):
-    """Operations Agent — manages inventory, shipping, and suppliers.
+    """Operations Agent — manages inventory, shipping, suppliers.
 
-    Combines Inventory, Stock Prediction, Supplier, Shipping, and Returns engines
-    to answer: "How do we keep operations running smoothly?"
+    Combines Inventory, Stock Prediction, Supplier, Shipping Optimization,
+    and Returns Management engines to answer: "How do we run ops efficiently?"
     """
 
     def __init__(self) -> None:
@@ -50,8 +50,6 @@ class OperationsAgent(BaseAgent):
         inv = engine_results.get("inventory", {})
         sp = engine_results.get("stock_prediction", {})
         sup = engine_results.get("supplier", {})
-        ship = engine_results.get("shipping_optimization", {})
-        ret = engine_results.get("returns_management", {})
 
         # Extract key findings
         findings = []
@@ -62,45 +60,33 @@ class OperationsAgent(BaseAgent):
             if inv_data.get("inventory_health"):
                 findings.append(f"Inventory health: {inv_data['inventory_health']}")
             if inv_data.get("stockout_risks"):
-                findings.append(f"Stockout risks identified: {len(inv_data['stockout_risks'])}")
+                findings.append(f"Stockout risks identified: {len(inv_data['stockout_risks'])} items")
 
         # Stock prediction findings
         if sp.get("status") == "success":
             sp_data = sp.get("data", {})
             if sp_data.get("stock_forecast"):
-                findings.append(f"Stock forecast generated: {sp_data['stock_forecast']}")
+                findings.append("Stock forecast generated for planning horizon")
 
         # Supplier findings
         if sup.get("status") == "success":
             sup_data = sup.get("data", {})
             if sup_data.get("supplier_scores"):
-                findings.append(f"Supplier scores computed: {len(sup_data['supplier_scores'])} suppliers")
-
-        # Shipping findings
-        if ship.get("status") == "success":
-            ship_data = ship.get("data", {})
-            if ship_data.get("shipping_plan"):
-                findings.append(f"Shipping plan: {ship_data['shipping_plan']}")
-
-        # Returns findings
-        if ret.get("status") == "success":
-            ret_data = ret.get("data", {})
-            if ret_data.get("return_analysis"):
-                findings.append(f"Return analysis: {ret_data['return_analysis']}")
+                findings.append("Supplier scores evaluated")
 
         # Final recommendation
         if score >= 70 and quality == "high":
             action = "place_reorder"
             confidence = "high"
-            reason = "Operations data supports immediate reorder action"
+            reason = "Inventory levels and supplier data support immediate reorder"
         elif score >= 50:
             action = "find_backup_supplier"
             confidence = "medium"
-            reason = "Some supply risks detected — diversify supplier base"
+            reason = "Operations data shows potential supply chain risks"
         elif score >= 30:
             action = "clear_dead_stock"
             confidence = "medium"
-            reason = "Inventory inefficiencies detected — clear slow-moving stock"
+            reason = "Inventory analysis reveals excess stock that should be cleared"
         else:
             action = "no_action_needed"
             confidence = "low"
@@ -120,26 +106,26 @@ class OperationsAgent(BaseAgent):
         if action == "place_reorder":
             return [
                 "Generate purchase orders for low-stock items",
-                "Confirm lead times with top suppliers",
+                "Confirm lead times with preferred suppliers",
                 "Update reorder points based on forecast",
-                "Schedule delivery coordination",
+                "Schedule receiving and warehousing",
             ]
         if action == "find_backup_supplier":
             return [
                 "Run supplier discovery for at-risk categories",
                 "Request quotes from alternative suppliers",
                 "Evaluate supplier reliability scores",
-                "Negotiate backup supply agreements",
+                "Set up dual-sourcing for critical products",
             ]
         if action == "clear_dead_stock":
             return [
-                "Identify items with no sales in 90+ days",
+                "Identify slow-moving inventory over 90 days",
                 "Create clearance pricing strategy",
-                "Bundle slow movers with popular items",
+                "Bundle dead stock with popular items",
                 "Consider liquidation channels",
             ]
         return [
             "Continue monitoring inventory levels",
-            "Review supplier performance quarterly",
-            "Optimize shipping routes periodically",
+            "Review operations dashboard weekly",
+            "Update demand forecasts with new data",
         ]
