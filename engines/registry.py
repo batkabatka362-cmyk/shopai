@@ -1,9 +1,7 @@
 """Engine Registry — maps engine names to their module paths.
 
-Only includes engines with real implementations (70+ lines of code).
-Stub/placeholder engines have been removed.
-
-69 real engines + base framework.
+Includes all engines: production-ready (flow.py pattern), original (modules/),
+and stub (BaseEngine). 86 engines + base framework.
 """
 
 from __future__ import annotations
@@ -103,6 +101,50 @@ _ENGINE_MAP: dict[str, str] = {
     "autonomous_execution": "engines.autonomous_execution",
     "orchestration": "engines.orchestration",
     "infinite_scaling": "engines.infinite_scaling",
+
+    # ── P0 Critical Engines (NEW — flow.py pattern) ──────────────
+
+    # Operations
+    "order_management": "engines.order_management",
+    "fraud_detection": "engines.fraud_detection",
+    "webhook_handler": "engines.webhook_handler",
+
+    # Finance
+    "tax_engine": "engines.tax_engine",
+    "accounting": "engines.accounting",
+    "cash_flow": "engines.cash_flow",
+
+    # Customer
+    "customer_service": "engines.customer_service",
+
+    # Infrastructure
+    "backup_recovery": "engines.backup_recovery",
+
+    # Product
+    "product_variant": "engines.product_variant",
+
+    # ── Previously Unregistered Engines (flow.py / modules pattern) ──
+
+    # Intelligence & Learning
+    "auto_research": "engines.auto_research",
+    "execution_intelligence": "engines.execution_intelligence",
+    "global_brain": "engines.global_brain",
+    "meta_governance": "engines.meta_governance",
+    "profit_optimization": "engines.profit_optimization",
+    "simulation_lab": "engines.simulation_lab",
+    "time_intelligence": "engines.time_intelligence",
+
+    # Original Module-based Engines
+    "competition_analyzer": "engines.competition_analyzer",
+    "demand_estimator": "engines.demand_estimator",
+    "market_research": "engines.market_research",
+    "product_filter": "engines.product_filter",
+    "product_risk": "engines.product_risk",
+    "profitability_calculator": "engines.profitability_calculator",
+    "selection_decision": "engines.selection_decision",
+    "selection_reasoning": "engines.selection_reasoning",
+    "supplier_discovery": "engines.supplier_discovery",
+    "trend_discovery": "engines.trend_discovery",
 }
 
 # Cache for instantiated engines
