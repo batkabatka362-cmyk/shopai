@@ -1,10 +1,9 @@
 """Order Management Engine — inventory checker.
 
-Checks stock availability for each line item and reserves units.
-Uses simulated stock levels (in production, this would call a real
-inventory service or database).
+Checks inventory availability for each line item and reserves units.
+Uses a simulated stock lookup (in production, would query inventory service).
 
-All logic is deterministic and real.
+All logic is real and deterministic.
 """
 from __future__ import annotations
 
@@ -12,37 +11,25 @@ import copy
 import hashlib
 from typing import Any
 
-# Simulated stock levels — in production this queries the inventory DB.
-# We derive a deterministic stock level from the SKU so results are
-# reproducible across runs.
 _DEFAULT_WAREHOUSE = "wh_east_01"
-
-
-def _simulated_stock(sku: str) -> int:
-    """Derive a deterministic stock quantity from SKU string.
-
-    Uses a hash to produce a stable number between 0 and 200.
-    """
-    digest = hashlib.md5(sku.encode()).hexdigest()
-    return int(digest[:4], 16) % 201  # 0–200 units
 
 
 def check_inventory(
     line_items: list[dict[str, Any]],
     warehouse_id: str | None = None,
 ) -> dict[str, Any]:
-    """Check inventory availability for each line item.
+    """Check inventory availability for all line items.
 
     Args:
-        line_items: List of LineItem dicts.
-        warehouse_id: Optional warehouse to check. Defaults to east warehouse.
+        line_items: List of LineItem dicts from the order.
+        warehouse_id: Optional specific warehouse to check.
 
     Returns:
-        Structured dict with reservation status, reservations, and shortages.
+        Structured dict with inventory check results.
     """
     try:
         items = copy.deepcopy(line_items)
-        wh = warehouse_id or _DEFAULT_WAREHOUSE
+        warehouse = warehouse_id or _DEFAULT_WAREHOUSE
 
         reservations: list[dict[str, Any]] = []
         shortages: list[dict[str, Any]] = []
@@ -50,35 +37,31 @@ def check_inventory(
 
         for item in items:
             sku = str(item.get("sku", item.get("product_id", "unknown")))
-            requested_qty = int(item.get("quantity", 1))
-            available = _simulated_stock(sku)
+            requested_qty = int(item.get("quantity", 0))
 
-            if available >= requested_qty:
+            # Simulated stock: derive available quantity from SKU hash
+            # This gives a deterministic but varied stock level per SKU
+            available = _simulate_stock_level(sku)
+
+            if requested_qty <= available:
                 reservations.append({
                     "sku": sku,
                     "quantity": requested_qty,
                     "reserved": True,
-                    "warehouse": wh,
-                    "available_before": available,
-                    "available_after": available - requested_qty,
+                    "warehouse": warehouse,
                 })
             else:
                 all_in_stock = False
-                # Reserve what we can
-                reserved_qty = min(available, requested_qty)
                 reservations.append({
                     "sku": sku,
-                    "quantity": reserved_qty,
-                    "reserved": reserved_qty > 0,
-                    "warehouse": wh,
-                    "available_before": available,
-                    "available_after": max(available - reserved_qty, 0),
+                    "quantity": requested_qty,
+                    "reserved": False,
+                    "warehouse": warehouse,
                 })
                 shortages.append({
                     "sku": sku,
                     "requested": requested_qty,
                     "available": available,
-                    "shortage": requested_qty - available,
                 })
 
         return {
@@ -88,10 +71,26 @@ def check_inventory(
             "shortages": shortages,
         }
     except Exception as exc:
-        return {
-            "status": "error",
-            "all_in_stock": False,
-            "reservations": [],
-            "shortages": [],
-            "error": f"Inventory check failed: {exc}",
-        }
+        return _fail(f"Inventory check failed: {exc}")
+
+
+def _simulate_stock_level(sku: str) -> int:
+    """Derive a deterministic simulated stock level from a SKU.
+
+    Uses a hash to produce a consistent stock number for any given SKU.
+    Range: 5 to 500 units.
+    """
+    h = hashlib.md5(sku.encode()).hexdigest()
+    num = int(h[:8], 16)
+    return 5 + (num % 496)
+
+
+def _fail(reason: str) -> dict[str, Any]:
+    """Return standardized error output."""
+    return {
+        "status": "error",
+        "all_in_stock": False,
+        "reservations": [],
+        "shortages": [],
+        "error": reason,
+    }

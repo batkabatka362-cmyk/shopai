@@ -1,36 +1,21 @@
 """Order Management Engine — tracking manager.
 
-Generates tracking IDs, builds tracking URLs, and creates initial
-tracking records for shipments.
+Generates tracking IDs and builds tracking URLs for shipments.
 
-All IDs are deterministic per order for reproducibility.
+All IDs are deterministic where possible. No external API calls.
 """
 from __future__ import annotations
 
 import copy
-import hashlib
 import uuid
 from typing import Any
 
-# Carrier tracking URL templates
-_TRACKING_URLS = {
+_TRACKING_URL_TEMPLATES = {
     "USPS": "https://tools.usps.com/go/TrackConfirmAction?tLabels={number}",
     "UPS": "https://www.ups.com/track?tracknum={number}",
-    "FedEx Freight": "https://www.fedex.com/fedextrack/?trknbr={number}",
+    "FedEx": "https://www.fedex.com/fedextrack/?trknbr={number}",
+    "freight": "https://freight.example.com/track/{number}",
 }
-
-
-def _generate_carrier_number(order_id: str, carrier: str) -> str:
-    """Generate a deterministic carrier tracking number from order ID."""
-    seed = f"{order_id}:{carrier}"
-    digest = hashlib.sha256(seed.encode()).hexdigest()
-    # Format like a real tracking number
-    if carrier == "USPS":
-        return f"9400{digest[:18].upper()}"
-    elif carrier == "UPS":
-        return f"1Z{digest[:16].upper()}"
-    else:
-        return f"{digest[:15].upper()}"
 
 
 def create_tracking(
@@ -38,45 +23,52 @@ def create_tracking(
     carrier: str,
     shipping: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create a tracking record for a shipment.
+    """Create tracking record for a shipment.
 
     Args:
-        order_id: The order identifier.
-        carrier: Carrier name (USPS, UPS, FedEx Freight).
+        order_id: The order ID.
+        carrier: Selected carrier name.
         shipping: Result from shipping_handler.
 
     Returns:
-        Structured dict with tracking ID, URL, carrier number, and status.
+        Structured dict with tracking details.
     """
     try:
         shipping = copy.deepcopy(shipping)
 
-        # --- Tracking ID ---
-        tracking_id = f"trk_{uuid.uuid4().hex[:16]}"
+        # ---- Generate tracking ID (internal) ----
+        tracking_id = f"trk_{uuid.uuid4().hex}"
 
-        # --- Carrier tracking number ---
-        carrier_number = _generate_carrier_number(order_id, carrier)
+        # ---- Generate carrier tracking number ----
+        # Deterministic from order_id for consistency
+        carrier_hex = uuid.uuid5(uuid.NAMESPACE_DNS, f"{order_id}.{carrier}").hex
+        carrier_tracking_number = carrier_hex[:20].upper()
 
-        # --- Tracking URL ---
-        url_template = _TRACKING_URLS.get(
+        # ---- Build tracking URL ----
+        url_template = _TRACKING_URL_TEMPLATES.get(
             carrier,
-            "https://track.example.com/?number={number}",
+            "https://track.example.com/{number}",
         )
-        tracking_url = url_template.format(number=carrier_number)
+        tracking_url = url_template.format(number=carrier_tracking_number)
 
         return {
             "status": "success",
             "tracking_id": tracking_id,
             "tracking_url": tracking_url,
-            "carrier_tracking_number": carrier_number,
+            "carrier_tracking_number": carrier_tracking_number,
             "tracking_status": "label_created",
         }
     except Exception as exc:
-        return {
-            "status": "error",
-            "tracking_id": "",
-            "tracking_url": "",
-            "carrier_tracking_number": "",
-            "tracking_status": "error",
-            "error": f"Tracking creation failed: {exc}",
-        }
+        return _fail(f"Tracking creation failed: {exc}")
+
+
+def _fail(reason: str) -> dict[str, Any]:
+    """Return standardized error output."""
+    return {
+        "status": "error",
+        "tracking_id": "",
+        "tracking_url": "",
+        "carrier_tracking_number": "",
+        "tracking_status": "failed",
+        "error": reason,
+    }

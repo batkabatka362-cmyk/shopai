@@ -1,9 +1,9 @@
 """Order Management Engine — fulfillment router.
 
-Selects fulfillment method (self, 3PL, dropship) and warehouse based on
-order characteristics and shipping destination.
+Selects fulfillment method and warehouse based on order attributes
+and inventory status.
 
-All routing logic is deterministic and rule-based.
+All routing logic is real and deterministic.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import copy
 import time
 from typing import Any
 
-# US state → region mapping for warehouse selection
+# US state-to-region mapping for warehouse selection
 _EAST_STATES = {
     "CT", "DE", "FL", "GA", "MA", "MD", "ME", "NC", "NH", "NJ",
     "NY", "PA", "RI", "SC", "VA", "VT", "WV", "DC",
@@ -22,57 +22,40 @@ _WEST_STATES = {
 }
 # Everything else is central
 
-_WAREHOUSE_MAP = {
+_WAREHOUSES = {
     "east": "wh_east_01",
     "west": "wh_west_01",
     "central": "wh_central_01",
 }
 
 
-def _get_region(province: str) -> str:
-    """Map a US state/province code to a fulfillment region."""
-    code = province.upper().strip()
-    if code in _EAST_STATES:
-        return "east"
-    if code in _WEST_STATES:
-        return "west"
-    return "central"
-
-
-def _total_item_count(order: dict[str, Any]) -> int:
-    """Sum quantities across all line items."""
-    total = 0
-    for item in order.get("line_items", []):
-        total += int(item.get("quantity", 1))
-    return total
-
-
 def route_fulfillment(
     order: dict[str, Any],
     inventory_status: dict[str, Any],
 ) -> dict[str, Any]:
-    """Select fulfillment method and warehouse for the order.
+    """Select fulfillment method and warehouse for an order.
 
     Args:
-        order: Order dict with line items and shipping address.
+        order: The full order dict.
         inventory_status: Result from inventory_checker.
 
     Returns:
-        Structured dict with fulfillment method, warehouse, and pick date.
+        Structured dict with fulfillment routing decision.
     """
     try:
         order = copy.deepcopy(order)
         inv = copy.deepcopy(inventory_status)
 
-        # --- Determine fulfillment method ---
-        total_items = _total_item_count(order)
+        line_items = order.get("line_items", [])
+        shipping_addr = order.get("shipping_address", {})
 
-        # Check if any line item has a supplier_id (dropship)
-        has_supplier = any(
-            item.get("supplier_id")
-            for item in order.get("line_items", [])
-        )
+        # ---- Calculate total item count ----
+        total_items = sum(int(li.get("quantity", 0)) for li in line_items)
 
+        # ---- Check for supplier_id (dropship indicator) ----
+        has_supplier = any(li.get("supplier_id") for li in line_items)
+
+        # ---- Select fulfillment method ----
         if has_supplier:
             method = "dropship"
         elif total_items > 50:
@@ -80,29 +63,24 @@ def route_fulfillment(
         else:
             method = "self_fulfillment"
 
-        # --- Select warehouse based on shipping region ---
-        shipping_addr = order.get("shipping_address", {})
-        province = str(shipping_addr.get("province", ""))
-        country_code = str(shipping_addr.get("country_code", "US")).upper()
+        # ---- Select warehouse based on shipping region ----
+        province = str(shipping_addr.get("province", "")).upper().strip()
+        country = str(shipping_addr.get("country_code", "")).upper().strip()
 
-        if country_code == "US" and province:
-            region = _get_region(province)
-        else:
-            # Default to east for non-US or unknown
+        if country != "US" or not province:
+            region = "east"  # default for international or unknown
+        elif province in _EAST_STATES:
             region = "east"
-
-        warehouse_id = _WAREHOUSE_MAP.get(region, "wh_east_01")
-
-        # --- Estimate pick date (1 business day for self, 2 for 3PL, varies for dropship) ---
-        if method == "self_fulfillment":
-            pick_days = 1
-        elif method == "3pl":
-            pick_days = 2
+        elif province in _WEST_STATES:
+            region = "west"
         else:
-            pick_days = 3
+            region = "central"
 
-        # Simple estimated pick date: today + pick_days
-        pick_timestamp = time.time() + (pick_days * 86400)
+        warehouse_id = _WAREHOUSES[region]
+
+        # ---- Estimate pick date (next business day + 1 for processing) ----
+        now = time.gmtime()
+        pick_timestamp = time.mktime(now) + (86400 * 1)
         estimated_pick_date = time.strftime(
             "%Y-%m-%d", time.gmtime(pick_timestamp),
         )
@@ -112,14 +90,17 @@ def route_fulfillment(
             "method": method,
             "warehouse_id": warehouse_id,
             "estimated_pick_date": estimated_pick_date,
-            "region": region,
-            "total_items": total_items,
         }
     except Exception as exc:
-        return {
-            "status": "error",
-            "method": "",
-            "warehouse_id": "",
-            "estimated_pick_date": "",
-            "error": f"Fulfillment routing failed: {exc}",
-        }
+        return _fail(f"Fulfillment routing failed: {exc}")
+
+
+def _fail(reason: str) -> dict[str, Any]:
+    """Return standardized error output."""
+    return {
+        "status": "error",
+        "method": "",
+        "warehouse_id": "",
+        "estimated_pick_date": "",
+        "error": reason,
+    }

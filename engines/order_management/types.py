@@ -36,7 +36,7 @@ class ShippingAddress(TypedDict, total=False):
 
 
 class CustomerInfo(TypedDict, total=False):
-    """Customer information associated with an order."""
+    """Customer information attached to an order."""
     id: str
     email: str
     orders_count: int
@@ -44,7 +44,7 @@ class CustomerInfo(TypedDict, total=False):
 
 
 class OrderInput(TypedDict, total=False):
-    """Full order input record."""
+    """The full order object inside the input data block."""
     id: str
     email: str
     total_price: float
@@ -83,12 +83,27 @@ class FraudScreen(TypedDict):
 # Intermediate types — inventory check
 # ---------------------------------------------------------------------------
 
+class InventoryReservation(TypedDict):
+    """Single inventory reservation."""
+    sku: str
+    quantity: int
+    reserved: bool
+    warehouse: str
+
+
+class InventoryShortage(TypedDict):
+    """Single inventory shortage."""
+    sku: str
+    requested: int
+    available: int
+
+
 class InventoryCheck(TypedDict):
     """Result from inventory_checker."""
     status: str
     all_in_stock: bool
-    reservations: list[dict[str, Any]]
-    shortages: list[dict[str, Any]]
+    reservations: list[InventoryReservation]
+    shortages: list[InventoryShortage]
 
 
 # ---------------------------------------------------------------------------
@@ -133,12 +148,18 @@ class TrackingRecord(TypedDict):
 # Intermediate types — status update
 # ---------------------------------------------------------------------------
 
+class StatusHistoryEntry(TypedDict):
+    """Single status history entry."""
+    status: str
+    timestamp: str
+
+
 class StatusUpdate(TypedDict):
     """Result from status_updater."""
     status: str
     current_status: str
     previous_status: str
-    status_history: list[dict[str, str]]
+    status_history: list[StatusHistoryEntry]
 
 
 # ---------------------------------------------------------------------------

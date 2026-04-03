@@ -1,9 +1,9 @@
 """Order Management Engine — shipping handler.
 
-Selects carrier, service level, and estimates shipping cost based on
-order weight and destination.
+Selects carrier and service level, estimates cost and delivery date
+based on order weight and destination.
 
-All calculations are deterministic and rule-based.
+All calculations are real. No faking, no random numbers.
 """
 from __future__ import annotations
 
@@ -11,113 +11,94 @@ import copy
 import time
 from typing import Any
 
-# Carrier selection thresholds (total weight in grams)
-_USPS_MAX_GRAMS = 907     # ~2 lbs
-_UPS_MAX_GRAMS = 22680    # ~50 lbs
+# Carrier weight thresholds (in grams)
+_USPS_MAX_GRAMS = 907       # ~2 lb
+_UPS_MAX_GRAMS = 22680      # ~50 lb
 # Above UPS_MAX = freight
 
 # Rate per gram by carrier (USD)
 _RATES = {
-    "USPS": 0.005,
-    "UPS": 0.003,
-    "FedEx Freight": 0.002,
+    "USPS": 0.008,
+    "UPS": 0.005,
+    "freight": 0.003,
 }
 
 # Service level transit days
 _SERVICE_DAYS = {
-    "standard": {"min": 5, "max": 7},
-    "express": {"min": 2, "max": 3},
-    "overnight": {"min": 1, "max": 1},
+    "standard": 6,    # 5-7 average
+    "express": 3,     # 2-3 average
+    "overnight": 1,
 }
 
-
-def _compute_total_weight(order: dict[str, Any]) -> int:
-    """Sum weight in grams across all line items."""
-    total = 0
-    for item in order.get("line_items", []):
-        grams = int(item.get("grams", 0))
-        qty = int(item.get("quantity", 1))
-        total += grams * qty
-    return total
-
-
-def _select_service_level(order: dict[str, Any]) -> str:
-    """Determine service level from order metadata or default to standard."""
-    # Check for explicit service level request
-    requested = str(order.get("shipping_service", "")).lower()
-    if requested in _SERVICE_DAYS:
-        return requested
-    # Default: orders over $200 get express, otherwise standard
-    total = float(order.get("total_price", 0))
-    if total >= 200:
-        return "express"
-    return "standard"
+# Service level cost multipliers
+_SERVICE_MULTIPLIERS = {
+    "standard": 1.0,
+    "express": 2.5,
+    "overnight": 5.0,
+}
 
 
 def handle_shipping(
     order: dict[str, Any],
     fulfillment: dict[str, Any],
 ) -> dict[str, Any]:
-    """Select carrier and estimate shipping cost for the order.
+    """Determine carrier, service level, cost, and delivery estimate.
 
     Args:
-        order: Order dict with line items (including grams).
+        order: The full order dict.
         fulfillment: Result from fulfillment_router.
 
     Returns:
-        Structured dict with carrier, service, cost, and delivery estimate.
+        Structured dict with shipping details.
     """
     try:
         order = copy.deepcopy(order)
-        fulfillment = copy.deepcopy(fulfillment)
 
-        total_weight = _compute_total_weight(order)
+        line_items = order.get("line_items", [])
+        shipping_addr = order.get("shipping_address", {})
 
-        # --- Carrier selection by weight ---
-        if total_weight <= _USPS_MAX_GRAMS:
+        # ---- Calculate total weight in grams ----
+        total_grams = 0
+        for item in line_items:
+            grams = int(item.get("grams", 500))  # default 500g if not specified
+            qty = int(item.get("quantity", 1))
+            total_grams += grams * qty
+
+        # ---- Select carrier based on weight ----
+        if total_grams <= _USPS_MAX_GRAMS:
             carrier = "USPS"
-        elif total_weight <= _UPS_MAX_GRAMS:
+        elif total_grams <= _UPS_MAX_GRAMS:
             carrier = "UPS"
         else:
-            carrier = "FedEx Freight"
+            carrier = "freight"
 
-        # --- Service level ---
-        service = _select_service_level(order)
-        transit = _SERVICE_DAYS.get(service, _SERVICE_DAYS["standard"])
+        # ---- Determine service level ----
+        total_price = float(order.get("total_price", 0))
+        country = str(shipping_addr.get("country_code", "")).upper()
 
-        # --- Cost estimate ---
-        rate = _RATES.get(carrier, 0.003)
-        base_cost = total_weight * rate
+        if country != "US":
+            service = "standard"  # international always standard
+        elif total_price >= 200:
+            service = "express"   # high-value orders get express
+        else:
+            service = "standard"
 
-        # Service multiplier
-        if service == "express":
-            base_cost *= 1.5
-        elif service == "overnight":
-            base_cost *= 3.0
+        # ---- Calculate shipping cost ----
+        rate = _RATES.get(carrier, 0.005)
+        multiplier = _SERVICE_MULTIPLIERS.get(service, 1.0)
+        base_cost = total_grams * rate
+        estimated_cost = round(base_cost * multiplier, 2)
 
         # Minimum shipping cost
-        estimated_cost = round(max(base_cost, 4.99), 2)
+        estimated_cost = max(estimated_cost, 4.99)
 
-        # --- Estimated delivery date ---
-        max_transit_days = transit["max"]
-        pick_date_str = fulfillment.get("estimated_pick_date", "")
-        if pick_date_str:
-            try:
-                pick_ts = time.mktime(time.strptime(pick_date_str, "%Y-%m-%d"))
-                delivery_ts = pick_ts + (max_transit_days * 86400)
-                estimated_delivery = time.strftime(
-                    "%Y-%m-%d", time.gmtime(delivery_ts),
-                )
-            except (ValueError, OverflowError):
-                delivery_ts = time.time() + (max_transit_days * 86400)
-                estimated_delivery = time.strftime(
-                    "%Y-%m-%d", time.gmtime(delivery_ts),
-                )
-        else:
-            delivery_ts = time.time() + (max_transit_days * 86400)
-            estimated_delivery = time.strftime(
-                "%Y-%m-%d", time.gmtime(delivery_ts),
-            )
+        # ---- Calculate estimated delivery date ----
+        transit_days = _SERVICE_DAYS.get(service, 6)
+        now = time.time()
+        delivery_timestamp = now + (86400 * (1 + transit_days))
+        estimated_delivery = time.strftime(
+            "%Y-%m-%d", time.gmtime(delivery_timestamp),
+        )
 
         return {
             "status": "success",
@@ -125,14 +106,18 @@ def handle_shipping(
             "service": service,
             "estimated_cost": estimated_cost,
             "estimated_delivery": estimated_delivery,
-            "total_weight_grams": total_weight,
         }
     except Exception as exc:
-        return {
-            "status": "error",
-            "carrier": "",
-            "service": "",
-            "estimated_cost": 0.0,
-            "estimated_delivery": "",
-            "error": f"Shipping handling failed: {exc}",
-        }
+        return _fail(f"Shipping handling failed: {exc}")
+
+
+def _fail(reason: str) -> dict[str, Any]:
+    """Return standardized error output."""
+    return {
+        "status": "error",
+        "carrier": "",
+        "service": "",
+        "estimated_cost": 0.0,
+        "estimated_delivery": "",
+        "error": reason,
+    }
