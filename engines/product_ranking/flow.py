@@ -1,0 +1,107 @@
+"""Product Ranking Engine — flow orchestrator.
+
+Pipeline:
+  Products -> Weight Calculator -> Rank Builder -> Tie Breaker ->
+  Explanation Builder -> Memory Writer -> Output
+
+Engine contract:
+  Input:  {status, data: {products, criteria}, meta, error}
+  Output: {status, data: {ranked_products, total_ranked, top_tier_count}, meta, error}
+"""
+from __future__ import annotations
+
+import copy
+import time
+from typing import Any
+
+from .weight_calculator import calculate_weights
+from .rank_builder import build_ranks
+from .tie_breaker import break_ties
+from .explanation_builder import build_explanations
+from .memory_reader import read_past_rankings
+from .memory_writer import write_ranking_result
+
+
+class ProductRankingEngine:
+    """Product Ranking Engine — orchestrator only, no logic."""
+
+    ENGINE_NAME = "product_ranking"
+
+    def run(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+        start = time.monotonic()
+
+        try:
+            payload = copy.deepcopy(input_payload)
+        except Exception as exc:
+            return self._fail(f"Input copy failed: {exc}", 0.0)
+
+        if not isinstance(payload, dict):
+            return self._fail("Input must be a dict", 0.0)
+        if payload.get("status") == "fail":
+            return self._fail(payload.get("error", "Upstream failure"), 0.0)
+
+        data = payload.get("data", {})
+        if not isinstance(data, dict):
+            return self._fail("Input 'data' must be a dict", 0.0)
+
+        products = data.get("products", [])
+        criteria = data.get("criteria", {})
+        if not products:
+            return self._fail("Product list is required", 0.0)
+
+        _past = read_past_rankings(limit=5)
+
+        # Stage 1: Weight Calculator
+        weight_result = calculate_weights(products=products, criteria=criteria)
+        if weight_result.get("status") == "error":
+            return self._fail(f"Weight calculation failed: {weight_result.get('error', 'unknown')}", time.monotonic() - start)
+        weighted_products = weight_result.get("weighted_products", [])
+
+        # Stage 2: Rank Builder
+        rank_result = build_ranks(weighted_products=weighted_products)
+        if rank_result.get("status") == "error":
+            return self._fail(f"Rank building failed: {rank_result.get('error', 'unknown')}", time.monotonic() - start)
+        ranked_products = rank_result.get("ranked_products", [])
+
+        # Stage 3: Tie Breaker
+        tie_result = break_ties(ranked_products=ranked_products)
+        if tie_result.get("status") == "error":
+            return self._fail(f"Tie breaking failed: {tie_result.get('error', 'unknown')}", time.monotonic() - start)
+        final_ranked = tie_result.get("ranked_products", [])
+
+        # Stage 4: Explanation Builder
+        explain_result = build_explanations(ranked_products=final_ranked, criteria=criteria)
+        if explain_result.get("status") == "error":
+            return self._fail(f"Explanation building failed: {explain_result.get('error', 'unknown')}", time.monotonic() - start)
+        explained = explain_result.get("ranked_products", [])
+
+        top_tier = sum(1 for p in explained if p.get("rank", 999) <= 3)
+
+        _write = write_ranking_result(
+            ranked_products=explained,
+            total_ranked=len(explained),
+            top_tier_count=top_tier,
+        )
+
+        elapsed = time.monotonic() - start
+        return {
+            "status": "success",
+            "data": {
+                "ranked_products": explained,
+                "total_ranked": len(explained),
+                "top_tier_count": top_tier,
+            },
+            "meta": {
+                "engine": self.ENGINE_NAME,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "elapsed_seconds": round(elapsed, 3),
+            },
+            "error": None,
+        }
+
+    def _fail(self, reason: str, elapsed: float) -> dict[str, Any]:
+        return {
+            "status": "error", "data": None,
+            "meta": {"engine": self.ENGINE_NAME, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "elapsed_seconds": round(elapsed, 3)},
+            "error": reason,
+        }
