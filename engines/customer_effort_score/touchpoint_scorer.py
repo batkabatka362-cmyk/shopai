@@ -1,31 +1,33 @@
 """Customer Effort Score Engine — touchpoint scorer.
 
-Aggregates effort scores per touchpoint to identify which channels/touchpoints
-require the most customer effort. Groups interactions by touchpoint and
-computes average effort, resolution rate, and volume.
+Scores effort per touchpoint type (checkout, support, returns, etc.)
+by aggregating individual interaction scores into touchpoint-level metrics.
 
 All math is real. No faking, no random numbers.
 """
 from __future__ import annotations
 
 import copy
-from collections import defaultdict
 from typing import Any
 
 
 def score_touchpoints(
-    interaction_efforts: list[dict[str, Any]],
+    interaction_scores: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Score each touchpoint by aggregating effort data.
+    """Score effort per touchpoint by aggregating interaction data.
+
+    Groups interactions by touchpoint, computes average effort, volume,
+    and resolution rate for each.
 
     Args:
-        interaction_efforts: Per-interaction effort data from effort_calculator.
+        interaction_scores: Per-interaction scores from effort_calculator.
 
     Returns:
-        Structured dict with per-touchpoint scores.
+        Structured dict with touchpoint_scores list.
     """
     try:
-        items = copy.deepcopy(interaction_efforts)
+        items = copy.deepcopy(interaction_scores)
+
         if not items:
             return {
                 "status": "success",
@@ -33,51 +35,43 @@ def score_touchpoints(
             }
 
         # Group by touchpoint
-        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for item in items:
-            tp = str(item.get("touchpoint", "unknown"))
-            groups[tp].append(item)
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for score in items:
+            tp = str(score.get("touchpoint", "unknown"))
+            groups.setdefault(tp, []).append(score)
 
         touchpoint_scores: list[dict[str, Any]] = []
 
-        for touchpoint, entries in groups.items():
-            efforts = [float(e.get("effort_score", 0.0)) for e in entries]
-            resolved_count = sum(1 for e in entries if e.get("resolved", False))
-            total = len(entries)
-            avg_steps = round(
-                sum(int(e.get("steps_taken", 0)) for e in entries) / total, 1
-            )
-            avg_time = round(
-                sum(float(e.get("time_spent", 0.0)) for e in entries) / total, 1
-            )
+        for touchpoint, scores in groups.items():
+            efforts = [float(s.get("effort_score", 0.0)) for s in scores]
+            resolved_count = sum(1 for s in scores if s.get("resolved", False))
+            total = len(scores)
 
-            avg_effort = round(sum(efforts) / len(efforts), 2)
+            avg_effort = round(sum(efforts) / total, 2) if total > 0 else 0.0
+            max_effort = round(max(efforts), 2) if efforts else 0.0
+            min_effort = round(min(efforts), 2) if efforts else 0.0
             resolution_rate = round(resolved_count / total, 4) if total > 0 else 0.0
 
-            # Grade: A (<=2), B (<=3), C (<=4), D (<=5), F (>5)
-            if avg_effort <= 2.0:
-                grade = "A"
-            elif avg_effort <= 3.0:
-                grade = "B"
-            elif avg_effort <= 4.0:
-                grade = "C"
-            elif avg_effort <= 5.0:
-                grade = "D"
+            # Rating: low (<=2.5), medium (<=4.5), high (>4.5)
+            if avg_effort <= 2.5:
+                rating = "low_effort"
+            elif avg_effort <= 4.5:
+                rating = "medium_effort"
             else:
-                grade = "F"
+                rating = "high_effort"
 
             touchpoint_scores.append({
                 "touchpoint": touchpoint,
-                "avg_effort_score": avg_effort,
-                "grade": grade,
+                "avg_effort": avg_effort,
+                "min_effort": min_effort,
+                "max_effort": max_effort,
                 "volume": total,
                 "resolution_rate": resolution_rate,
-                "avg_steps": avg_steps,
-                "avg_time_seconds": avg_time,
+                "rating": rating,
             })
 
-        # Sort worst touchpoints first (highest effort)
-        touchpoint_scores.sort(key=lambda t: t["avg_effort_score"], reverse=True)
+        # Sort by avg_effort descending (worst first)
+        touchpoint_scores.sort(key=lambda t: t["avg_effort"], reverse=True)
 
         return {
             "status": "success",

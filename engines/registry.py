@@ -172,6 +172,13 @@ _ENGINE_MAP: dict[str, str] = {
     # ── P11 Operational (flow.py pattern) ───────────────────────
     "sop_generator": "engines.sop_generator",
     "order_quality": "engines.order_quality",
+
+    # ── Final Engines (flow.py pattern) ─────────────────────────
+    "customer_effort_score": "engines.customer_effort_score",
+    "team_task_manager": "engines.team_task_manager",
+    "customer_journey": "engines.customer_journey",
+    "performance_monitor": "engines.performance_monitor",
+    "security_monitor": "engines.security_monitor",
 }
 
 # Cache for instantiated engines

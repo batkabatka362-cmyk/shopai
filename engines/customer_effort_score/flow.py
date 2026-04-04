@@ -4,8 +4,8 @@ This is the FLOW file. It ONLY orchestrates — no business logic here.
 Calls modules in sequence, passes data between them, returns unified result.
 
 Pipeline:
-  Interaction Data → Effort Calculator → Touchpoint Scorer →
-  Friction Detector → Improvement Planner → Output
+  Interaction Data -> Effort Calculator -> Touchpoint Scorer ->
+  Friction Detector -> Improvement Planner -> Output
 
 Engine contract:
   Input:  {status, data: {interactions: [{customer_id, touchpoint, steps_taken, time_spent, resolved}]}, meta, error}
@@ -69,10 +69,10 @@ class CustomerEffortScoreEngine:
                 time.monotonic() - start,
             )
         ces_score = effort_result.get("ces_score", 0.0)
-        interaction_efforts = effort_result.get("interaction_efforts", [])
+        interaction_scores = effort_result.get("interaction_scores", [])
 
         # ---- Stage 2: Touchpoint Scorer ----
-        tp_result = score_touchpoints(interaction_efforts=interaction_efforts)
+        tp_result = score_touchpoints(interaction_scores=interaction_scores)
         if tp_result.get("status") == "error":
             return self._fail(
                 f"Touchpoint scoring failed: {tp_result.get('error', 'unknown')}",
@@ -82,8 +82,8 @@ class CustomerEffortScoreEngine:
 
         # ---- Stage 3: Friction Detector ----
         friction_result = detect_friction(
+            interaction_scores=interaction_scores,
             touchpoint_scores=touchpoint_scores,
-            interaction_efforts=interaction_efforts,
         )
         if friction_result.get("status") == "error":
             return self._fail(
@@ -95,6 +95,7 @@ class CustomerEffortScoreEngine:
         # ---- Stage 4: Improvement Planner ----
         improvement_result = plan_improvements(
             friction_points=friction_points,
+            touchpoint_scores=touchpoint_scores,
             ces_score=ces_score,
         )
         if improvement_result.get("status") == "error":

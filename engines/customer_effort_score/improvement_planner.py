@@ -1,8 +1,7 @@
 """Customer Effort Score Engine — improvement planner.
 
-Plans concrete friction-reduction improvements based on detected friction
-points. Prioritizes by impact (severity x volume) and provides actionable
-recommendations.
+Plans friction reduction strategies based on detected friction points
+and touchpoint scores. Prioritizes improvements by impact and feasibility.
 
 All math is real. No faking, no random numbers.
 """
@@ -13,105 +12,112 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# Improvement templates per friction reason type
+# Improvement templates by friction type
 # ---------------------------------------------------------------------------
 
-_IMPROVEMENTS: dict[str, dict[str, str]] = {
-    "High effort score": {
-        "action": "Simplify the interaction flow",
-        "detail": "Reduce required steps, pre-fill known data, enable self-service shortcuts.",
+_IMPROVEMENT_TEMPLATES: dict[str, dict[str, Any]] = {
+    "high_effort_touchpoint": {
+        "strategy": "simplify_flow",
+        "actions": [
+            "Reduce number of steps in this touchpoint",
+            "Add progress indicators and inline validation",
+            "Implement auto-fill and smart defaults",
+        ],
+        "expected_improvement_pct": 20,
     },
-    "Low resolution rate": {
-        "action": "Improve first-contact resolution",
-        "detail": "Train agents on common issues, add knowledge base articles, enable escalation paths.",
+    "low_resolution_rate": {
+        "strategy": "improve_resolution",
+        "actions": [
+            "Add self-service options and knowledge base articles",
+            "Implement escalation paths for complex issues",
+            "Train support staff on common failure scenarios",
+        ],
+        "expected_improvement_pct": 25,
     },
-    "Too many steps": {
-        "action": "Reduce process complexity",
-        "detail": "Consolidate steps, remove redundant confirmations, implement smart defaults.",
-    },
-    "Excessive time": {
-        "action": "Speed up interaction completion",
-        "detail": "Optimize page load times, add progress indicators, reduce wait/queue times.",
+    "repeat_contact": {
+        "strategy": "first_contact_resolution",
+        "actions": [
+            "Audit repeat-contact root causes",
+            "Implement follow-up confirmation workflows",
+            "Add proactive status updates to reduce check-in contacts",
+        ],
+        "expected_improvement_pct": 30,
     },
 }
 
 
 def plan_improvements(
     friction_points: list[dict[str, Any]],
+    touchpoint_scores: list[dict[str, Any]],
     ces_score: float,
 ) -> dict[str, Any]:
-    """Generate prioritized improvement plan from friction analysis.
+    """Plan friction reduction improvements.
+
+    Generates prioritized improvement plans based on friction severity,
+    volume of affected interactions, and expected impact.
 
     Args:
-        friction_points: Detected friction areas from friction_detector.
-        ces_score: Overall CES score.
+        friction_points: Detected friction points from friction_detector.
+        touchpoint_scores: Per-touchpoint scores from touchpoint_scorer.
+        ces_score: Overall CES score from effort_calculator.
 
     Returns:
-        Structured dict with improvement recommendations and projected impact.
+        Structured dict with improvements list and trend assessment.
     """
     try:
-        points = copy.deepcopy(friction_points)
+        frictions = copy.deepcopy(friction_points)
+        tp_map = {
+            str(t.get("touchpoint", "")): t
+            for t in copy.deepcopy(touchpoint_scores)
+        }
+
         improvements: list[dict[str, Any]] = []
 
-        for idx, point in enumerate(points):
-            touchpoint = str(point.get("touchpoint", ""))
-            severity = str(point.get("severity", "low"))
-            severity_score = float(point.get("severity_score", 0.0))
-            affected = int(point.get("affected_interactions", 0))
-            reasons = point.get("reasons", [])
+        for friction in frictions:
+            friction_type = str(friction.get("type", ""))
+            touchpoint = str(friction.get("touchpoint", ""))
+            severity = str(friction.get("severity", "low"))
+            volume = int(friction.get("volume", 0))
 
-            # Impact score: severity_score * log(affected + 1)
-            import math
-            impact_score = round(severity_score * math.log(affected + 1, 10), 3)
-
-            # Build recommendation from reason types
-            actions: list[str] = []
-            for reason in reasons:
-                for key, rec in _IMPROVEMENTS.items():
-                    if reason.startswith(key):
-                        actions.append(f"{rec['action']}: {rec['detail']}")
-                        break
-
-            if not actions:
-                actions.append(
-                    "Review touchpoint design and identify unnecessary complexity."
-                )
-
-            # Estimate effort reduction if improvement is implemented
-            # Conservative: expect 20-40% reduction based on severity
-            reduction_pct = min(0.40, 0.15 + severity_score * 0.08)
-            projected_ces_improvement = round(ces_score * reduction_pct, 2)
-
-            # Priority: P1 (critical/high), P2 (medium), P3 (low)
-            if severity in ("critical", "high"):
-                priority = "P1"
-            elif severity == "medium":
-                priority = "P2"
-            else:
-                priority = "P3"
-
-            improvements.append({
-                "rank": idx + 1,
-                "touchpoint": touchpoint,
-                "priority": priority,
-                "impact_score": impact_score,
-                "severity": severity,
-                "actions": actions,
-                "projected_ces_reduction": projected_ces_improvement,
-                "affected_interactions": affected,
+            template = _IMPROVEMENT_TEMPLATES.get(friction_type, {
+                "strategy": "general_optimization",
+                "actions": ["Review and optimize touchpoint flow"],
+                "expected_improvement_pct": 10,
             })
 
-        # Sort by impact score descending
-        improvements.sort(key=lambda i: i["impact_score"], reverse=True)
-        for idx, imp in enumerate(improvements):
-            imp["rank"] = idx + 1
+            # Priority score: severity weight * volume
+            severity_weight = {"high": 3, "medium": 2, "low": 1}.get(severity, 1)
+            priority_score = severity_weight * max(volume, 1)
 
-        # Compute trend direction based on overall CES
+            tp_data = tp_map.get(touchpoint, {})
+            current_effort = float(tp_data.get("avg_effort", 0.0))
+            expected_pct = template["expected_improvement_pct"]
+            projected_effort = round(
+                current_effort * (1 - expected_pct / 100.0), 2,
+            )
+
+            improvements.append({
+                "touchpoint": touchpoint,
+                "friction_type": friction_type,
+                "severity": severity,
+                "strategy": template["strategy"],
+                "actions": template["actions"],
+                "priority_score": priority_score,
+                "current_effort": current_effort,
+                "projected_effort": projected_effort,
+                "expected_improvement_pct": expected_pct,
+                "affected_interactions": volume,
+            })
+
+        # Sort by priority score descending
+        improvements.sort(key=lambda i: i["priority_score"], reverse=True)
+
+        # Trend assessment
         if ces_score <= 2.5:
             trend = "excellent"
-        elif ces_score <= 3.5:
-            trend = "good"
-        elif ces_score <= 4.5:
+        elif ces_score <= 4.0:
+            trend = "acceptable"
+        elif ces_score <= 5.5:
             trend = "needs_improvement"
         else:
             trend = "critical"
@@ -126,5 +132,6 @@ def plan_improvements(
         return {
             "status": "error",
             "improvements": [],
+            "trend": "unknown",
             "error": f"Improvement planning failed: {exc}",
         }

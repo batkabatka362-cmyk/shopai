@@ -1,7 +1,7 @@
 """Customer Effort Score Engine — friction detector.
 
-Detects high-friction areas by identifying touchpoints and patterns where
-customer effort exceeds acceptable thresholds.
+Detects high-friction areas where customers struggle. Identifies patterns
+of excessive steps, long resolution times, and repeat contacts.
 
 All math is real. No faking, no random numbers.
 """
@@ -15,90 +15,103 @@ from typing import Any
 # Friction thresholds
 # ---------------------------------------------------------------------------
 
-_HIGH_EFFORT_THRESHOLD = 4.5       # CES score above this = high friction
-_LOW_RESOLUTION_THRESHOLD = 0.6    # Resolution rate below this = friction
-_HIGH_STEPS_THRESHOLD = 7          # Steps above this = friction
-_HIGH_TIME_THRESHOLD = 900         # Seconds above this (15 min) = friction
+_HIGH_EFFORT_THRESHOLD = 4.5       # CES score above this = friction point
+_LOW_RESOLUTION_THRESHOLD = 0.7    # Resolution rate below 70% = friction
+_HIGH_REPEAT_THRESHOLD = 2         # Customer seen >2 times at same touchpoint
 
 
 def detect_friction(
+    interaction_scores: list[dict[str, Any]],
     touchpoint_scores: list[dict[str, Any]],
-    interaction_efforts: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Detect high-friction areas across touchpoints and interactions.
+    """Detect high-friction areas across touchpoints and customers.
+
+    Looks for: high-effort touchpoints, low-resolution touchpoints,
+    repeat-contact patterns, and individual high-friction interactions.
 
     Args:
-        touchpoint_scores: Per-touchpoint aggregate scores.
-        interaction_efforts: Per-interaction effort data.
+        interaction_scores: Per-interaction scores from effort_calculator.
+        touchpoint_scores: Per-touchpoint scores from touchpoint_scorer.
 
     Returns:
-        Structured dict with friction points and severity.
+        Structured dict with friction_points list.
     """
     try:
-        tp_data = copy.deepcopy(touchpoint_scores)
-        ix_data = copy.deepcopy(interaction_efforts)
+        interactions = copy.deepcopy(interaction_scores)
+        tp_scores = copy.deepcopy(touchpoint_scores)
 
         friction_points: list[dict[str, Any]] = []
 
-        # Check each touchpoint for friction signals
-        for tp in tp_data:
+        # --- Touchpoint-level friction ---
+        for tp in tp_scores:
             touchpoint = str(tp.get("touchpoint", ""))
-            avg_effort = float(tp.get("avg_effort_score", 0.0))
+            avg_effort = float(tp.get("avg_effort", 0.0))
             resolution_rate = float(tp.get("resolution_rate", 1.0))
-            avg_steps = float(tp.get("avg_steps", 0))
-            avg_time = float(tp.get("avg_time_seconds", 0))
             volume = int(tp.get("volume", 0))
 
-            reasons: list[str] = []
-            severity_score = 0.0
-
-            if avg_effort > _HIGH_EFFORT_THRESHOLD:
-                reasons.append(f"High effort score ({avg_effort}/7)")
-                severity_score += (avg_effort - _HIGH_EFFORT_THRESHOLD) / 2.5
-
-            if resolution_rate < _LOW_RESOLUTION_THRESHOLD:
-                reasons.append(
-                    f"Low resolution rate ({round(resolution_rate * 100, 1)}%)"
-                )
-                severity_score += (
-                    (_LOW_RESOLUTION_THRESHOLD - resolution_rate)
-                    / _LOW_RESOLUTION_THRESHOLD
-                )
-
-            if avg_steps > _HIGH_STEPS_THRESHOLD:
-                reasons.append(f"Too many steps ({avg_steps} avg)")
-                severity_score += (avg_steps - _HIGH_STEPS_THRESHOLD) / _HIGH_STEPS_THRESHOLD
-
-            if avg_time > _HIGH_TIME_THRESHOLD:
-                reasons.append(f"Excessive time ({round(avg_time / 60, 1)} min avg)")
-                severity_score += (avg_time - _HIGH_TIME_THRESHOLD) / _HIGH_TIME_THRESHOLD
-
-            if reasons:
-                # Severity: critical (>1.5), high (>1.0), medium (>0.5), low
-                if severity_score > 1.5:
-                    severity = "critical"
-                elif severity_score > 1.0:
-                    severity = "high"
-                elif severity_score > 0.5:
-                    severity = "medium"
-                else:
-                    severity = "low"
-
+            if avg_effort >= _HIGH_EFFORT_THRESHOLD:
                 friction_points.append({
+                    "type": "high_effort_touchpoint",
+                    "severity": "high" if avg_effort >= 5.5 else "medium",
                     "touchpoint": touchpoint,
-                    "severity": severity,
-                    "severity_score": round(severity_score, 3),
-                    "reasons": reasons,
-                    "affected_interactions": volume,
+                    "metric": avg_effort,
+                    "volume": volume,
+                    "description": (
+                        f"Touchpoint '{touchpoint}' has avg effort score of "
+                        f"{avg_effort}/7.0 across {volume} interactions."
+                    ),
                 })
 
-        # Sort by severity score descending
-        friction_points.sort(key=lambda f: f["severity_score"], reverse=True)
+            if resolution_rate < _LOW_RESOLUTION_THRESHOLD and volume > 0:
+                friction_points.append({
+                    "type": "low_resolution_rate",
+                    "severity": "high" if resolution_rate < 0.5 else "medium",
+                    "touchpoint": touchpoint,
+                    "metric": resolution_rate,
+                    "volume": volume,
+                    "description": (
+                        f"Touchpoint '{touchpoint}' has only "
+                        f"{round(resolution_rate * 100, 1)}% resolution rate."
+                    ),
+                })
+
+        # --- Repeat-contact friction ---
+        contact_counts: dict[str, dict[str, int]] = {}
+        for interaction in interactions:
+            cid = str(interaction.get("customer_id", ""))
+            tp = str(interaction.get("touchpoint", ""))
+            contact_counts.setdefault(cid, {})
+            contact_counts[cid][tp] = contact_counts[cid].get(tp, 0) + 1
+
+        repeat_touchpoints: dict[str, int] = {}
+        for cid, tps in contact_counts.items():
+            for tp, count in tps.items():
+                if count > _HIGH_REPEAT_THRESHOLD:
+                    repeat_touchpoints[tp] = repeat_touchpoints.get(tp, 0) + 1
+
+        for tp, affected_customers in repeat_touchpoints.items():
+            friction_points.append({
+                "type": "repeat_contact",
+                "severity": "medium",
+                "touchpoint": tp,
+                "metric": affected_customers,
+                "volume": affected_customers,
+                "description": (
+                    f"{affected_customers} customers required >2 contacts "
+                    f"at '{tp}', indicating unresolved issues."
+                ),
+            })
+
+        # Sort by severity
+        severity_order = {"high": 0, "medium": 1, "low": 2}
+        friction_points.sort(
+            key=lambda f: severity_order.get(f.get("severity", "low"), 3),
+        )
 
         return {
             "status": "success",
             "friction_points": friction_points,
-            "total_friction_areas": len(friction_points),
+            "total_friction_points": len(friction_points),
         }
     except Exception as exc:
         return {
