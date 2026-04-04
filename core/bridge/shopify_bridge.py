@@ -1,14 +1,15 @@
 """ShopifyBridge — connects ShopAI engines to real Shopify store data.
 
-Fetches real products/orders/customers from Shopify → feeds to engines.
-Engine results → creates/updates Shopify products/prices/inventory.
+Data flow:
+  1. Try DB cache (fast, always available)
+  2. If stale/missing → fetch from Shopify API → store in DB
+  3. Fallback to mock data only if nothing else works
 
 Requires: SHOPAI_SHOPIFY_URL and SHOPAI_SHOPIFY_KEY env vars.
 """
 from __future__ import annotations
 
 import os
-import copy
 import time
 from typing import Any
 
@@ -19,13 +20,15 @@ logger = get_logger("bridge.shopify")
 
 
 class ShopifyBridge:
-    """Connects engines to real Shopify store."""
+    """Connects engines to real Shopify store data via DB cache + live API."""
 
     def __init__(self, shop_url: str = "", api_key: str = "") -> None:
         self._shop_url = shop_url or os.environ.get("SHOPAI_SHOPIFY_URL", "")
         self._api_key = api_key or os.environ.get("SHOPAI_SHOPIFY_KEY", "")
         self._api = None
         self._connected = False
+        self._store_id = self._shop_url.replace(".myshopify.com", "").replace("https://", "")
+        self._db = None
 
     def connect(self) -> dict[str, Any]:
         """Connect to Shopify store."""
@@ -37,9 +40,24 @@ class ShopifyBridge:
             self._api = ShopifyAPI(self._shop_url, self._api_key)
             self._connected = True
             logger.info("Connected to Shopify: %s", self._shop_url)
+
+            # Initialize DB
+            self._init_db()
+
             return {"connected": True, "shop": self._shop_url}
         except Exception as exc:
             return {"connected": False, "error": str(exc)}
+
+    def _init_db(self) -> None:
+        """Initialize DB connection for caching."""
+        try:
+            from data_pipeline.store.db import ShopAIDatabase
+            self._db = ShopAIDatabase()
+            # Ensure store exists in DB
+            if self._store_id:
+                self._db.add_store(self._store_id, self._shop_url)
+        except Exception as exc:
+            logger.debug("DB init failed (non-critical): %s", exc)
 
     @property
     def is_connected(self) -> bool:
@@ -48,43 +66,72 @@ class ShopifyBridge:
     # --- Fetch data for engines ---
 
     def fetch_products(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Fetch products from Shopify in engine-ready format."""
-        if not self._connected:
-            return self._mock_products()
+        """Fetch products: DB cache → live API → mock."""
+        # Try DB cache first
+        cached = self._read_cache("products", limit)
+        if cached:
+            return cached
 
-        try:
-            raw = self._api.fetch_products(self._shop_url, self._api_key)
-            return self._normalize_products(raw.get("products", [])[:limit])
-        except Exception as exc:
-            logger.error("Shopify fetch_products failed: %s", exc)
-            return self._mock_products()
+        # Try live API
+        if self._connected and self._api:
+            try:
+                raw = self._api.fetch_products(self._shop_url, self._api_key)
+                products = self._normalize_products(raw.get("products", [])[:limit])
+                self._write_cache("products", products)
+                return products
+            except Exception as exc:
+                logger.error("Shopify fetch_products failed: %s", exc)
+
+        return self._mock_products()
 
     def fetch_orders(self, days_back: int = 30, limit: int = 100) -> list[dict[str, Any]]:
-        """Fetch orders from Shopify in engine-ready format."""
-        if not self._connected:
-            return self._mock_orders()
+        """Fetch orders: DB cache → live API → mock."""
+        cached = self._read_cache("orders", limit)
+        if cached:
+            return cached
 
-        try:
-            raw = self._api.fetch_orders(self._shop_url, self._api_key, days_back=days_back)
-            return self._normalize_orders(raw.get("orders", [])[:limit])
-        except Exception as exc:
-            logger.error("Shopify fetch_orders failed: %s", exc)
-            return self._mock_orders()
+        if self._connected and self._api:
+            try:
+                raw = self._api.fetch_orders(self._shop_url, self._api_key, days_back=days_back)
+                orders = self._normalize_orders(raw.get("orders", [])[:limit])
+                self._write_cache("orders", orders)
+                return orders
+            except Exception as exc:
+                logger.error("Shopify fetch_orders failed: %s", exc)
+
+        return self._mock_orders()
 
     def fetch_customers(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Fetch customers from Shopify in engine-ready format."""
-        if not self._connected:
-            return self._mock_customers()
+        """Fetch customers: DB cache → live API → mock."""
+        cached = self._read_cache("customers", limit)
+        if cached:
+            return cached
 
-        try:
-            raw = self._api.fetch_customers(self._shop_url, self._api_key)
-            return self._normalize_customers(raw.get("customers", [])[:limit])
-        except Exception as exc:
-            logger.error("Shopify fetch_customers failed: %s", exc)
-            return self._mock_customers()
+        if self._connected and self._api:
+            try:
+                raw = self._api.fetch_customers(self._shop_url, self._api_key)
+                customers = self._normalize_customers(raw.get("customers", [])[:limit])
+                self._write_cache("customers", customers)
+                return customers
+            except Exception as exc:
+                logger.error("Shopify fetch_customers failed: %s", exc)
+
+        return self._mock_customers()
 
     def fetch_for_engine(self, engine_name: str) -> dict[str, Any]:
-        """Fetch the right data for a specific engine."""
+        """Fetch the right data for a specific engine — uses DataProvider if available."""
+        try:
+            from data_pipeline.store.data_provider import DataProvider
+            from data_pipeline.store.store_manager import StoreManager
+            sm = StoreManager()
+            if self._store_id:
+                sm.add_store(self._store_id, self._shop_url, api_key=self._api_key)
+            provider = DataProvider(sm)
+            return provider.get_data_for_engine(engine_name, self._store_id)
+        except Exception:
+            pass
+
+        # Fallback to direct fetch
         product_engines = {"product_selection", "pricing", "product_description", "inventory",
                            "product_ranking", "product_optimization", "catalog", "seo"}
         customer_engines = {"customer_segmentation", "churn_prediction", "retention", "loyalty",
@@ -108,7 +155,6 @@ class ShopifyBridge:
     # --- Push results to Shopify ---
 
     def push_prices(self, price_updates: list[dict[str, Any]]) -> dict[str, Any]:
-        """Push pricing changes to Shopify."""
         if not self._connected:
             return {"pushed": False, "reason": "not_connected", "updates": len(price_updates)}
 
@@ -130,7 +176,6 @@ class ShopifyBridge:
         return {"pushed": True, "total": len(results), "results": results}
 
     def push_inventory(self, inventory_updates: list[dict[str, Any]]) -> dict[str, Any]:
-        """Push inventory changes to Shopify."""
         if not self._connected:
             return {"pushed": False, "reason": "not_connected"}
 
@@ -150,6 +195,39 @@ class ShopifyBridge:
                 results.append({"item": update.get("name"), "status": "failed", "error": str(exc)})
 
         return {"pushed": True, "total": len(results), "results": results}
+
+    # --- DB Cache ---
+
+    def _read_cache(self, data_type: str, limit: int) -> list[dict[str, Any]]:
+        """Read from SQLite cache."""
+        if not self._db or not self._store_id:
+            self._init_db()
+        if not self._db or not self._store_id:
+            return []
+        try:
+            if data_type == "products":
+                return self._db.get_products(self._store_id, limit=limit)
+            elif data_type == "orders":
+                return self._db.get_orders(self._store_id, limit=limit)
+            elif data_type == "customers":
+                return self._db.get_customers(self._store_id, limit=limit)
+        except Exception:
+            pass
+        return []
+
+    def _write_cache(self, data_type: str, records: list[dict[str, Any]]) -> None:
+        """Write to SQLite cache."""
+        if not self._db or not self._store_id:
+            return
+        try:
+            if data_type == "products":
+                self._db.upsert_products(self._store_id, records)
+            elif data_type == "orders":
+                self._db.upsert_orders(self._store_id, records)
+            elif data_type == "customers":
+                self._db.upsert_customers(self._store_id, records)
+        except Exception as exc:
+            logger.debug("Cache write failed: %s", exc)
 
     # --- Normalizers ---
 
@@ -205,7 +283,7 @@ class ShopifyBridge:
             })
         return customers
 
-    # --- Mock data (when Shopify not connected) ---
+    # --- Mock data (last resort fallback) ---
 
     @staticmethod
     def _mock_products() -> list[dict[str, Any]]:
