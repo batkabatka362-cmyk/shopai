@@ -445,6 +445,13 @@ class AutonomousController:
                 "error": None,
             }
 
+        # Map DB field names to engine field names
+        if product:
+            product = dict(product)
+            product.setdefault("cogs", product.get("cost", 0))
+            product.setdefault("shipping_cost", 0)
+            product.setdefault("weight_kg", product.get("weight", 0))
+
         engine_data: dict[str, Any] = {
             "status": "success",
             "data": {
