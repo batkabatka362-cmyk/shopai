@@ -163,7 +163,12 @@ class SmartChain:
                     engine_name=engine_name,
                     data=copy.deepcopy(context),
                 )
-                raw_output = engine.run(inp)
+                # Try dict-based input first (new flow.py engines), fall back to EngineInput (legacy)
+                dict_input = {"status": "success", "data": inp.data, "meta": {}, "error": None}
+                try:
+                    raw_output = engine.run(dict_input)
+                except (TypeError, AttributeError):
+                    raw_output = engine.run(inp)
                 output = normalize_engine_output(raw_output, inp)
                 elapsed = time.monotonic() - start
 

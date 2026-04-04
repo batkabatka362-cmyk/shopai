@@ -619,7 +619,11 @@ class MainOrchestrator:
                         engine_name=name,
                         data=params,
                     )
-                    raw_output = engine.run(engine_input)
+                    dict_input = {"status": "success", "data": params, "meta": {}, "error": None}
+                    try:
+                        raw_output = engine.run(dict_input)
+                    except (TypeError, AttributeError):
+                        raw_output = engine.run(engine_input)
                     output = normalize_engine_output(raw_output, engine_input)
                     return output.to_dict()
                 return handler

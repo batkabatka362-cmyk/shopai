@@ -99,7 +99,12 @@ class EngineChain:
                     engine_name=step.engine_name,
                     data=engine_data,
                 )
-                raw_output = engine.run(engine_input)
+                # Try dict input (new engines), fall back to EngineInput (legacy)
+                dict_input = {"status": "success", "data": engine_data, "meta": {}, "error": None}
+                try:
+                    raw_output = engine.run(dict_input)
+                except (TypeError, AttributeError):
+                    raw_output = engine.run(engine_input)
                 output = normalize_engine_output(raw_output, engine_input)
             except Exception as exc:
                 step_results.append(self._step_error(step, i, f"Engine error: {exc}"))
