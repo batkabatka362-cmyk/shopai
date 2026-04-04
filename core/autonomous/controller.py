@@ -135,6 +135,15 @@ class AutonomousController:
         cycle_result["duration_s"] = round(elapsed, 2)
         cycle_result["status"] = "complete"
 
+        # Phase 6b: SELF-IMPROVE — review cycle and learn from mistakes
+        try:
+            from core.ai.self_improver import SelfImprover
+            improver = SelfImprover()
+            review = improver.review_cycle(cycle_result)
+            cycle_result["phases"]["self_improvement"] = review
+        except Exception as exc:
+            logger.debug("Self-improvement review: %s", exc)
+
         # Track performance
         if self._performance_tracker:
             self._performance_tracker.record_cycle(cycle_result)
