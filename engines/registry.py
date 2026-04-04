@@ -193,6 +193,13 @@ _ENGINE_MAP: dict[str, str] = {
     # ── Reporting Engines (flow.py pattern) ────────────────────
     "report_dashboard": "engines.report_dashboard",
     "email_reporter": "engines.email_reporter",
+
+    # ── Brand Intelligence Engines (flow.py pattern) ──────────
+    "brand_identity": "engines.brand_identity",
+    "brand_visual": "engines.brand_visual",
+    "brand_voice_enforcer": "engines.brand_voice_enforcer",
+    "brand_perception": "engines.brand_perception",
+    "brand_positioning": "engines.brand_positioning",
 }
 
 # Cache for instantiated engines
