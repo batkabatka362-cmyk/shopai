@@ -154,6 +154,24 @@ _ENGINE_MAP: dict[str, str] = {
     "loyalty": "engines.loyalty",
     "supplier_communication": "engines.supplier_communication",
     "competitor_monitor": "engines.competitor_monitor",
+
+    # ── P8 Growth Engines (flow.py pattern) ─────────────────────
+    "international_expansion": "engines.international_expansion",
+    "wholesale_b2b": "engines.wholesale_b2b",
+    "dropshipping": "engines.dropshipping",
+
+    # ── P9 Customer Deep Analytics (flow.py pattern) ────────────
+    "cohort_analysis": "engines.cohort_analysis",
+    "nps_engine": "engines.nps_engine",
+    "ltv_cac_dashboard": "engines.ltv_cac_dashboard",
+
+    # ── P10 Competitive Intelligence (flow.py pattern) ──────────
+    "competitor_ad_intelligence": "engines.competitor_ad_intelligence",
+    "competitor_social": "engines.competitor_social",
+
+    # ── P11 Operational (flow.py pattern) ───────────────────────
+    "sop_generator": "engines.sop_generator",
+    "order_quality": "engines.order_quality",
 }
 
 # Cache for instantiated engines

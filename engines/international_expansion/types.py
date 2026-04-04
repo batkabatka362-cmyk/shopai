@@ -12,18 +12,9 @@ from typing import Any, TypedDict
 # Input types
 # ---------------------------------------------------------------------------
 
-class ProductRecord(TypedDict, total=False):
-    """Single product record."""
-    id: str
-    title: str
-    price: float
-    weight_kg: float
-    category: str
-
-
 class ExpansionInputData(TypedDict, total=False):
     """The 'data' block of engine input."""
-    products: list[ProductRecord]
+    products: list[dict[str, Any]]
     target_markets: list[str]
     current_currency: str
 
@@ -36,8 +27,8 @@ class MarketScore(TypedDict):
     """Per-market evaluation from market_evaluator."""
     market: str
     gdp_score: float
-    ecommerce_penetration_score: float
-    ease_of_entry_score: float
+    ecommerce_penetration: float
+    ease_of_entry: float
     overall_score: float
     recommendation: str
 
@@ -52,7 +43,7 @@ class CurrencyPricing(TypedDict):
     local_currency: str
     exchange_rate: float
     converted_prices: list[dict[str, Any]]
-    rounding_applied: bool
+    rounding_strategy: str
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +51,13 @@ class CurrencyPricing(TypedDict):
 # ---------------------------------------------------------------------------
 
 class LocalizationGap(TypedDict):
-    """Localization gap from localization_checker."""
+    """Localization readiness gap from localization_checker."""
     market: str
     language: str
     translation_ready: bool
-    gaps: list[str]
-    readiness_score: float
+    missing_fields: list[str]
+    cultural_notes: list[str]
+    readiness_pct: float
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +68,8 @@ class ShippingPlan(TypedDict):
     """Per-market shipping plan from shipping_planner."""
     market: str
     shipping_zones: list[str]
-    estimated_cost_per_kg: float
-    transit_days: int
+    estimated_cost_per_unit: float
+    estimated_transit_days: int
     customs_notes: str
 
 

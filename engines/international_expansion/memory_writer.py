@@ -15,7 +15,7 @@ from typing import Any
 _MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory")
 
 
-def write_result(
+def write_expansion_result(
     market_scores: list[dict[str, Any]],
     currency_pricing: list[dict[str, Any]],
     localization_gaps: list[dict[str, Any]],
@@ -38,7 +38,7 @@ def write_result(
             "currency_pricing": copy.deepcopy(currency_pricing),
             "localization_gaps": copy.deepcopy(localization_gaps),
             "shipping_plans": copy.deepcopy(shipping_plans),
-            "recommended_markets": recommended_markets,
+            "recommended_markets": copy.deepcopy(recommended_markets),
             "outcome_actual": None,
         }
 
@@ -50,9 +50,7 @@ def write_result(
         return {"status": "success", "record_id": record_id, "path": fpath}
     except Exception as exc:
         return {
-            "status": "warning",
-            "record_id": None,
-            "path": None,
+            "status": "warning", "record_id": None, "path": None,
             "note": f"Memory write failed (non-fatal): {exc}",
         }
 

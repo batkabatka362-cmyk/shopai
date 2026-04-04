@@ -1,8 +1,4 @@
-"""International Expansion Engine — memory reader.
-
-Reads past expansion decision records from memory storage.
-Used to inform current analysis with historical context.
-"""
+"""Dropshipping Engine — memory reader."""
 from __future__ import annotations
 
 import copy
@@ -14,37 +10,16 @@ from typing import Any
 _MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory")
 
 
-def read_past_expansions(
-    limit: int = 10,
-) -> dict[str, Any]:
-    """Read past expansion records.
-
-    Args:
-        limit: Max records to return.
-
-    Returns:
-        Structured dict with past records and summary statistics.
-    """
+def read_past_dropshipping(limit: int = 10) -> dict[str, Any]:
     try:
         records = _load_records()
-        records = sorted(
-            records, key=lambda r: r.get("timestamp", ""), reverse=True,
-        )[:limit]
-
-        return {
-            "status": "success",
-            "records": copy.deepcopy(records),
-            "count": len(records),
-        }
+        records = sorted(records, key=lambda r: r.get("timestamp", ""), reverse=True)[:limit]
+        return {"status": "success", "records": copy.deepcopy(records), "count": len(records)}
     except Exception as exc:
-        return {
-            "status": "success", "records": [], "count": 0,
-            "note": f"Memory read warning: {exc}",
-        }
+        return {"status": "success", "records": [], "count": 0, "note": f"Memory read warning: {exc}"}
 
 
 def compute_input_hash(input_data: dict[str, Any]) -> str:
-    """Produce a deterministic hash for an input payload."""
     try:
         serialised = json.dumps(input_data, sort_keys=True, default=str)
         return hashlib.sha256(serialised.encode()).hexdigest()[:16]
@@ -53,7 +28,6 @@ def compute_input_hash(input_data: dict[str, Any]) -> str:
 
 
 def _load_records() -> list[dict[str, Any]]:
-    """Load all records from the memory directory."""
     if not os.path.isdir(_MEMORY_DIR):
         return []
     records: list[dict[str, Any]] = []

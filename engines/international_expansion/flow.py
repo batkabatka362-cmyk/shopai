@@ -18,11 +18,11 @@ import time
 from typing import Any
 
 from .market_evaluator import evaluate_markets
-from .currency_manager import manage_currency
+from .currency_manager import manage_currency_pricing
 from .localization_checker import check_localization
 from .shipping_planner import plan_shipping
-from .memory_reader import read_past_results
-from .memory_writer import write_result
+from .memory_reader import read_past_expansions
+from .memory_writer import write_expansion_result
 
 
 class InternationalExpansionEngine:
@@ -31,7 +31,14 @@ class InternationalExpansionEngine:
     ENGINE_NAME = "international_expansion"
 
     def run(self, input_payload: dict[str, Any]) -> dict[str, Any]:
-        """Run the full international expansion pipeline."""
+        """Run the full international expansion pipeline.
+
+        Args:
+            input_payload: Engine-contract input dict.
+
+        Returns:
+            ExpansionOutput dict.
+        """
         start = time.monotonic()
 
         # ---- Stage 0: Input validation ----
@@ -59,8 +66,8 @@ class InternationalExpansionEngine:
         if not target_markets:
             return self._fail("Target markets list is required", 0.0)
 
-        # ---- Stage 1: Read past results (non-blocking) ----
-        _past = read_past_results(limit=5)
+        # ---- Stage 1: Read past expansions (non-blocking) ----
+        _past = read_past_expansions(limit=5)
 
         # ---- Stage 2: Market Evaluator ----
         market_result = evaluate_markets(
@@ -75,7 +82,7 @@ class InternationalExpansionEngine:
         market_scores = market_result.get("market_scores", [])
 
         # ---- Stage 3: Currency Manager ----
-        currency_result = manage_currency(
+        currency_result = manage_currency_pricing(
             products=products,
             target_markets=target_markets,
             current_currency=current_currency,
@@ -89,8 +96,8 @@ class InternationalExpansionEngine:
 
         # ---- Stage 4: Localization Checker ----
         local_result = check_localization(
-            target_markets=target_markets,
             products=products,
+            target_markets=target_markets,
         )
         if local_result.get("status") == "error":
             return self._fail(
@@ -114,11 +121,11 @@ class InternationalExpansionEngine:
         # ---- Stage 6: Determine recommended markets ----
         recommended_markets = [
             s["market"] for s in market_scores
-            if s.get("overall_score", 0) >= 0.5
+            if s.get("recommendation") in ("strongly_recommended", "recommended")
         ]
 
         # ---- Stage 7: Memory Writer (non-fatal) ----
-        _write = write_result(
+        _write_result = write_expansion_result(
             market_scores=market_scores,
             currency_pricing=currency_pricing,
             localization_gaps=localization_gaps,
