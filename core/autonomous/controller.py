@@ -130,6 +130,22 @@ class AutonomousController:
                 "top": [r["name"] for r in recommended[:5]],
             }
 
+        # Phase 1b: BRAIN THINK — autonomous reasoning
+        try:
+            from core.brain.decision_brain import DecisionBrain
+            brain = DecisionBrain()
+            thought = brain.think(data)
+            cycle_result["phases"]["brain"] = {
+                "health_score": thought.get("health_score", 0),
+                "problems": len(thought.get("problems", [])),
+                "opportunities": len(thought.get("opportunities", [])),
+                "decisions": len(thought.get("decisions", [])),
+                "top_action": thought["action_plan"][0]["action"] if thought.get("action_plan") else "none",
+            }
+        except Exception as exc:
+            logger.debug("Brain think: %s", exc)
+            thought = {}
+
         # Phase 2: ANALYZE — Run analysis engines
         analysis = self._phase_analyze(sid, data)
         total_insights = 0
