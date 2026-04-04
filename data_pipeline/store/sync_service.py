@@ -44,6 +44,15 @@ class SyncService:
         product_result = self._sync_products(sid, creds)
         results["synced"]["products"] = product_result
 
+        # Sync costs (separate API call)
+        try:
+            from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
+            api = ShopifyAPI(creds["shop_url"], creds["api_key"])
+            raw = api.fetch_products(creds["shop_url"], creds["api_key"])
+            self._sync_product_costs(sid, creds, raw.get("products", []))
+        except Exception:
+            pass
+
         # Sync orders
         order_result = self._sync_orders(sid, creds)
         results["synced"]["orders"] = order_result
@@ -199,6 +208,36 @@ class SyncService:
         self._sm.db.save_snapshot(store_id, "post_sync", stats)
 
     # ── Normalizers (Shopify API → DB format) ────────────────
+
+    def _sync_product_costs(self, store_id: str, creds: dict[str, str], products: list[dict]) -> None:
+        """Fetch product costs via inventory_items API (costs not in products endpoint)."""
+        try:
+            import json, urllib.request
+            token = creds["api_key"]
+            shop = creds["shop_url"]
+            conn = self._sm.db._get_conn()
+
+            for p in products:
+                variant = p.get("variants", [{}])[0] if p.get("variants") else {}
+                inv_item_id = variant.get("inventory_item_id")
+                if not inv_item_id:
+                    continue
+                try:
+                    url = f"https://{shop}/admin/api/2024-01/inventory_items/{inv_item_id}.json"
+                    req = urllib.request.Request(url, headers={"X-Shopify-Access-Token": token})
+                    data = json.loads(urllib.request.urlopen(req, timeout=15).read())
+                    cost = float(data.get("inventory_item", {}).get("cost", 0) or 0)
+                    if cost > 0:
+                        conn.execute(
+                            "UPDATE products SET cost = ? WHERE store_id = ? AND shopify_id = ?",
+                            (cost, store_id, str(p["id"])),
+                        )
+                except Exception:
+                    pass
+
+            conn.commit()
+        except Exception as exc:
+            logger.debug("Cost sync: %s", exc)
 
     @staticmethod
     def _normalize_products(raw_products: list[dict]) -> list[dict[str, Any]]:

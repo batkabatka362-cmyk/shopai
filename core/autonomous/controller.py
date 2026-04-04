@@ -100,14 +100,21 @@ class AutonomousController:
         analysis = self._phase_analyze(sid, data)
         total_insights = 0
         for a in analysis.values():
-            if isinstance(a, dict):
+            if isinstance(a, dict) and a.get("status") != "error":
                 d = a.get("data")
                 if isinstance(d, dict):
+                    # Count various insight formats engines use
                     recs = d.get("recommendations")
                     if isinstance(recs, list):
                         total_insights += len(recs)
+                    if d.get("recommended_price"):
+                        total_insights += 1
+                    if d.get("winners") and isinstance(d["winners"], list):
+                        total_insights += len(d["winners"])
+                    if d.get("reorder_recommendations") and isinstance(d["reorder_recommendations"], list):
+                        total_insights += len(d["reorder_recommendations"])
         cycle_result["phases"]["analysis"] = {
-            "engines_run": len(analysis),
+            "engines_run": len([a for a in analysis.values() if isinstance(a, dict) and a.get("status") != "error"]),
             "insights": total_insights,
         }
 
@@ -163,10 +170,32 @@ class AutonomousController:
     # ── Phase Implementations ────────────────────────────────
 
     def _phase_data(self, store_id: str) -> dict[str, Any]:
-        """Phase 1: Fetch current store data."""
-        if not self._data_provider:
+        """Phase 1: Fetch current store data (sync first, then read from DB)."""
+        if not self._data_provider or not self._store_manager:
             return {}
-        return self._data_provider.get_data_for_engine("analytics", store_id)
+
+        # Sync from Shopify first if possible
+        try:
+            from data_pipeline.store.sync_service import SyncService
+            sync = SyncService(self._store_manager)
+            sync.sync_store(store_id)
+        except Exception as exc:
+            logger.debug("Pre-cycle sync: %s", exc)
+
+        # Now read from DB (freshly synced)
+        data: dict[str, Any] = {"store_id": store_id, "source": "database"}
+        products = self._store_manager.get_products(store_id)
+        orders = self._store_manager.get_orders(store_id)
+        customers = self._store_manager.get_customers(store_id)
+
+        data["products"] = products if products else self._data_provider._mock_products()
+        data["order_data"] = orders if orders else self._data_provider._mock_orders()
+        data["customer_data"] = customers if customers else self._data_provider._mock_customers()
+
+        if not products and not orders and not customers:
+            data["source"] = "mock"
+
+        return data
 
     def _phase_analyze(self, store_id: str, data: dict[str, Any]) -> dict[str, Any]:
         """Phase 2: Run key analysis engines + AI reasoning."""
@@ -181,7 +210,10 @@ class AutonomousController:
         for engine_name in engines_to_run:
             try:
                 engine = get_engine(engine_name)
-                engine_data = self._data_provider.get_data_for_engine(engine_name, store_id) if self._data_provider else data
+                if not engine:
+                    continue
+                # Build engine-compatible input
+                engine_data = self._build_engine_input(engine_name, data)
                 result = engine.run(engine_data)
                 results[engine_name] = result if isinstance(result, dict) else {"status": "error", "error": "engine returned non-dict"}
             except Exception as exc:
@@ -212,20 +244,55 @@ class AutonomousController:
 
     def _phase_decide(self, store_id: str, analysis: dict[str, Any]) -> list[dict[str, Any]]:
         """Phase 3: Convert analysis results to proposed actions."""
-        if not self._decision_executor:
+        if not self._action_executor:
             return []
 
         all_decisions: list[dict[str, Any]] = []
 
-        # Pricing decisions
-        if "pricing" in analysis and analysis["pricing"].get("status") != "error":
-            decisions = self._decision_executor.execute_pricing_decisions(store_id, analysis["pricing"])
-            all_decisions.extend(decisions)
+        # From engine results
+        if self._decision_executor:
+            if "pricing" in analysis and analysis["pricing"].get("status") != "error":
+                decisions = self._decision_executor.execute_pricing_decisions(store_id, analysis["pricing"])
+                all_decisions.extend(decisions)
 
-        # Inventory decisions
-        if "inventory" in analysis and analysis["inventory"].get("status") != "error":
-            decisions = self._decision_executor.execute_inventory_decisions(store_id, analysis["inventory"])
-            all_decisions.extend(decisions)
+            if "inventory" in analysis and analysis["inventory"].get("status") != "error":
+                decisions = self._decision_executor.execute_inventory_decisions(store_id, analysis["inventory"])
+                all_decisions.extend(decisions)
+
+        # From AI reasoning recommendations
+        for key in ("ai_pricing", "ai_inventory"):
+            result = analysis.get(key, {})
+            if not isinstance(result, dict) or result.get("status") == "error":
+                continue
+            data = result.get("data", {})
+            for rec in data.get("recommendations", []):
+                if not isinstance(rec, dict):
+                    continue
+                # Convert AI recommendation to action
+                if rec.get("recommended_price") and rec.get("product_id"):
+                    action = self._action_executor.propose_action({
+                        "type": "update_price",
+                        "store_id": store_id,
+                        "engine": key,
+                        "confidence": rec.get("confidence", 0.5),
+                        "reason": rec.get("reason", "AI recommendation"),
+                        "params": {
+                            "product_id": rec.get("product_id", ""),
+                            "variant_id": rec.get("variant_id", ""),
+                            "price": rec["recommended_price"],
+                        },
+                    })
+                    all_decisions.append(action)
+                elif rec.get("action") == "urgent_restock" or rec.get("priority") == "critical":
+                    action = self._action_executor.propose_action({
+                        "type": "alert",
+                        "store_id": store_id,
+                        "engine": key,
+                        "confidence": rec.get("confidence", 0.8),
+                        "reason": rec.get("reason", "Urgent attention needed"),
+                        "params": {"product": rec.get("product", ""), "action": rec.get("action", "")},
+                    })
+                    all_decisions.append(action)
 
         return all_decisions
 
@@ -253,6 +320,50 @@ class AutonomousController:
             analysis_results=analysis,
             execution_results=executions,
         )
+
+    @staticmethod
+    def _build_engine_input(engine_name: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Build engine-compatible input from raw store data.
+
+        Most engines expect: {status: "success", data: {product: {...}, ...}}
+        Some (product_research) expect: {products: [...]}
+        """
+        products = data.get("products", [])
+        orders = data.get("order_data", [])
+        customers = data.get("customer_data", [])
+
+        # Engines that take the flat format directly
+        if engine_name in ("product_research",):
+            return {"products": products}
+
+        # Standard engine format: {status, data: {...}}
+        # Use first product with cost > 0 as primary
+        product = {}
+        for p in products:
+            if p.get("cost", 0) > 0:
+                product = p
+                break
+        if not product and products:
+            product = products[0]
+
+        engine_data: dict[str, Any] = {
+            "status": "success",
+            "data": {
+                "product": product,
+                "products": products,
+                "order_data": orders,
+                "customer_data": customers,
+                "inventory_data": [
+                    {"product_id": p.get("id"), "name": p.get("name"),
+                     "quantity": p.get("inventory_quantity", 0),
+                     "price": p.get("price", 0), "cost": p.get("cost", 0)}
+                    for p in products
+                ],
+            },
+            "meta": {"engine": engine_name},
+            "error": None,
+        }
+        return engine_data
 
     # ── Auto-Run ─────────────────────────────────────────────
 
