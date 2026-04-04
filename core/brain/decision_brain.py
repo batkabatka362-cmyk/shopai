@@ -232,6 +232,21 @@ class DecisionBrain:
                 if structured.choice != "no_action":
                     thought.setdefault("structured_decisions", []).append(structured.to_dict())
 
+        # Step 5c: Multi-model analysis via ModelCoordinator
+        try:
+            from core.brain.model_coordinator import ModelCoordinator
+            coordinator = ModelCoordinator()
+            if state.products:
+                top_product = state.products[0]
+                coord_result = coordinator.pricing_decision(top_product)
+                thought["model_coordinator"] = {
+                    "product": top_product.get("name", "?")[:30],
+                    "decision": coord_result.get("decision", {}),
+                    "model": coord_result.get("model", ""),
+                }
+        except Exception as exc:
+            logger.debug("ModelCoordinator: %s", exc)
+
         # Step 5b: VALIDATE — remove bad decisions
         decisions = self._validate_decisions(decisions, state)
         thought["decisions"] = decisions

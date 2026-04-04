@@ -65,16 +65,27 @@ class AutonomousController:
 
         # System layer integration
         try:
-            from core.system.shared_memory import get_shared_memory
+            from core.memory.unified_memory import get_unified_memory
             from core.system.llm_adapter import get_llm
             from core.system.adaptive_skills import get_adaptive_skills
-            self._memory = get_shared_memory()
+            from core.autonomous.layer_dispatcher import LayerDispatcher
+            from core.autonomous.agent_dispatcher import AgentDispatcher
+            self._unified_memory = get_unified_memory()
+            self._unified_memory.initialize()
+            self._memory = self._unified_memory._shared  # Backward compat
             self._llm = get_llm()
             self._skills = get_adaptive_skills()
+            self._layer_dispatcher = LayerDispatcher()
+            self._layer_dispatcher.initialize()
+            self._agent_dispatcher = AgentDispatcher()
+            self._agent_dispatcher.initialize()
         except Exception:
+            self._unified_memory = None
             self._memory = None
             self._llm = None
             self._skills = None
+            self._layer_dispatcher = None
+            self._agent_dispatcher = None
 
         logger.info("AutonomousController initialized")
         return {"status": "initialized", "auto_approve": self._auto_approve}
@@ -109,8 +120,15 @@ class AutonomousController:
             "source": data.get("source", "unknown"),
         }
 
-        # Populate shared memory
-        if self._memory:
+        # Populate unified memory (all backends)
+        if hasattr(self, '_unified_memory') and self._unified_memory:
+            self._unified_memory.ingest_store_data(
+                data.get("products", []),
+                data.get("order_data", []),
+                data.get("customer_data", []),
+                sid,
+            )
+        elif self._memory:
             self._memory.load_store_data(
                 data.get("products", []),
                 data.get("order_data", []),
@@ -171,6 +189,20 @@ class AutonomousController:
             "insights": total_insights,
         }
 
+        # Phase 2b: LAYERS — Run all 12 layers (131 engines grouped by domain)
+        if hasattr(self, '_layer_dispatcher') and self._layer_dispatcher:
+            try:
+                layer_result = self._layer_dispatcher.run_all(data)
+                cycle_result["phases"]["layers"] = {
+                    "layers_run": layer_result.get("layers_run", 0),
+                    "total_insights": layer_result.get("total_insights", 0),
+                    "duration_s": layer_result.get("duration_s", 0),
+                }
+                total_insights += layer_result.get("total_insights", 0)
+            except Exception as exc:
+                logger.debug("Layer dispatch: %s", exc)
+                cycle_result["phases"]["layers"] = {"error": str(exc)[:80]}
+
         # Phase 3: DECIDE — Convert brain decisions + analysis to actions
         brain_decisions = cycle_result.get("_brain_decisions", [])
         decisions = self._phase_decide(sid, analysis, brain_decisions)
@@ -178,6 +210,22 @@ class AutonomousController:
             "proposed": len(decisions),
             "types": list(set(d.get("type", "") for d in decisions)),
         }
+
+        # Phase 3b: AGENTS — Dispatch decisions to domain agents
+        if hasattr(self, '_agent_dispatcher') and self._agent_dispatcher:
+            try:
+                agent_result = self._agent_dispatcher.dispatch(
+                    brain_decisions, {"products": data.get("products", []),
+                                      "orders": data.get("order_data", []),
+                                      "customers": data.get("customer_data", [])},
+                )
+                cycle_result["phases"]["agents"] = {
+                    "dispatched": agent_result.get("dispatched", 0),
+                    "agents_available": agent_result.get("agents_available", 0),
+                }
+            except Exception as exc:
+                logger.debug("Agent dispatch: %s", exc)
+                cycle_result["phases"]["agents"] = {"error": str(exc)[:80]}
 
         # Phase 4: EXECUTE — Run approved actions
         executions = self._phase_execute()
