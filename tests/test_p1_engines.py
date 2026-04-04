@@ -70,6 +70,11 @@ class TestBrowseRecovery(unittest.TestCase):
         self.assertEqual(result["meta"]["engine"], "browse_recovery")
         self.assertIn("elapsed_seconds", result["meta"])
 
+        # Verify each recovery target has expected structure
+        for target in result["data"]["recovery_targets"]:
+            self.assertIn("user_id", target)
+            self.assertIn("intent_score", target)
+
     def test_empty_sessions(self):
         """Empty sessions list should return an error."""
         result = self.engine.run(_payload({
@@ -88,6 +93,44 @@ class TestBrowseRecovery(unittest.TestCase):
         """Missing data entirely should return error."""
         result = self.engine.run(_empty_payload())
         self.assertEqual(result["status"], "error")
+
+    def test_single_session_recovery(self):
+        """A single session with viewed products should still produce a target."""
+        result = self.engine.run(_payload({
+            "sessions": [
+                {
+                    "user_id": "solo_user",
+                    "pages_viewed": ["/products/item1"],
+                    "products_viewed": ["item1"],
+                    "duration": 90,
+                    "cart_items": [],
+                },
+            ],
+            "products": [
+                {"id": "item1", "title": "Item One", "price": 15.00},
+            ],
+        }))
+        self.assertEqual(result["status"], "success")
+        targets = result["data"]["recovery_targets"]
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["user_id"], "solo_user")
+
+    def test_estimated_revenue_non_negative(self):
+        """Estimated revenue should always be non-negative."""
+        result = self.engine.run(_payload({
+            "sessions": [
+                {
+                    "user_id": "u1",
+                    "pages_viewed": ["/products/a"],
+                    "products_viewed": ["a"],
+                    "duration": 30,
+                    "cart_items": [],
+                },
+            ],
+            "products": [{"id": "a", "title": "A", "price": 10.0}],
+        }))
+        self.assertEqual(result["status"], "success")
+        self.assertGreaterEqual(result["data"]["estimated_revenue"], 0)
 
 
 # ======================================================================
@@ -155,6 +198,46 @@ class TestLoyalty(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIsNotNone(result["error"])
 
+    def test_program_health_structure(self):
+        """Program health should include membership metrics."""
+        result = self.engine.run(_payload({
+            "customers": [
+                {"id": "c1", "name": "A", "email": "a@test.com", "total_spent": 100},
+                {"id": "c2", "name": "B", "email": "b@test.com", "total_spent": 500},
+            ],
+            "orders": [
+                {"id": "o1", "customer_id": "c1", "total": 100, "date": "2026-03-01"},
+                {"id": "o2", "customer_id": "c2", "total": 500, "date": "2026-03-01"},
+            ],
+            "program_config": {},
+            "current_points": {},
+        }))
+        self.assertEqual(result["status"], "success")
+        health = result["data"]["program_health"]
+        self.assertIn("total_members", health)
+        self.assertEqual(health["total_members"], 2)
+        self.assertIn("active_members", health)
+        self.assertIn("total_points_outstanding", health)
+
+    def test_reward_recommendations_returned(self):
+        """Should include reward recommendations in output."""
+        result = self.engine.run(_payload({
+            "customers": [
+                {"id": "c1", "name": "Loyal", "email": "loyal@test.com", "total_spent": 5000},
+            ],
+            "orders": [
+                {"id": "o1", "customer_id": "c1", "total": 5000, "date": "2026-01-01"},
+            ],
+            "program_config": {"reward_catalog": [
+                {"id": "r1", "name": "Free Shipping", "points_cost": 100},
+                {"id": "r2", "name": "10% Discount", "points_cost": 500},
+            ]},
+            "current_points": {"c1": 1000},
+        }))
+        self.assertEqual(result["status"], "success")
+        self.assertIn("reward_recommendations", result["data"])
+        self.assertIsInstance(result["data"]["reward_recommendations"], list)
+
 
 # ======================================================================
 # Supplier Communication
@@ -192,6 +275,7 @@ class TestSupplierCommunication(unittest.TestCase):
         self.assertIsInstance(data["purchase_orders"], list)
         self.assertIn("messages", data)
         self.assertIn("tracking_updates", data)
+        self.assertIn("negotiation_tips", data)
         self.assertEqual(result["meta"]["engine"], "supplier_communication")
 
     def test_builds_messages(self):
@@ -219,6 +303,30 @@ class TestSupplierCommunication(unittest.TestCase):
             "suppliers": [],
             "reorder_plan": [],
         }))
+        self.assertEqual(result["status"], "error")
+
+    def test_multiple_suppliers(self):
+        """Should handle multiple suppliers in a single run."""
+        result = self.engine.run(_payload({
+            "suppliers": [
+                {"id": "s1", "name": "Supplier A", "email": "a@sup.com",
+                 "products": ["x"], "lead_time_days": 5, "min_order": 10},
+                {"id": "s2", "name": "Supplier B", "email": "b@sup.com",
+                 "products": ["y"], "lead_time_days": 10, "min_order": 20},
+            ],
+            "reorder_plan": [
+                {"product_id": "x", "supplier_id": "s1", "quantity": 50, "urgency": "normal"},
+                {"product_id": "y", "supplier_id": "s2", "quantity": 100, "urgency": "high"},
+            ],
+            "inventory_status": [],
+            "communication_history": [],
+        }))
+        self.assertEqual(result["status"], "success")
+        self.assertIn("purchase_orders", result["data"])
+
+    def test_upstream_failure(self):
+        """Upstream failure should propagate as error."""
+        result = self.engine.run(_fail_payload("supplier API down"))
         self.assertEqual(result["status"], "error")
 
 
@@ -285,6 +393,39 @@ class TestCompetitorMonitor(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIsNotNone(result["error"])
 
+    def test_single_competitor_no_changes(self):
+        """Competitor with no price changes should still succeed."""
+        result = self.engine.run(_payload({
+            "competitors": [
+                {
+                    "name": "StableCo",
+                    "url": "https://stableco.com",
+                    "products": [
+                        {"id": "sp1", "title": "Stable Widget", "price": 30.00,
+                         "previous_price": 30.00, "category": "widgets"},
+                    ],
+                },
+            ],
+            "our_products": [
+                {"id": "p1", "title": "Our Widget", "price": 30.00, "category": "widgets"},
+            ],
+            "alert_thresholds": {"price_change_pct": 5.0},
+        }))
+        self.assertEqual(result["status"], "success")
+
+    def test_output_meta_contains_timing(self):
+        """Meta should always include engine name and elapsed_seconds."""
+        result = self.engine.run(_payload({
+            "competitors": [
+                {"name": "X", "url": "https://x.com", "products": []},
+            ],
+            "our_products": [],
+            "alert_thresholds": {},
+        }))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["meta"]["engine"], "competitor_monitor")
+        self.assertIsInstance(result["meta"]["elapsed_seconds"], float)
+
 
 # ======================================================================
 # Store Design
@@ -306,7 +447,8 @@ class TestStoreDesign(unittest.TestCase):
                 "name": "TestBrand",
                 "industry": "fashion",
                 "style": "modern",
-                "colors": {"primary": "#333333", "secondary": "#FF6600"},
+                "voice": "playful",
+                "colors": ["#333333", "#FF6600"],
                 "target_audience": "young adults",
             },
             "products": [
@@ -343,6 +485,32 @@ class TestStoreDesign(unittest.TestCase):
         }))
         self.assertEqual(result["status"], "success")
         self.assertIn("layout_recommendations", result["data"])
+
+    def test_conversion_lift_is_numeric(self):
+        """estimated_conversion_lift should be a number."""
+        result = self.engine.run(_payload({
+            "brand": {"name": "NumericTest", "industry": "tech"},
+            "products": [
+                {"id": "p1", "title": "Gadget", "price": 99.99, "category": "tech", "images": 2},
+            ],
+            "analytics": {"bounce_rate": 0.50, "mobile_pct": 0.70},
+        }))
+        self.assertEqual(result["status"], "success")
+        lift = result["data"]["estimated_conversion_lift"]
+        self.assertIsInstance(lift, (int, float))
+
+    def test_color_palette_returned(self):
+        """Color palette should be returned for branded input."""
+        result = self.engine.run(_payload({
+            "brand": {
+                "name": "ColorBrand",
+                "colors": ["#0066CC", "#FFCC00"],
+            },
+            "products": [],
+            "analytics": {},
+        }))
+        self.assertEqual(result["status"], "success")
+        self.assertIn("color_palette", result["data"])
 
 
 # ======================================================================
@@ -421,6 +589,20 @@ class TestLegalDocument(unittest.TestCase):
         }))
         self.assertEqual(result["status"], "error")
 
+    def test_documents_have_content(self):
+        """Each generated document should have non-empty content."""
+        result = self.engine.run(_payload({
+            "business": {
+                "name": "ContentCheck Inc",
+                "country": "US",
+                "website": "https://contentcheck.com",
+            },
+            "policies": {"return_window_days": 14},
+        }))
+        self.assertEqual(result["status"], "success")
+        for doc in result["data"]["documents"]:
+            self.assertIsInstance(doc, dict)
+
 
 # ======================================================================
 # Checkout Optimizer
@@ -458,11 +640,7 @@ class TestCheckoutOptimizer(unittest.TestCase):
                 "mobile_checkout_pct": 0.55,
                 "payment_failure_rate": 0.08,
             },
-            "payment_methods": [
-                {"name": "credit_card", "enabled": True, "failure_rate": 0.05},
-                {"name": "paypal", "enabled": True, "failure_rate": 0.03},
-                {"name": "apple_pay", "enabled": False, "failure_rate": 0.01},
-            ],
+            "payment_methods": ["visa", "mastercard", "paypal", "apple_pay"],
         }))
         self.assertEqual(result["status"], "success")
         data = result["data"]
@@ -488,6 +666,38 @@ class TestCheckoutOptimizer(unittest.TestCase):
         """Upstream failure should be propagated."""
         result = self.engine.run(_fail_payload("payment gateway down"))
         self.assertEqual(result["status"], "error")
+
+    def test_optimizations_have_types(self):
+        """Each optimization should have a type field."""
+        result = self.engine.run(_payload({
+            "checkout_config": {
+                "steps": ["cart", "payment", "confirm"],
+                "guest_checkout": False,
+                "address_autocomplete": False,
+            },
+            "analytics": {
+                "cart_abandonment_rate": 0.80,
+                "step_drop_off": {"cart_to_payment": 0.40, "payment_to_confirm": 0.20},
+                "avg_checkout_time_seconds": 300,
+                "mobile_checkout_pct": 0.70,
+            },
+            "payment_methods": ["visa", "mastercard"],
+        }))
+        self.assertEqual(result["status"], "success")
+        for opt in result["data"]["optimizations"]:
+            self.assertIn("type", opt)
+            self.assertIn("recommendation", opt)
+
+    def test_trust_signals_returned(self):
+        """Trust signals should be included in output."""
+        result = self.engine.run(_payload({
+            "checkout_config": {"steps": ["cart", "confirm"]},
+            "analytics": {},
+            "payment_methods": ["visa", "paypal"],
+        }))
+        self.assertEqual(result["status"], "success")
+        self.assertIn("trust_signals", result["data"])
+        self.assertIsInstance(result["data"]["trust_signals"], list)
 
 
 if __name__ == "__main__":
