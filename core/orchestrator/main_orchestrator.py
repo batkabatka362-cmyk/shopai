@@ -608,6 +608,7 @@ class MainOrchestrator:
     def _register_engines(self) -> None:
         """Auto-register all engines from the registry as execution handlers."""
         from engines.base import EngineInput
+        from engines.base.engine_types import normalize_engine_output
 
         for engine_name in list_engines():
             def _make_handler(name: str):
@@ -618,7 +619,8 @@ class MainOrchestrator:
                         engine_name=name,
                         data=params,
                     )
-                    output = engine.run(engine_input)
+                    raw_output = engine.run(engine_input)
+                    output = normalize_engine_output(raw_output, engine_input)
                     return output.to_dict()
                 return handler
 

@@ -12,7 +12,7 @@ from typing import Any, Callable
 from utils.logger import get_logger
 from utils.helpers import generate_id
 from engines.registry import get_engine
-from engines.base.engine_types import EngineInput, EngineStatus
+from engines.base.engine_types import EngineInput, EngineStatus, normalize_engine_output
 
 logger = get_logger("chaining.engine_chain")
 
@@ -99,7 +99,8 @@ class EngineChain:
                     engine_name=step.engine_name,
                     data=engine_data,
                 )
-                output = engine.run(engine_input)
+                raw_output = engine.run(engine_input)
+                output = normalize_engine_output(raw_output, engine_input)
             except Exception as exc:
                 step_results.append(self._step_error(step, i, f"Engine error: {exc}"))
                 if step.required:

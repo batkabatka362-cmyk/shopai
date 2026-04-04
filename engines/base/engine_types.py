@@ -92,3 +92,54 @@ class EngineOutput:
             "error": self.error,
             "timestamp": self.timestamp,
         }
+
+
+def normalize_engine_output(raw: Any, engine_input: EngineInput | None = None) -> EngineOutput:
+    """Convert any engine output (dict or EngineOutput) to EngineOutput.
+
+    New flow.py engines return dicts like:
+        {"status": "success", "data": {...}, "meta": {...}, "error": None}
+
+    Legacy BaseEngine engines return EngineOutput dataclass instances.
+
+    This function normalizes both to EngineOutput so callers (chains,
+    orchestrators, bridges) don't need to know which pattern an engine uses.
+    """
+    if isinstance(raw, EngineOutput):
+        return raw
+
+    if isinstance(raw, dict):
+        status_str = raw.get("status", "error")
+        if status_str in ("success",):
+            status = EngineStatus.COMPLETED
+        elif status_str in ("error", "fail"):
+            status = EngineStatus.FAILED
+        else:
+            status = EngineStatus.FAILED
+
+        task_id = ""
+        engine_name = ""
+        if engine_input is not None:
+            task_id = engine_input.task_id
+            engine_name = engine_input.engine_name
+
+        meta = raw.get("meta", {})
+        if not engine_name and isinstance(meta, dict):
+            engine_name = meta.get("engine", "")
+
+        return EngineOutput(
+            task_id=task_id,
+            engine_name=engine_name,
+            status=status,
+            result=raw.get("data") if isinstance(raw.get("data"), dict) else {},
+            error=raw.get("error"),
+            timestamp=meta.get("timestamp", timestamp_now()) if isinstance(meta, dict) else timestamp_now(),
+        )
+
+    # Fallback: unknown type
+    return EngineOutput(
+        task_id="",
+        engine_name="",
+        status=EngineStatus.FAILED,
+        error=f"Unknown engine output type: {type(raw).__name__}",
+    )
