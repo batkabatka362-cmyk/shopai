@@ -151,20 +151,21 @@ class AutonomousController:
         # Phase 2: ANALYZE — Run analysis engines
         analysis = self._phase_analyze(sid, data)
         total_insights = 0
+        _insight_keys = (
+            "recommendations", "winners", "ranked_products",
+            "reorder_plan", "alerts", "segments",
+            "reorder_recommendations", "opportunities",
+        )
         for a in analysis.values():
             if isinstance(a, dict) and a.get("status") != "error":
                 d = a.get("data")
                 if isinstance(d, dict):
-                    # Count various insight formats engines use
-                    recs = d.get("recommendations")
-                    if isinstance(recs, list):
-                        total_insights += len(recs)
+                    for key in _insight_keys:
+                        val = d.get(key)
+                        if isinstance(val, list):
+                            total_insights += len(val)
                     if d.get("recommended_price"):
                         total_insights += 1
-                    if d.get("winners") and isinstance(d["winners"], list):
-                        total_insights += len(d["winners"])
-                    if d.get("reorder_recommendations") and isinstance(d["reorder_recommendations"], list):
-                        total_insights += len(d["reorder_recommendations"])
         cycle_result["phases"]["analysis"] = {
             "engines_run": len([a for a in analysis.values() if isinstance(a, dict) and a.get("status") != "error"]),
             "insights": total_insights,
@@ -315,15 +316,39 @@ class AutonomousController:
             })
             all_decisions.append(action)
 
-        # From engine results
-        if self._decision_executor:
-            if "pricing" in analysis and analysis["pricing"].get("status") != "error":
-                decisions = self._decision_executor.execute_pricing_decisions(store_id, analysis["pricing"])
-                all_decisions.extend(decisions)
+        # From engine results — convert to actions
+        # Inventory alerts
+        inv = analysis.get("inventory", {})
+        if isinstance(inv, dict) and inv.get("status") != "error":
+            inv_data = inv.get("data", {})
+            if isinstance(inv_data, dict):
+                for alert in inv_data.get("alerts", [])[:5]:
+                    if isinstance(alert, dict) and alert.get("severity") in ("critical", "high"):
+                        all_decisions.append(self._action_executor.propose_action({
+                            "type": "inventory_alert",
+                            "store_id": store_id,
+                            "engine": "inventory",
+                            "confidence": 0.85,
+                            "reason": alert.get("message", str(alert)[:80]),
+                            "params": alert,
+                        }))
 
-            if "inventory" in analysis and analysis["inventory"].get("status") != "error":
-                decisions = self._decision_executor.execute_inventory_decisions(store_id, analysis["inventory"])
-                all_decisions.extend(decisions)
+        # Pricing recommendation
+        pr = analysis.get("pricing", {})
+        if isinstance(pr, dict) and pr.get("status") != "error":
+            pr_data = pr.get("data", {})
+            if isinstance(pr_data, dict) and pr_data.get("recommended_price"):
+                all_decisions.append(self._action_executor.propose_action({
+                    "type": "pricing_recommendation",
+                    "store_id": store_id,
+                    "engine": "pricing",
+                    "confidence": pr_data.get("confidence", 0.5),
+                    "reason": pr_data.get("rationale", "")[:100],
+                    "params": {
+                        "recommended_price": pr_data["recommended_price"],
+                        "strategy": pr_data.get("strategy", ""),
+                    },
+                }))
 
         # From AI reasoning recommendations
         for key in ("ai_pricing", "ai_inventory"):
@@ -403,7 +428,6 @@ class AutonomousController:
             return {"products": products}
 
         # Standard engine format: {status, data: {...}}
-        # Use first product with cost > 0 as primary
         product = {}
         for p in products:
             if p.get("cost", 0) > 0:
@@ -411,6 +435,15 @@ class AutonomousController:
                 break
         if not product and products:
             product = products[0]
+
+        # Customer segmentation needs customers at top level of data
+        if engine_name == "customer_segmentation":
+            return {
+                "status": "success",
+                "data": {"customer_data": customers, "customers": customers},
+                "meta": {"engine": engine_name},
+                "error": None,
+            }
 
         engine_data: dict[str, Any] = {
             "status": "success",
