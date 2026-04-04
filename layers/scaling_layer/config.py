@@ -1,14 +1,18 @@
-"""Scaling Layer — configuration."""
+"""Scaling Layer — configuration.
+
+Neither engine is strictly required — scaling analysis is
+informational and should not block the cycle.
+"""
 
 SCALING_LAYER_CONFIG = {
     "engines": [
         "marketplace",
         "infinite_scaling",
     ],
-    "required_engines": [
+    "required_engines": [],
+    "optional_engines": [
         "marketplace",
         "infinite_scaling",
     ],
-    "optional_engines": [],
     "parallel_groups": [],
 }

@@ -120,6 +120,24 @@ class AutonomousController:
             "source": data.get("source", "unknown"),
         }
 
+        # Phase 1a: DATA QUALITY — validate and score data before AI uses it
+        try:
+            from data_pipeline.quality import get_data_quality
+            dq = get_data_quality()
+            quality_report = dq.run(data)
+            cycle_result["phases"]["data_quality"] = {
+                "score": quality_report.get("overall_score", 0),
+                "products_valid": quality_report["products"]["valid"],
+                "issues": len(quality_report.get("issues", [])),
+                "anomalies": len(quality_report.get("anomalies", [])),
+                "top_issue": quality_report["issues"][0]["message"][:80] if quality_report.get("issues") else "none",
+            }
+            # Use cleaned products for all subsequent phases
+            if quality_report.get("cleaned_products"):
+                data["products"] = quality_report["cleaned_products"]
+        except Exception as exc:
+            logger.debug("Data quality pipeline: %s", exc)
+
         # Populate unified memory (all backends)
         if hasattr(self, '_unified_memory') and self._unified_memory:
             self._unified_memory.ingest_store_data(
@@ -147,6 +165,21 @@ class AutonomousController:
                 "recommended": len(recommended),
                 "top": [r["name"] for r in recommended[:5]],
             }
+
+        # Phase 1c: COMPETITOR SCAN — get real market data
+        try:
+            from core.ai.competitor_monitor import get_competitor_monitor
+            cm = get_competitor_monitor()
+            comp_scan = cm.scan_competitors(data.get("products", []), max_products=5)
+            cycle_result["phases"]["competitor_scan"] = {
+                "products_scanned": comp_scan.get("products_scanned", 0),
+                "position": comp_scan.get("summary", {}),
+            }
+            # Inject competitor data into store data for brain/engines
+            data["competitor_data"] = comp_scan.get("results", [])
+            data["market_position"] = comp_scan.get("summary", {})
+        except Exception as exc:
+            logger.debug("Competitor scan: %s", exc)
 
         # Phase 1b: BRAIN THINK — autonomous reasoning
         try:
