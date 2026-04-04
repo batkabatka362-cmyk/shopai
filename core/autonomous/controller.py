@@ -160,25 +160,44 @@ class AutonomousController:
         return self._data_provider.get_data_for_engine("analytics", store_id)
 
     def _phase_analyze(self, store_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        """Phase 2: Run key analysis engines."""
+        """Phase 2: Run key analysis engines + AI reasoning."""
         from engines.registry import get_engine
 
         engines_to_run = [
             "pricing", "inventory", "product_ranking",
-            "customer_segmentation", "analytics",
+            "customer_segmentation", "product_research",
         ]
         results: dict[str, Any] = {}
 
         for engine_name in engines_to_run:
             try:
                 engine = get_engine(engine_name)
-                # Get specific data for this engine
                 engine_data = self._data_provider.get_data_for_engine(engine_name, store_id) if self._data_provider else data
                 result = engine.run(engine_data)
                 results[engine_name] = result if isinstance(result, dict) else {"status": "error", "error": "engine returned non-dict"}
             except Exception as exc:
                 logger.warning("Engine %s failed: %s", engine_name, exc)
                 results[engine_name] = {"status": "error", "error": str(exc)}
+
+        # AI-enhanced analysis layer
+        try:
+            from core.ai.reasoning import ai_reason
+            ai_pricing = ai_reason("pricing_optimization", products=data.get("products", []))
+            if ai_pricing.get("recommendations"):
+                results["ai_pricing"] = {
+                    "status": "success",
+                    "data": ai_pricing,
+                    "source": ai_pricing.get("source", "unknown"),
+                }
+            ai_inventory = ai_reason("inventory_management", products=data.get("products", []))
+            if ai_inventory.get("recommendations"):
+                results["ai_inventory"] = {
+                    "status": "success",
+                    "data": ai_inventory,
+                    "source": ai_inventory.get("source", "unknown"),
+                }
+        except Exception as exc:
+            logger.debug("AI reasoning layer: %s", exc)
 
         return results
 

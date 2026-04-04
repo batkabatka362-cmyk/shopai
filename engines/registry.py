@@ -21,6 +21,7 @@ _ENGINE_MAP: dict[str, str] = {
     "product_lifecycle": "engines.product_lifecycle",
     "product_optimization": "engines.product_optimization",
     "product_ranking": "engines.product_ranking",
+    "product_research": "engines.product_research",
     "catalog": "engines.catalog",
     "image_optimization": "engines.image_optimization",
 
