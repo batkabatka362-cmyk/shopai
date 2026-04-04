@@ -63,6 +63,19 @@ class AutonomousController:
         self._learning_pipeline = LearningPipeline(self._store_manager)
         self._performance_tracker = PerformanceTracker(self._store_manager)
 
+        # System layer integration
+        try:
+            from core.system.shared_memory import get_shared_memory
+            from core.system.llm_adapter import get_llm
+            from core.system.adaptive_skills import get_adaptive_skills
+            self._memory = get_shared_memory()
+            self._llm = get_llm()
+            self._skills = get_adaptive_skills()
+        except Exception:
+            self._memory = None
+            self._llm = None
+            self._skills = None
+
         logger.info("AutonomousController initialized")
         return {"status": "initialized", "auto_approve": self._auto_approve}
 
@@ -95,6 +108,27 @@ class AutonomousController:
             "customers": len(data.get("customer_data", [])),
             "source": data.get("source", "unknown"),
         }
+
+        # Populate shared memory
+        if self._memory:
+            self._memory.load_store_data(
+                data.get("products", []),
+                data.get("order_data", []),
+                data.get("customer_data", []),
+                sid,
+            )
+
+        # Get skill recommendations
+        if self._skills:
+            recommended = self._skills.recommend_skills({
+                "products": data.get("products", []),
+                "orders": data.get("order_data", []),
+                "customers": data.get("customer_data", []),
+            })
+            cycle_result["phases"]["skills"] = {
+                "recommended": len(recommended),
+                "top": [r["name"] for r in recommended[:5]],
+            }
 
         # Phase 2: ANALYZE — Run analysis engines
         analysis = self._phase_analyze(sid, data)
