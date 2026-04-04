@@ -113,6 +113,16 @@ def build_parser() -> argparse.ArgumentParser:
     workflow.add_argument("workflow_name", help="Workflow name")
     workflow.add_argument("--params", type=str, default="{}", help="JSON params")
 
+    # ── Autonomous commands ─────────────────────────────────
+    auto_p = sub.add_parser("auto", help="Run autonomous AI cycle")
+    auto_p.add_argument("--store", default="", help="Store ID")
+    auto_p.add_argument("--loop", action="store_true", help="Run continuously")
+    auto_p.add_argument("--interval", type=int, default=600, help="Loop interval (seconds)")
+    auto_p.add_argument("--auto-approve", action="store_true", help="Auto-approve actions (DANGEROUS)")
+
+    learn_p = sub.add_parser("learn", help="Show learning status")
+    learn_p.add_argument("--details", action="store_true", help="Show detailed learning data")
+
     # ── System commands ──────────────────────────────────────
     sub.add_parser("health", help="System health check")
     sub.add_parser("status", help="Full system status")
@@ -354,6 +364,91 @@ def _cmd_actions(args) -> None:
         print("Usage: shopai actions {pending|approve|approve-all|reject|log|stats}")
 
 
+# ── Autonomous Commands ──────────────────────────────────────
+
+def _cmd_auto(args) -> None:
+    sm = _get_store_manager()
+    from core.autonomous.controller import AutonomousController
+
+    controller = AutonomousController(sm, auto_approve=args.auto_approve)
+    controller.initialize()
+
+    if args.auto_approve:
+        print("WARNING: Auto-approve enabled — AI will execute actions without confirmation!\n")
+
+    if args.loop:
+        print(f"Starting autonomous loop (every {args.interval}s). Press Ctrl+C to stop.\n")
+        controller.start(args.interval)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            controller.stop()
+            status = controller.get_status()
+            print(f"\nStopped after {status['cycles_completed']} cycles.")
+        return
+
+    # Single cycle
+    store_id = args.store or sm.active_store_id
+    print(f"Running autonomous cycle for {store_id}...\n")
+    result = controller.run_cycle(store_id)
+
+    if result.get("status") == "error":
+        print(f"Error: {result.get('error', 'unknown')}")
+        return
+
+    print(f"Cycle: {result['cycle_id']}")
+    print(f"Duration: {result['duration_s']}s")
+    print()
+
+    phases = result.get("phases", {})
+    data = phases.get("data", {})
+    print(f"  Data: {data.get('products', 0)} products, {data.get('orders', 0)} orders, {data.get('customers', 0)} customers ({data.get('source', '?')})")
+
+    analysis = phases.get("analysis", {})
+    print(f"  Analysis: {analysis.get('engines_run', 0)} engines, {analysis.get('insights', 0)} insights")
+
+    decisions = phases.get("decisions", {})
+    print(f"  Decisions: {decisions.get('proposed', 0)} proposed")
+
+    execution = phases.get("execution", {})
+    print(f"  Execution: {execution.get('executed', 0)} executed, {execution.get('pending', 0)} pending")
+
+    learning = phases.get("learning", {})
+    print(f"  Learning: {learning.get('patterns_found', 0)} patterns, {learning.get('weight_updates', 0)} weight updates")
+
+
+def _cmd_learn(args) -> None:
+    from core.autonomous.controller import LearningPipeline
+    sm = _get_store_manager()
+    pipeline = LearningPipeline(sm)
+    summary = pipeline.get_learning_summary()
+
+    print("ShopAI Learning Status\n")
+
+    weights = summary.get("weights", {})
+    if weights:
+        print("  Learned Weights:")
+        for factor, weight in sorted(weights.items()):
+            direction = "+" if weight > 0 else ""
+            bar = "█" * int(abs(weight) * 20) if weight != 0 else "·"
+            print(f"    {factor:12s}: {direction}{weight:.4f}  {bar}")
+    else:
+        print("  No learned weights yet (needs more cycles)")
+
+    system = summary.get("system", {})
+    if system and system.get("status") != "no_data":
+        print(f"\n  Engines analyzed: {system.get('engines_analyzed', 0)}")
+        recs = system.get("recommendations", [])
+        if recs:
+            print(f"  System recommendations ({len(recs)}):")
+            for r in recs[:5]:
+                print(f"    - {r}")
+
+    if args.details:
+        print(f"\n  Full summary: {json.dumps(summary, indent=2, default=str)}")
+
+
 # ── System Commands ──────────────────────────────────────────
 
 def _cmd_health() -> None:
@@ -558,6 +653,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "actions":
         _cmd_actions(args)
+        return
+
+    if args.command == "auto":
+        _cmd_auto(args)
+        return
+
+    if args.command == "learn":
+        _cmd_learn(args)
         return
 
     if args.command == "pipeline":

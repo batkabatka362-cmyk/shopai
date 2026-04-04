@@ -1,4 +1,7 @@
-"""AutonomousOperator — fully autonomous Shopify store operator.
+"""AutonomousOperator + AutonomousController — fully autonomous Shopify store operator.
+
+AutonomousOperator: Legacy one-shot operator (runs all intelligence modules once)
+AutonomousController: New self-improving continuous loop (data → analyze → decide → act → learn)
 
 ONE COMMAND runs everything:
   1. Fetch store data (products, customers, orders)
