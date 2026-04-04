@@ -97,13 +97,12 @@ class ShopifyAuth:
     # ── Token Request ────────────────────────────────────────
 
     def _request_token(self) -> dict[str, Any]:
-        """Request new access token from Shopify using client credentials."""
+        """Request new access token from Shopify using authorization code exchange."""
         url = f"https://{self._shop_url}/admin/oauth/access_token"
 
         payload = json.dumps({
             "client_id": self._client_id,
             "client_secret": self._client_secret,
-            "grant_type": "client_credentials",
         }).encode("utf-8")
 
         req = urllib.request.Request(
@@ -127,6 +126,55 @@ class ShopifyAuth:
             raise RuntimeError(
                 f"Shopify token request failed ({exc.code}): {body}"
             ) from exc
+
+    def get_auth_url(self, scopes: str = "", redirect_uri: str = "") -> str:
+        """Generate the Shopify authorization URL for browser approval.
+
+        User opens this URL → approves → gets redirected with ?code=XXX
+        """
+        if not scopes:
+            scopes = "read_products,write_products,read_orders,read_customers,read_inventory,write_inventory"
+        if not redirect_uri:
+            redirect_uri = f"https://{self._shop_url}/admin/auth/callback"
+
+        params = urllib.parse.urlencode({
+            "client_id": self._client_id,
+            "scope": scopes,
+            "redirect_uri": redirect_uri,
+        })
+        return f"https://{self._shop_url}/admin/oauth/authorize?{params}"
+
+    def exchange_code(self, code: str) -> str:
+        """Exchange authorization code for access token."""
+        url = f"https://{self._shop_url}/admin/oauth/access_token"
+
+        payload = json.dumps({
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "code": code,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        if "access_token" not in data:
+            raise ValueError(f"No access_token: {data}")
+
+        self._access_token = data["access_token"]
+        # New Shopify tokens may or may not expire
+        expires_in = int(data.get("expires_in", 86400))
+        self._expires_at = time.time() + expires_in
+        self._save_cached_token()
+
+        logger.info("Token obtained for %s via code exchange", self._shop_url)
+        return self._access_token
 
     # ── Token Validation ─────────────────────────────────────
 
