@@ -1,193 +1,339 @@
-# ShopAI Architecture — Тодорхой Зорилго, Тодорхой Бүтэц
+# ShopAI — Autonomous E-Commerce Intelligence System
 
 ## ЗОРИЛГО
 
-ShopAI = Бие даасан e-commerce AI.
-Хүн биш. Tool биш. Бодож, шийдэж, хийж, суралцдаг систем.
+ShopAI бол **бүрэн бие даасан e-commerce AI систем** — хүний оролцоогүйгээр дэлгүүр ажиллуулж, ашиг олж, суралцаж, өсдөг.
 
-## ТОДОРХОЙ ЗОРИЛГО (Priority)
+### ЭЦСИЙН ЗОРИЛГО (Vision)
 
 ```
-P0: AI бодит data ойлгоно → зөв шийдвэр гаргана
-P1: AI алдаанаасаа суралцана → дахиж давтахгүй
-P2: AI бие даан ажиллана → хүн оролцохгүй
-P3: AI олон store удирдана → мэдлэг хуваалцана
+ShopAI = Хүнээс илүү ухаалаг e-commerce оператор
+
+Хүн 1 дэлгүүр ажиллуулна      → ShopAI 100 дэлгүүр зэрэг ажиллуулна
+Хүн өдөрт 8 цаг ажиллана       → ShopAI 24/7 зогсолтгүй ажиллана
+Хүн 5 бүтээгдэхүүн шинжилнэ    → ShopAI 10,000 бүтээгдэхүүн шинжилнэ
+Хүн алдаагаа мартна             → ShopAI НЭГ Ч алдаагаа мартахгүй
+Хүн туршлагаа хуваалцахгүй      → ShopAI 100 дэлгүүрийн мэдлэг нэгтгэнэ
 ```
 
-## БҮТЭЦ (Тодорхой)
+### ТОДОРХОЙ ЗОРИЛГУУД
+
+```
+Z1: АВТОНОМ АЖИЛЛАГАА
+    → Хүн унтаж байхад AI дэлгүүр ажиллуулна
+    → Бүтээгдэхүүн олох, нэмэх, үнэлэх, сурталчлах
+    → Захиалга боловсруулах, хүргэлт хянах
+    → Асуудал гарвал өөрөө шийднэ
+
+Z2: СУРАЛЦАХ ЧАДВАР
+    → Цикл бүрт ухаалаг болно
+    → Амжилтыг давтана, алдааг дахиж давтахгүй
+    → Pattern → Rule → Strategy автомат үүсгэнэ
+    → 1000 шийдвэрийн дараа хүнээс илүү зөв шийднэ
+
+Z3: ОЛОН ДЭЛГҮҮР
+    → 1 AI = 100 дэлгүүр удирдана
+    → Store A-д сурсан зүйлийг Store B-д ашиглана
+    → Niche бүрт тохирсон стратеги автомат тохируулна
+    → Нэг store-ийн алдааг бүх store-д түгээнэ (давтахгүй)
+
+Z4: БОДИТ МӨНГӨ ОЛОХ
+    → Зөв бүтээгдэхүүн = зарагдах бүтээгдэхүүн
+    → Зөв үнэ = хамгийн их ашиг
+    → Зөв маркетинг = хамгийн бага зардал, хамгийн их борлуулалт
+    → Зөв inventory = мөнгө гацахгүй, дуусахгүй
+
+Z5: БҮРЭН ХЯНАЛТ
+    → Shopify store-ийн бүх тохиргоо удирдана
+    → Бүтээгдэхүүн CRUD (үүсгэх, засах, устгах)
+    → Үнэ автомат тохируулах
+    → Collection, page, navigation удирдах
+    → Theme, shipping, payment мэдээлэл хянах
+    → Webhook-ээр real-time хариу үйлдэл
+
+Z6: INTELLIGENCE ТҮВШИН
+    → Data ойлгоно (зүгээр хадгалахгүй — боловсруулна)
+    → Memory ашиглана (шийдвэр бүрт өмнөх туршлага хайна)
+    → Pattern олно (3+ давтагдсан → дүрэм)
+    → Rule үүсгэнэ (дүрэм → автомат шийдвэр)
+    → Strategy бүтээнэ (олон дүрэм → стратеги)
+    → Simulation хийнэ (бодит store-д нөлөөлөхгүй)
+    → 4 model зэрэг ажиллана (analyze + work + create + learn)
+
+Z7: ӨРСӨЛДӨӨНИЙ ДАВУУ ТАЛ
+    → Өрсөлдөгчийг автомат хянана
+    → Тэдний үнэ, бүтээгдэхүүн, стратегийг мэднэ
+    → Тэднээс түрүүлж хариу үйлдэл хийнэ
+    → Зах зээлийн trend-ийг бусдаас өмнө олно
+```
+
+### CORE PRINCIPLE
+
+```
+AI Intelligence = Data + Memory + Decision + Learning + Execution
+Model alone = хангалтгүй
+System = жинхэнэ ухаан
+Зорилго = хүнээс илүү сайн бизнес ажиллуулах AI
+```
+
+---
+
+## СИСТЕМИЙН БҮТЭЦ
 
 ```
 shopai/
-│
-├── core/                        ← СИСТЕМИЙН ЦӨМ (бүгдийг удирдана)
-│   ├── brain/                   ← AI ТАРХИ (нэг газар!)
-│   │   ├── memory.py            → 6-layer intelligent memory
-│   │   ├── decision_engine.py   → Structured decisions (memory-backed)
-│   │   ├── decision_brain.py    → High-level thinking (observe→decide→plan)
-│   │   ├── learning_loop.py     → Execution→Result→Evaluate→Learn
-│   │   ├── learning_model.py    → 4th model: patterns, rules, simulation
-│   │   └── model_coordinator.py → 3 workers + 1 learner
+├── core/                            ← СИСТЕМИЙН ЦӨМ
+│   ├── brain/                       ← AI ТАРХИ (шийдвэр гаргах цөм)
+│   │   ├── decision_brain.py        → 7 алхамт бодох процесс
+│   │   ├── decision_engine.py       → Memory-backed structured decisions
+│   │   ├── memory.py                → 6-layer intelligent memory (L0→L5)
+│   │   ├── learning_loop.py         → Execution→Result→Evaluate→Learn
+│   │   ├── learning_model.py        → 4th model: patterns + rules + simulation
+│   │   └── model_coordinator.py     → 3 worker + 1 learner model удирдлага
 │   │
-│   ├── system/                  ← СИСТЕМ УДИРДЛАГА
-│   │   ├── orchestrator.py      → Бүх task удирдах
-│   │   ├── task_queue.py        → Dependency graph execution
-│   │   ├── shared_memory.py     → Бүх component хуваалцах data
-│   │   ├── llm_adapter.py       → Бүх LLM нэг interface
-│   │   ├── adaptive_skills.py   → Skills scoring
-│   │   ├── shopify_manager.py   → Shopify бүрэн удирдлага
-│   │   └── realtime_monitor.py  → Live хяналт
+│   ├── memory/                      ← НЭГДСЭН САНАХ ОЙ
+│   │   └── unified_memory.py        → 5 memory backend = 1 interface
 │   │
-│   ├── ai/                      ← AI ЧАДВАРУУД
-│   │   ├── reasoning.py         → LLM reasoning
-│   │   ├── experience.py        → Permanent knowledge DB
-│   │   ├── external_tools.py    → Web search, scraping
-│   │   └── self_improver.py     → Self-analysis
+│   ├── autonomous/                  ← АВТОНОМ УДИРДЛАГА
+│   │   ├── controller.py            → 7 phase autonomous cycle
+│   │   ├── layer_dispatcher.py      → 12 layer → autonomous cycle руу холбосон
+│   │   └── agent_dispatcher.py      → 7 agent → brain decisions руу холбосон
 │   │
-│   ├── auth/                    → OAuth tokens
-│   └── autonomous/              → Автоном cycle controller
+│   ├── system/                      ← СИСТЕМ ДЭМЖЛЭГ
+│   │   ├── llm_adapter.py           → Ollama/OpenAI/Anthropic нэгдсэн
+│   │   ├── task_queue.py            → Dependency graph execution
+│   │   ├── shared_memory.py         → Live namespace store (TTL)
+│   │   ├── adaptive_skills.py       → 22 skill, Bayesian scoring
+│   │   ├── shopify_manager.py       → Shopify store бүрэн API
+│   │   └── realtime_monitor.py      → Live store хяналт
+│   │
+│   ├── ai/                          ← AI ЧАДВАРУУД
+│   │   ├── reasoning.py             → LLM direct reasoning
+│   │   ├── experience.py            → Permanent knowledge DB
+│   │   ├── external_tools.py        → Web search, scraping, research
+│   │   └── self_improver.py         → Self-analysis, mistake detection
+│   │
+│   ├── auth/                        → Shopify OAuth (24h auto-refresh)
+│   ├── intelligence/                → 39 intelligence module
+│   ├── orchestrator/                → MainOrchestrator (legacy, 10 files)
+│   ├── learning/                    → Learning engine + outcome tracker
+│   └── [30+ legacy modules]         → Bridge, chaining, events, etc.
 │
-├── data_pipeline/               ← DATA УРСГАЛ
-│   ├── store/                   → SQLite DB, sync, data provider
-│   ├── ingestion/api/           → GraphQL + REST API clients
-│   └── tracking/                → Event collector (ML training data)
+├── data_pipeline/                   ← DATA УРСГАЛ
+│   ├── store/                       → SQLite DB, multi-store, sync, data provider
+│   ├── ingestion/api/               → GraphQL (шинэ) + REST (fallback) API clients
+│   └── tracking/                    → Event collector (ML training data)
 │
-├── engines/                     ← 131 ENGINE (ажлын нэгжүүд)
-├── layers/                      ← 12 LAYER (engines бүлэглэсэн)
-├── agents/                      ← 7 AGENT (plan→execute→evaluate)
-├── execution/                   ← ГҮЙЦЭТГЭЛ (Shopify дээр action хийх)
-├── models/                      ← LLM WRAPPERS (Mistral/Qwen/LLaMA)
-├── tools/                       ← TOOL ADAPTERS (Shopify, email, ads)
-├── memory/                      ← LEGACY MEMORY (vector, long-term)
-├── brain/                       ← LEGACY BRAIN (strategy, quality)
-└── tests/                       ← ТЕСТҮҮД
+├── engines/                         ← 131 ENGINE (ажлын нэгжүүд)
+│   ├── pricing/                     → Үнийн бодлого
+│   ├── inventory/                   → Нөөцийн удирдлага
+│   ├── product_research/            → Winning product хайлт
+│   ├── customer_segmentation/       → Хэрэглэгч ангилал
+│   └── [127 more engines]           → Бүгд registry-д бүртгэлтэй
+│
+├── layers/                          ← 12 LAYER (engines бүлэглэсэн)
+│   ├── data_layer/                  → Data collection engines
+│   ├── analysis_layer/              → Analysis engines
+│   ├── product_layer/               → Product engines
+│   ├── pricing_layer/               → Pricing engines
+│   ├── customer_layer/              → Customer engines
+│   ├── marketing_layer/             → Marketing engines
+│   ├── sales_layer/                 → Sales engines
+│   ├── operations_layer/            → Operations engines
+│   ├── financial_layer/             → Financial engines
+│   ├── intelligence_layer/          → Intelligence engines
+│   ├── execution_layer/             → Execution engines
+│   └── scaling_layer/               → Scaling engines
+│
+├── agents/                          ← 7 AGENT (plan→execute→evaluate)
+│   ├── product/                     → Product sourcing + optimization
+│   ├── marketing/                   → Campaign planning + execution
+│   ├── content/                     → Content + image management
+│   ├── finance/                     → Pricing + profitability
+│   ├── operations/                  → Inventory + fulfillment
+│   ├── customer/                    → Segmentation + retention
+│   └── research/                    → Market + competitor research
+│
+├── execution/                       ← ГҮЙЦЭТГЭЛ
+│   ├── action_executor.py           → propose → approve → execute
+│   ├── content/ai_writer.py         → AI content generation
+│   └── shopify/                     → Product creator, updater
+│
+├── models/                          ← LLM WRAPPERS
+│   ├── mistral/                     → Analyzer role
+│   ├── qwen/                        → Worker role
+│   ├── llama/                       → Creative role
+│   └── inference/                   → Ollama backend
+│
+├── tools/                           ← TOOL ADAPTERS (13)
+│   ├── adapters/shopify.py          → Shopify commerce
+│   ├── adapters/google_ads.py       → Google Ads
+│   └── [11 more adapters]           → Email, SMS, Analytics, etc.
+│
+├── api/server.py                    ← HTTP + Webhook server
+├── cli.py                           ← CLI tool
+└── tests/                           ← 530+ tests
 ```
 
-## DATA УРСГАЛ (Тодорхой)
+---
+
+## DATA УРСГАЛ (Бүтэн Pipeline)
 
 ```
-ОРОЛТ (Input):
-  Shopify → GraphQL API → SQLite DB
-  Webhooks → Event Collector
-  Web Search → Market Intel
-
-БОЛОВСРУУЛАЛТ (Processing):
-  SQLite → DataProvider → SharedMemory
-  SharedMemory → Brain.IntelligentMemory (L0→L5)
-  IntelligentMemory → DecisionEngine.retrieve()
-
-ШИЙДВЭР (Decision):
-  DecisionEngine:
-    1. Memory-оос context авна (best cases, failures, rules)
-    2. Options үүсгэнэ (keep/raise/lower)
-    3. Score тооцно (profit × risk × memory × rules)
-    4. Best option сонгоно
-    5. Memory-д бичнэ
-
-ГҮЙЦЭТГЭЛ (Execution):
-  Decision → ActionExecutor → propose → [approve] → Shopify API
-
-СУРАЛЦАХ (Learning):
-  Result → LearningLoop.learn()
-    → Evaluate (score 1-5)
-    → Success? reinforce pattern
-    → Failure? root cause → rule generate
-    → Memory update
-    → Next cycle: илүү ухаалаг
+                    SHOPIFY STORE
+                         │
+                         ▼ GraphQL API (costs included)
+                    ┌─────────┐
+                    │ SQLite   │ ← products, orders, customers
+                    │ Database │ ← sync history, analytics snapshots
+                    └────┬────┘
+                         │
+                         ▼ SyncService
+                ┌────────────────────┐
+                │  UNIFIED MEMORY    │ ← 5 backends, 1 interface
+                │                    │
+                │  SharedMemory ──── │ → live namespace data (TTL)
+                │  BrainMemory ───── │ → 6-layer (L0→L5)
+                │  Experience ────── │ → permanent knowledge DB
+                │  CrossCache ────── │ → engine-to-engine sharing
+                │  Persistent ────── │ → long-term key-value
+                └────────┬──────────┘
+                         │
+            ┌────────────▼────────────┐
+            │     DECISION BRAIN      │
+            │                         │
+            │  1. OBSERVE  → state    │
+            │  2. DIAGNOSE → problems │
+            │  3. OPPORTUNITIES       │
+            │  4. CONSULT MEMORY      │
+            │     └→ retrieve best    │
+            │     └→ retrieve fails   │
+            │     └→ retrieve rules   │
+            │  5. DECIDE              │
+            │     └→ DecisionEngine   │
+            │     └→ ModelCoordinator │
+            │  6. VALIDATE            │
+            │  7. ACTION PLAN         │
+            └────────────┬────────────┘
+                         │
+        ┌────────────────┼────────────────┐
+        ▼                ▼                ▼
+   ┌─────────┐    ┌───────────┐    ┌───────────┐
+   │ 5 Core  │    │ 12 Layers │    │ AI        │
+   │ Engines │    │ 131 Engines│    │ Reasoning │
+   └────┬────┘    └─────┬─────┘    └─────┬─────┘
+        └───────────────┼────────────────┘
+                        ▼
+               ┌────────────────┐
+               │ ACTION EXECUTOR │
+               │ propose→approve │
+               │ →execute        │
+               └───────┬────────┘
+                       │
+               ┌───────▼────────┐
+               │ 7 AGENTS       │
+               │ plan→execute   │
+               │ →evaluate      │
+               └───────┬────────┘
+                       │
+               ┌───────▼────────┐
+               │ LEARNING LOOP  │
+               │                │
+               │ evaluate (1-5) │
+               │ success → reinforce │
+               │ failure → rule      │
+               │ memory update       │
+               └───────┬────────┘
+                       │
+                       ▼
+                 NEXT CYCLE
+                (илүү ухаалаг)
 ```
 
-## LOCAL AI MODELS (Тодорхой)
+---
+
+## AUTONOMOUS CYCLE (7 Phase)
 
 ```
-┌─────────────────────────────────────────────┐
-│            MODEL COORDINATOR                 │
-│                                              │
-│  EXECUTION (real-time, зэрэг):              │
-│    Mistral  → ANALYZER                       │
-│      input: data + question                  │
-│      output: score(1-10) + decision + reason │
-│      when: evaluate product, check price,    │
-│            validate quality                  │
-│                                              │
-│    Qwen → WORKER                             │
-│      input: data + task                      │
-│      output: calculation result              │
-│      when: margin calc, demand forecast,     │
-│            data processing                   │
-│                                              │
-│    LLaMA → CREATIVE                          │
-│      input: product info + style             │
-│      output: text content                    │
-│      when: descriptions, ad copy, emails,    │
-│            SEO titles                        │
-│                                              │
-│  LEARNING (background, тусад):              │
-│    Learning Model (Mistral)                  │
-│      input: historical aggregated data       │
-│      output: patterns, rules, simulations    │
-│      when: after every N cycles              │
-│      ХЭЗЭЭ Ч execution хийхгүй              │
-└─────────────────────────────────────────────┘
+Phase 1:   DATA        → Shopify sync → SQLite → UnifiedMemory
+Phase 1b:  BRAIN       → observe → diagnose → decide → plan
+Phase 2:   ANALYZE     → 5 core engines (77 insights)
+Phase 2b:  LAYERS      → 12 layers, 131 engines (207+ insights)
+Phase 3:   DECIDE      → brain decisions + engine results → actions
+Phase 3b:  AGENTS      → 7 agents dispatched by domain
+Phase 4:   EXECUTE     → ActionExecutor → Shopify API
+Phase 5:   LEARN       → evaluate → memory update → rules
+Phase 6:   IMPROVE     → self-analysis → strategy adjust
+
+Duration: ~1.7 seconds per cycle
 ```
 
-## MEMORY SYSTEM (Тодорхой)
+---
+
+## 4 MODEL ARCHITECTURE
 
 ```
-INTELLIGENT MEMORY (brain/memory.py):
-  L0: Raw data орно
-  L1: Filter (quality < 2 → bad_data руу)
-  L2: Features extract (margin, tier, has_images, etc.)
-  L3: Scored (1-5) + tagged (high_margin, premium, etc.)
-  L4: Patterns (3+ давтагдсан → pattern)
-  L5: Rules (pattern → actionable rule)
+WORKERS (зэрэг, real-time):
+  Mistral   → ANALYZER  (evaluate, score, decide)
+  Qwen      → WORKER    (calculate, process)
+  LLaMA     → CREATIVE  (content, descriptions)
 
-  Bad data: устгагдахгүй → тусад нь → analyze хийгдэнэ
-
-SHARED MEMORY (system/shared_memory.py):
-  Namespaced: products, orders, customers, decisions, state
-  TTL-based: хуучирсан data автомат устгагдана
-  Context builder: task бүрт тохирсон data цуглуулна
-
-EXPERIENCE DB (ai/experience.py):
-  Product knowledge: юу зардаг, яагаад
-  Decision outcomes: юу амжилттай, юу амжилтгүй
-  Strategy knowledge: ямар стратеги ажилладаг
-  Mistake log: юу хийхгүй байх
-  Tool knowledge: ямар tool хэзээ сайн
-  Market intel: зах зээлийн мэдээлэл
+LEARNER (background, тусад):
+  Learning Model → pattern detection, rule generation, simulation
+  → ХЭЗЭЭ Ч execution хийхгүй
+  → Зөвхөн system сайжруулна
 ```
 
-## LEARNING SYSTEM (Тодорхой)
+---
+
+## MEMORY SYSTEM (6 Layer)
+
+```
+L0: Raw buffer     → шүүгдээгүй data орно
+L1: Filtered       → чанар муу → bad_data руу (устгахгүй!)
+L2: Features       → margin, price_tier, has_images extract
+L3: Scored         → 1-5 оноо + auto-tag
+L4: Patterns       → 3+ давтагдсан → pattern
+L5: Rules          → pattern → actionable rule (prefer/avoid)
+
+Bad data: устгагдахгүй → тусад нь хадгалагдана → analyze хийгдэнэ
+```
+
+---
+
+## LEARNING SYSTEM
 
 ```
 CYCLE БҮРТ:
-  1. Execution хийнэ
-  2. Result авна
-  3. Evaluate хийнэ (score 1-5)
-     - profit > 0? + 1
-     - conversion > 0? + 0.5
-     - status = error? - 1.5
-  4. Score >= 4: SUCCESS
-     → pattern reinforce
-     → strategy weight нэмэгдэнэ
-  5. Score <= 2: FAILURE
-     → root cause: missing_resource / performance / unprofitable
-     → repeated 3+? "STOP using this approach"
-     → rule generate → decision engine update
-  6. Memory update
-  7. Next cycle: rules ашиглана → илүү сайн шийдвэр
-
-LEARNING MODEL (background):
-  Historical data → analyze
-  → patterns (price_tier_margin, category_concentration, etc.)
-  → rules (KEEP mid pricing, DIVERSIFY categories, RESTOCK)
-  → simulation (raise 10%? lower 10%? focus top5?)
-  → system update (execution-г зогсоохгүй)
+  Execution → Result → Evaluate (score 1-5)
+  
+  Score >= 4: SUCCESS
+    → pattern reinforce
+    → strategy weight ↑
+    → "do more of this"
+  
+  Score <= 2: FAILURE  
+    → root cause analysis
+    → repeated 3+? "STOP this approach"
+    → rule generate
+    → decision engine update
+  
+  Memory update → Next cycle: rules ашиглана → илүү сайн шийдвэр
 ```
 
-## ОДООГИЙН ДУТАГДАЛ
+---
 
-1. Legacy код (brain/, memory/) шинэтэй холбогдоогүй
-2. Layers, Agents шинэ system-тэй integrate хийгдээгүй
-3. Бодит борлуулалт 0 — AI суралцах data хязгаарлагдмал
-4. Image, marketing execution дутуу
-5. Зарим engine зөв data авахгүй (input format тохирохгүй)
+## ОДООГИЙН ТООН ҮЗҮҮЛЭЛТ
+
+```
+Engines:        131 registered
+Layers:         12 (all loaded, 2 running)
+Agents:         7 (all loaded, 2 dispatching)
+LLM Models:     3 installed (Mistral + Qwen + LLaMA)
+Memory:         5 backends unified
+Skills:         22 adaptive
+Tests:          530+
+Store:          deguar (15 products, 90/100 health)
+Cycle time:     1.7 seconds
+Insights:       284 per cycle
+```
