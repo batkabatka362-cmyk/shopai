@@ -179,6 +179,20 @@ _ENGINE_MAP: dict[str, str] = {
     "customer_journey": "engines.customer_journey",
     "performance_monitor": "engines.performance_monitor",
     "security_monitor": "engines.security_monitor",
+
+    # ── Simulation Engines (flow.py pattern) ───────────────────
+    "market_simulator": "engines.market_simulator",
+    "competitor_reaction_simulator": "engines.competitor_reaction_simulator",
+    "cashflow_simulator": "engines.cashflow_simulator",
+    "customer_behavior_simulator": "engines.customer_behavior_simulator",
+
+    # ── Strategy Engines (flow.py pattern) ─────────────────────
+    "campaign_strategy": "engines.campaign_strategy",
+    "workflow_builder": "engines.workflow_builder",
+
+    # ── Reporting Engines (flow.py pattern) ────────────────────
+    "report_dashboard": "engines.report_dashboard",
+    "email_reporter": "engines.email_reporter",
 }
 
 # Cache for instantiated engines
