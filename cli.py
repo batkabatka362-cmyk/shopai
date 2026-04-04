@@ -130,6 +130,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("start", help="Start the orchestrator")
     sub.add_parser("stop", help="Stop the orchestrator")
 
+    server_p = sub.add_parser("server", help="Start API + webhook server")
+    server_p.add_argument("--port", type=int, default=8080, help="Port (default 8080)")
+    server_p.add_argument("--host", default="0.0.0.0", help="Host (default 0.0.0.0)")
+
     return parser
 
 
@@ -702,6 +706,15 @@ def main(argv: list[str] | None = None) -> None:
         result = orchestrator.run_workflow(args.workflow_name, params)
         print(json.dumps(result, indent=2, default=str))
         orchestrator.shutdown()
+        return
+
+    if args.command == "server":
+        from api.server import ShopAIServer
+        print(f"Starting ShopAI API server on {args.host}:{args.port}")
+        print(f"Webhook URL: http://{args.host}:{args.port}/api/webhook/shopify")
+        print("Press Ctrl+C to stop.\n")
+        server = ShopAIServer(args.host, args.port)
+        server.start()
         return
 
     parser.print_help()

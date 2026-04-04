@@ -32,6 +32,9 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/status": self._status,
             "/api/engines": self._list_engines,
             "/api/chains": self._list_chains,
+            "/api/experience": self._get_experience,
+            "/api/webhooks": self._list_webhooks,
+            "/api/stores": self._list_stores,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -61,8 +64,8 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/webhook/shopify": self._handle_webhook,
             "/api/agent": self._agent_run,
             "/api/workflow": self._run_workflow,
-        }
-            "/api/analyze": self._analyze_engine,
+            "/api/auto/cycle": self._auto_cycle,
+            "/api/store/sync": self._store_sync,
         }
 
         handler = routes.get(path)
@@ -109,6 +112,32 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             self._json_response(500, {"error": str(exc)})
+
+    def _get_experience(self) -> None:
+        try:
+            from core.ai.experience import get_experience
+            exp = get_experience()
+            self._json_response(200, exp.get_knowledge_summary())
+        except Exception as exc:
+            self._json_response(500, {"error": str(exc)})
+
+    def _list_webhooks(self) -> None:
+        from core.webhooks import ShopifyWebhookHandler
+        handler = ShopifyWebhookHandler()
+        self._json_response(200, {
+            "supported_events": handler.list_supported_events(),
+            "stats": handler.get_stats(),
+        })
+
+    def _list_stores(self) -> None:
+        try:
+            from data_pipeline.store.store_manager import StoreManager
+            sm = StoreManager()
+            stores = sm.list_stores()
+            stats = [sm.get_stats(s["store_id"]) for s in stores]
+            self._json_response(200, {"stores": stores, "stats": stats})
+        except Exception as exc:
+            self._json_response(200, {"stores": [], "error": str(exc)})
 
     # --- POST handlers ---
 
@@ -169,7 +198,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         self._json_response(200, result)
 
     def _handle_webhook(self, body: dict) -> None:
-        """Handle Shopify webhook event."""
+        """Handle Shopify webhook event — triggers engines + records experience."""
         topic = self.headers.get("X-Shopify-Topic", body.get("topic", ""))
         shop = self.headers.get("X-Shopify-Shop-Domain", body.get("shop", ""))
         hmac_val = self.headers.get("X-Shopify-Hmac-SHA256", "")
@@ -181,7 +210,58 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         from core.webhooks import ShopifyWebhookHandler
         handler = ShopifyWebhookHandler()
         result = handler.handle(topic, body, hmac_val, shop)
+
+        # Store in experience DB
+        try:
+            from core.ai.experience import get_experience
+            exp = get_experience()
+            store_id = shop.replace(".myshopify.com", "") if shop else ""
+            if "orders/create" in topic:
+                total = float(body.get("total_price", 0) or 0)
+                exp.store_market_intel(
+                    "order_event", f"New order ${total:.2f} from {shop}",
+                    source="webhook", confidence=1.0, relevance=store_id,
+                )
+            # Cache webhook data to DB
+            from data_pipeline.store.db import ShopAIDatabase
+            db = ShopAIDatabase()
+            if store_id and "order" in topic:
+                db.upsert_orders(store_id, handler._normalize_order(body))
+            elif store_id and "product" in topic:
+                db.upsert_products(store_id, handler._normalize_product(body))
+            elif store_id and "customer" in topic:
+                db.upsert_customers(store_id, handler._normalize_customer(body))
+        except Exception as exc:
+            logger.debug("Webhook experience/cache: %s", exc)
+
         self._json_response(200, result)
+
+    def _auto_cycle(self, body: dict) -> None:
+        """Run one autonomous AI cycle."""
+        store_id = body.get("store_id", "")
+        try:
+            from data_pipeline.store.store_manager import StoreManager
+            from core.autonomous.controller import AutonomousController
+            sm = StoreManager()
+            controller = AutonomousController(sm, auto_approve=body.get("auto_approve", False))
+            controller.initialize()
+            result = controller.run_cycle(store_id)
+            self._json_response(200, result)
+        except Exception as exc:
+            self._json_response(500, {"error": str(exc)})
+
+    def _store_sync(self, body: dict) -> None:
+        """Sync store data from Shopify."""
+        store_id = body.get("store_id", "")
+        try:
+            from data_pipeline.store.store_manager import StoreManager
+            from data_pipeline.store.sync_service import SyncService
+            sm = StoreManager()
+            sync = SyncService(sm)
+            result = sync.sync_store(store_id)
+            self._json_response(200, result)
+        except Exception as exc:
+            self._json_response(500, {"error": str(exc)})
 
     def _agent_run(self, body: dict) -> None:
         """Run a task through an agent."""
