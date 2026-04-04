@@ -1,2 +1,7 @@
-"""Profitability Calculator Engine — complete product profitability analysis."""
-from .engine import ProfitabilityCalculatorEngine
+"""Profitability Calculator Engine — public API.
+
+Exports only the ProfitabilityCalculatorEngine orchestrator class.
+"""
+from .flow import ProfitabilityCalculatorEngine
+
+__all__ = ["ProfitabilityCalculatorEngine"]

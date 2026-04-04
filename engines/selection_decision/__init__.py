@@ -1,12 +1,7 @@
-"""Selection Decision Engine — final product selection with confidence scoring.
+"""Selection Decision Engine — public API.
 
-Orchestrates the full selection pipeline:
-  score_aggregator -> ranking -> confidence_calculator -> comparison -> final_selector
-
-Takes scored products from all upstream engines and produces a definitive
-product selection with confidence rating, comparison analysis, decision
-rationale, and concrete action plan.
+Exports only the SelectionDecisionEngine orchestrator class.
 """
-from .engine import SelectionDecisionEngine
+from .flow import SelectionDecisionEngine
 
 __all__ = ["SelectionDecisionEngine"]
