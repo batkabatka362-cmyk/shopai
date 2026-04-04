@@ -49,7 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_p = store_sub.add_parser("add", help="Add a new Shopify store")
     add_p.add_argument("store_id", help="Unique store identifier")
     add_p.add_argument("shop_url", help="Shopify store URL (e.g. mystore.myshopify.com)")
-    add_p.add_argument("api_key", help="Shopify Admin API access token")
+    add_p.add_argument("--client-id", default="", help="OAuth Client ID (2026+)")
+    add_p.add_argument("--client-secret", default="", help="OAuth Client Secret (2026+)")
+    add_p.add_argument("--api-key", default="", help="Legacy API token (pre-2026)")
     add_p.add_argument("--name", default="", help="Store display name")
     add_p.add_argument("--niche", default="", help="Store niche (e.g. electronics)")
     add_p.add_argument("--type", default="dropshipping", dest="store_type",
@@ -156,11 +158,15 @@ def _get_store_manager():
 def _cmd_store_add(args) -> None:
     sm = _get_store_manager()
     result = sm.add_store(
-        args.store_id, args.shop_url, args.api_key,
+        args.store_id, args.shop_url,
+        api_key=args.api_key,
+        client_id=args.client_id,
+        client_secret=args.client_secret,
         name=args.name, niche=args.niche, store_type=args.store_type,
     )
     print(f"✓ Store added: {args.store_id}")
     print(f"  URL: {args.shop_url}")
+    print(f"  Auth: {'OAuth (auto-refresh)' if args.client_id else 'Legacy token' if args.api_key else 'No credentials'}")
     print(f"  Type: {args.store_type}")
     if args.niche:
         print(f"  Niche: {args.niche}")

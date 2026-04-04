@@ -29,15 +29,19 @@ class StoreManager:
         self,
         store_id: str,
         shop_url: str,
-        api_key: str,
+        api_key: str = "",
         name: str = "",
         niche: str = "",
         store_type: str = "dropshipping",
+        client_id: str = "",
+        client_secret: str = "",
     ) -> dict[str, Any]:
-        """Register a new Shopify store."""
+        """Register a new Shopify store. Supports OAuth (client_id+secret) or legacy key."""
         self._store_credentials[store_id] = {
             "shop_url": shop_url,
             "api_key": api_key,
+            "client_id": client_id,
+            "client_secret": client_secret,
         }
         result = self._db.add_store(
             store_id, shop_url,
@@ -98,15 +102,45 @@ class StoreManager:
     # ── Credentials ──────────────────────────────────────────
 
     def get_credentials(self, store_id: str = "") -> dict[str, str]:
-        """Get API credentials for a store."""
+        """Get API credentials for a store. Supports OAuth auto-refresh."""
         sid = store_id or self._active_store_id
         if sid in self._store_credentials:
-            return self._store_credentials[sid]
+            creds = dict(self._store_credentials[sid])
+            # Try OAuth token refresh
+            creds["api_key"] = self._resolve_token(creds)
+            return creds
         # Fallback to env vars (single-store mode)
         return {
             "shop_url": os.environ.get("SHOPAI_SHOPIFY_URL", ""),
-            "api_key": os.environ.get("SHOPAI_SHOPIFY_KEY", ""),
+            "api_key": self._resolve_env_token(),
         }
+
+    @staticmethod
+    def _resolve_token(creds: dict[str, str]) -> str:
+        """Resolve token — use OAuth if client_id/secret present, else static key."""
+        if creds.get("client_id") and creds.get("client_secret"):
+            try:
+                from core.auth.shopify_auth import ShopifyAuth
+                auth = ShopifyAuth(creds["shop_url"], creds["client_id"], creds["client_secret"])
+                return auth.get_token()
+            except Exception:
+                pass
+        return creds.get("api_key", "")
+
+    @staticmethod
+    def _resolve_env_token() -> str:
+        """Resolve token from env — OAuth or legacy."""
+        client_id = os.environ.get("SHOPAI_SHOPIFY_CLIENT_ID", "")
+        client_secret = os.environ.get("SHOPAI_SHOPIFY_CLIENT_SECRET", "")
+        shop_url = os.environ.get("SHOPAI_SHOPIFY_URL", "")
+        if client_id and client_secret and shop_url:
+            try:
+                from core.auth.shopify_auth import ShopifyAuth
+                auth = ShopifyAuth(shop_url, client_id, client_secret)
+                return auth.get_token()
+            except Exception:
+                pass
+        return os.environ.get("SHOPAI_SHOPIFY_KEY", "")
 
     def set_credentials(self, store_id: str, shop_url: str, api_key: str) -> None:
         self._store_credentials[store_id] = {
