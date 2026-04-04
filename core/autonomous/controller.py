@@ -333,22 +333,29 @@ class AutonomousController:
                             "params": alert,
                         }))
 
-        # Pricing recommendation
+        # Pricing recommendation — only if it RAISES price or has competitor data
         pr = analysis.get("pricing", {})
         if isinstance(pr, dict) and pr.get("status") != "error":
             pr_data = pr.get("data", {})
             if isinstance(pr_data, dict) and pr_data.get("recommended_price"):
-                all_decisions.append(self._action_executor.propose_action({
-                    "type": "pricing_recommendation",
-                    "store_id": store_id,
-                    "engine": "pricing",
-                    "confidence": pr_data.get("confidence", 0.5),
-                    "reason": pr_data.get("rationale", "")[:100],
-                    "params": {
-                        "recommended_price": pr_data["recommended_price"],
-                        "strategy": pr_data.get("strategy", ""),
-                    },
-                }))
+                rec_price = pr_data["recommended_price"]
+                # Get current price from first product in data
+                products = data.get("products", []) if hasattr(self, '_last_data') else []
+                current_price = products[0].get("price", 0) if products else 0
+
+                # Only propose if raising price or confidence is high
+                if rec_price > current_price or pr_data.get("confidence", 0) > 0.7:
+                    all_decisions.append(self._action_executor.propose_action({
+                        "type": "pricing_recommendation",
+                        "store_id": store_id,
+                        "engine": "pricing",
+                        "confidence": pr_data.get("confidence", 0.5),
+                        "reason": pr_data.get("rationale", "")[:100],
+                        "params": {
+                            "recommended_price": rec_price,
+                            "strategy": pr_data.get("strategy", ""),
+                        },
+                    }))
 
         # From AI reasoning recommendations
         for key in ("ai_pricing", "ai_inventory"):

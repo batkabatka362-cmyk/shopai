@@ -204,6 +204,10 @@ class DecisionBrain:
         decisions = self._decide(state, problems, opportunities, experience_advice)
         thought["decisions"] = decisions
 
+        # Step 5b: VALIDATE — remove bad decisions
+        decisions = self._validate_decisions(decisions, state)
+        thought["decisions"] = decisions
+
         # Step 6: PLAN — in what order?
         action_plan = self._create_action_plan(decisions)
         thought["action_plan"] = action_plan
@@ -477,6 +481,35 @@ class DecisionBrain:
             })
 
         return sorted(decisions, key=lambda d: d["priority"])
+
+    # ── Step 5b: Validate Decisions ─────────────────────────
+
+    def _validate_decisions(self, decisions: list, state: StoreState) -> list[dict[str, Any]]:
+        """Brain reviews its own decisions before acting. Removes bad ideas."""
+        validated = []
+        for dec in decisions:
+            action = dec.get("type", "")
+
+            # DON'T lower prices when there are zero orders
+            # Lowering prices without data = losing margin for nothing
+            if action == "lower_price" and state.order_count == 0:
+                logger.info("Brain rejected: lower_price with 0 orders (no data to justify)")
+                continue
+
+            # DON'T make pricing changes without competitor data
+            if action in ("raise_price", "lower_price") and not dec.get("has_competitor_data"):
+                dec["confidence"] = min(dec.get("confidence", 0.5), 0.4)
+                dec["reason"] = dec.get("reason", "") + " [low confidence: no competitor data]"
+
+            # DON'T add more products if current ones have no images
+            if action == "add_products" and state.product_count >= 10:
+                # Check if existing products are well-set-up first
+                no_images = sum(1 for p in state.products if not p.get("image_url"))
+                if no_images > state.product_count * 0.5:
+                    dec["reason"] = f"Add products BUT fix images first ({no_images}/{state.product_count} have no images)"
+
+            validated.append(dec)
+        return validated
 
     # ── Step 6: Action Plan ──────────────────────────────────
 
