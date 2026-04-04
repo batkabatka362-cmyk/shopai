@@ -104,7 +104,14 @@ class AIReasoning:
     # ── LLM Reasoning ────────────────────────────────────────
 
     def _llm_reason(self, prompt: str, role: str, context: dict) -> dict[str, Any] | None:
-        """Call actual LLM via ModelRouter/Ollama."""
+        """Call LLM — direct Ollama first (faster), ModelRouter as fallback."""
+        # Direct Ollama call first (no middleware timeout issues)
+        try:
+            return self._direct_ollama_call(prompt)
+        except Exception as exc:
+            logger.debug("Direct Ollama: %s", exc)
+
+        # Fallback to ModelRouter
         router = self._get_router()
         if router:
             try:
@@ -112,14 +119,9 @@ class AIReasoning:
                 if not result.get("error"):
                     return self._parse_llm_response(result)
             except Exception as exc:
-                logger.warning("ModelRouter failed: %s", exc)
+                logger.debug("ModelRouter: %s", exc)
 
-        # Direct Ollama call as backup
-        try:
-            return self._direct_ollama_call(prompt)
-        except Exception as exc:
-            logger.warning("Direct Ollama failed: %s", exc)
-            return None
+        return None
 
     def _direct_ollama_call(self, prompt: str) -> dict[str, Any]:
         """Direct HTTP call to Ollama API."""
@@ -129,7 +131,7 @@ class AIReasoning:
             "model": "mistral",
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.3, "num_predict": 1024},
+            "options": {"temperature": 0.3, "num_predict": 800},
         }).encode()
 
         req = urllib.request.Request(
@@ -139,7 +141,7 @@ class AIReasoning:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read())
             text = data.get("response", "")
             return self._parse_text_response(text)
@@ -460,20 +462,24 @@ class AIReasoning:
         # Summarize data to fit context window
         summary = self._summarize_data(data)
 
-        return f"""You are an expert e-commerce AI analyst. Analyze the following data and provide actionable recommendations.
+        return f"""You are an expert e-commerce AI analyst specializing in dropshipping. Analyze the following data and provide actionable recommendations.
 
 TASK: {task}
 
 DATA:
 {summary}
 
-Respond in JSON format with these fields:
-- "analysis": Brief analysis summary (2-3 sentences)
-- "recommendations": List of objects with "action", "reason", "confidence" (0-1), "impact" ("high"/"medium"/"low")
-- "confidence": Overall confidence score (0-1)
-- "reasoning": Your reasoning process (1-2 sentences)
+Respond in JSON format:
+{{
+  "analysis": "Brief analysis (2-3 sentences)",
+  "recommendations": [
+    {{"action": "what to do", "product": "which product", "reason": "why", "confidence": 0.8, "impact": "high/medium/low"}}
+  ],
+  "confidence": 0.7,
+  "reasoning": "Your reasoning (1-2 sentences)"
+}}
 
-Focus on actionable, specific recommendations. Be data-driven."""
+Focus on actionable, specific recommendations. Consider margins, competition, and demand. Max 5 recommendations."""
 
     @staticmethod
     def _summarize_data(data: dict, max_items: int = 10) -> str:
