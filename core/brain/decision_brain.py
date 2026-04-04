@@ -157,6 +157,19 @@ class DecisionBrain:
                 self._memory = get_shared_memory()
             except Exception:
                 pass
+        # Connect intelligent memory + decision engine + learning loop
+        if not hasattr(self, "_brain_memory") or not self._brain_memory:
+            try:
+                from core.brain.memory import get_brain_memory
+                from core.brain.decision_engine import DecisionEngine
+                from core.brain.learning_loop import LearningLoop
+                self._brain_memory = get_brain_memory()
+                self._decision_engine = DecisionEngine()
+                self._learning_loop = LearningLoop()
+            except Exception:
+                self._brain_memory = None
+                self._decision_engine = None
+                self._learning_loop = None
 
     # ── Main thinking process ────────────────────────────────
 
@@ -184,6 +197,15 @@ class DecisionBrain:
             "action_plan": [],
         }
 
+        # Step 0: INGEST — feed all data into intelligent memory
+        if self._brain_memory:
+            for p in state.products:
+                self._brain_memory.ingest("product", p, source="cycle", store_id=store_data.get("store_id", ""))
+            for o in state.orders:
+                self._brain_memory.ingest("order", o, source="cycle")
+            for c in state.customers:
+                self._brain_memory.ingest("customer", c, source="cycle")
+
         # Step 1: OBSERVE — what's happening?
         observations = self._observe(state)
         thought["observations"] = observations
@@ -200,9 +222,15 @@ class DecisionBrain:
         experience_advice = self._consult_experience(state, problems, opportunities)
         thought["experience"] = experience_advice
 
-        # Step 5: DECIDE — what to do?
+        # Step 5: DECIDE — what to do? (uses DecisionEngine + memory)
         decisions = self._decide(state, problems, opportunities, experience_advice)
-        thought["decisions"] = decisions
+
+        # Step 5a: Structured decisions via DecisionEngine
+        if self._decision_engine:
+            for p in state.products[:5]:  # Top 5 products
+                structured = self._decision_engine.decide("pricing", p)
+                if structured.choice != "no_action":
+                    thought.setdefault("structured_decisions", []).append(structured.to_dict())
 
         # Step 5b: VALIDATE — remove bad decisions
         decisions = self._validate_decisions(decisions, state)

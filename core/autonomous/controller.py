@@ -187,8 +187,30 @@ class AutonomousController:
             "pending": len(self._action_executor.get_pending()) if self._action_executor else 0,
         }
 
-        # Phase 5: LEARN — Track outcomes and update weights
+        # Phase 5: LEARN — Track outcomes via all learning systems
         learning = self._phase_learn(sid, cycle_id, analysis, executions)
+
+        # Brain learning loop — learn from this cycle
+        try:
+            from core.brain.learning_loop import LearningLoop
+            brain_loop = LearningLoop()
+            cycle_metrics = {
+                "insights": cycle_result["phases"]["analysis"]["insights"],
+                "actions_proposed": cycle_result["phases"]["decisions"]["proposed"],
+            }
+            brain_learning = brain_loop.learn(
+                "cycle", {"store_id": sid, "cycle": self._cycle_count},
+                "autonomous_cycle",
+                {"status": "complete", "insights": cycle_metrics["insights"]},
+                cycle_metrics,
+            )
+            learning["brain_learning"] = {
+                "score": brain_learning.get("score", 0),
+                "success": brain_learning.get("success", False),
+            }
+        except Exception as exc:
+            logger.debug("Brain learning: %s", exc)
+
         cycle_result["phases"]["learning"] = learning
 
         # Phase 6: REPORT — Generate cycle summary
