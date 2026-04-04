@@ -145,6 +145,15 @@ _ENGINE_MAP: dict[str, str] = {
     "selection_reasoning": "engines.selection_reasoning",
     "supplier_discovery": "engines.supplier_discovery",
     "trend_discovery": "engines.trend_discovery",
+
+    # ── P1 Engines (flow.py pattern) ────────────────────────────
+    "store_design": "engines.store_design",
+    "legal_document": "engines.legal_document",
+    "checkout_optimizer": "engines.checkout_optimizer",
+    "browse_recovery": "engines.browse_recovery",
+    "loyalty": "engines.loyalty",
+    "supplier_communication": "engines.supplier_communication",
+    "competitor_monitor": "engines.competitor_monitor",
 }
 
 # Cache for instantiated engines
