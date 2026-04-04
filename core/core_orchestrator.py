@@ -978,3 +978,91 @@ class CoreOrchestrator:
             "patterns": self.journal.detect_patterns(),
             "recent_decisions": self.journal.get_decisions(limit=5),
         }
+
+    # ------------------------------------------------------------------
+    # Layer + Agent integration
+    # ------------------------------------------------------------------
+
+    def run_layer(self, layer_name: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Run a named layer from the layer system.
+
+        Layers group engines into domain pipelines (data, analysis, product, etc.).
+        Each layer has a flow.py that orchestrates its engines.
+
+        Args:
+            layer_name: One of the 12 layer names (e.g. "data_layer", "pricing_layer")
+            data: Input data for the layer
+
+        Returns:
+            Layer output dict with accumulated engine results.
+        """
+        try:
+            import importlib
+            mod = importlib.import_module(f"layers.{layer_name}")
+            # Find the flow class (ends with 'LayerFlow')
+            flow_cls = None
+            for attr_name in dir(mod):
+                if attr_name.endswith("LayerFlow"):
+                    flow_cls = getattr(mod, attr_name)
+                    break
+            if flow_cls is None:
+                return {"status": "error", "error": f"No LayerFlow class in {layer_name}"}
+
+            flow = flow_cls()
+            payload = {"status": "success", "data": data, "meta": {}, "error": None}
+            result = flow.run(payload)
+            if hasattr(self.journal, "record_decision"):
+                self.journal.record_decision(f"layer:{layer_name}", result.get("meta", {}))
+            return result
+        except Exception as exc:
+            logger.error("Layer %s failed: %s", layer_name, exc)
+            return {"status": "error", "error": str(exc)}
+
+    def run_agent(self, agent_name: str, goal: str, context: dict[str, Any],
+                  constraints: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run a named agent with plan→execute→evaluate→recommend cycle.
+
+        Args:
+            agent_name: One of 7 agents (research, product, marketing, finance, operations, customer, content)
+            goal: What the agent should accomplish
+            context: Domain-specific context data
+            constraints: Optional constraints
+
+        Returns:
+            Agent output with plan, results, evaluation, recommendation.
+        """
+        try:
+            import importlib
+            mod = importlib.import_module(f"agents.{agent_name}")
+            # Find the agent class (ends with 'Agent')
+            agent_cls = None
+            for attr_name in dir(mod):
+                attr = getattr(mod, attr_name)
+                if isinstance(attr, type) and attr_name.endswith("Agent") and attr_name != "BaseAgent":
+                    agent_cls = attr
+                    break
+            if agent_cls is None:
+                return {"status": "error", "error": f"No Agent class in {agent_name}"}
+
+            agent = agent_cls()
+            result = agent.run(goal=goal, context=context, constraints=constraints or {})
+            if hasattr(self.journal, "record_decision"):
+                self.journal.record_decision(f"agent:{agent_name}", {
+                    "goal": goal, "status": result.get("status", "unknown"),
+                })
+            return result
+        except Exception as exc:
+            logger.error("Agent %s failed: %s", agent_name, exc)
+            return {"status": "error", "error": str(exc)}
+
+    def list_layers(self) -> list[str]:
+        """List all available layers."""
+        return [
+            "data_layer", "analysis_layer", "product_layer", "pricing_layer",
+            "customer_layer", "marketing_layer", "sales_layer", "operations_layer",
+            "financial_layer", "intelligence_layer", "execution_layer", "scaling_layer",
+        ]
+
+    def list_available_agents(self) -> list[str]:
+        """List all available agents."""
+        return ["research", "product", "marketing", "finance", "operations", "customer", "content"]
