@@ -142,6 +142,8 @@ class AutonomousController:
                 "decisions": len(thought.get("decisions", [])),
                 "top_action": thought["action_plan"][0]["action"] if thought.get("action_plan") else "none",
             }
+            # Store brain decisions for phase 3
+            cycle_result["_brain_decisions"] = thought.get("decisions", [])
         except Exception as exc:
             logger.debug("Brain think: %s", exc)
             thought = {}
@@ -168,8 +170,9 @@ class AutonomousController:
             "insights": total_insights,
         }
 
-        # Phase 3: DECIDE — Convert analysis to actions
-        decisions = self._phase_decide(sid, analysis)
+        # Phase 3: DECIDE — Convert brain decisions + analysis to actions
+        brain_decisions = cycle_result.get("_brain_decisions", [])
+        decisions = self._phase_decide(sid, analysis, brain_decisions)
         cycle_result["phases"]["decisions"] = {
             "proposed": len(decisions),
             "types": list(set(d.get("type", "") for d in decisions)),
@@ -292,12 +295,25 @@ class AutonomousController:
 
         return results
 
-    def _phase_decide(self, store_id: str, analysis: dict[str, Any]) -> list[dict[str, Any]]:
-        """Phase 3: Convert analysis results to proposed actions."""
+    def _phase_decide(self, store_id: str, analysis: dict[str, Any],
+                      brain_decisions: list[dict] | None = None) -> list[dict[str, Any]]:
+        """Phase 3: Convert brain decisions + analysis to proposed actions."""
         if not self._action_executor:
             return []
 
         all_decisions: list[dict[str, Any]] = []
+
+        # Brain decisions → actions
+        for dec in (brain_decisions or []):
+            action = self._action_executor.propose_action({
+                "type": dec.get("type", "brain_recommendation"),
+                "store_id": store_id,
+                "engine": "brain",
+                "confidence": dec.get("confidence", 0.7),
+                "reason": dec.get("reason", ""),
+                "params": {"priority": dec.get("priority", 4)},
+            })
+            all_decisions.append(action)
 
         # From engine results
         if self._decision_executor:

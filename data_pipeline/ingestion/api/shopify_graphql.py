@@ -100,8 +100,6 @@ class ShopifyGraphQL:
                       compareAtPrice
                       inventoryQuantity
                       sku
-                      weight
-                      weightUnit
                       inventoryItem {{
                         unitCost {{ amount currencyCode }}
                       }}
@@ -333,7 +331,6 @@ class ShopifyGraphQL:
                 "cost": float(cost_data.get("amount", 0) or 0),
                 "inventory_quantity": int(v.get("inventoryQuantity", 0) or 0),
                 "sku": v.get("sku", ""),
-                "weight": float(v.get("weight", 0) or 0),
             })
 
         images = [ie.get("node", {}).get("url", "") for ie in node.get("images", {}).get("edges", [])]

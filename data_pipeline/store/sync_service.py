@@ -44,15 +44,6 @@ class SyncService:
         product_result = self._sync_products(sid, creds)
         results["synced"]["products"] = product_result
 
-        # Sync costs (separate API call)
-        try:
-            from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
-            api = ShopifyAPI(creds["shop_url"], creds["api_key"])
-            raw = api.fetch_products(creds["shop_url"], creds["api_key"])
-            self._sync_product_costs(sid, creds, raw.get("products", []))
-        except Exception:
-            pass
-
         # Sync orders
         order_result = self._sync_orders(sid, creds)
         results["synced"]["orders"] = order_result
@@ -131,21 +122,23 @@ class SyncService:
     def _sync_products(self, store_id: str, creds: dict[str, str]) -> dict[str, Any]:
         start = time.monotonic()
         try:
-            from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
-            api = ShopifyAPI(creds["shop_url"], creds["api_key"])
-            raw = api.fetch_products(creds["shop_url"], creds["api_key"])
+            # Try GraphQL first (includes costs!)
+            products = self._fetch_products_graphql(creds)
+            if products is None:
+                # Fallback to REST
+                from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
+                api = ShopifyAPI(creds["shop_url"], creds["api_key"])
+                raw = api.fetch_products(creds["shop_url"], creds["api_key"])
+                products = self._normalize_products(raw.get("products", []))
 
-            products = raw.get("products", [])
             if products:
-                # Normalize for DB storage
-                normalized = self._normalize_products(products)
-                count = self._sm.db.upsert_products(store_id, normalized)
+                count = self._sm.db.upsert_products(store_id, products)
             else:
                 count = 0
 
             elapsed = time.monotonic() - start
             self._sm.db.log_sync(store_id, "products", "success", count, elapsed)
-            return {"count": count, "duration_s": round(elapsed, 2), "errors": raw.get("errors", [])}
+            return {"count": count, "duration_s": round(elapsed, 2)}
 
         except Exception as exc:
             elapsed = time.monotonic() - start
@@ -156,20 +149,22 @@ class SyncService:
     def _sync_orders(self, store_id: str, creds: dict[str, str], days_back: int = 30) -> dict[str, Any]:
         start = time.monotonic()
         try:
-            from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
-            api = ShopifyAPI(creds["shop_url"], creds["api_key"])
-            raw = api.fetch_orders(creds["shop_url"], creds["api_key"], days_back=days_back)
+            # Try GraphQL first
+            orders = self._fetch_orders_graphql(creds)
+            if orders is None:
+                from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
+                api = ShopifyAPI(creds["shop_url"], creds["api_key"])
+                raw = api.fetch_orders(creds["shop_url"], creds["api_key"], days_back=days_back)
+                orders = self._normalize_orders(raw.get("orders", []))
 
-            orders = raw.get("orders", [])
             if orders:
-                normalized = self._normalize_orders(orders)
-                count = self._sm.db.upsert_orders(store_id, normalized)
+                count = self._sm.db.upsert_orders(store_id, orders)
             else:
                 count = 0
 
             elapsed = time.monotonic() - start
             self._sm.db.log_sync(store_id, "orders", "success", count, elapsed)
-            return {"count": count, "duration_s": round(elapsed, 2), "errors": raw.get("errors", [])}
+            return {"count": count, "duration_s": round(elapsed, 2)}
 
         except Exception as exc:
             elapsed = time.monotonic() - start
@@ -180,20 +175,22 @@ class SyncService:
     def _sync_customers(self, store_id: str, creds: dict[str, str]) -> dict[str, Any]:
         start = time.monotonic()
         try:
-            from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
-            api = ShopifyAPI(creds["shop_url"], creds["api_key"])
-            raw = api.fetch_customers(creds["shop_url"], creds["api_key"])
+            # Try GraphQL first
+            customers = self._fetch_customers_graphql(creds)
+            if customers is None:
+                from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
+                api = ShopifyAPI(creds["shop_url"], creds["api_key"])
+                raw = api.fetch_customers(creds["shop_url"], creds["api_key"])
+                customers = self._normalize_customers(raw.get("customers", []))
 
-            customers = raw.get("customers", [])
             if customers:
-                normalized = self._normalize_customers(customers)
-                count = self._sm.db.upsert_customers(store_id, normalized)
+                count = self._sm.db.upsert_customers(store_id, customers)
             else:
                 count = 0
 
             elapsed = time.monotonic() - start
             self._sm.db.log_sync(store_id, "customers", "success", count, elapsed)
-            return {"count": count, "duration_s": round(elapsed, 2), "errors": raw.get("errors", [])}
+            return {"count": count, "duration_s": round(elapsed, 2)}
 
         except Exception as exc:
             elapsed = time.monotonic() - start
@@ -208,6 +205,78 @@ class SyncService:
         self._sm.db.save_snapshot(store_id, "post_sync", stats)
 
     # ── Normalizers (Shopify API → DB format) ────────────────
+
+    def _fetch_products_graphql(self, creds: dict[str, str]) -> list[dict] | None:
+        """Fetch products via GraphQL (includes costs in one query)."""
+        try:
+            from data_pipeline.ingestion.api.shopify_graphql import ShopifyGraphQL
+            gql = ShopifyGraphQL(creds["shop_url"], creds["api_key"])
+            products = gql.get_all_products()
+            if products:
+                # GraphQL normalizer already includes cost from inventoryItem.unitCost
+                return [{
+                    "id": p.get("id", ""),
+                    "shopify_id": p.get("id", ""),
+                    "title": p.get("name", ""),
+                    "price": p.get("price", 0),
+                    "cost": p.get("cost", 0),
+                    "compare_at_price": p.get("compare_at_price", 0),
+                    "vendor": p.get("vendor", ""),
+                    "product_type": p.get("category", ""),
+                    "tags": p.get("tags", []),
+                    "status": p.get("status", "active"),
+                    "inventory_quantity": p.get("inventory_quantity", 0),
+                    "image_url": p.get("image_url", ""),
+                    "body_html": p.get("description", ""),
+                    "variants": p.get("variants", []),
+                } for p in products]
+        except Exception as exc:
+            logger.debug("GraphQL products fetch failed, using REST: %s", exc)
+        return None
+
+    def _fetch_orders_graphql(self, creds: dict[str, str]) -> list[dict] | None:
+        """Fetch orders via GraphQL."""
+        try:
+            from data_pipeline.ingestion.api.shopify_graphql import ShopifyGraphQL
+            gql = ShopifyGraphQL(creds["shop_url"], creds["api_key"])
+            result = gql.get_orders(first=50)
+            orders = result.get("orders", [])
+            if orders is not None:
+                return [{
+                    "id": o.get("id", ""),
+                    "shopify_id": o.get("id", ""),
+                    "total": o.get("total", 0),
+                    "subtotal": o.get("subtotal", 0),
+                    "financial_status": o.get("status", ""),
+                    "fulfillment_status": o.get("fulfillment_status", ""),
+                    "item_count": o.get("items", 0),
+                    "customer_id": o.get("customer_id", ""),
+                    "line_items": o.get("line_items", []),
+                } for o in orders]
+        except Exception as exc:
+            logger.debug("GraphQL orders fetch failed, using REST: %s", exc)
+        return None
+
+    def _fetch_customers_graphql(self, creds: dict[str, str]) -> list[dict] | None:
+        """Fetch customers via GraphQL."""
+        try:
+            from data_pipeline.ingestion.api.shopify_graphql import ShopifyGraphQL
+            gql = ShopifyGraphQL(creds["shop_url"], creds["api_key"])
+            result = gql.get_customers(first=50)
+            customers = result.get("customers", [])
+            if customers is not None:
+                return [{
+                    "id": c.get("id", ""),
+                    "shopify_id": c.get("id", ""),
+                    "name": c.get("name", ""),
+                    "email": c.get("email", ""),
+                    "orders_count": c.get("orders", 0),
+                    "total_spent": c.get("total_spent", 0),
+                    "tags": c.get("tags", []),
+                } for c in customers]
+        except Exception as exc:
+            logger.debug("GraphQL customers fetch failed, using REST: %s", exc)
+        return None
 
     def _sync_product_costs(self, store_id: str, creds: dict[str, str], products: list[dict]) -> None:
         """Fetch product costs via inventory_items API (costs not in products endpoint)."""
