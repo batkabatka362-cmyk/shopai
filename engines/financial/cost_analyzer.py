@@ -38,6 +38,8 @@ def analyze_costs(
         total_cogs = 0.0
         for order in orders:
             items = order.get("line_items", order.get("items", []))
+            if not isinstance(items, list):
+                items = []
             for item in items:
                 pid = str(item.get("product_id", ""))
                 qty = int(item.get("quantity", 1))

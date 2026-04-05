@@ -385,28 +385,36 @@ class MemoryIntelligence:
         threshold = PROMOTION_THRESHOLDS["event_to_pattern"]
 
         events = conn.execute(
-            "SELECT * FROM memories WHERE category = ? AND level = 0 AND score >= 3.5 ORDER BY timestamp DESC LIMIT 50",
+            "SELECT * FROM memories WHERE category = ? AND level = 0 AND score >= 2.0 ORDER BY timestamp DESC LIMIT 100",
             (category,),
         ).fetchall()
 
         if len(events) < threshold:
             return
 
-        # Group by feature similarity
+        # Group by feature similarity (coarse: top 2 features for broader patterns)
         groups: dict[str, list] = {}
         for e in events:
             features = json.loads(e["features"]) if isinstance(e["features"], str) else e["features"]
-            # Build grouping key from top features
+            # Build grouping key from top 2 non-trivial features
             key_parts = []
-            for k, v in sorted(features.items())[:4]:
+            for k, v in sorted(features.items()):
+                if len(key_parts) >= 2:
+                    break
                 if isinstance(v, bool):
                     key_parts.append(f"{k}={'T' if v else 'F'}")
                 elif isinstance(v, str) and v:
-                    key_parts.append(f"{k}={v[:20]}")
-                elif isinstance(v, (int, float)):
-                    bucket = "high" if v > 0.6 else "mid" if v > 0.3 else "low"
+                    key_parts.append(f"{k}={v[:15]}")
+                elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                    bucket = "high" if v > 0.5 else "low"
                     key_parts.append(f"{k}={bucket}")
             group_key = "|".join(key_parts) if key_parts else "default"
+
+            # Also group by action for decision memories
+            action = e["action"] if e["action"] else ""
+            if action and action not in ("failure",):
+                group_key = f"{action}|{group_key}"
+
             groups.setdefault(group_key, []).append(e)
 
         for group_key, group_events in groups.items():
@@ -477,7 +485,7 @@ class MemoryIntelligence:
                 continue
 
             content = json.loads(p["content"]) if isinstance(p["content"], str) else p["content"]
-            group_key = content.get("group_key", p.get("action", ""))
+            group_key = content.get("group_key", p["action"] if p["action"] else "")
             avg_score = content.get("avg_score", p["score"])
 
             if avg_score >= 3.5:

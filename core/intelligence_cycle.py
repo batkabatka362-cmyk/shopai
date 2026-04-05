@@ -120,12 +120,20 @@ class IntelligenceCycle:
             stages["execution"] = {"status": "skipped" if not action_fn else "no_action"}
 
         # Stage 7: RESULT - capture outcome
-        result = self._capture_result(category, decision, execution_result, store_id)
-        stages["result"] = result
+        result_data = self._capture_result(category, decision, execution_result, store_id)
+        stages["result"] = result_data
 
         # Stage 8: EVALUATION - score the outcome
         score = self._evaluate(category, decision, execution_result, features)
         stages["evaluation"] = {"score": score, "rating": self._score_label(score)}
+
+        # Attach evaluation as result (even without execution — the score IS the result)
+        self._data_arch.attach_result(
+            result_data["action_id"],
+            {"score": score, "rating": self._score_label(score),
+             "executed": bool(execution_result), **execution_result},
+            score=score,
+        )
 
         # Stage 9: LEARNING - extract insights
         learning = self._learn(category, features, decision, execution_result, score)
@@ -255,8 +263,7 @@ class IntelligenceCycle:
                          "reason": decision.get("reason", "")},
             store_id=store_id,
         )
-        if execution_result:
-            self._data_arch.attach_result(action_id, execution_result)
+        # Result will be attached after evaluation (Stage 8)
         return {"action_id": action_id, "captured": True}
 
 

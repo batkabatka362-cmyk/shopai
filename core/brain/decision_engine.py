@@ -274,9 +274,9 @@ class DecisionEngine:
                 elif recommended == "avoid":
                     rule_boost -= irule.get("confidence", 0.5) * 0.15
 
-            # Final score: profit - risk + memory + rules
-            final = profit * 0.5 - risk * 0.3 + memory_boost - memory_penalty + rule_boost
-            final = max(0, min(1, final))
+            # Final score: base 0.3 + profit-weighted + risk penalty + memory + rules
+            final = 0.3 + profit * 0.4 - risk * 0.2 + memory_boost - memory_penalty + rule_boost
+            final = max(0.05, min(1.0, final))
 
             scored.append({
                 **opt,

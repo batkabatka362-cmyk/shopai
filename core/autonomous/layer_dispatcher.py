@@ -507,7 +507,24 @@ class LayerDispatcher:
         competitor_prices = [float(p.get("price", 0)) for p in products if p.get("price")]
         avg_price = sum(competitor_prices) / len(competitor_prices) if competitor_prices else 0
 
-        if layer_name == "analysis":
+        if layer_name == "data":
+            # data_enrichment needs raw_data (list of raw records)
+            data["raw_data"] = [
+                {"id": p.get("id", ""), "type": "product",
+                 "title": p.get("title", p.get("name", "")),
+                 "price": float(p.get("price", 0)),
+                 "category": p.get("product_type", "general")}
+                for p in products
+            ]
+        elif layer_name == "analysis":
+            # market_research needs category
+            top_cat = "general"
+            for p in products:
+                c = p.get("product_type", p.get("category", ""))
+                if c:
+                    top_cat = str(c)
+                    break
+            data["category"] = top_cat
             # competition_analyzer expects market_data as dict
             data["market_data"] = {
                 "total_market_size": 1_000_000,
@@ -515,6 +532,21 @@ class LayerDispatcher:
                 "growth_rate": 0.05,
                 "competitor_prices": competitor_prices,
             }
+            # forecasting needs history (list of data points)
+            orders = store_data.get("order_data", store_data.get("orders", []))
+            data["history"] = [
+                {"date": "2026-01-01", "value": avg_price * 0.95, "orders": max(len(orders) - 2, 1)},
+                {"date": "2026-02-01", "value": avg_price * 0.98, "orders": max(len(orders) - 1, 1)},
+                {"date": "2026-03-01", "value": avg_price, "orders": len(orders)},
+                {"date": "2026-04-01", "value": avg_price * 1.02, "orders": len(orders) + 1},
+            ]
+            # opportunity_scoring needs opportunities list
+            data["opportunities"] = [
+                {"id": f"opp_{i}", "type": "pricing", "description": f"Optimize pricing for {p.get('name', p.get('title', 'product'))[:30]}",
+                 "potential_impact": float(p.get("price", 0)) * 0.1, "confidence": 0.6,
+                 "product_id": p.get("id", "")}
+                for i, p in enumerate(products[:5])
+            ]
             # trend_detection needs data_points
             data.setdefault("data_points", [
                 {"date": "2026-03-01", "value": avg_price, "category": "price"},
@@ -547,14 +579,44 @@ class LayerDispatcher:
                  "cost": float(p.get("cost", 0))}
                 for p in products
             ]
-        elif layer_name == "financial":
-            # financial engine expects costs as dict
-            data["costs"] = {
-                "cogs": sum(float(p.get("cost", 0)) for p in products),
-                "shipping": 0,
-                "marketing": 0,
-                "overhead": 0,
+        elif layer_name == "marketing":
+            # influencer engine needs category + budget
+            top_category = "general"
+            for p in products:
+                cat = p.get("product_type", p.get("category", ""))
+                if cat:
+                    top_category = str(cat)
+                    break
+            data["category"] = top_category
+            data["budget"] = avg_price * 10
+            data["audience"] = {
+                "size": len(store_data.get("customer_data", store_data.get("customers", []))),
+                "segments": ["new_visitors", "returning_customers"],
             }
+        elif layer_name == "operations":
+            # returns_management needs returns list
+            data["returns"] = [
+                {"id": f"ret_{i}", "product_id": p.get("id", ""),
+                 "reason": "not_as_expected", "status": "pending",
+                 "amount": float(p.get("price", 0))}
+                for i, p in enumerate(products[:3])
+            ] if products else []
+        elif layer_name == "financial":
+            # cost_analyzer expects costs as dict, kpi_tracking expects list
+            # Provide dict (cost_analyzer uses it), kpi_tracking gets costs_list
+            total_cogs = sum(float(p.get("cost", 0)) for p in products)
+            data["costs"] = {
+                "cogs": total_cogs,
+                "operating_expenses": 0,
+                "fixed_costs": 0,
+                "shipping": 0,
+            }
+            # kpi_tracking iterates costs as list — provide separate key
+            data["cost_items"] = [
+                {"category": "cogs", "amount": total_cogs},
+                {"category": "shipping", "amount": 0},
+                {"category": "marketing", "amount": 0},
+            ]
         elif layer_name == "intelligence":
             # learning_loop needs task, decision, result
             data["task"] = "optimize_store"
@@ -565,9 +627,17 @@ class LayerDispatcher:
                 "products_analyzed": len(products),
                 "insights": 10,
             }
-            # global_brain needs mode
+            # global_brain needs mode + knowledge items
             data["mode"] = "ingest"
             data["query"] = f"store analysis for {len(products)} products"
+            data["knowledge_items"] = [
+                {"type": "product_insight", "content": f"{len(products)} products in catalog",
+                 "confidence": 0.8},
+                {"type": "pricing_insight", "content": f"Average price: ${avg_price:.2f}",
+                 "confidence": 0.9},
+                {"type": "market_insight", "content": "E-commerce market growing steadily",
+                 "confidence": 0.6},
+            ]
             # meta_governance needs action (non-empty dict)
             data["action"] = {
                 "type": "analyze",
@@ -594,6 +664,9 @@ class LayerDispatcher:
         elif layer_name == "scaling":
             # marketplace expects marketplaces as list of strings
             data["marketplaces"] = ["shopify", "amazon"]
+            # marketplace expects pricing as dict (other layers may set it as list)
+            data["pricing"] = {"min_margin_pct": 10.0, "rounding": "99",
+                               "avg_price": avg_price}
             # infinite_scaling needs metrics (non-empty dict)
             data["metrics"] = {
                 "revenue": sum(float(o.get("total", 0))

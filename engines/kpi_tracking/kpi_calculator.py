@@ -14,7 +14,7 @@ from typing import Any
 def calculate_kpis(
     orders: list[dict[str, Any]],
     customers: list[dict[str, Any]],
-    costs: list[dict[str, Any]],
+    costs: list[dict[str, Any]] | dict[str, Any],
     period: str = "30d",
 ) -> dict[str, Any]:
     """Calculate core business KPIs.
@@ -32,6 +32,10 @@ def calculate_kpis(
         orders = copy.deepcopy(orders)
         customers = copy.deepcopy(customers)
         costs = copy.deepcopy(costs)
+        # Normalize costs: dict → list of {category, amount}
+        if isinstance(costs, dict):
+            costs = [{"category": k, "amount": v} for k, v in costs.items()
+                     if isinstance(v, (int, float))]
 
         # Order metrics
         order_count = len(orders)

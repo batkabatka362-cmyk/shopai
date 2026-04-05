@@ -34,6 +34,8 @@ def calculate_revenue(
 
             # Track per-product revenue
             items = order.get("line_items", order.get("items", []))
+            if not isinstance(items, list):
+                items = []
             for item in items:
                 pid = str(item.get("product_id", "unknown"))
                 item_rev = float(item.get("total", item.get("price", 0)))
