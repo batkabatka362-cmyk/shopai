@@ -49,6 +49,7 @@ class SmartExecutor:
         self._memory_intel = None
         self._data_arch = None
         self._learning_loop = None
+        self._ab_testing = None
         self._execution_log: list[dict[str, Any]] = []
         self._simulation_count = 0
         self._live_count = 0
@@ -70,6 +71,12 @@ class SmartExecutor:
             try:
                 from core.brain.learning_loop import LearningLoop
                 self._learning_loop = LearningLoop()
+            except Exception:
+                pass
+        if not self._ab_testing:
+            try:
+                from core.system.ab_testing import get_ab_testing
+                self._ab_testing = get_ab_testing()
             except Exception:
                 pass
 
@@ -453,6 +460,15 @@ class SmartExecutor:
                     "profit": float(actual.get("estimated_revenue_change_pct", 0) or 0),
                     "conversion": float(actual.get("estimated_conversion_boost", 0) or 0),
                 },
+            )
+
+        # Create A/B experiment from simulation
+        if self._ab_testing and mode == "simulate":
+            self._ab_testing.create_from_simulation(
+                action_type=action_type,
+                predicted=predicted,
+                actual=actual,
+                score=score,
             )
 
     # == STATS =====================================================

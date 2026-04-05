@@ -128,6 +128,16 @@ class AutonomousController:
             "source": data.get("source", "unknown"),
         }
 
+        # Phase 1-pre: PRICE HISTORY — record current prices
+        try:
+            from data_pipeline.tracking.price_history import get_price_history
+            ph = get_price_history()
+            recorded = ph.record_prices_batch(data.get("products", []), store_id=sid)
+            if recorded:
+                cycle_result["phases"]["price_tracking"] = {"new_prices": recorded}
+        except Exception as exc:
+            logger.debug("Price history: %s", exc)
+
         # Phase 1a: DATA QUALITY — validate and score data before AI uses it
         try:
             from data_pipeline.quality import get_data_quality
