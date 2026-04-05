@@ -228,6 +228,41 @@ class AutonomousController:
         except Exception:
             pass
 
+        # Phase 1d: RL PRICING — learned pricing recommendations
+        try:
+            from models.rl.pricing_agent import get_pricing_agent
+            rl = get_pricing_agent()
+            # Learn from memory every 5 cycles
+            learn_result = {}
+            if self._cycle_count % 5 == 1:
+                learn_result = rl.learn_from_memory()
+            # Get recommendations
+            rl_recs = rl.recommend_all(data.get("products", []))
+            cycle_result["phases"]["rl_pricing"] = {
+                "recommendations": len(rl_recs),
+                "learned_from": learn_result.get("learned", 0),
+                "top_action": rl_recs[0]["action"] if rl_recs else "none",
+                "avg_confidence": round(
+                    sum(r["confidence"] for r in rl_recs) / max(len(rl_recs), 1), 2
+                ),
+            }
+        except Exception as exc:
+            logger.debug("RL pricing: %s", exc)
+
+        # Phase 1e: IMAGE SOURCING — find images for products without them
+        try:
+            from execution.content.image_sourcer import get_image_sourcer
+            sourcer = get_image_sourcer()
+            img_result = sourcer.source_images(data.get("products", []), max_products=5)
+            if img_result.get("images_found", 0) > 0:
+                cycle_result["phases"]["image_sourcing"] = {
+                    "products_needing": img_result.get("products_without_images", 0),
+                    "images_found": img_result.get("images_found", 0),
+                    "method": img_result.get("method", ""),
+                }
+        except Exception as exc:
+            logger.debug("Image sourcing: %s", exc)
+
         # Phase 2: ANALYZE — Run analysis engines
         analysis = self._phase_analyze(sid, data)
         total_insights = 0
