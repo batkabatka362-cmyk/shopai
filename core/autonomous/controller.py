@@ -228,7 +228,54 @@ class AutonomousController:
         except Exception:
             pass
 
-        # Phase 1d: RL PRICING — learned pricing recommendations
+        # Phase 1d: COGNITIVE THINKING — deep understanding + reasoning
+        try:
+            from core.brain.cognitive import get_cognitive_module
+            cog = get_cognitive_module()
+
+            # Get recent memories for analysis
+            cog_memories = []
+            if hasattr(self, '_unified_memory') and self._unified_memory:
+                try:
+                    cog_memories = self._unified_memory._memory_intel.retrieve(
+                        "pricing", limit=20) if self._unified_memory._memory_intel else []
+                except Exception:
+                    pass
+
+            rules = []
+            if hasattr(self, '_unified_memory') and self._unified_memory:
+                try:
+                    rules = self._unified_memory.get_learned_rules()
+                except Exception:
+                    pass
+
+            # Deep analysis (limit products for speed)
+            deep = cog.think_deep(data.get("products", [])[:5], cog_memories, rules)
+            cycle_result["phases"]["cognitive"] = {
+                "products_analyzed": deep["understanding"]["products_analyzed"],
+                "critical_products": deep["understanding"]["critical"],
+                "clusters": deep["understanding"]["clusters"],
+                "hypotheses": deep["reasoning"]["hypotheses"],
+                "near_misses": deep["failure_analysis"]["near_misses"],
+                "questions": deep["curiosity"]["questions"][:3],
+                "exploration": deep["curiosity"]["exploration"].get("suggest", ""),
+            }
+
+            # Record exploration
+            for dec in brain_decisions:
+                cog.curiosity.record_exploration(dec.get("type", "unknown"))
+
+            # Track confidence calibration from recent decisions
+            for m in cog_memories[:10]:
+                action = m.get("action", "")
+                confidence = m.get("confidence", 0.5)
+                score = m.get("score", 3.0)
+                if action:
+                    cog.reflection.record_decision(action, confidence, score)
+        except Exception as exc:
+            logger.debug("Cognitive thinking: %s", exc)
+
+        # Phase 1f: RL PRICING — learned pricing recommendations
         try:
             from models.rl.pricing_agent import get_pricing_agent
             rl = get_pricing_agent()
@@ -249,7 +296,7 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("RL pricing: %s", exc)
 
-        # Phase 1e: IMAGE SOURCING — find images for products without them
+        # Phase 1g: IMAGE SOURCING — find images for products without them
         try:
             from execution.content.image_sourcer import get_image_sourcer
             sourcer = get_image_sourcer()
