@@ -47,7 +47,7 @@ class CompetitorMonitor:
         errors: list[str] = []
 
         for product in products[:max_products]:
-            title = product.get("title", "")
+            title = product.get("title", product.get("name", ""))
             our_price = float(product.get("price", 0))
             pid = str(product.get("id", ""))
 

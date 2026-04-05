@@ -238,6 +238,10 @@ class MemoryIntelligence:
         elif score <= 2:
             all_tags.append("failure")
 
+        # Credit rules if this decision scored well
+        if score >= 3.5:
+            self.record_rule_success(category, score)
+
         return self.create(
             category=category, content=input_data, action=action,
             result=result, score=score, memory_type="episodic",
@@ -540,8 +544,8 @@ class MemoryIntelligence:
                 if success_rate >= 0.7:
                     qualifying.append(r)
 
-        if len(qualifying) < 2:
-            return  # Need multiple rules to form strategy
+        if not qualifying:
+            return  # Need at least one qualifying rule
 
         # Check if strategy already exists
         existing = conn.execute(
@@ -698,6 +702,33 @@ class MemoryIntelligence:
                 (mid, "used", now),
             )
         conn.commit()
+
+    def record_rule_success(self, category: str, score: float) -> int:
+        """Record success for rules that were used in a decision.
+
+        When a decision scores well (>= 3.5), credit the rules that were
+        used (retrieved) for that category. This is how rules earn
+        success_count for strategy promotion.
+        """
+        if score < 3.5:
+            return 0
+        conn = self._conn()
+        rules = conn.execute(
+            "SELECT id FROM memories WHERE level = 2 AND category = ? AND use_count > 0",
+            (category,),
+        ).fetchall()
+        updated = 0
+        for r in rules:
+            conn.execute(
+                "UPDATE memories SET success_count = success_count + 1, last_updated = ? WHERE id = ?",
+                (time.time(), r["id"]),
+            )
+            updated += 1
+        if updated:
+            conn.commit()
+            # Check if any rules now qualify for strategy promotion
+            self._promote_rules_to_strategies(category)
+        return updated
 
     def _record_promotion(self, source_id: int, target_id: int,
                           from_level: int, to_level: int, reason: str) -> None:
