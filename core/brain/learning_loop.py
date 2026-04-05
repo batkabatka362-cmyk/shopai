@@ -18,6 +18,8 @@ class LearningLoop:
 
     def __init__(self) -> None:
         self._memory = None
+        self._memory_intel = None
+        self._data_arch = None
         self._total_learnings = 0
 
     def _get_memory(self):
@@ -25,6 +27,21 @@ class LearningLoop:
             from core.brain.memory import get_brain_memory
             self._memory = get_brain_memory()
         return self._memory
+
+    def _get_intelligence(self):
+        if not self._memory_intel:
+            try:
+                from core.memory.intelligence import get_memory_intelligence
+                self._memory_intel = get_memory_intelligence()
+            except Exception:
+                pass
+        if not self._data_arch:
+            try:
+                from core.data.architecture import get_data_architecture
+                self._data_arch = get_data_architecture()
+            except Exception:
+                pass
+        return self._memory_intel
 
     def learn(self, category: str, input_data: dict, action: str,
               result: dict, metrics: dict | None = None) -> dict[str, Any]:
@@ -38,22 +55,41 @@ class LearningLoop:
             metrics: Business metrics (profit, conversion, cost, time)
         """
         mem = self._get_memory()
+        mi = self._get_intelligence()
         metrics = metrics or {}
 
         # Step 1: EVALUATE
         score = self._evaluate(result, metrics)
 
-        # Step 2: RECORD
+        # Step 2: RECORD in IntelligentMemory (L3)
+        tags = self._build_tags(category, action, score)
         mem.record_decision(
             category=category,
             input_data=input_data,
             action=action,
             result=result,
             score=score,
-            tags=self._build_tags(category, action, score),
+            tags=tags,
         )
 
-        # Step 3: FAILURE ANALYSIS
+        # Step 2b: RECORD in MemoryIntelligence (4-level, with promotion)
+        if mi:
+            mi.create_from_decision(
+                category=category,
+                input_data=input_data,
+                action=action,
+                result=result,
+                score=score,
+                tags=tags,
+            )
+
+        # Step 2c: RECORD in DataArchitecture (action→result tracking)
+        if self._data_arch:
+            action_id = f"ll_{category}_{int(time.time())}"
+            self._data_arch.record_action(action_id, action, input_data)
+            self._data_arch.attach_result(action_id, result, score=score)
+
+        # Step 3: FAILURE ANALYSIS (both systems)
         failure_insight = None
         if score <= 2:
             failure_insight = self._analyze_failure(category, input_data, action, result, metrics)
@@ -136,6 +172,17 @@ class LearningLoop:
             "action": action, "input_summary": str(input_data)[:200],
             "error": str(error)[:200], "root_cause": root_cause,
         }, f"Failure: {root_cause}")
+
+        # Record in MemoryIntelligence failure tracking (auto-generates avoidance rules)
+        mi = self._get_intelligence()
+        if mi:
+            mi.record_failure(
+                category=category,
+                failure_data={"action": action, "error": str(error)[:200],
+                              "metrics": metrics},
+                root_cause=root_cause,
+                severity="critical" if similar_failures >= 2 else "medium",
+            )
 
         insight = {
             "root_cause": root_cause,

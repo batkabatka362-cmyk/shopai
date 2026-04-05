@@ -170,6 +170,16 @@ class DecisionBrain:
                 self._brain_memory = None
                 self._decision_engine = None
                 self._learning_loop = None
+        # Connect new intelligence systems
+        if not hasattr(self, "_memory_intel") or not self._memory_intel:
+            try:
+                from core.memory.intelligence import get_memory_intelligence
+                from core.data.architecture import get_data_architecture
+                self._memory_intel = get_memory_intelligence()
+                self._data_arch = get_data_architecture()
+            except Exception:
+                self._memory_intel = None
+                self._data_arch = None
 
     # ── Main thinking process ────────────────────────────────
 
@@ -198,13 +208,22 @@ class DecisionBrain:
         }
 
         # Step 0: INGEST — feed all data into intelligent memory
+        sid = store_data.get("store_id", "")
         if self._brain_memory:
             for p in state.products:
-                self._brain_memory.ingest("product", p, source="cycle", store_id=store_data.get("store_id", ""))
+                self._brain_memory.ingest("product", p, source="cycle", store_id=sid)
             for o in state.orders:
                 self._brain_memory.ingest("order", o, source="cycle")
             for c in state.customers:
                 self._brain_memory.ingest("customer", c, source="cycle")
+
+        # Step 0b: INGEST into DataArchitecture (12-domain)
+        if hasattr(self, "_data_arch") and self._data_arch:
+            for p in state.products:
+                self._data_arch.capture("product", p, source="brain_cycle", store_id=sid)
+            for o in state.orders:
+                self._data_arch.capture("result", {"action_id": o.get("id", ""), **o},
+                                        source="order", store_id=sid)
 
         # Step 1: OBSERVE — what's happening?
         observations = self._observe(state)
@@ -266,6 +285,19 @@ class DecisionBrain:
         # Store in memory
         if self._memory:
             self._memory.record_decision(f"brain_{int(time.time())}", thought)
+
+        # Store in MemoryIntelligence (4-level hierarchy)
+        if hasattr(self, "_memory_intel") and self._memory_intel:
+            self._memory_intel.create(
+                category="brain_thought",
+                content={"problems": len(problems), "opportunities": len(opportunities),
+                         "decisions": len(decisions), "health_score": state.health_score},
+                action=action_plan[0]["action"] if action_plan else "none",
+                result={"action_plan_size": len(action_plan)},
+                score=min(5.0, state.health_score / 20.0),  # health 0-100 → score 0-5
+                memory_type="episodic",
+                tags=["brain_cycle", f"health:{state.health_score}"],
+            )
 
         self._decision_history.append(thought)
         if len(self._decision_history) > 50:

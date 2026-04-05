@@ -49,6 +49,8 @@ class DecisionEngine:
 
     def __init__(self) -> None:
         self._memory = None
+        self._memory_intel = None
+        self._data_arch = None
         self._decisions_made = 0
 
     def _get_memory(self):
@@ -56,6 +58,21 @@ class DecisionEngine:
             from core.brain.memory import get_brain_memory
             self._memory = get_brain_memory()
         return self._memory
+
+    def _get_intelligence(self):
+        if not self._memory_intel:
+            try:
+                from core.memory.intelligence import get_memory_intelligence
+                self._memory_intel = get_memory_intelligence()
+            except Exception:
+                pass
+        if not self._data_arch:
+            try:
+                from core.data.architecture import get_data_architecture
+                self._data_arch = get_data_architecture()
+            except Exception:
+                pass
+        return self._memory_intel
 
     # ── Main Decision Process ────────────────────────────────
 
@@ -73,9 +90,20 @@ class DecisionEngine:
         """
         start = time.monotonic()
         mem = self._get_memory()
+        mi = self._get_intelligence()
 
-        # Step 1: CONTEXT — retrieve relevant memories
+        # Step 1: CONTEXT — retrieve from both memory systems
         context = mem.retrieve_for_decision(category, input_data)
+
+        # Enhance with 4-level intelligence (patterns, rules, strategies)
+        if mi:
+            intel = mi.retrieve_for_decision(category)
+            context["intel_rules"] = intel.get("rules", [])
+            context["intel_strategies"] = intel.get("strategies", [])
+            context["intel_patterns"] = intel.get("patterns", [])
+            context["total_memories"] = max(
+                context.get("total_memories", 0), intel.get("total_memories", 0),
+            )
 
         # Step 2: OPTIONS — generate or use provided
         if not options:
@@ -102,7 +130,7 @@ class DecisionEngine:
             rules_applied=rules_applied,
         )
 
-        # Step 6: Record in memory
+        # Step 6: Record in memory (both systems)
         mem.record_decision(
             category=category,
             input_data=input_data,
@@ -111,6 +139,33 @@ class DecisionEngine:
             score=decision.score * 5,  # Convert 0-1 → 1-5
             tags=[category, decision.choice],
         )
+
+        # Record in MemoryIntelligence (4-level, with promotion checks)
+        if mi:
+            mi.create_from_decision(
+                category=category,
+                input_data=input_data,
+                action=decision.choice,
+                result={},
+                score=decision.score * 5,
+                tags=[category, decision.choice],
+            )
+
+        # Capture in DataArchitecture (12-domain)
+        if self._data_arch:
+            self._data_arch.capture(
+                domain="decision",
+                data={
+                    "choice": decision.choice,
+                    "category": category,
+                    "confidence": decision.score,
+                    "options_considered": decision.options_considered,
+                    "memory_used": decision.memory_used,
+                    "rules_applied": len(decision.rules_applied),
+                },
+                source="decision_engine",
+                score=decision.score * 5,
+            )
 
         self._decisions_made += 1
         elapsed = time.monotonic() - start
@@ -200,13 +255,24 @@ class DecisionEngine:
                     memory_penalty += 0.15
                     break
 
-            # Rule application
+            # Rule application (from IntelligentMemory L5)
             rule_boost = 0
             for rule in rules:
                 if rule.get("action") == "prefer" and opt.get("action") in rule.get("condition", ""):
                     rule_boost += rule.get("confidence", 0) * 0.1
                 elif rule.get("action") == "avoid" and opt.get("action") in rule.get("condition", ""):
                     rule_boost -= rule.get("confidence", 0) * 0.1
+
+            # Intelligence rules (from MemoryIntelligence L2)
+            for irule in context.get("intel_rules", []):
+                rc = irule.get("content", {})
+                if not isinstance(rc, dict):
+                    continue
+                recommended = rc.get("recommended_action", irule.get("action", ""))
+                if recommended == "prefer":
+                    rule_boost += irule.get("confidence", 0.5) * 0.15
+                elif recommended == "avoid":
+                    rule_boost -= irule.get("confidence", 0.5) * 0.15
 
             # Final score: profit - risk + memory + rules
             final = profit * 0.5 - risk * 0.3 + memory_boost - memory_penalty + rule_boost
@@ -236,6 +302,33 @@ class DecisionEngine:
             score=score,
             tags=[category, action, "outcome"],
         )
+
+        # Record in MemoryIntelligence with full result
+        mi = self._get_intelligence()
+        if mi:
+            mi.create_from_decision(
+                category=category,
+                input_data=input_data,
+                action=action,
+                result=result,
+                score=score,
+                tags=[category, action, "outcome"],
+            )
+            # Failures are gold
+            if score <= 2.0:
+                root_cause = result.get("error", result.get("reason", ""))
+                mi.record_failure(
+                    category=category,
+                    failure_data={"action": action, "input": input_data, "result": result},
+                    root_cause=str(root_cause)[:100] if root_cause else "low_score_outcome",
+                    severity="critical" if score <= 1.5 else "medium",
+                )
+
+        # Track action→result in DataArchitecture
+        if self._data_arch:
+            action_id = f"de_{category}_{int(time.time())}"
+            self._data_arch.record_action(action_id, action, input_data)
+            self._data_arch.attach_result(action_id, result, score=score)
 
     def get_stats(self) -> dict[str, Any]:
         mem = self._get_memory()
