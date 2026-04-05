@@ -883,6 +883,40 @@ class MemoryIntelligence:
         return tags
 
 
+    # == WORKING MEMORY (ephemeral per-cycle context) ===============
+
+    def set_working(self, key: str, value: Any, category: str = "working") -> int:
+        """Store ephemeral working memory for current cycle.
+
+        Working memory is cleared at the start of each cycle. Used for
+        sharing context between phases within a single cycle.
+        """
+        return self.create(
+            category=category,
+            content={"key": key, "value": value},
+            memory_type="working",
+            score=3.0,
+            tags=["working", key],
+        )
+
+    def get_working(self, key: str = "", category: str = "working") -> list[dict[str, Any]]:
+        """Retrieve working memory entries."""
+        if key:
+            return self.retrieve(
+                category=category, tags=["working", key],
+                memory_type="working", limit=10,
+            )
+        return self.retrieve(
+            category=category, memory_type="working", limit=50,
+        )
+
+    def clear_working(self) -> int:
+        """Clear all working memory (called at cycle start)."""
+        conn = self._conn()
+        cur = conn.execute("DELETE FROM memories WHERE memory_type = 'working'")
+        conn.commit()
+        return cur.rowcount
+
     # == CONVENIENCE GETTERS =======================================
 
     def get_rules(self, category: str = "") -> list[dict[str, Any]]:

@@ -39,6 +39,9 @@ def evaluate_criteria(
         evaluated: list[dict[str, Any]] = []
 
         for opp in opps:
+            # Normalize: string opportunities → dict
+            if isinstance(opp, str):
+                opp = {"description": opp, "type": "detected"}
             scores: dict[str, float] = {}
 
             # Market fit: based on demand and market size

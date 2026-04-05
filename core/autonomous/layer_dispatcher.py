@@ -588,7 +588,7 @@ class LayerDispatcher:
                     top_category = str(cat)
                     break
             data["category"] = top_category
-            data["budget"] = avg_price * 10
+            data["budget"] = max(avg_price * 50, 2000)  # Realistic influencer budget
             data["audience"] = {
                 "size": len(store_data.get("customer_data", store_data.get("customers", []))),
                 "segments": ["new_visitors", "returning_customers"],

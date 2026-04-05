@@ -104,6 +104,14 @@ class AutonomousController:
 
         logger.info("Starting cycle %s for store %s", cycle_id, sid)
 
+        # Clear working memory from previous cycle
+        try:
+            from core.memory.intelligence import get_memory_intelligence
+            mi = get_memory_intelligence()
+            mi.clear_working()
+        except Exception:
+            pass
+
         cycle_result: dict[str, Any] = {
             "cycle_id": cycle_id,
             "store_id": sid,
@@ -201,6 +209,14 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("Brain think: %s", exc)
             thought = {}
+
+        # Store brain context in working memory for other phases
+        try:
+            mi.set_working("health_score", thought.get("health_score", 0))
+            mi.set_working("top_problems", thought.get("problems", [])[:3])
+            mi.set_working("top_opportunities", thought.get("opportunities", [])[:3])
+        except Exception:
+            pass
 
         # Phase 2: ANALYZE — Run analysis engines
         analysis = self._phase_analyze(sid, data)
