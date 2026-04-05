@@ -99,7 +99,7 @@ API:            GraphQL (primary) + REST (fallback)
 
 | # | Ажил | Impact | Файл |
 |---|------|--------|------|
-| P2.1 | RL pricing agent | CRITICAL | `models/rl/pricing_agent.py` |
+| P2.1 | RL pricing agent | CRITICAL | ✅ `models/rl/pricing_agent.py` |
 | P2.2 | Customer segmentation ML | HIGH | `models/ml/customer_segmentation.py` |
 | P2.3 | Demand forecasting | HIGH | `models/ml/demand_forecast.py` |
 | P2.4 | Product scoring (learned) | MED | `models/ml/product_scorer.py` |
@@ -110,16 +110,16 @@ API:            GraphQL (primary) + REST (fallback)
 | # | Ажил | Impact | Файл |
 |---|------|--------|------|
 | P3.1 | A/B testing framework | HIGH | ✅ `core/system/ab_testing.py` |
-| P3.2 | Marketing automation | HIGH | `execution/marketing/auto_campaign.py` |
+| P3.2 | Marketing automation | HIGH | ✅ `execution/marketing/auto_campaign.py` |
 | P3.3 | Order fulfillment auto | MED | `execution/fulfillment/auto_fulfill.py` |
-| P3.4 | Product image sourcing | HIGH | `execution/content/image_sourcer.py` |
+| P3.4 | Product image sourcing | HIGH | ✅ `execution/content/image_sourcer.py` |
 
 ### P4: BRAIN UPGRADE
 **AI тархийг гүнзгий болгох.**
 
 | # | Ажил | Impact | Файл |
 |---|------|--------|------|
-| P4.1 | Long-term strategy planner | HIGH | `core/brain/strategy_planner.py` |
+| P4.1 | Long-term strategy planner | HIGH | ✅ `core/brain/strategy_planner.py` |
 | P4.2 | Multi-store intelligence | CRITICAL | `core/brain/multi_store_brain.py` |
 | P4.3 | Competitive intelligence | HIGH | `core/brain/competitive_intel.py` |
 | P4.4 | Chain of thought reasoning | MED | `core/brain/reasoning_chain.py` |

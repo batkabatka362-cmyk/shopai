@@ -416,6 +416,43 @@ class AutonomousController:
 
         cycle_result["phases"]["learning"] = learning
 
+        # Phase 5a: MARKETING AUTOMATION — generate campaigns
+        try:
+            from execution.marketing.auto_campaign import get_marketing_automation
+            mkt = get_marketing_automation()
+            mkt_result = mkt.generate_campaigns(
+                data.get("products", []),
+                data.get("customer_data", []),
+                data.get("order_data", []),
+                store_id=sid,
+            )
+            cycle_result["phases"]["marketing_auto"] = {
+                "campaigns": mkt_result.get("total", 0),
+                "types": mkt_result.get("by_type", {}),
+                "estimated_revenue": mkt_result.get("estimated_revenue", 0),
+            }
+        except Exception as exc:
+            logger.debug("Marketing automation: %s", exc)
+
+        # Phase 5a2: STRATEGY PLANNER — long-term plans
+        if self._cycle_count % 5 == 1:  # Every 5 cycles
+            try:
+                from core.brain.strategy_planner import get_strategy_planner
+                sp = get_strategy_planner()
+                plan = sp.plan(
+                    data.get("products", []),
+                    data.get("order_data", []),
+                    data.get("customer_data", []),
+                    store_id=sid,
+                )
+                cycle_result["phases"]["strategy"] = {
+                    "strategies": plan.get("total", 0),
+                    "priority": plan.get("priority_order", []),
+                    "intelligence": plan.get("intelligence_used", {}),
+                }
+            except Exception as exc:
+                logger.debug("Strategy planner: %s", exc)
+
         # Phase 5b: DOMAIN CAPTURE — fill all 12 data domains
         if hasattr(self, '_unified_memory') and self._unified_memory:
             try:
