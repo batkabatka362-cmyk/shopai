@@ -119,6 +119,26 @@ class AutonomousController:
             "phases": {},
         }
 
+        # Phase 0: TIME + CONTEXT awareness
+        try:
+            from core.brain.smart_rotation import get_time_awareness, get_exploration_boost
+            ta = get_time_awareness()
+            time_ctx = ta.get_context()
+            cycle_result["phases"]["time_context"] = {
+                "period": time_ctx.get("period", ""),
+                "day": time_ctx.get("day", ""),
+                "season": time_ctx.get("season", ""),
+                "signals": time_ctx.get("signals", []),
+                "shopping_intensity": time_ctx.get("shopping_intensity", 0.5),
+            }
+            # Check exploration
+            eb = get_exploration_boost()
+            explore = eb.should_explore()
+            if explore.get("explore"):
+                cycle_result["phases"]["exploration_alert"] = explore
+        except Exception:
+            pass
+
         # Phase 1: DATA — Fetch current store state
         data = self._phase_data(sid)
         cycle_result["phases"]["data"] = {
@@ -207,6 +227,14 @@ class AutonomousController:
             from core.brain.decision_brain import DecisionBrain
             brain = DecisionBrain()
             thought = brain.think(data)
+            # Record exploration
+            try:
+                from core.brain.smart_rotation import get_exploration_boost
+                eb = get_exploration_boost()
+                eb.record(thought.get("action_plan", [{}])[0].get("action", "analyze") if thought.get("action_plan") else "analyze")
+            except Exception:
+                pass
+
             cycle_result["phases"]["brain"] = {
                 "health_score": thought.get("health_score", 0),
                 "problems": len(thought.get("problems", [])),
