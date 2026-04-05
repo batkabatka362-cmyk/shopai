@@ -6634,6 +6634,102 @@
         ]
       },
       "timestamp": "2026-04-05T12:38:00Z"
+    },
+    {
+      "entry_id": "k_ad3d9cf06afe",
+      "content": "15 products in catalog, avg price $24.59",
+      "tf": {
+        "15": 1.0,
+        "products": 1.0,
+        "catalog": 1.0,
+        "avg": 1.0,
+        "price": 1.0,
+        "24": 1.0,
+        "59": 1.0
+      },
+      "tokens": [
+        "catalog",
+        "59",
+        "24",
+        "avg",
+        "15",
+        "price",
+        "products"
+      ],
+      "metadata": {
+        "knowledge_type": "insight",
+        "category": "product",
+        "subcategory": "catalog",
+        "source_engine": "autonomous_cycle",
+        "confidence": 0.6,
+        "score": 0.74,
+        "tags": [
+          "product",
+          "insight",
+          "pricing",
+          "autonomous_cycle"
+        ]
+      },
+      "timestamp": "2026-04-05T12:47:57Z"
+    },
+    {
+      "entry_id": "k_baec6c734a59",
+      "content": "Analyzing 15 products for optimization",
+      "tf": {
+        "analyzing": 1.0,
+        "15": 1.0,
+        "products": 1.0,
+        "optimization": 1.0
+      },
+      "tokens": [
+        "optimization",
+        "analyzing",
+        "products",
+        "15"
+      ],
+      "metadata": {
+        "knowledge_type": "insight",
+        "category": "product",
+        "subcategory": "general",
+        "source_engine": "autonomous_cycle",
+        "confidence": 0.6,
+        "score": 0.69,
+        "tags": [
+          "product",
+          "autonomous_cycle",
+          "insight"
+        ]
+      },
+      "timestamp": "2026-04-05T12:47:57Z"
+    },
+    {
+      "entry_id": "k_b0067b8cb89e",
+      "content": "Top category: Home & Office",
+      "tf": {
+        "top": 1.0,
+        "category": 1.0,
+        "home": 1.0,
+        "office": 1.0
+      },
+      "tokens": [
+        "top",
+        "home",
+        "office",
+        "category"
+      ],
+      "metadata": {
+        "knowledge_type": "insight",
+        "category": "operational",
+        "subcategory": "general",
+        "source_engine": "autonomous_cycle",
+        "confidence": 0.5,
+        "score": 0.605,
+        "tags": [
+          "insight",
+          "autonomous_cycle"
+        ]
+      },
+      "timestamp": "2026-04-05T12:47:57Z"
     }
   ],
   "vocabulary": {
@@ -6690,18 +6786,18 @@
     "weekends": 1,
     "sales": 1,
     "spike": 1,
-    "catalog": 68,
-    "15": 136,
-    "59": 68,
-    "products": 136,
-    "avg": 68,
-    "price": 68,
-    "24": 68,
-    "analyzing": 68,
-    "optimization": 68,
-    "category": 68,
-    "home": 68,
-    "top": 68,
-    "office": 68
+    "catalog": 69,
+    "15": 138,
+    "59": 69,
+    "products": 138,
+    "avg": 69,
+    "price": 69,
+    "24": 69,
+    "analyzing": 69,
+    "optimization": 69,
+    "category": 69,
+    "home": 69,
+    "top": 69,
+    "office": 69
   }
 }
