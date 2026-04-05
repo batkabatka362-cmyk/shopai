@@ -808,7 +808,44 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("Live execution: %s", exc)
 
-        # Phase 8k: MODEL WORKERS — AI model tasks on products
+        # Phase 8k: CONTINUOUS OPTIMIZATION — auto-fix store issues
+        try:
+            from execution.continuous_optimizer import get_continuous_optimizer
+            co = get_continuous_optimizer()
+            creds = {}
+            if self._store_manager:
+                creds = self._store_manager.get_credentials(sid)
+            co_result = co.optimize(
+                data.get("products", []),
+                data.get("customer_data", []),
+                shop_url=creds.get("shop_url", ""),
+                token=creds.get("api_key", ""),
+                store_id=sid,
+            )
+            if co_result.get("fixes_applied", 0) > 0:
+                cycle_result["phases"]["continuous_optimization"] = co_result
+        except Exception as exc:
+            logger.debug("Continuous optimizer: %s", exc)
+
+        # Phase 8k2: REVENUE STRATEGY — generate revenue plan
+        if self._cycle_count % 10 == 1:
+            try:
+                from core.brain.revenue_strategy import get_revenue_strategy
+                rs = get_revenue_strategy()
+                rev_plan = rs.create_plan(
+                    data.get("products", []),
+                    data.get("order_data", []),
+                    data.get("customer_data", []),
+                )
+                cycle_result["phases"]["revenue_strategy"] = {
+                    "phase": rev_plan.get("phase", ""),
+                    "strategies": len(rev_plan.get("strategies", [])),
+                    "immediate_actions": len(rev_plan.get("immediate_actions", [])),
+                }
+            except Exception as exc:
+                logger.debug("Revenue strategy: %s", exc)
+
+        # Phase 8k3: MODEL WORKERS — AI model tasks on products
         try:
             from core.system.model_workers import get_model_workers
             mw = get_model_workers()
@@ -848,6 +885,14 @@ class AutonomousController:
             from core.system.cycle_reporter import get_cycle_reporter
             reporter = get_cycle_reporter()
             cycle_result["_report"] = reporter.report(cycle_result)
+        except Exception:
+            pass
+
+        # Phase 9b: NOTIFICATIONS — deliver alerts
+        try:
+            from core.system.notifications import get_notifications
+            notif = get_notifications()
+            notif.send_cycle_summary(cycle_result)
         except Exception:
             pass
 
