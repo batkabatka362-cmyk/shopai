@@ -595,6 +595,55 @@ class AutonomousController:
             except Exception:
                 pass
 
+        # Phase 7: RULE HEALTH CHECK — monitor rule effectiveness
+        try:
+            from core.brain.rule_health import get_rule_health_checker
+            rhc = get_rule_health_checker()
+            health = rhc.check()
+            cycle_result["phases"]["rule_health"] = {
+                "total_rules": health.get("total_rules", 0),
+                "healthy": health.get("healthy", 0),
+                "zero_success": len(health.get("zero_success", [])),
+                "health_score": health.get("health_score", 0),
+                "recommendations": health.get("recommendations", []),
+            }
+        except Exception as exc:
+            logger.debug("Rule health: %s", exc)
+
+        # Phase 7b: EXECUTION PROMOTION — track and promote modes
+        try:
+            from execution.promoter import get_execution_promoter
+            promoter = get_execution_promoter()
+            se_results_list = smart_exec_result.get("results", []) if isinstance(smart_exec_result, dict) else []
+            for se in se_results_list:
+                promoter.record(se.get("action_type", ""), se.get("mode", "simulate"), se.get("score", 3.0))
+            # Check for promotions
+            promotion_recs = {}
+            for se in se_results_list:
+                at = se.get("action_type", "")
+                if at and at not in promotion_recs:
+                    rec = promoter.recommend_mode(at, default_mode="simulate")
+                    if rec.get("mode") != "simulate":
+                        promotion_recs[at] = rec
+            if promotion_recs:
+                cycle_result["phases"]["execution_promotion"] = promotion_recs
+        except Exception as exc:
+            logger.debug("Execution promotion: %s", exc)
+
+        # Phase 7c: STRATEGY EXPANSION — every 5 cycles
+        if self._cycle_count % 5 == 0:
+            try:
+                from core.brain.strategy_expander import get_strategy_expander
+                expander = get_strategy_expander()
+                expansion = expander.expand()
+                if expansion.get("expanded", 0) > 0:
+                    cycle_result["phases"]["strategy_expansion"] = {
+                        "expanded": expansion.get("expanded", 0),
+                        "coverage": expansion.get("categories_covered_after", 0),
+                    }
+            except Exception as exc:
+                logger.debug("Strategy expansion: %s", exc)
+
         # Track performance
         if self._performance_tracker:
             self._performance_tracker.record_cycle(cycle_result)

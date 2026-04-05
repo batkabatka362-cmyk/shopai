@@ -961,6 +961,25 @@ class MemoryIntelligence:
             ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    # == DIRECT STRATEGY CREATION (for expander) ====================
+
+    def create_strategy(self, category: str, content: dict,
+                        score: float = 3.5, tags: list[str] | None = None) -> int:
+        """Create a strategy directly at level 3 (used by StrategyExpander)."""
+        import json as _json
+        conn = self._conn()
+        all_tags = list(set((tags or []) + [category, "strategy"]))
+        cur = conn.execute(
+            """INSERT INTO memories (level, memory_type, category, content, features,
+               action, score, confidence, tags, timestamp, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (3, "procedural", category, _json.dumps(content, default=str),
+             _json.dumps({"strategy": True}), "strategy",
+             score, score / 5.0, _json.dumps(all_tags), time.time(), time.time()),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+
     # == STATS =====================================================
 
     def get_stats(self) -> dict[str, Any]:
