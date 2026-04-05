@@ -102,7 +102,10 @@ class AnalysisLayerFlow:
                 )
             if result is not None:
                 engine_data = result.get("data", {}) or {}
-                accumulated_data.update(engine_data)
+                # Don't let empty results overwrite non-empty accumulated data
+                for k, v in engine_data.items():
+                    if v or k not in accumulated_data or not accumulated_data[k]:
+                        accumulated_data[k] = v
                 engine_results[name] = result
 
         # ---- Assemble output ----

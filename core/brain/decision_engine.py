@@ -131,12 +131,22 @@ class DecisionEngine:
         )
 
         # Step 6: Record in memory (both systems)
+        # Memory score = data quality, NOT decision confidence
+        mem_score = 3.0  # Base: valid decision
+        if decision.memory_used:
+            mem_score += 0.5  # Memory-informed = better quality
+        if decision.options_considered >= 3:
+            mem_score += 0.3  # More options considered
+        if decision.rules_applied:
+            mem_score += 0.2  # Rules applied
+        mem_score = min(5.0, mem_score)
+
         mem.record_decision(
             category=category,
             input_data=input_data,
             action=decision.choice,
             result={},  # Will be updated after execution
-            score=decision.score * 5,  # Convert 0-1 → 1-5
+            score=mem_score,
             tags=[category, decision.choice],
         )
 
@@ -147,7 +157,7 @@ class DecisionEngine:
                 input_data=input_data,
                 action=decision.choice,
                 result={},
-                score=decision.score * 5,
+                score=mem_score,
                 tags=[category, decision.choice],
             )
 
@@ -164,7 +174,7 @@ class DecisionEngine:
                     "rules_applied": len(decision.rules_applied),
                 },
                 source="decision_engine",
-                score=decision.score * 5,
+                score=mem_score,
             )
 
         self._decisions_made += 1

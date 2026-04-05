@@ -627,16 +627,23 @@ class LayerDispatcher:
                 "products_analyzed": len(products),
                 "insights": 10,
             }
-            # global_brain needs mode + knowledge items
+            # global_brain needs mode + insights (data_ingestor reads 'insights' key)
             data["mode"] = "ingest"
             data["query"] = f"store analysis for {len(products)} products"
-            data["knowledge_items"] = [
-                {"type": "product_insight", "content": f"{len(products)} products in catalog",
-                 "confidence": 0.8},
-                {"type": "pricing_insight", "content": f"Average price: ${avg_price:.2f}",
-                 "confidence": 0.9},
-                {"type": "market_insight", "content": "E-commerce market growing steadily",
-                 "confidence": 0.6},
+            top_cat = "general"
+            for p in products:
+                c = p.get("product_type", p.get("category", ""))
+                if c:
+                    top_cat = str(c)
+                    break
+            data["insights"] = [
+                f"{len(products)} products in catalog, avg price ${avg_price:.2f}",
+                f"Store health: analyzing {len(products)} products for optimization",
+                f"Top category: {top_cat}",
+            ]
+            data["recommendations"] = [
+                {"content": "Optimize pricing for high-margin products", "confidence": 0.7},
+                {"content": "Add product images to improve conversion", "confidence": 0.8},
             ]
             # meta_governance needs action (non-empty dict)
             data["action"] = {

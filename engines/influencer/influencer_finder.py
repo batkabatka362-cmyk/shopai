@@ -58,7 +58,19 @@ def find_influencers(
     """
     try:
         category_lower = category.lower().strip()
-        relevant_niches = _CATEGORY_NICHE_MAP.get(category_lower, [category_lower])
+        # Match category to niches — try exact, then substring
+        relevant_niches = _CATEGORY_NICHE_MAP.get(category_lower, [])
+        if not relevant_niches:
+            # Substring match: "home & office" → matches "home"
+            for map_key, niches in _CATEGORY_NICHE_MAP.items():
+                if map_key in category_lower or category_lower in map_key:
+                    relevant_niches = niches
+                    break
+        if not relevant_niches:
+            # Fallback: use category words as niches
+            relevant_niches = [w for w in category_lower.split() if len(w) > 2]
+        if not relevant_niches:
+            relevant_niches = ["general", "lifestyle"]
         preferred_platforms = [
             p.lower() for p in target_audience.get("platforms", [])
         ]

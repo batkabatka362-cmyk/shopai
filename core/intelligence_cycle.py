@@ -276,7 +276,7 @@ class IntelligenceCycle:
         score = 3.0  # Neutral default
 
         if not result:
-            return 2.5  # No result = slightly negative
+            return 3.0  # No execution = neutral (not negative)
 
         # Error = bad
         if result.get("error"):
