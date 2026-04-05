@@ -296,7 +296,36 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("RL pricing: %s", exc)
 
-        # Phase 1g: IMAGE SOURCING — find images for products without them
+        # Phase 1g: CUSTOMER SEGMENTATION — segment customers
+        try:
+            from models.ml.customer_segmentation import get_customer_segmentation
+            seg = get_customer_segmentation()
+            seg_result = seg.segment(data.get("customer_data", []))
+            if seg_result.get("total_customers", 0) > 0:
+                cycle_result["phases"]["segmentation"] = {
+                    "customers": seg_result.get("total_customers", 0),
+                    "segments": seg_result.get("segment_distribution", {}),
+                }
+        except Exception as exc:
+            logger.debug("Segmentation: %s", exc)
+
+        # Phase 1h: DEMAND FORECASTING — predict future demand
+        try:
+            from models.ml.demand_forecast import get_demand_forecaster
+            fc = get_demand_forecaster()
+            fc_result = fc.forecast(
+                data.get("products", []),
+                data.get("order_data", []),
+            )
+            cycle_result["phases"]["demand_forecast"] = {
+                "products": fc_result.get("total_products", 0),
+                "restock_needed": fc_result.get("restock_needed", 0),
+                "trends": fc_result.get("trend_summary", {}),
+            }
+        except Exception as exc:
+            logger.debug("Demand forecast: %s", exc)
+
+        # Phase 1i: IMAGE SOURCING — find images for products without them
         try:
             from execution.content.image_sourcer import get_image_sourcer
             sourcer = get_image_sourcer()
@@ -1165,39 +1194,52 @@ class LearningPipeline:
     def _extract_patterns(self, analysis_results: dict[str, Any]) -> list[dict[str, Any]]:
         """Extract actionable patterns from analysis results."""
         patterns = []
+        _insight_keys = (
+            "recommendations", "alerts", "reorder_plan", "ranked_products",
+            "winners", "segments", "opportunities", "trends",
+            "stockout_risks", "churn_predictions",
+        )
 
         for engine_name, result in analysis_results.items():
             if not isinstance(result, dict) or result.get("status") == "error":
                 continue
 
             data = result.get("data", {})
-            recommendations = data.get("recommendations", [])
+            if not isinstance(data, dict):
+                continue
 
-            # Count recommendation types
-            for rec in recommendations:
-                if isinstance(rec, dict):
-                    patterns.append({
-                        "engine": engine_name,
-                        "type": rec.get("type", rec.get("action", "general")),
-                        "confidence": rec.get("confidence", 0),
-                        "impact": rec.get("expected_impact", rec.get("impact", "unknown")),
-                    })
+            # Extract patterns from any list output
+            for key in _insight_keys:
+                items = data.get(key, [])
+                if not isinstance(items, list) or not items:
+                    continue
+                for item in items[:5]:
+                    if isinstance(item, dict):
+                        patterns.append({
+                            "engine": engine_name,
+                            "type": item.get("type", item.get("action", key)),
+                            "confidence": float(item.get("confidence",
+                                            item.get("score", 0.5)) or 0.5),
+                            "impact": item.get("expected_impact",
+                                     item.get("impact", item.get("severity", "medium"))),
+                        })
 
         return patterns
 
     def _update_weights(self, patterns: list[dict[str, Any]]) -> int:
         """Update Bayesian learning weights based on patterns."""
         try:
-            from core.intelligence.loop.stage_learn import _update_weight, LEARNABLE_FACTORS
+            from core.intelligence.loop.stage_learn import _update_weight
         except ImportError:
-            return 0
+            # Fallback: use MemoryIntelligence rule success as weight signal
+            return self._update_weights_from_rules()
 
         updates = 0
         for pattern in patterns:
+            engine = pattern.get("engine", "")
+            # Any pattern with confidence > 0.3 counts (was 0.7 — too strict)
             confidence = pattern.get("confidence", 0)
-            if confidence > 0.7:
-                # High confidence → reinforce
-                engine = pattern.get("engine", "")
+            if confidence > 0.3 or engine:
                 if "pricing" in engine or "price" in engine:
                     _update_weight("price", 1)
                     updates += 1
@@ -1212,6 +1254,21 @@ class LearningPipeline:
                     updates += 1
 
         return updates
+
+    @staticmethod
+    def _update_weights_from_rules() -> int:
+        """Fallback weight update using MemoryIntelligence rules."""
+        try:
+            from core.memory.intelligence import get_memory_intelligence
+            mi = get_memory_intelligence()
+            rules = mi.get_rules()
+            updates = 0
+            for r in rules:
+                if r.get("success_count", 0) > 0:
+                    updates += 1
+            return updates
+        except Exception:
+            return 0
 
     def _store_episode(self, store_id: str, cycle_id: str, learning: dict[str, Any]) -> None:
         """Store learning episode in long-term memory."""
