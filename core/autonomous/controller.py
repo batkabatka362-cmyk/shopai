@@ -268,6 +268,41 @@ class AutonomousController:
             "pending": len(self._action_executor.get_pending()) if self._action_executor else 0,
         }
 
+        # Phase 4b: INTELLIGENCE CYCLE — run full AI cycle on key decisions
+        if hasattr(self, '_unified_memory') and self._unified_memory:
+            try:
+                ic_results = []
+                categories = ["product", "pricing", "marketing"]
+                for cat in categories:
+                    ic_result = self._unified_memory.run_intelligence_cycle(
+                        category=cat, data=data, store_id=sid,
+                    )
+                    ic_results.append(ic_result)
+                cycle_result["phases"]["intelligence_cycle"] = {
+                    "cycles_run": len(ic_results),
+                    "avg_score": round(
+                        sum(r.get("score", 0) for r in ic_results) / max(len(ic_results), 1), 1
+                    ),
+                    "actions": [r.get("action", "none") for r in ic_results],
+                    "memory_informed": sum(1 for r in ic_results if r.get("memory_informed")),
+                }
+            except Exception as exc:
+                logger.debug("Intelligence cycle: %s", exc)
+
+            # Capture engine results into data architecture
+            try:
+                for engine_name, result in analysis.items():
+                    if isinstance(result, dict) and result.get("status") != "error":
+                        self._unified_memory.capture_data(
+                            domain="tool_usage",
+                            data={"tool_name": engine_name, "success": True,
+                                  "output_size": len(str(result))},
+                            source="engine",
+                            store_id=sid,
+                        )
+            except Exception:
+                pass
+
         # Phase 5: LEARN — Track outcomes via all learning systems
         learning = self._phase_learn(sid, cycle_id, analysis, executions)
 

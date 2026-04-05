@@ -8,7 +8,8 @@ build/
 .venv/
 .memory/
 .backups/
-data/
+/data/
+!core/data/
 *.db
 .pytest_cache/
 .env

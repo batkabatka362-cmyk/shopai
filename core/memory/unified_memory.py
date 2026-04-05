@@ -34,6 +34,9 @@ class UnifiedMemory:
         self._experience = None
         self._cross_cache = None
         self._persistent = None
+        self._data_arch = None        # 12-domain data architecture
+        self._memory_intel = None     # 4-level memory intelligence
+        self._intel_cycle = None      # 10-stage intelligence cycle
         self._initialized = False
 
     def initialize(self) -> dict[str, bool]:
@@ -74,6 +77,28 @@ class UnifiedMemory:
             status["persistent"] = True
         except Exception:
             status["persistent"] = False
+
+        # New intelligence systems
+        try:
+            from core.data.architecture import get_data_architecture
+            self._data_arch = get_data_architecture()
+            status["data_architecture"] = True
+        except Exception:
+            status["data_architecture"] = False
+
+        try:
+            from core.memory.intelligence import get_memory_intelligence
+            self._memory_intel = get_memory_intelligence()
+            status["memory_intelligence"] = True
+        except Exception:
+            status["memory_intelligence"] = False
+
+        try:
+            from core.intelligence_cycle import get_intelligence_cycle
+            self._intel_cycle = get_intelligence_cycle()
+            status["intelligence_cycle"] = True
+        except Exception:
+            status["intelligence_cycle"] = False
 
         self._initialized = True
         logger.info("UnifiedMemory initialized: %s", status)
@@ -237,6 +262,92 @@ class UnifiedMemory:
             return self._shared.get("cache", f"{engine_name}_{key}")
         return None
 
+    # ── INTELLIGENCE CYCLE — run full AI decision cycle ─────
+
+    def run_intelligence_cycle(self, category: str, data: dict,
+                               action_fn=None, store_id: str = "") -> dict[str, Any]:
+        """Run the 10-stage intelligence cycle.
+
+        Data → Filter → Feature → Memory → Decision → Execution
+        → Result → Evaluation → Learning → Memory Update
+        """
+        self._ensure_init()
+        if self._intel_cycle:
+            return self._intel_cycle.run(category, data, action_fn, store_id)
+        return {"status": "intelligence_cycle_not_available"}
+
+    # ── DATA ARCHITECTURE — structured domain data ───────────
+
+    def capture_data(self, domain: str, data: dict, source: str = "",
+                     store_id: str = "", score: float = 0.0) -> int:
+        """Capture data into the 12-domain architecture."""
+        self._ensure_init()
+        if self._data_arch:
+            return self._data_arch.capture(domain, data, source=source,
+                                           store_id=store_id, score=score)
+        return 0
+
+    def query_data(self, domain: str, min_score: float = 0.0,
+                   tags: list | None = None, limit: int = 50) -> list[dict]:
+        """Query data from a domain."""
+        self._ensure_init()
+        if self._data_arch:
+            return self._data_arch.query(domain, min_score=min_score,
+                                         tags=tags, limit=limit)
+        return []
+
+    def get_data_context(self, domain: str) -> dict[str, Any]:
+        """Get full context from data architecture for decisions."""
+        self._ensure_init()
+        if self._data_arch:
+            return self._data_arch.get_context_for_decision(domain)
+        return {}
+
+    # ── MEMORY INTELLIGENCE — 4-level hierarchy ──────────────
+
+    def create_memory(self, category: str, content: dict, action: str = "",
+                      result: dict | None = None, score: float = 3.0,
+                      memory_type: str = "episodic",
+                      tags: list[str] | None = None) -> int:
+        """Create a memory in the 4-level hierarchy."""
+        self._ensure_init()
+        if self._memory_intel:
+            return self._memory_intel.create(category, content, action=action,
+                                             result=result, score=score,
+                                             memory_type=memory_type, tags=tags)
+        return 0
+
+    def retrieve_intelligence(self, category: str) -> dict[str, Any]:
+        """Retrieve full intelligence context (events, patterns, rules, strategies)."""
+        self._ensure_init()
+        if self._memory_intel:
+            return self._memory_intel.retrieve_for_decision(category)
+        return {"best_events": [], "patterns": [], "rules": [],
+                "strategies": [], "failures": [], "total_memories": 0}
+
+    def get_learned_rules(self, category: str = "") -> list[dict]:
+        """Get rules learned through pattern promotion."""
+        self._ensure_init()
+        if self._memory_intel:
+            return self._memory_intel.get_rules(category)
+        return []
+
+    def get_strategies(self, category: str = "") -> list[dict]:
+        """Get strategies built from rules."""
+        self._ensure_init()
+        if self._memory_intel:
+            return self._memory_intel.get_strategies(category)
+        return []
+
+    def record_failure(self, category: str, failure_data: dict,
+                       root_cause: str = "", severity: str = "medium") -> int:
+        """Record a failure for learning. Failures are gold."""
+        self._ensure_init()
+        if self._memory_intel:
+            return self._memory_intel.record_failure(category, failure_data,
+                                                     root_cause, severity)
+        return 0
+
     # ── STATS ────────────────────────────────────────────────
 
     def get_stats(self) -> dict[str, Any]:
@@ -250,6 +361,12 @@ class UnifiedMemory:
             stats["brain_memory"] = self._brain.get_stats()
         if self._experience:
             stats["experience"] = self._experience.get_knowledge_summary()
+        if self._data_arch:
+            stats["data_architecture"] = self._data_arch.get_stats()
+        if self._memory_intel:
+            stats["memory_intelligence"] = self._memory_intel.get_stats()
+        if self._intel_cycle:
+            stats["intelligence_cycle"] = self._intel_cycle.get_stats()
 
         total = 0
         for v in stats.values():
