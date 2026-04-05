@@ -808,6 +808,41 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("Live execution: %s", exc)
 
+        # Phase 8k: MODEL WORKERS — AI model tasks on products
+        try:
+            from core.system.model_workers import get_model_workers
+            mw = get_model_workers()
+            model_tasks = []
+            for p in data.get("products", [])[:3]:
+                r = mw.execute_task("analyze_product", {
+                    "name": p.get("name", p.get("title", "")),
+                    "price": p.get("price", 0),
+                    "cost": p.get("cost", 0),
+                    "category": p.get("product_type", ""),
+                }, store_id=sid)
+                model_tasks.append(r)
+            if model_tasks:
+                cycle_result["phases"]["model_workers"] = {
+                    "tasks": len(model_tasks),
+                    "roles_used": list(set(t.get("role", "") for t in model_tasks)),
+                    "models_used": list(set(t.get("model", "") for t in model_tasks)),
+                }
+        except Exception as exc:
+            logger.debug("Model workers: %s", exc)
+
+        # Phase 8l: TOOL DISCOVERY — check available tools
+        if self._cycle_count <= 1:
+            try:
+                from core.system.tool_orchestrator import get_tool_orchestrator
+                to = get_tool_orchestrator()
+                disc = to.discover()
+                cycle_result["phases"]["tool_discovery"] = {
+                    "available": disc.get("available", 0),
+                    "total": disc.get("total_tools", 0),
+                }
+            except Exception as exc:
+                logger.debug("Tool discovery: %s", exc)
+
         # Phase 9: CYCLE REPORT — human-readable summary
         try:
             from core.system.cycle_reporter import get_cycle_reporter
