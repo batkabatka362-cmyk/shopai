@@ -260,10 +260,33 @@ class AutonomousController:
                 logger.debug("Agent dispatch: %s", exc)
                 cycle_result["phases"]["agents"] = {"error": str(exc)[:80]}
 
-        # Phase 4: EXECUTE — Run approved actions
+        # Phase 4: EXECUTE — Smart execution with simulation + learning
         executions = self._phase_execute()
+
+        # Phase 4a: SMART EXECUTION — simulate all pending decisions
+        smart_exec_result = {}
+        try:
+            from execution.smart_executor import get_smart_executor
+            se = get_smart_executor()
+            pending = self._action_executor.get_pending() if self._action_executor else []
+            if pending:
+                smart_exec_result = se.execute_batch(pending, store_data=data)
+                cycle_result["phases"]["smart_execution"] = {
+                    "total": smart_exec_result.get("total", 0),
+                    "simulated": smart_exec_result.get("simulated", 0),
+                    "dry_run": smart_exec_result.get("dry_run", 0),
+                    "live": smart_exec_result.get("live", 0),
+                    "avg_score": smart_exec_result.get("avg_score", 0),
+                }
+                # Smart execution handles these, clear from pending
+                if self._action_executor:
+                    self._action_executor._pending_actions.clear()
+        except Exception as exc:
+            logger.debug("Smart execution: %s", exc)
+
         cycle_result["phases"]["execution"] = {
             "executed": len([e for e in executions if e.get("status") == "executed"]),
+            "smart_executed": smart_exec_result.get("total", 0),
             "failed": len([e for e in executions if e.get("status") == "failed"]),
             "pending": len(self._action_executor.get_pending()) if self._action_executor else 0,
         }
