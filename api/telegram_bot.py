@@ -29,6 +29,7 @@ class TelegramBot:
             "/memory": self._cmd_memory,
             "/alerts": self._cmd_alerts,
             "/profit": self._cmd_profit,
+            "/stores": self._cmd_stores,
             "/help": self._cmd_help,
             "/start": self._cmd_help,
         }
@@ -82,7 +83,16 @@ class TelegramBot:
         if not text or not cid:
             return
         self._chat_ids.add(cid)
-        cmd = text.split()[0].lower()
+        parts = text.split()
+        cmd = parts[0].lower()
+
+        # Special: /addstore url token name niche
+        if cmd == "/addstore" and len(parts) >= 3:
+            self.send(cid, self._cmd_addstore(parts[1], parts[2],
+                      parts[3] if len(parts) > 3 else "",
+                      parts[4] if len(parts) > 4 else "", cid))
+            return
+
         handler = self._commands.get(cmd)
         if handler:
             self.send(cid, handler())
@@ -168,8 +178,41 @@ class TelegramBot:
             return "Unavailable"
 
     @staticmethod
+    def _cmd_stores():
+        try:
+            from core.system.store_registry import get_store_registry
+            reg = get_store_registry()
+            stores = reg.list_stores()
+            if not stores:
+                return "No stores registered. Use /addstore"
+            lines = ["Stores ({}):\n".format(len(stores))]
+            for s in stores:
+                lines.append("{} [{}] {} products, health {}".format(
+                    s.get("store_id", "?"), s.get("status", "?"),
+                    s.get("products_count", 0), s.get("health_score", 0)))
+            return "\n".join(lines)
+        except Exception:
+            return "Unavailable"
+
+    @staticmethod
+    def _cmd_addstore(url, token, name="", niche="", chat_id=0):
+        try:
+            from core.system.store_registry import get_store_registry
+            reg = get_store_registry()
+            result = reg.register(url, token, name, niche,
+                                  telegram_chat_id=chat_id)
+            if result.get("status") == "success":
+                steps = result.get("setup", {}).get("steps", [])
+                summary = "\n".join(str(s) for s in steps[:5])
+                return "Store {} registered!\n\n{}".format(
+                    result.get("store_id", ""), summary)
+            return "Error: {}".format(result.get("error", "unknown"))
+        except Exception as e:
+            return "Error: {}".format(e)
+
+    @staticmethod
     def _cmd_help():
-        return "/status /cycle /report /memory /alerts /profit /help"
+        return "/status /cycle /report /memory /alerts /profit /stores /help\n/addstore url token [name] [niche]"
 
     def get_stats(self):
         return {"running": self._running, "chats": len(self._chat_ids),

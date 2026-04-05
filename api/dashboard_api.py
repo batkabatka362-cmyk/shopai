@@ -26,6 +26,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 
         if path == "/api/status":
             self._json_response(self._get_status())
+        elif path == "/api/stores":
+            self._json_response(self._get_stores())
         elif path == "/api/dashboard":
             self._json_response(self._get_dashboard())
         elif path == "/api/cycle":
@@ -57,6 +59,21 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 self._json_response(result)
             except Exception as exc:
                 self._json_response({"error": str(exc)[:100]}, 500)
+        elif path == "/api/stores":
+            # POST /api/stores — register new store
+            try:
+                payload = json.loads(body) if body else {}
+                from core.system.store_registry import get_store_registry
+                reg = get_store_registry()
+                result = reg.register(
+                    shop_url=payload.get("url", ""),
+                    token=payload.get("token", ""),
+                    name=payload.get("name", ""),
+                    niche=payload.get("niche", ""),
+                )
+                self._json_response(result)
+            except Exception as exc:
+                self._json_response({"error": str(exc)[:100]}, 500)
         else:
             self._json_response({"error": "not_found"}, 404)
 
@@ -72,6 +89,15 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(text.encode())
+
+    @staticmethod
+    def _get_stores() -> dict:
+        try:
+            from core.system.store_registry import get_store_registry
+            reg = get_store_registry()
+            return {"stores": reg.list_stores(), "stats": reg.get_stats()}
+        except Exception as exc:
+            return {"error": str(exc)[:100]}
 
     @staticmethod
     def _get_status() -> dict:
