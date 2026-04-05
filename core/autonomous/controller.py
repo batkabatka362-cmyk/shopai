@@ -644,6 +644,85 @@ class AutonomousController:
             except Exception as exc:
                 logger.debug("Strategy expansion: %s", exc)
 
+        # Phase 8: PRODUCT SCORING — AI-learned product ranking
+        try:
+            from models.ml.product_scorer import get_product_scorer
+            ps = get_product_scorer()
+            product_scores = ps.score_all(data.get("products", []))
+            cycle_result["phases"]["product_scoring"] = {
+                "scored": len(product_scores),
+                "top_product": product_scores[0]["name"] if product_scores else "?",
+                "top_score": product_scores[0]["total_score"] if product_scores else 0,
+                "grade_A": sum(1 for s in product_scores if s["grade"] == "A"),
+                "grade_D": sum(1 for s in product_scores if s["grade"] == "D"),
+            }
+        except Exception as exc:
+            logger.debug("Product scoring: %s", exc)
+
+        # Phase 8b: COMPETITIVE INTELLIGENCE — deep market analysis
+        try:
+            from core.brain.competitive_intel import get_competitive_intelligence
+            ci = get_competitive_intelligence()
+            comp_intel = ci.analyze(
+                data.get("products", []),
+                data.get("competitor_data", []),
+            )
+            cycle_result["phases"]["competitive_intel"] = {
+                "position": comp_intel.get("market_position", {}).get("position", "unknown"),
+                "advantages": len(comp_intel.get("advantages", [])),
+                "vulnerabilities": len(comp_intel.get("vulnerabilities", [])),
+                "recommendations": comp_intel.get("recommendations", [])[:2],
+            }
+        except Exception as exc:
+            logger.debug("Competitive intel: %s", exc)
+
+        # Phase 8c: ALERTS — check for important events
+        try:
+            from core.system.alerts import get_alert_system
+            alerts = get_alert_system()
+            cycle_alerts = alerts.check_cycle(cycle_result)
+            if cycle_alerts:
+                cycle_result["phases"]["alerts"] = {
+                    "count": len(cycle_alerts),
+                    "critical": sum(1 for a in cycle_alerts if a["severity"] == "critical"),
+                    "warnings": sum(1 for a in cycle_alerts if a["severity"] == "warning"),
+                    "messages": [a["message"] for a in cycle_alerts[:3]],
+                }
+        except Exception as exc:
+            logger.debug("Alerts: %s", exc)
+
+        # Phase 8d: PRODUCT PERFORMANCE — track over time
+        try:
+            from core.system.product_performance import get_product_performance
+            pp = get_product_performance()
+            pp.record(data.get("products", []),
+                      product_scores if 'product_scores' in dir() else None)
+        except Exception:
+            pass
+
+        # Phase 8e: TREND ANALYSIS — cross-cycle trends
+        try:
+            from core.system.trend_analyzer import get_trend_analyzer
+            ta = get_trend_analyzer()
+            ta.record_cycle(cycle_result)
+            if self._cycle_count >= 3:
+                trends = ta.analyze()
+                cycle_result["phases"]["trends"] = {
+                    "cycles": trends.get("cycles_analyzed", 0),
+                    "health": trends.get("health_trend", "unknown"),
+                    "details": trends.get("trends", {}),
+                }
+        except Exception as exc:
+            logger.debug("Trend analysis: %s", exc)
+
+        # Phase 9: CYCLE REPORT — human-readable summary
+        try:
+            from core.system.cycle_reporter import get_cycle_reporter
+            reporter = get_cycle_reporter()
+            cycle_result["_report"] = reporter.report(cycle_result)
+        except Exception:
+            pass
+
         # Track performance
         if self._performance_tracker:
             self._performance_tracker.record_cycle(cycle_result)
