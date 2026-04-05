@@ -715,6 +715,99 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("Trend analysis: %s", exc)
 
+        # Phase 8f: CHAIN OF THOUGHT — structured reasoning on top problem
+        try:
+            from core.brain.reasoning_chain import get_chain_of_thought
+            cot = get_chain_of_thought()
+            brain_phase = cycle_result.get("phases", {}).get("brain", {})
+            top_problem = brain_phase.get("top_action", "optimize_store")
+            reasoning = cot.reason(
+                "Should we {} for this store?".format(top_problem),
+                {"products": data.get("products", [])[:5],
+                 "orders": data.get("order_data", []),
+                 "health_score": brain_phase.get("health_score", 0)},
+            )
+            cycle_result["phases"]["chain_of_thought"] = {
+                "question": reasoning.get("question", "")[:60],
+                "answer": reasoning.get("answer", "")[:60],
+                "confidence": reasoning.get("confidence", 0),
+                "steps": reasoning.get("reasoning_length", 0),
+            }
+        except Exception as exc:
+            logger.debug("Chain of thought: %s", exc)
+
+        # Phase 8g: FULFILLMENT — check order fulfillment status
+        try:
+            from execution.fulfillment.auto_fulfill import get_fulfillment
+            ff = get_fulfillment()
+            ff_result = ff.process_orders(
+                data.get("order_data", []),
+                data.get("products", []),
+            )
+            if ff_result.get("total_orders", 0) > 0:
+                cycle_result["phases"]["fulfillment"] = {
+                    "total": ff_result.get("total_orders", 0),
+                    "fulfillable": ff_result.get("fulfillable", 0),
+                    "blocked": ff_result.get("blocked", 0),
+                }
+        except Exception as exc:
+            logger.debug("Fulfillment: %s", exc)
+
+        # Phase 8h: MULTI-STORE — share learnings
+        try:
+            from core.brain.multi_store_brain import get_multi_store
+            ms = get_multi_store()
+            ms.register_store(sid)
+            shared = ms.share_learning(sid)
+            if shared.get("shareable_rules", 0) > 0:
+                cycle_result["phases"]["multi_store"] = {
+                    "shareable_rules": shared.get("shareable_rules", 0),
+                    "shareable_strategies": shared.get("shareable_strategies", 0),
+                }
+        except Exception as exc:
+            logger.debug("Multi-store: %s", exc)
+
+        # Phase 8i: DASHBOARD — generate dashboard snapshot
+        try:
+            from core.system.dashboard import get_dashboard
+            dash = get_dashboard()
+            cycle_result["_dashboard"] = dash.generate(cycle_result)
+        except Exception:
+            pass
+
+        # Phase 8j: LIVE EXECUTION — execute safe actions on Shopify
+        try:
+            from execution.live_executor import get_live_executor
+            le = get_live_executor()
+            # Only execute safe actions if we have credentials
+            creds = {}
+            if self._store_manager:
+                creds = self._store_manager.get_credentials(sid)
+            if creds.get("api_key"):
+                # Find products without descriptions to update
+                safe_actions = []
+                for p in data.get("products", [])[:2]:
+                    pid = str(p.get("id", ""))
+                    desc = str(p.get("body_html", p.get("description", ""))).strip()
+                    if pid and not desc:
+                        safe_actions.append({
+                            "type": "update_description",
+                            "product_id": pid,
+                            "description": "Quality {} product. Great value at ${}.".format(
+                                p.get("product_type", ""), p.get("price", "")),
+                        })
+                live_results = []
+                for action in safe_actions[:1]:  # Max 1 per cycle for safety
+                    r = le.execute(action.get("type", ""), sid, action, creds)
+                    live_results.append(r)
+                if live_results:
+                    cycle_result["phases"]["live_execution"] = {
+                        "actions": len(live_results),
+                        "success": sum(1 for r in live_results if r.get("status") == "success"),
+                    }
+        except Exception as exc:
+            logger.debug("Live execution: %s", exc)
+
         # Phase 9: CYCLE REPORT — human-readable summary
         try:
             from core.system.cycle_reporter import get_cycle_reporter
