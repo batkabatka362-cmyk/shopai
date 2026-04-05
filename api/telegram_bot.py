@@ -1,0 +1,184 @@
+"""Telegram Bot — monitor and control ShopAI via Telegram.
+
+Commands: /status /cycle /report /memory /alerts /profit /help
+Requires: TELEGRAM_BOT_TOKEN in .env
+"""
+from __future__ import annotations
+import json
+import os
+import threading
+import time
+import urllib.request
+from typing import Any
+from utils.logger import get_logger
+logger = get_logger("telegram.bot")
+
+
+class TelegramBot:
+    """ShopAI Telegram bot."""
+
+    def __init__(self, token=""):
+        self._token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        self._offset = 0
+        self._running = False
+        self._chat_ids = set()
+        self._commands = {
+            "/status": self._cmd_status,
+            "/cycle": self._cmd_cycle,
+            "/report": self._cmd_report,
+            "/memory": self._cmd_memory,
+            "/alerts": self._cmd_alerts,
+            "/profit": self._cmd_profit,
+            "/help": self._cmd_help,
+            "/start": self._cmd_help,
+        }
+
+    def start(self):
+        if not self._token:
+            return {"error": "No TELEGRAM_BOT_TOKEN"}
+        self._running = True
+        threading.Thread(target=self._poll, daemon=True).start()
+        return {"status": "started"}
+
+    def stop(self):
+        self._running = False
+
+    def send(self, chat_id, text):
+        if not self._token:
+            return False
+        try:
+            url = "https://api.telegram.org/bot{}/sendMessage".format(self._token)
+            payload = json.dumps({"chat_id": chat_id, "text": text[:4096],
+                                  "parse_mode": "HTML"}).encode()
+            req = urllib.request.Request(url, data=payload, method="POST",
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10)
+            return True
+        except Exception:
+            return False
+
+    def broadcast(self, text):
+        return sum(1 for cid in self._chat_ids if self.send(cid, text))
+
+    def _poll(self):
+        while self._running:
+            try:
+                url = "https://api.telegram.org/bot{}/getUpdates?offset={}&timeout=5".format(
+                    self._token, self._offset)
+                with urllib.request.urlopen(urllib.request.Request(url), timeout=10) as resp:
+                    updates = json.loads(resp.read()).get("result", [])
+                    if updates:
+                        self._offset = updates[-1]["update_id"] + 1
+                    for u in updates:
+                        self._handle(u)
+            except Exception:
+                pass
+            time.sleep(2)
+
+    def _handle(self, update):
+        msg = update.get("message", {})
+        text = msg.get("text", "").strip()
+        cid = msg.get("chat", {}).get("id", 0)
+        if not text or not cid:
+            return
+        self._chat_ids.add(cid)
+        cmd = text.split()[0].lower()
+        handler = self._commands.get(cmd)
+        if handler:
+            self.send(cid, handler())
+        else:
+            self.send(cid, "Unknown command. /help")
+
+    @staticmethod
+    def _cmd_status():
+        try:
+            from core.memory.intelligence import get_memory_intelligence
+            from core.data.architecture import get_data_architecture
+            mi = get_memory_intelligence()
+            da = get_data_architecture()
+            s = mi.get_stats()
+            ds = da.get_stats()
+            return "ShopAI Status\nMemories: {}\nRules: {} Strategies: {}\nData: {} records ({}%)\nScore: {}".format(
+                s["total_memories"], s["by_level"].get("rule", 0),
+                s["by_level"].get("strategy", 0), ds["total_records"],
+                ds["result_rate"], s["avg_score"])
+        except Exception as e:
+            return "Error: {}".format(e)
+
+    @staticmethod
+    def _cmd_cycle():
+        try:
+            from core.autonomous.controller import AutonomousController
+            ac = AutonomousController(auto_approve=False)
+            ac.initialize()
+            r = ac.run_cycle("deguar")
+            return "Cycle done: {}s | {} phases | {} insights".format(
+                r.get("duration_s", 0), len(r.get("phases", {})),
+                r.get("phases", {}).get("layers", {}).get("total_insights", 0))
+        except Exception as e:
+            return "Error: {}".format(e)
+
+    @staticmethod
+    def _cmd_report():
+        try:
+            from core.system.auto_scheduler import get_scheduler
+            sc = get_scheduler()
+            if sc._last_result:
+                from core.system.cycle_reporter import get_cycle_reporter
+                return get_cycle_reporter().report(sc._last_result)
+            return "No cycle yet. /cycle first."
+        except Exception:
+            return "Unavailable"
+
+    @staticmethod
+    def _cmd_memory():
+        try:
+            from core.memory.intelligence import get_memory_intelligence
+            mi = get_memory_intelligence()
+            s = mi.get_stats()
+            lines = ["AI Memory", "Total: {}".format(s["total_memories"])]
+            for k, v in s.get("by_level", {}).items():
+                lines.append("{}: {}".format(k, v))
+            lines.append("Score: {}".format(s["avg_score"]))
+            return "\n".join(lines)
+        except Exception:
+            return "Unavailable"
+
+    @staticmethod
+    def _cmd_alerts():
+        try:
+            from core.system.alerts import get_alert_system
+            alerts = get_alert_system().get_recent(5)
+            if not alerts:
+                return "No alerts"
+            return "\n".join("[{}] {}".format(a.get("severity"), a.get("message")) for a in alerts)
+        except Exception:
+            return "Unavailable"
+
+    @staticmethod
+    def _cmd_profit():
+        try:
+            from core.system.profit_calculator import get_profit_calculator
+            from data_pipeline.store.store_manager import StoreManager
+            pc = get_profit_calculator()
+            p = pc.calculate_store(StoreManager().get_products("deguar"))
+            return "Profit: {}/{} profitable, {}% margin".format(
+                p["profitable"], p["products"], p["avg_margin"])
+        except Exception:
+            return "Unavailable"
+
+    @staticmethod
+    def _cmd_help():
+        return "/status /cycle /report /memory /alerts /profit /help"
+
+    def get_stats(self):
+        return {"running": self._running, "chats": len(self._chat_ids),
+                "configured": bool(self._token)}
+
+
+_instance = None
+def get_telegram_bot():
+    global _instance
+    if _instance is None:
+        _instance = TelegramBot()
+    return _instance
