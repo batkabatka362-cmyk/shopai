@@ -284,7 +284,7 @@ class AutonomousController:
             if self._cycle_count % 5 == 1:
                 learn_result = rl.learn_from_memory()
             # Get recommendations
-            rl_recs = rl.recommend_all(data.get("products", []))
+            rl_recs = rl.recommend_all(data.get("products", [])[:5])
             cycle_result["phases"]["rl_pricing"] = {
                 "recommendations": len(rl_recs),
                 "learned_from": learn_result.get("learned", 0),

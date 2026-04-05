@@ -196,6 +196,15 @@ class MemoryIntelligence:
             return 0
         score = max(1.0, min(5.0, score))
 
+        # Dedup: skip if same category+action within 30s (prevent bloat)
+        if action and memory_type == "episodic":
+            recent = self._conn().execute(
+                "SELECT id FROM memories WHERE category = ? AND action = ? AND timestamp > ? LIMIT 1",
+                (category, action, time.time() - 30),
+            ).fetchone()
+            if recent:
+                return recent["id"]
+
         if not features:
             features = self._extract_features(category, content)
 

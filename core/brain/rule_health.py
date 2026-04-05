@@ -109,6 +109,18 @@ class RuleHealthChecker:
                 zero_success, over_relied, conflicting),
         }
 
+        # Auto-deprioritize zero-success rules (lower their score)
+        if zero_success:
+            try:
+                from core.memory.intelligence import get_memory_intelligence
+                mi = get_memory_intelligence()
+                for zs in zero_success:
+                    rid = zs.get("id", 0)
+                    if rid:
+                        mi.update_score(rid, 2.0, "zero_success_deprioritized")
+            except Exception:
+                pass
+
         self._last_check = report
         return report
 

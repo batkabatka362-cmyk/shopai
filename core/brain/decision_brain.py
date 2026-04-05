@@ -242,9 +242,9 @@ class DecisionBrain:
         # Step 5: DECIDE — what to do? (uses DecisionEngine + memory)
         decisions = self._decide(state, problems, opportunities, experience_advice)
 
-        # Step 5a: Structured decisions via DecisionEngine
+        # Step 5a: Structured decisions via DecisionEngine (top 2 for speed)
         if self._decision_engine:
-            for p in state.products[:5]:  # Top 5 products
+            for p in state.products[:2]:
                 structured = self._decision_engine.decide("pricing", p)
                 if structured.choice != "no_action":
                     thought.setdefault("structured_decisions", []).append(structured.to_dict())
