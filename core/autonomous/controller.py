@@ -438,26 +438,53 @@ class AutonomousController:
                 pass
 
         # Phase 5: LEARN — Track outcomes via all learning systems
-        learning = self._phase_learn(sid, cycle_id, analysis, executions)
+        # Merge smart execution results into executions for learning
+        all_executions = list(executions)
+        se_results = smart_exec_result.get("results", []) if isinstance(smart_exec_result, dict) else []
+        for se in se_results:
+            all_executions.append({
+                "engine": se.get("action_type", "smart_executor"),
+                "type": se.get("action_type", ""),
+                "status": "executed",
+                "score": se.get("score", 3.0),
+                "mode": se.get("mode", "simulate"),
+                "duration_s": se.get("duration_s", 0),
+            })
 
-        # Brain learning loop — learn from this cycle
+        learning = self._phase_learn(sid, cycle_id, analysis, all_executions)
+
+        # Brain learning loop — learn from this cycle + smart executions
         try:
             from core.brain.learning_loop import LearningLoop
             brain_loop = LearningLoop()
             cycle_metrics = {
                 "insights": cycle_result["phases"]["analysis"]["insights"],
                 "actions_proposed": cycle_result["phases"]["decisions"]["proposed"],
+                "smart_executed": len(se_results),
+                "avg_exec_score": smart_exec_result.get("avg_score", 0) if isinstance(smart_exec_result, dict) else 0,
             }
             brain_learning = brain_loop.learn(
                 "cycle", {"store_id": sid, "cycle": self._cycle_count},
                 "autonomous_cycle",
-                {"status": "complete", "insights": cycle_metrics["insights"]},
+                {"status": "complete", "insights": cycle_metrics["insights"],
+                 "executions": len(se_results)},
                 cycle_metrics,
             )
             learning["brain_learning"] = {
                 "score": brain_learning.get("score", 0),
                 "success": brain_learning.get("success", False),
             }
+
+            # Learn from each smart execution individually
+            for se in se_results:
+                brain_loop.learn(
+                    category=se.get("action_type", "execution"),
+                    input_data={"action": se.get("action_type", ""), "mode": se.get("mode", "")},
+                    action=se.get("action_type", "unknown"),
+                    result=se.get("actual_outcome", {}),
+                    metrics={"profit": se.get("score", 3.0) - 3.0},
+                )
+                learning["outcomes_recorded"] = learning.get("outcomes_recorded", 0) + 1
         except Exception as exc:
             logger.debug("Brain learning: %s", exc)
 

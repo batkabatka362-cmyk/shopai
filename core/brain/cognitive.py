@@ -660,15 +660,55 @@ class CognitiveModule:
                         "similar": [s["name"] for s in similar[:2]],
                     })
 
-        # C3: Reasoning
+        # C3: Reasoning — always generate hypotheses
         hypotheses = []
+        good = [p for p in product_insights if p["health"] == "good"]
+        needs_attn = [p for p in product_insights if p["health"] != "good"]
+
         if critical:
-            h = self.reasoning.hypothesis(
+            hypotheses.append(self.reasoning.hypothesis(
                 "Critical products need immediate attention",
                 evidence_for=[p["name"] for p in critical],
-                evidence_against=[p["name"] for p in product_insights if p["health"] == "good"],
-            )
-            hypotheses.append(h)
+                evidence_against=[p["name"] for p in good],
+            ))
+
+        # Image hypothesis — always relevant if products lack images
+        no_images = [p for p in product_insights if not p.get("has_images")]
+        if no_images:
+            hypotheses.append(self.reasoning.hypothesis(
+                "Adding images will improve conversion rates",
+                evidence_for=["{}% products have no images".format(
+                    round(len(no_images) / max(len(product_insights), 1) * 100))],
+                evidence_against=["no A/B test data yet"] if not rules else [],
+            ))
+
+        # Pricing hypothesis
+        margins = [p["margin"] for p in product_insights if p.get("margin") is not None]
+        if margins:
+            low_margin = [p["name"] for p in product_insights
+                          if p.get("margin") is not None and p["margin"] < 0.2]
+            high_margin = [p["name"] for p in product_insights
+                           if p.get("margin") is not None and p["margin"] > 0.5]
+            if low_margin:
+                hypotheses.append(self.reasoning.hypothesis(
+                    "Low-margin products should be repriced or removed",
+                    evidence_for=low_margin,
+                    evidence_against=high_margin[:2],
+                ))
+
+        # Rule effectiveness hypothesis
+        if rules:
+            used_rules = [r for r in rules if r.get("use_count", 0) > 5]
+            success_rules = [r for r in used_rules if r.get("success_count", 0) > 0]
+            failed_rules = [r for r in used_rules if r.get("success_count", 0) == 0]
+            if used_rules:
+                hypotheses.append(self.reasoning.hypothesis(
+                    "Learned rules are improving decisions",
+                    evidence_for=["rule used {} times with success".format(
+                        r.get("use_count", 0)) for r in success_rules[:3]],
+                    evidence_against=["rule used {} times, 0 success".format(
+                        r.get("use_count", 0)) for r in failed_rules[:3]],
+                ))
 
         # C4: Reflection
         reflection = self.reflection.reflect()

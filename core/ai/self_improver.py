@@ -103,9 +103,54 @@ class SelfImprover:
         if weight_updates > 0:
             strategies_reinforced += 1
 
+        # Review smart execution
+        smart = phases.get("smart_execution", {})
+        smart_total = smart.get("total", 0)
+        smart_score = smart.get("avg_score", 0)
+        if smart_total > 0 and smart_score >= 3.5:
+            strategies_reinforced += 1
+            improvements.append(f"Smart execution working: {smart_total} actions, avg score {smart_score}")
+        elif smart_total > 0 and smart_score < 2.5:
+            mistakes_found += 1
+            improvements.append("Smart execution scoring low — review simulation accuracy")
+
+        # Review cognitive insights
+        cognitive = phases.get("cognitive", {})
+        questions = cognitive.get("questions", [])
+        if questions:
+            improvements.append(f"AI asking {len(questions)} questions — curiosity active")
+
+        hypotheses = cognitive.get("hypotheses", 0)
+        if hypotheses > 0:
+            improvements.append(f"{hypotheses} hypotheses generated — reasoning active")
+
+        # Review RL pricing
+        rl = phases.get("rl_pricing", {})
+        if rl.get("recommendations", 0) > 0:
+            strategies_reinforced += 1
+
+        # Review strategy generation
+        strategy = phases.get("strategy", {})
+        if strategy.get("strategies", 0) > 0:
+            strategies_reinforced += 1
+            improvements.append(f"{strategy['strategies']} strategies active, top: {strategy.get('priority', ['?'])[0]}")
+
+        # Check intelligence growth via MemoryIntelligence
+        try:
+            from core.memory.intelligence import get_memory_intelligence
+            mi = get_memory_intelligence()
+            stats = mi.get_stats()
+            rules = stats.get("by_level", {}).get("rule", 0)
+            strats = stats.get("by_level", {}).get("strategy", 0)
+            if rules > 0:
+                improvements.append(f"Intelligence: {rules} rules, {strats} strategies learned")
+                strategies_reinforced += 1
+        except Exception:
+            pass
+
         # Duration analysis
         duration = cycle_result.get("duration_s", 0)
-        if duration > 60:
+        if duration > 30:
             improvements.append(f"Cycle took {duration:.0f}s — optimize for speed")
 
         self._improvement_count += 1
