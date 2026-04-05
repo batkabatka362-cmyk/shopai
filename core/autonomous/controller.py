@@ -845,7 +845,61 @@ class AutonomousController:
             except Exception as exc:
                 logger.debug("Revenue strategy: %s", exc)
 
-        # Phase 8k3: MODEL WORKERS — AI model tasks on products
+        # Phase 8k3: SEO ANALYSIS
+        try:
+            from core.system.seo_analyzer import get_seo_analyzer
+            seo = get_seo_analyzer()
+            seo_result = seo.analyze_all(data.get("products", [])[:5])
+            cycle_result["phases"]["seo_analysis"] = {
+                "avg_score": seo_result.get("avg_seo_score", 0),
+                "grades": seo_result.get("grade_distribution", {}),
+                "top_issues": seo_result.get("top_issues", [])[:3],
+            }
+        except Exception as exc:
+            logger.debug("SEO analysis: %s", exc)
+
+        # Phase 8k4: PROFIT CALCULATOR
+        try:
+            from core.system.profit_calculator import get_profit_calculator
+            pc = get_profit_calculator()
+            profit = pc.calculate_store(data.get("products", []), data.get("order_data", []))
+            cycle_result["phases"]["profit_analysis"] = {
+                "profitable": profit.get("profitable", 0),
+                "unprofitable": profit.get("unprofitable", 0),
+                "avg_margin": profit.get("avg_margin", 0),
+                "needs_attention": len(profit.get("needs_attention", [])),
+            }
+        except Exception as exc:
+            logger.debug("Profit calculator: %s", exc)
+
+        # Phase 8k5: SOCIAL CONTENT — generate posts for top products
+        if self._cycle_count % 5 == 1:
+            try:
+                from execution.content.social_content import get_social_content
+                sc = get_social_content()
+                social = sc.generate_batch(data.get("products", [])[:3])
+                cycle_result["phases"]["social_content"] = {
+                    "products": social.get("total_products", 0),
+                    "platforms": 4,
+                }
+            except Exception as exc:
+                logger.debug("Social content: %s", exc)
+
+        # Phase 8k6: EMAIL SEQUENCES — build on first cycle
+        if self._cycle_count <= 1:
+            try:
+                from execution.marketing.email_sequences import get_email_builder
+                eb = get_email_builder()
+                emails = eb.build_all("deguar", "https://deguar.myshopify.com",
+                                      data.get("products", [])[:3])
+                cycle_result["phases"]["email_sequences"] = {
+                    "sequences": emails.get("total_sequences", 0),
+                    "total_emails": emails.get("total_emails", 0),
+                }
+            except Exception as exc:
+                logger.debug("Email sequences: %s", exc)
+
+        # Phase 8k7: MODEL WORKERS — AI model tasks on products
         try:
             from core.system.model_workers import get_model_workers
             mw = get_model_workers()
