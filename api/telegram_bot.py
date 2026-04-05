@@ -86,6 +86,19 @@ class TelegramBot:
         parts = text.split()
         cmd = parts[0].lower()
 
+        # Record every command in data architecture
+        try:
+            from core.data.architecture import get_data_architecture
+            da = get_data_architecture()
+            da.capture("feedback", {
+                "source": "telegram",
+                "topic": cmd,
+                "sentiment": "neutral",
+                "urgency": "low",
+            }, source="telegram_bot", score=3.5)
+        except Exception:
+            pass
+
         # Special: /addstore url token name niche
         if cmd == "/addstore" and len(parts) >= 3:
             self.send(cid, self._cmd_addstore(parts[1], parts[2],

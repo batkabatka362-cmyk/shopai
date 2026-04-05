@@ -24,6 +24,18 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
 
+        # Record every API request in data architecture
+        try:
+            from core.data.architecture import get_data_architecture
+            get_data_architecture().capture("system", {
+                "event_type": "api_request",
+                "component": "dashboard_api",
+                "severity": "info",
+                "endpoint": path,
+            }, source="api", score=3.0)
+        except Exception:
+            pass
+
         if path == "/api/status":
             self._json_response(self._get_status())
         elif path == "/api/stores":
