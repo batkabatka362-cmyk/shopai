@@ -184,7 +184,21 @@ class StoreRegistry:
         except Exception as exc:
             result["steps"].append({"optimize": "error", "error": str(exc)[:50]})
 
-        # Step 3: Add placeholder images where missing
+        # Step 3: Full store configuration (collections, discounts, content, tags)
+        try:
+            from execution.store_configurator import get_store_configurator
+            sc = get_store_configurator()
+            config_result = sc.configure(shop_url, token, niche)
+            result["steps"].append({
+                "configure": "OK",
+                "collections": config_result.get("results", {}).get("collections", {}).get("created", 0),
+                "discounts": config_result.get("results", {}).get("discounts", {}).get("created", 0),
+                "tagged": config_result.get("results", {}).get("product_tags", {}).get("tagged", 0),
+            })
+        except Exception as exc:
+            result["steps"].append({"configure": "error", "error": str(exc)[:50]})
+
+        # Step 4: Add placeholder images where missing
         try:
             from execution.shopify_automation import get_shopify_automation
             auto = get_shopify_automation()
