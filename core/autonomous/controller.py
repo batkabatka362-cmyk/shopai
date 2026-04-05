@@ -737,6 +737,50 @@ class AutonomousController:
             }, source="brain", store_id=store_id, score=3.5)
         captured["marketing"] += min(len(brain_decisions), 2)
 
+        # 8. Feed competitor prices to price history
+        try:
+            from data_pipeline.tracking.price_history import get_price_history
+            ph = get_price_history()
+            comp_data = data.get("competitor_data", [])
+            comp_count = 0
+            for comp in comp_data:
+                if isinstance(comp, dict):
+                    pid = comp.get("product_id", "")
+                    for cp in comp.get("competitor_prices", []):
+                        if isinstance(cp, dict) and cp.get("price"):
+                            ph.record_competitor_price(
+                                pid, cp.get("competitor", "unknown"),
+                                float(cp["price"]),
+                            )
+                            comp_count += 1
+            captured["competitor_prices"] = comp_count
+        except Exception:
+            pass
+
+        # 9. Auto-complete mature A/B experiments
+        try:
+            from core.system.ab_testing import get_ab_testing
+            ab = get_ab_testing()
+            active = ab.get_active()
+            completed_count = 0
+            for exp in active:
+                exp_id = exp.get("id", "")
+                if not exp_id:
+                    continue
+                # Complete if has enough observations
+                analysis = ab.analyze(exp_id)
+                variants = analysis.get("variants", {})
+                min_samples = min(
+                    (v.get("sample_size", 0) for v in variants.values()),
+                    default=0,
+                )
+                if min_samples >= 3:  # Enough data to conclude
+                    ab.complete(exp_id)
+                    completed_count += 1
+            captured["experiments_completed"] = completed_count
+        except Exception:
+            pass
+
         return captured
 
     def _phase_execute(self) -> list[dict[str, Any]]:

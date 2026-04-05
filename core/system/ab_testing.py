@@ -272,13 +272,23 @@ class ABTestingFramework:
 
     def create_from_simulation(self, action_type: str, predicted: dict,
                                actual: dict, score: float) -> str:
-        """Auto-create experiment from SmartExecutor simulation."""
-        exp_id = self.create_experiment(
-            name=f"sim_{action_type}",
-            hypothesis=f"{action_type} simulation predicts positive outcome",
-            category=action_type,
-            variants=["predicted", "actual"],
-        )
+        """Auto-create or reuse experiment from SmartExecutor simulation."""
+        # Reuse existing active experiment for same action_type
+        conn = self._conn()
+        existing = conn.execute(
+            "SELECT id FROM experiments WHERE category = ? AND status = 'active' LIMIT 1",
+            (action_type,),
+        ).fetchone()
+
+        if existing:
+            exp_id = existing["id"]
+        else:
+            exp_id = self.create_experiment(
+                name=f"sim_{action_type}",
+                hypothesis=f"{action_type} simulation predicts positive outcome",
+                category=action_type,
+                variants=["predicted", "actual"],
+            )
 
         # Record predicted metrics
         pred_metrics = {}

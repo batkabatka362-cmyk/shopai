@@ -91,7 +91,7 @@ API:            GraphQL (primary) + REST (fallback)
 |---|------|--------|--------|
 | P1.1 | Data quality pipeline | HIGH | ✅ `data_pipeline/quality/validator.py` |
 | P1.2 | Competitor price scraping | HIGH | ✅ `core/ai/competitor_monitor.py` (5/cycle) |
-| P1.3 | Price history tracking | MED | ⬜ TODO |
+| P1.3 | Price history tracking | MED | ✅ `data_pipeline/tracking/price_history.py` |
 | P1.4 | Store analytics dashboard data | MED | ⬜ TODO |
 
 ### P2: REAL ML MODELS (Формул → Бодит ML)
@@ -109,7 +109,7 @@ API:            GraphQL (primary) + REST (fallback)
 
 | # | Ажил | Impact | Файл |
 |---|------|--------|------|
-| P3.1 | A/B testing framework | HIGH | `core/system/ab_testing.py` |
+| P3.1 | A/B testing framework | HIGH | ✅ `core/system/ab_testing.py` |
 | P3.2 | Marketing automation | HIGH | `execution/marketing/auto_campaign.py` |
 | P3.3 | Order fulfillment auto | MED | `execution/fulfillment/auto_fulfill.py` |
 | P3.4 | Product image sourcing | HIGH | `execution/content/image_sourcer.py` |
@@ -149,9 +149,9 @@ API:            GraphQL (primary) + REST (fallback)
 
 ОДОО (next priorities):
 ├── P2.1  RL pricing agent (formulas → real ML)
-├── P3.1  A/B testing framework
 ├── P3.4  Product image sourcing
-└── P1.3  Price history tracking
+├── P1.4  Store analytics dashboard
+└── P3.2  Marketing automation
 
 ДАРАА:
 ├── P4.1  Strategy planner (AI-generated long-term plans)
