@@ -380,6 +380,20 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("Self-improvement review: %s", exc)
 
+        # Phase 6c: MAINTENANCE — prune old data, cleanup
+        if self._cycle_count % 10 == 0:  # Every 10 cycles
+            try:
+                from core.memory.intelligence import get_memory_intelligence
+                from core.data.architecture import get_data_architecture
+                mi = get_memory_intelligence()
+                da = get_data_architecture()
+                pruned = mi.prune_unused(days=30)
+                expired = da.cleanup_expired()
+                if pruned or expired:
+                    logger.info("Maintenance: pruned %d memories, %d expired records", pruned, expired)
+            except Exception:
+                pass
+
         # Track performance
         if self._performance_tracker:
             self._performance_tracker.record_cycle(cycle_result)
@@ -671,6 +685,31 @@ class AutonomousController:
                 }, source="smart_executor", store_id=store_id,
                     score=se.get("score", 3.0))
         captured["simulation"] = len(se_results)
+
+        # 7. MARKETING domain — skill recommendations as marketing insights
+        skills = cycle_result.get("phases", {}).get("skills", {})
+        if skills.get("recommended", 0) > 0:
+            for skill_name in skills.get("top", [])[:3]:
+                da.capture("marketing", {
+                    "channel": "ai_recommendation",
+                    "campaign_type": skill_name,
+                    "audience_size": len(data.get("customer_data", data.get("customers", []))),
+                    "spend": 0,
+                    "impressions": 0,
+                    "clicks": 0,
+                    "conversions": 0,
+                }, source="skills", store_id=store_id, score=3.5)
+        captured["marketing"] = min(skills.get("recommended", 0), 3)
+
+        # Capture brain decisions as marketing opportunities
+        for dec in brain_decisions[:2]:
+            da.capture("marketing", {
+                "channel": "brain_decision",
+                "campaign_type": dec.get("type", "recommendation"),
+                "audience_size": 0,
+                "spend": 0,
+            }, source="brain", store_id=store_id, score=3.5)
+        captured["marketing"] += min(len(brain_decisions), 2)
 
         return captured
 

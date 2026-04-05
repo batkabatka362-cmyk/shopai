@@ -84,18 +84,33 @@ System = жинхэнэ ухаан
 shopai/
 ├── core/                            ← СИСТЕМИЙН ЦӨМ
 │   ├── brain/                       ← AI ТАРХИ (шийдвэр гаргах цөм)
-│   │   ├── decision_brain.py        → 7 алхамт бодох процесс
-│   │   ├── decision_engine.py       → Memory-backed structured decisions
+│   │   ├── decision_brain.py        → 7 алхамт бодох процесс + intelligence integration
+│   │   ├── decision_engine.py       → Memory-backed decisions (2 memory systems)
 │   │   ├── memory.py                → 6-layer intelligent memory (L0→L5)
-│   │   ├── learning_loop.py         → Execution→Result→Evaluate→Learn
+│   │   ├── learning_loop.py         → Execution→Result→Evaluate→Learn (3 systems)
 │   │   ├── learning_model.py        → 4th model: patterns + rules + simulation
 │   │   └── model_coordinator.py     → 3 worker + 1 learner model удирдлага
 │   │
+│   ├── data/                        ← 12 DOMAIN DATA ARCHITECTURE ← ШИНЭ
+│   │   └── architecture.py          → 12 domain store: product, marketing, action,
+│   │                                   result, decision, feedback, experiment,
+│   │                                   feature, knowledge, system, tool_usage,
+│   │                                   simulation. Feature extraction, scoring,
+│   │                                   auto-tagging, action→result tracking
+│   │
 │   ├── memory/                      ← НЭГДСЭН САНАХ ОЙ
-│   │   └── unified_memory.py        → 5 memory backend = 1 interface
+│   │   ├── unified_memory.py        → 8 memory backend = 1 interface
+│   │   └── intelligence.py          → 4-LEVEL MEMORY HIERARCHY ← ШИНЭ
+│   │                                   Event(L0)→Pattern(L1)→Rule(L2)→Strategy(L3)
+│   │                                   Auto-promotion, failure intelligence,
+│   │                                   meta memory, memory pruning
+│   │
+│   ├── intelligence_cycle.py        ← 10-STAGE AI LOOP ← ШИНЭ
+│   │                                   Data→Filter→Feature→Memory→Decision→
+│   │                                   Execution→Result→Evaluation→Learning→Update
 │   │
 │   ├── autonomous/                  ← АВТОНОМ УДИРДЛАГА
-│   │   ├── controller.py            → 7 phase autonomous cycle
+│   │   ├── controller.py            → 15+ phase autonomous cycle
 │   │   ├── layer_dispatcher.py      → 12 layer → autonomous cycle руу холбосон
 │   │   └── agent_dispatcher.py      → 7 agent → brain decisions руу холбосон
 │   │
@@ -111,7 +126,15 @@ shopai/
 │   │   ├── reasoning.py             → LLM direct reasoning
 │   │   ├── experience.py            → Permanent knowledge DB
 │   │   ├── external_tools.py        → Web search, scraping, research
+│   │   ├── competitor_monitor.py    → Real competitor price scanning
 │   │   └── self_improver.py         → Self-analysis, mistake detection
+│   │
+├── execution/                       ← ГҮЙЦЭТГЭЛ
+│   ├── action_executor.py           → Shopify API actions (CRUD, pricing)
+│   └── smart_executor.py            → УХААЛАГ ГҮЙЦЭТГЭЛ ← ШИНЭ
+│                                       3 mode: simulate/dry_run/live
+│                                       Risk-based mode selection
+│                                       Simulation → Score → Memory → Learn
 │   │
 │   ├── auth/                        → Shopify OAuth (24h auto-refresh)
 │   ├── intelligence/                → 39 intelligence module
@@ -190,13 +213,16 @@ shopai/
                          │
                          ▼ SyncService
                 ┌────────────────────┐
-                │  UNIFIED MEMORY    │ ← 5 backends, 1 interface
+                │  UNIFIED MEMORY    │ ← 8 backends, 1 interface
                 │                    │
                 │  SharedMemory ──── │ → live namespace data (TTL)
                 │  BrainMemory ───── │ → 6-layer (L0→L5)
                 │  Experience ────── │ → permanent knowledge DB
                 │  CrossCache ────── │ → engine-to-engine sharing
                 │  Persistent ────── │ → long-term key-value
+                │  DataArchitecture  │ → 12 domain data store ← ШИНЭ
+                │  MemoryIntel ───── │ → 4-level hierarchy ← ШИНЭ
+                │  IntelCycle ────── │ → 10-stage AI loop ← ШИНЭ
                 └────────┬──────────┘
                          │
             ┌────────────▼────────────┐
@@ -252,20 +278,25 @@ shopai/
 
 ---
 
-## AUTONOMOUS CYCLE (7 Phase)
+## AUTONOMOUS CYCLE (15+ Phase)
 
 ```
-Phase 1:   DATA        → Shopify sync → SQLite → UnifiedMemory
-Phase 1b:  BRAIN       → observe → diagnose → decide → plan
-Phase 2:   ANALYZE     → 5 core engines (77 insights)
-Phase 2b:  LAYERS      → 12 layers, 131 engines (207+ insights)
-Phase 3:   DECIDE      → brain decisions + engine results → actions
-Phase 3b:  AGENTS      → 7 agents dispatched by domain
-Phase 4:   EXECUTE     → ActionExecutor → Shopify API
-Phase 5:   LEARN       → evaluate → memory update → rules
-Phase 6:   IMPROVE     → self-analysis → strategy adjust
+Phase 1:    DATA            → Shopify sync → SQLite → UnifiedMemory
+Phase 1a:   DATA QUALITY    → validate, score, clean (100/100)
+Phase 1b:   BRAIN           → observe → diagnose → decide → plan
+Phase 1c:   COMPETITOR      → scan 5 products → price comparison
+Phase 2:    ANALYZE         → 5 core engines (77 insights)
+Phase 2b:   LAYERS          → 12 layers, 131 engines (5,300+ insights)
+Phase 3:    DECIDE          → brain decisions + engine results → actions
+Phase 3b:   AGENTS          → 7 agents dispatched by domain
+Phase 4:    EXECUTE         → ActionExecutor (pending)
+Phase 4a:   SMART EXEC      → SmartExecutor: simulate → score → learn (3/cycle)
+Phase 4b:   INTEL CYCLE     → 10-stage loop × 3 categories
+Phase 5:    LEARN           → evaluate → memory update → rules
+Phase 5b:   DOMAIN CAPTURE  → fill all 12 data domains
+Phase 6:    IMPROVE         → self-analysis → strategy adjust
 
-Duration: ~1.7 seconds per cycle
+Duration: ~0.54 seconds per cycle
 ```
 
 ---
@@ -286,8 +317,9 @@ LEARNER (background, тусад):
 
 ---
 
-## MEMORY SYSTEM (6 Layer)
+## MEMORY SYSTEM (2 Systems, 4+6 Layers)
 
+### IntelligentMemory (6 Layer — brain/memory.py)
 ```
 L0: Raw buffer     → шүүгдээгүй data орно
 L1: Filtered       → чанар муу → bad_data руу (устгахгүй!)
@@ -295,8 +327,84 @@ L2: Features       → margin, price_tier, has_images extract
 L3: Scored         → 1-5 оноо + auto-tag
 L4: Patterns       → 3+ давтагдсан → pattern
 L5: Rules          → pattern → actionable rule (prefer/avoid)
+```
 
-Bad data: устгагдахгүй → тусад нь хадгалагдана → analyze хийгдэнэ
+### MemoryIntelligence (4 Level — memory/intelligence.py) ← ШИНЭ
+```
+Event(L0)     → raw observations with features+action+result+score
+Pattern(L1)   → 3+ similar events auto-grouped (coarse feature matching)
+Rule(L2)      → 5+ evidence patterns → prefer/avoid rules
+Strategy(L3)  → 10+ uses + 70% success → decision strategies
+
+Promotion: automatic after each memory creation
+Success tracking: decisions that score >= 3.5 credit used rules
+Failure intelligence: 3+ similar failures → avoidance rule auto-generated
+Meta memory: use_count, success_count, last_used tracking
+Pruning: unused events older than 30 days auto-deleted
+```
+
+### DataArchitecture (12 Domains — data/architecture.py) ← ШИНЭ
+```
+product      → product attributes, margins, performance
+marketing    → campaigns, channels, content performance
+action       → things the system DID (price changes, launches)
+result       → what HAPPENED after an action
+decision     → choices made with context + reasoning
+feedback     → external signals (quality issues, alerts)
+experiment   → smart execution simulations with hypotheses
+feature      → extracted AI signals from each cycle
+knowledge    → learned rules stored as domain knowledge
+system       → cycle performance metrics (latency, insights)
+tool_usage   → which engines used, success rates
+simulation   → predictions vs actuals tracking
+```
+
+---
+
+## INTELLIGENCE CYCLE (10 Stage — intelligence_cycle.py) ← ШИНЭ
+
+```
+Stage 1:  DATA        → raw input enters
+Stage 2:  FILTER      → noise removed
+Stage 3:  FEATURE     → raw → AI signals
+Stage 4:  MEMORY      → consult past experience (REQUIRED)
+Stage 5:  DECISION    → choose action based on memory (REQUIRED)
+Stage 6:  EXECUTION   → do it (simulate/dry_run/live)
+Stage 7:  RESULT      → capture what happened
+Stage 8:  EVALUATION  → score the outcome (1-5)
+Stage 9:  LEARNING    → extract patterns/insights
+Stage 10: UPDATE      → update memory for next cycle
+
+Rules:
+  data → decision directly    = FORBIDDEN
+  features → REQUIRED before memory
+  memory → REQUIRED before decision
+  evaluation → REQUIRED after execution
+  learning → REQUIRED after evaluation
+```
+
+---
+
+## SMART EXECUTOR (execution/smart_executor.py) ← ШИНЭ
+
+```
+3 MODES:
+  SIMULATE  → estimate outcome, no real action (default)
+  DRY_RUN   → validate everything, stop before API
+  LIVE      → execute on real Shopify
+
+MODE SELECTION (risk-based):
+  Low confidence (< 0.4)     → always simulate
+  No past data               → always simulate
+  High risk action            → need 3+ past successes for dry_run
+  Past failures for action    → always simulate
+  Proven low-risk             → can promote to dry_run
+
+Every execution (even simulated):
+  → Memory: record in MemoryIntelligence
+  → Data: record in DataArchitecture (action→result)
+  → Learning: feed to LearningLoop
+  → Failure: auto-record for avoidance rule generation
 ```
 
 ---
@@ -309,16 +417,22 @@ CYCLE БҮРТ:
   
   Score >= 4: SUCCESS
     → pattern reinforce
-    → strategy weight ↑
+    → rule success_count ↑
+    → strategy promotion check
     → "do more of this"
   
   Score <= 2: FAILURE  
     → root cause analysis
-    → repeated 3+? "STOP this approach"
-    → rule generate
-    → decision engine update
+    → MemoryIntelligence.record_failure()
+    → repeated 3+? auto-avoidance rule
+    → decision engine penalty
   
-  Memory update → Next cycle: rules ашиглана → илүү сайн шийдвэр
+  Memory update → Next cycle: rules + strategies ашиглана
+  
+  3 SYSTEMS ЗЭРЭГ СУРНА:
+    IntelligentMemory  → L3 scored decisions, pattern detection
+    MemoryIntelligence → 4-level promotion, failure intelligence
+    DataArchitecture   → action→result tracking (96% attach rate)
 ```
 
 ---
@@ -326,14 +440,22 @@ CYCLE БҮРТ:
 ## ОДООГИЙН ТООН ҮЗҮҮЛЭЛТ
 
 ```
-Engines:        131 registered
-Layers:         12 (all loaded, 2 running)
-Agents:         7 (all loaded, 2 dispatching)
-LLM Models:     3 installed (Mistral + Qwen + LLaMA)
-Memory:         5 backends unified
-Skills:         22 adaptive
-Tests:          530+
-Store:          deguar (15 products, 90/100 health)
-Cycle time:     1.7 seconds
-Insights:       284 per cycle
+Engines:            131 registered, 0 failures
+Layers:             12/12 (all running)
+Agents:             7/7 (all dispatching)
+LLM Models:         3 installed (Mistral + Qwen + LLaMA)
+Memory backends:    8 unified
+  - IntelligentMemory:  456+ memories (430E → 15P → 10R → 1S)
+  - DataArchitecture:   1,796+ records across 12 domains
+  - Result attach rate: 96%
+Skills:             22 adaptive
+Tests:              530+
+Store:              deguar (15 products, 100/100 data quality)
+Cycle time:         0.54 seconds
+Insights:           5,321 per cycle
+Smart executions:   3 per cycle (simulated)
+Competitor scans:   5 products per cycle
+Intelligence cycles: 3 per cycle (all memory-informed)
+Auto-generated:     10 rules, 1 strategy, 58 promotions
+Avg memory score:   3.31 (climbing with each cycle)
 ```
