@@ -207,23 +207,21 @@ class DecisionBrain:
             "action_plan": [],
         }
 
-        # Step 0: INGEST — feed all data into intelligent memory
+        # Step 0: INGEST — feed data into memory (skip if recently ingested)
         sid = store_data.get("store_id", "")
-        if self._brain_memory:
-            for p in state.products:
-                self._brain_memory.ingest("product", p, source="cycle", store_id=sid)
-            for o in state.orders:
-                self._brain_memory.ingest("order", o, source="cycle")
-            for c in state.customers:
-                self._brain_memory.ingest("customer", c, source="cycle")
-
-        # Step 0b: INGEST into DataArchitecture (12-domain)
-        if hasattr(self, "_data_arch") and self._data_arch:
-            for p in state.products:
-                self._data_arch.capture("product", p, source="brain_cycle", store_id=sid)
-            for o in state.orders:
-                self._data_arch.capture("result", {"action_id": o.get("id", ""), **o},
-                                        source="order", store_id=sid)
+        _ingest_key = f"_ingested_{sid}_{len(state.products)}"
+        if not hasattr(self, "_last_ingest") or self._last_ingest != _ingest_key:
+            self._last_ingest = _ingest_key
+            if self._brain_memory:
+                for p in state.products:
+                    self._brain_memory.ingest("product", p, source="cycle", store_id=sid)
+                for o in state.orders:
+                    self._brain_memory.ingest("order", o, source="cycle")
+                for c in state.customers:
+                    self._brain_memory.ingest("customer", c, source="cycle")
+            if hasattr(self, "_data_arch") and self._data_arch:
+                for p in state.products:
+                    self._data_arch.capture("product", p, source="brain_cycle", store_id=sid)
 
         # Step 1: OBSERVE — what's happening?
         observations = self._observe(state)

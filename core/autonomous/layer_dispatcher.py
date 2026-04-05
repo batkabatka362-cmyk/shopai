@@ -618,6 +618,12 @@ class LayerDispatcher:
                 {"category": "marketing", "amount": 0},
             ]
         elif layer_name == "intelligence":
+            top_cat = "general"
+            for p in products:
+                c = p.get("product_type", p.get("category", ""))
+                if c:
+                    top_cat = str(c)
+                    break
             # learning_loop needs task, decision, result
             data["task"] = "optimize_store"
             data["decision"] = "analyze_and_improve"
@@ -627,24 +633,21 @@ class LayerDispatcher:
                 "products_analyzed": len(products),
                 "insights": 10,
             }
-            # global_brain needs mode + insights (data_ingestor reads 'insights' key)
+            # global_brain reads data.data for ingest — must nest insights
             data["mode"] = "ingest"
             data["query"] = f"store analysis for {len(products)} products"
-            top_cat = "general"
-            for p in products:
-                c = p.get("product_type", p.get("category", ""))
-                if c:
-                    top_cat = str(c)
-                    break
-            data["insights"] = [
-                f"{len(products)} products in catalog, avg price ${avg_price:.2f}",
-                f"Store health: analyzing {len(products)} products for optimization",
-                f"Top category: {top_cat}",
-            ]
-            data["recommendations"] = [
-                {"content": "Optimize pricing for high-margin products", "confidence": 0.7},
-                {"content": "Add product images to improve conversion", "confidence": 0.8},
-            ]
+            data["source_engine"] = "autonomous_cycle"
+            data["data"] = {
+                "insights": [
+                    f"{len(products)} products in catalog, avg price ${avg_price:.2f}",
+                    f"Analyzing {len(products)} products for optimization",
+                    f"Top category: {top_cat}",
+                ],
+                "recommendations": [
+                    {"content": "Optimize pricing for high-margin products", "confidence": 0.7},
+                    {"content": "Add product images to improve conversion", "confidence": 0.8},
+                ],
+            }
             # meta_governance needs action (non-empty dict)
             data["action"] = {
                 "type": "analyze",

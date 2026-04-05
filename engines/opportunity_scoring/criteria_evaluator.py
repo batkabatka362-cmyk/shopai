@@ -32,6 +32,8 @@ def evaluate_criteria(
     """
     try:
         opps = copy.deepcopy(opportunities)
+        if not isinstance(criteria, dict):
+            criteria = {}
         weights = criteria.get("weights", _DEFAULT_CRITERIA)
 
         evaluated: list[dict[str, Any]] = []

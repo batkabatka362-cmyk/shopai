@@ -138,21 +138,24 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("Data quality pipeline: %s", exc)
 
-        # Populate unified memory (all backends)
-        if hasattr(self, '_unified_memory') and self._unified_memory:
-            self._unified_memory.ingest_store_data(
-                data.get("products", []),
-                data.get("order_data", []),
-                data.get("customer_data", []),
-                sid,
-            )
-        elif self._memory:
-            self._memory.load_store_data(
-                data.get("products", []),
-                data.get("order_data", []),
-                data.get("customer_data", []),
-                sid,
-            )
+        # Populate unified memory (skip if same data as last cycle)
+        _data_key = f"{sid}_{len(data.get('products', []))}_{len(data.get('order_data', []))}"
+        if not hasattr(self, '_last_data_key') or self._last_data_key != _data_key:
+            self._last_data_key = _data_key
+            if hasattr(self, '_unified_memory') and self._unified_memory:
+                self._unified_memory.ingest_store_data(
+                    data.get("products", []),
+                    data.get("order_data", []),
+                    data.get("customer_data", []),
+                    sid,
+                )
+            elif self._memory:
+                self._memory.load_store_data(
+                    data.get("products", []),
+                    data.get("order_data", []),
+                    data.get("customer_data", []),
+                    sid,
+                )
 
         # Get skill recommendations
         if self._skills:
