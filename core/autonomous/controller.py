@@ -962,7 +962,70 @@ class AutonomousController:
             except Exception as exc:
                 logger.debug("Tool discovery: %s", exc)
 
-        # Phase 9: CYCLE REPORT — human-readable summary
+        # Phase 8m: TIMESERIES — domain trend analysis
+        try:
+            from core.data.timeseries import get_timeseries
+            ts = get_timeseries()
+            trends = ts.all_domains(days=1)
+            cycle_result["phases"]["timeseries"] = {
+                "improving": trends.get("improving", 0),
+                "declining": trends.get("declining", 0),
+                "stable": trends.get("stable", 0),
+            }
+        except Exception as exc:
+            logger.debug("Timeseries: %s", exc)
+
+        # Phase 8n: SIMILARITY SEARCH — find related memories for top decision
+        try:
+            from core.memory.similarity_search import get_similarity_search
+            ss = get_similarity_search()
+            products = data.get("products", [])
+            if products:
+                top_p = products[0]
+                features = {"has_price": bool(top_p.get("price")),
+                            "margin": (float(top_p.get("price",0)) - float(top_p.get("cost",0))) / max(float(top_p.get("price",1)),1) if top_p.get("cost") else 0}
+                similar = ss.search(features, "pricing", limit=3)
+                cycle_result["phases"]["similarity_search"] = {
+                    "found": len(similar),
+                    "top_similarity": similar[0].get("_similarity", 0) if similar else 0,
+                }
+        except Exception as exc:
+            logger.debug("Similarity: %s", exc)
+
+        # Phase 8o: CONTENT CALENDAR — plan upcoming content
+        if self._cycle_count <= 1:
+            try:
+                from core.system.content_calendar import get_content_calendar
+                cc = get_content_calendar()
+                cal = cc.generate_calendar(data.get("products", []), weeks=4)
+                cycle_result["phases"]["content_calendar"] = {
+                    "weeks": cal.get("weeks", 0),
+                    "total_items": cal.get("total_items", 0),
+                    "types": cal.get("by_type", {}),
+                }
+            except Exception as exc:
+                logger.debug("Content calendar: %s", exc)
+
+        # Phase 8p: REAL IMAGE FINDER — search for better images
+        if self._cycle_count % 10 == 1:
+            try:
+                from execution.content.real_image_finder import get_real_image_finder
+                rif = get_real_image_finder()
+                img_result = rif.find_real_images(data.get("products", [])[:3])
+                if img_result.get("found", 0) > 0:
+                    cycle_result["phases"]["real_images"] = img_result
+            except Exception as exc:
+                logger.debug("Real images: %s", exc)
+
+        # Phase 9: STRUCTURED LOGGING — log this cycle
+        try:
+            from core.system.structured_logger import get_structured_logger
+            sl = get_structured_logger()
+            sl.log_cycle(cycle_result)
+        except Exception:
+            pass
+
+        # Phase 9b: CYCLE REPORT — human-readable summary
         try:
             from core.system.cycle_reporter import get_cycle_reporter
             reporter = get_cycle_reporter()
