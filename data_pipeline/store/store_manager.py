@@ -13,6 +13,22 @@ from utils.logger import get_logger
 
 logger = get_logger("store_manager")
 
+# Cache ShopifyAuth instances per (shop_url, client_id, client_secret) to avoid
+# repeated token cache loads and refresh attempts on every credential lookup.
+# get_credentials() may be called multiple times per cycle.
+_auth_instances: dict[tuple[str, str, str], Any] = {}
+
+
+def _get_auth_instance(shop_url: str, client_id: str, client_secret: str) -> Any:
+    """Return a cached ShopifyAuth instance, creating it on first access."""
+    key = (shop_url, client_id, client_secret)
+    auth = _auth_instances.get(key)
+    if auth is None:
+        from core.auth.shopify_auth import ShopifyAuth
+        auth = ShopifyAuth(shop_url, client_id, client_secret)
+        _auth_instances[key] = auth
+    return auth
+
 
 class StoreManager:
     """Manages multiple Shopify stores for ShopAI."""
@@ -120,8 +136,9 @@ class StoreManager:
         """Resolve token — use OAuth if client_id/secret present, else static key."""
         if creds.get("client_id") and creds.get("client_secret"):
             try:
-                from core.auth.shopify_auth import ShopifyAuth
-                auth = ShopifyAuth(creds["shop_url"], creds["client_id"], creds["client_secret"])
+                auth = _get_auth_instance(creds["shop_url"],
+                                           creds["client_id"],
+                                           creds["client_secret"])
                 return auth.get_token()
             except Exception:
                 pass
@@ -135,8 +152,7 @@ class StoreManager:
         shop_url = os.environ.get("SHOPAI_SHOPIFY_URL", "")
         if client_id and client_secret and shop_url:
             try:
-                from core.auth.shopify_auth import ShopifyAuth
-                auth = ShopifyAuth(shop_url, client_id, client_secret)
+                auth = _get_auth_instance(shop_url, client_id, client_secret)
                 return auth.get_token()
             except Exception:
                 pass

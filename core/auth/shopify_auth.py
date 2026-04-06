@@ -39,6 +39,8 @@ class ShopifyAuth:
 
     # Token refresh buffer — refresh 1 hour before expiry
     _REFRESH_BUFFER_S = 3600
+    # After a failed refresh, wait this long before trying again
+    _REFRESH_BACKOFF_S = 300
 
     def __init__(self, shop_url: str, client_id: str, client_secret: str) -> None:
         self._shop_url = shop_url.rstrip("/")
@@ -46,6 +48,7 @@ class ShopifyAuth:
         self._client_secret = client_secret
         self._access_token: str = ""
         self._expires_at: float = 0
+        self._last_refresh_failure: float = 0.0
         self._lock = threading.Lock()
 
         # Try loading cached token
@@ -54,13 +57,27 @@ class ShopifyAuth:
     # ── Public API ───────────────────────────────────────────
 
     def get_token(self) -> str:
-        """Get a valid access token. Auto-refreshes if expired."""
+        """Get a valid access token. Auto-refreshes if expired.
+
+        If a refresh attempt failed recently (within REFRESH_BACKOFF_S),
+        returns the last known token (even if stale) instead of hammering
+        the Shopify token endpoint. Callers get to decide whether to retry.
+        """
         with self._lock:
             if self._is_valid():
                 return self._access_token
+            # Back off after a recent refresh failure — hammering auth
+            # costs ~400ms per attempt and floods logs
+            if self._last_refresh_failure and \
+               (time.time() - self._last_refresh_failure) < self._REFRESH_BACKOFF_S:
+                return self._access_token  # may be empty/stale
 
-        # Need new token
-        return self.refresh_token()
+        try:
+            return self.refresh_token()
+        except Exception:
+            with self._lock:
+                self._last_refresh_failure = time.time()
+            return self._access_token
 
     def refresh_token(self) -> str:
         """Force refresh the access token."""
