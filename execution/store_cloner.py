@@ -132,8 +132,13 @@ class StoreCloner:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 return json.loads(resp.read())
-        except Exception:
-            return {}
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:200]
+            logger.warning("Clone API error %d on %s: %s", exc.code, path, body)
+            return {"error": "HTTP {}".format(exc.code), "body": body}
+        except Exception as exc:
+            logger.warning("Clone API error on %s: %s", path, exc)
+            return {"error": str(exc)[:100]}
 
 
 _instance = None

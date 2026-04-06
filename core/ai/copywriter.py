@@ -1,6 +1,5 @@
 """AI Copywriter — generates selling copy, not just descriptions."""
 from __future__ import annotations
-from typing import Any
 
 
 class AICopywriter:

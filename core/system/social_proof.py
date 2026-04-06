@@ -107,17 +107,20 @@ class SocialProofEngine:
         return script
 
     def install_script_tag(self, shop_url: str, token: str,
-                           script_content: str) -> dict:
-        """Install social proof script via Shopify ScriptTag API."""
-        # Create a hosted script (inline via script tag)
-        h = {"X-Shopify-Access-Token": token, "Content-Type": "application/json"}
+                           script_src: str) -> dict:
+        """Install social proof script via Shopify ScriptTag API.
 
-        # Store script as asset or use inline approach
-        # For now, create a script tag pointing to our API
+        Requires a publicly hosted script URL (script_src). Shopify won't
+        accept inline JS — host generate_popup_script() output yourself first.
+        """
+        if not script_src or not script_src.startswith("https://"):
+            return {"error": "script_src must be a public https URL"}
+
+        h = {"X-Shopify-Access-Token": token, "Content-Type": "application/json"}
         payload = json.dumps({
             "script_tag": {
                 "event": "onload",
-                "src": "https://cdn.jsdelivr.net/npm/noop3@latest/index.js",  # placeholder
+                "src": script_src,
                 "display_scope": "online_store",
             }
         }).encode()
@@ -127,6 +130,9 @@ class SocialProofEngine:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:200]
+            return {"error": "HTTP {} {}".format(exc.code, body)}
         except Exception as exc:
             return {"error": str(exc)[:80]}
 

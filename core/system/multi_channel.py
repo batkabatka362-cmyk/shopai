@@ -1,10 +1,14 @@
-"""Multi-Channel Sync — unified product management across platforms."""
+"""Multi-Channel adapter registry — reads products from registered platforms.
+
+Currently supports read-side enumeration only. Write-side sync (push
+products from one channel to another) is not implemented; add an
+adapter-specific `push_products` method when write support is needed.
+"""
 from __future__ import annotations
-from typing import Any
 
 
 class MultiChannelSync:
-    """Sync products across Shopify + WooCommerce + Amazon."""
+    """Registry of platform adapters for cross-channel reads."""
 
     def __init__(self):
         self._channels = {}
@@ -12,18 +16,22 @@ class MultiChannelSync:
     def register_channel(self, name, adapter):
         self._channels[name] = adapter
 
-    def sync_all(self, products):
+    def fetch_all(self):
+        """Fetch products from every registered adapter. Read-only."""
         results = {}
         for name, adapter in self._channels.items():
+            if not hasattr(adapter, "get_products"):
+                results[name] = {"status": "no_get_products"}
+                continue
             try:
-                if hasattr(adapter, "get_products"):
-                    remote = adapter.get_products()
-                    results[name] = {"products": len(remote), "status": "synced"}
-                else:
-                    results[name] = {"status": "no_get_products"}
+                remote = adapter.get_products()
+                results[name] = {"products": len(remote), "status": "fetched"}
             except Exception as e:
                 results[name] = {"status": "error", "error": str(e)[:50]}
         return {"channels": results, "total": len(self._channels)}
+
+    # Backward-compat alias
+    sync_all = fetch_all
 
     def get_stats(self):
         return {"channels": len(self._channels), "names": list(self._channels.keys())}

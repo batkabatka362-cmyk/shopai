@@ -57,11 +57,15 @@ class ModelRouter:
 
     def __init__(self):
         self._queue = queue.Queue(maxsize=100)
-        self._results = {}
+        self._results = {}  # task_id → (result, inserted_at)
         self._worker = None
         self._running = False
         self._stats = {"total": 0, "success": 0, "fallback": 0, "timeout": 0}
         self._timeout = 10  # seconds per task (fast fallback if slow)
+        self._lock = threading.Lock()
+        self._max_results = 200
+        self._availability_cached = None
+        self._availability_ts = 0.0
 
     def start_worker(self):
         """Start background worker thread."""
@@ -77,58 +81,67 @@ class ModelRouter:
         self._running = False
 
     def is_available(self):
-        """Check if Ollama is reachable."""
+        """Check if Ollama is reachable. Cached 30s."""
+        now = time.time()
+        if self._availability_cached is not None and now - self._availability_ts < 30:
+            return self._availability_cached
         try:
             req = urllib.request.Request("{}/api/tags".format(OLLAMA_URL))
-            urllib.request.urlopen(req, timeout=2)
-            return True
+            with urllib.request.urlopen(req, timeout=2):
+                self._availability_cached = True
         except Exception:
-            return False
+            self._availability_cached = False
+        self._availability_ts = now
+        return self._availability_cached
 
     # ── SUBMIT TASK ──────────────────────────────
 
     def submit(self, task_type, data, store_id=""):
         """Submit a task. Returns task_id. Non-blocking."""
-        task_id = "task_{:.0f}".format(time.time() * 1000)
+        import uuid
+        task_id = "task_{}".format(uuid.uuid4().hex[:16])
         role = TASK_ROLE_MAP.get(task_type, "work")
         model = MODEL_ROLES.get(role, "mistral")
-
-        # Build prompt with data context
         prompt = self._build_prompt(task_type, data)
 
         task = {
-            "id": task_id,
-            "type": task_type,
-            "role": role,
-            "model": model,
-            "prompt": prompt,
-            "data": data,
-            "store_id": store_id,
+            "id": task_id, "type": task_type, "role": role, "model": model,
+            "prompt": prompt, "data": data, "store_id": store_id,
             "submitted": time.time(),
         }
 
-        try:
-            self._queue.put_nowait(task)
-        except queue.Full:
-            # Queue full — use heuristic immediately
-            result = self._heuristic(task_type, data)
-            self._results[task_id] = {"result": result, "source": "heuristic"}
-            self._stats["fallback"] += 1
+        with self._lock:
+            self._stats["total"] += 1
+            try:
+                self._queue.put_nowait(task)
+            except queue.Full:
+                # Queue full — use heuristic immediately
+                result = self._heuristic(task_type, data)
+                self._store_result(task_id, {"result": result, "source": "heuristic"})
+                self._stats["fallback"] += 1
 
-        self._stats["total"] += 1
         return task_id
+
+    def _store_result(self, task_id, result):
+        """Store result with bounded eviction. Caller must hold lock."""
+        self._results[task_id] = (result, time.time())
+        if len(self._results) > self._max_results:
+            # Evict oldest
+            oldest = sorted(self._results.items(), key=lambda kv: kv[1][1])
+            for tid, _ in oldest[: len(self._results) - self._max_results]:
+                self._results.pop(tid, None)
 
     def get_result(self, task_id, timeout=0):
         """Get result for a task. Returns None if not ready."""
-        if task_id in self._results:
-            return self._results.pop(task_id)
-        if timeout > 0:
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                if task_id in self._results:
-                    return self._results.pop(task_id)
-                time.sleep(0.1)
-        return None
+        deadline = time.time() + timeout if timeout > 0 else 0
+        while True:
+            with self._lock:
+                entry = self._results.pop(task_id, None)
+            if entry is not None:
+                return entry[0]
+            if deadline == 0 or time.time() >= deadline:
+                return None
+            time.sleep(0.1)
 
     def run_sync(self, task_type, data, store_id=""):
         """Run task synchronously. Blocks until complete or timeout."""
@@ -136,20 +149,18 @@ class ModelRouter:
         model = MODEL_ROLES.get(role, "mistral")
         prompt = self._build_prompt(task_type, data)
 
-        # Try model
         result = self._call_model(model, prompt)
         if result:
             self._record(task_type, data, result, "model", store_id)
-            self._stats["success"] += 1
+            with self._lock:
+                self._stats["success"] += 1
             return {"result": result, "source": model, "role": role}
 
-        # Fallback to heuristic
         result = self._heuristic(task_type, data)
         self._record(task_type, data, result, "heuristic", store_id)
-        self._stats["fallback"] += 1
+        with self._lock:
+            self._stats["fallback"] += 1
         return {"result": result, "source": "heuristic", "role": role}
-
-    # ── BACKGROUND WORKER ────────────────────────
 
     def _process_queue(self):
         while self._running:
@@ -161,19 +172,27 @@ class ModelRouter:
             try:
                 result = self._call_model(task["model"], task["prompt"])
                 if result:
-                    self._results[task["id"]] = {
-                        "result": result, "source": task["model"]}
-                    self._stats["success"] += 1
+                    payload = {"result": result, "source": task["model"]}
+                    with self._lock:
+                        self._store_result(task["id"], payload)
+                        self._stats["success"] += 1
                 else:
                     result = self._heuristic(task["type"], task["data"])
-                    self._results[task["id"]] = {
-                        "result": result, "source": "heuristic"}
-                    self._stats["fallback"] += 1
+                    payload = {"result": result, "source": "heuristic"}
+                    with self._lock:
+                        self._store_result(task["id"], payload)
+                        self._stats["fallback"] += 1
 
                 self._record(task["type"], task["data"], result,
                              task["model"], task.get("store_id", ""))
-            except Exception:
-                self._stats["timeout"] += 1
+            except Exception as exc:
+                # Never drop a task silently — store error result so callers don't hang
+                logger.warning("Model task %s failed: %s", task.get("id", "?"), exc)
+                fallback = self._heuristic(task["type"], task["data"])
+                with self._lock:
+                    self._store_result(task["id"],
+                        {"result": fallback, "source": "heuristic", "error": str(exc)[:100]})
+                    self._stats["timeout"] += 1
 
     # ── MODEL CALL ───────────────────────────────
 

@@ -1,11 +1,9 @@
 """Data-Driven Enhancer — makes all components read data before acting.
 
-ADDITIVE ONLY — existing components unchanged, this adds intelligence layer.
-Every function reads memory+data BEFORE generating output.
+Every function reads memory + data architecture BEFORE generating output.
+Degrades gracefully (static output) if either backend is unavailable.
 """
 from __future__ import annotations
-import time
-from typing import Any
 from utils.logger import get_logger
 logger = get_logger("enhancer.data_driven")
 
@@ -16,20 +14,25 @@ class DataDrivenEnhancer:
     def __init__(self):
         self._mi = None
         self._da = None
+        self._warned = False
 
     def _ensure(self):
-        if not self._mi:
+        if self._mi is None:
             try:
                 from core.memory.intelligence import get_memory_intelligence
                 self._mi = get_memory_intelligence()
-            except Exception:
-                pass
-        if not self._da:
+            except Exception as exc:
+                if not self._warned:
+                    logger.warning("MemoryIntelligence unavailable, running in degraded mode: %s", exc)
+                    self._warned = True
+        if self._da is None:
             try:
                 from core.data.architecture import get_data_architecture
                 self._da = get_data_architecture()
-            except Exception:
-                pass
+            except Exception as exc:
+                if not self._warned:
+                    logger.warning("DataArchitecture unavailable, running in degraded mode: %s", exc)
+                    self._warned = True
 
     def smart_description(self, product):
         """Generate description using product data + memory."""

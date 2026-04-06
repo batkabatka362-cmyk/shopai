@@ -1,14 +1,13 @@
 """AI Product Finder — discovers trending products to add to store.
 
-Searches: web trends, competitor stores, marketplace bestsellers.
-Scores each product: margin potential, demand, competition level.
-Auto-suggests which to add and at what price.
+Uses web search + a niche suggestion database to propose products.
+Scores each candidate by margin potential and price sweet spot.
 """
 from __future__ import annotations
-import time
-from typing import Any
 from utils.logger import get_logger
 logger = get_logger("product.finder")
+
+_MAX_FOUND_HISTORY = 200
 
 # Product niches and their search terms
 NICHE_SEARCHES = {
@@ -66,8 +65,9 @@ class AIProductFinder:
         scored.sort(key=lambda x: -x.get("score", 0))
         top = scored[:max_results]
         self._found.extend(top)
+        if len(self._found) > _MAX_FOUND_HISTORY:
+            self._found = self._found[-_MAX_FOUND_HISTORY:]
 
-        # Record in data architecture
         self._record(top, niche)
 
         return {
@@ -145,7 +145,8 @@ class AIProductFinder:
 
         return round(min(100, score))
 
-    def import_to_shopify(self, product: dict, shop_url: str, token: str) -> dict:
+    def import_to_shopify(self, product: dict, shop_url: str, token: str,
+                          niche: str = "") -> dict:
         """Import a found product to Shopify store."""
         import json, urllib.request
         name = product.get("name", "Product")
@@ -157,12 +158,15 @@ class AIProductFinder:
         if not desc:
             desc = "<p>Discover the <strong>{}</strong> — premium quality for your everyday needs.</p>".format(name)
 
+        tag_parts = [t for t in [category.lower(), niche, "new", "trending"] if t]
+        tags = ", ".join(dict.fromkeys(tag_parts))  # dedupe, preserve order
+
         payload = json.dumps({"product": {
             "title": name,
             "body_html": desc,
             "product_type": category,
             "vendor": "ShopAI",
-            "tags": "{}, {}, new, trending".format(category.lower(), "home"),
+            "tags": tags,
             "variants": [{"price": str(price), "cost": str(cost),
                           "inventory_management": "shopify", "inventory_quantity": 100}],
         }}).encode()
@@ -176,6 +180,9 @@ class AIProductFinder:
                 data = json.loads(resp.read())
                 if data.get("product"):
                     return {"status": "imported", "product_id": data["product"]["id"], "name": name}
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:200]
+            return {"status": "error", "error": "HTTP {} {}".format(exc.code, body)}
         except Exception as exc:
             return {"status": "error", "error": str(exc)[:80]}
         return {"status": "error"}

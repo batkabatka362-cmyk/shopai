@@ -1,7 +1,6 @@
 """AI Store Doctor — weekly health diagnosis with auto-fix."""
 from __future__ import annotations
 import time
-from typing import Any
 from utils.logger import get_logger
 logger = get_logger("store.doctor")
 
@@ -52,6 +51,20 @@ class AIStoreDoctor:
             issues.append("WARNING: {} products with <20% margin".format(low_margin))
             fixes.append("Raise prices or find cheaper suppliers")
             score -= low_margin * 2
+
+        # Cycle-level signals
+        if cycle_result:
+            phases = cycle_result.get("phases", {}) or {}
+            layers_run = phases.get("layers", {}).get("layers_run", 12)
+            if layers_run < 12:
+                issues.append("WARNING: Only {}/12 layers ran last cycle".format(layers_run))
+                fixes.append("Check layer_dispatcher logs")
+                score -= (12 - layers_run) * 2
+            rule_health = phases.get("rule_health", {}).get("health_score", 100)
+            if rule_health < 50:
+                issues.append("WARNING: Rule health at {}%".format(rule_health))
+                fixes.append("Deprioritize zero-success rules")
+                score -= 5
 
         score = max(0, min(100, score))
         health = "HEALTHY" if score >= 80 else "NEEDS ATTENTION" if score >= 50 else "CRITICAL"
