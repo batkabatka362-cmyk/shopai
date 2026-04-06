@@ -718,6 +718,41 @@ def _cmd_pipeline(pipeline_name: str, input_path: str) -> None:
 
 # ── Main ─────────────────────────────────────────────────────
 
+def _validate_startup_config(command: str | None) -> None:
+    """Run config validation at startup and fail fast on hard errors.
+
+    - Skipped for the `config` subcommand itself so users can inspect bad
+      configs via `shopai config check` without being blocked.
+    - Skipped when no command is given (argparse will print help).
+    - Type / range errors are printed to stderr and exit(2).
+    - Cross-field warnings are printed to stderr but do not block.
+    - An env var `SHOPAI_SKIP_CONFIG_CHECK=1` bypasses this entirely for
+      emergency recovery.
+    """
+    if command in (None, "config"):
+        return
+    if os.environ.get("SHOPAI_SKIP_CONFIG_CHECK") == "1":
+        return
+    try:
+        from infrastructure.config.schema import validate_config
+    except Exception:  # noqa: BLE001
+        return  # schema module broken — don't block the app
+
+    result = validate_config()
+    if result.warnings:
+        for w in result.warnings:
+            print(f"config warning: {w}", file=sys.stderr)
+    if not result.ok():
+        for err in result.errors:
+            print(f"config error: {err}", file=sys.stderr)
+        print(
+            "\nFix the errors above or run `shopai config check` for "
+            "details. Set SHOPAI_SKIP_CONFIG_CHECK=1 to bypass.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
 def main(argv: list[str] | None = None) -> None:
     # Load .env if it exists
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -730,6 +765,8 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    _validate_startup_config(getattr(args, "command", None))
 
     if args.command == "store":
         dispatch = {

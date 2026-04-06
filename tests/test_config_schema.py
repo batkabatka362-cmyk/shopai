@@ -217,6 +217,67 @@ class TestEnvFileCheck:
         assert check_env_file(str(f)) is None
 
 
+class TestStartupValidation:
+    """Test _validate_startup_config() hook in cli.main()."""
+
+    def test_bad_config_blocks_normal_command(self, monkeypatch, capsys):
+        monkeypatch.setenv("SHOPAI_LOG_BACKUPS", "xyz")
+        monkeypatch.delenv("SHOPAI_SKIP_CONFIG_CHECK", raising=False)
+        import cli
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["engines"])
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "SHOPAI_LOG_BACKUPS" in err
+        assert "config error" in err
+
+    def test_config_subcommand_bypasses_validation(self, monkeypatch, capsys):
+        """Must be able to run `config check` even with invalid config."""
+        monkeypatch.setenv("SHOPAI_LOG_BACKUPS", "xyz")
+        monkeypatch.delenv("SHOPAI_SKIP_CONFIG_CHECK", raising=False)
+        import cli
+        cli.main(["config", "check"])  # should NOT raise SystemExit
+        out = capsys.readouterr().out
+        assert "SHOPAI_LOG_BACKUPS" in out
+
+    def test_skip_env_var_bypasses_validation(self, monkeypatch, capsys):
+        monkeypatch.setenv("SHOPAI_LOG_BACKUPS", "xyz")
+        monkeypatch.setenv("SHOPAI_SKIP_CONFIG_CHECK", "1")
+        import cli
+        # Running engines should NOT exit on bad config
+        cli.main(["engines"])
+        err = capsys.readouterr().err
+        # No "config error" line when bypassed
+        assert "config error" not in err
+
+    def test_warnings_do_not_block(self, monkeypatch, capsys):
+        # Warning-only: URL without credentials
+        monkeypatch.setenv("SHOPAI_SHOPIFY_URL", "test.myshopify.com")
+        monkeypatch.delenv("SHOPAI_SHOPIFY_KEY", raising=False)
+        monkeypatch.delenv("SHOPAI_SHOPIFY_CLIENT_ID", raising=False)
+        monkeypatch.delenv("SHOPAI_SHOPIFY_CLIENT_SECRET", raising=False)
+        # Prevent the real .env file (which has full OAuth creds) from
+        # overwriting the monkeypatched env vars.
+        import os as _os
+        real_exists = _os.path.exists
+        monkeypatch.setattr(_os.path, "exists",
+                            lambda p: False if p.endswith(".env") else real_exists(p))
+        import cli
+        cli.main(["engines"])  # should run, not block
+        err = capsys.readouterr().err
+        assert "config warning" in err
+        assert "no credentials" in err
+
+    def test_no_command_does_not_validate(self, monkeypatch, capsys):
+        """argparse prints help when no command — validation should skip."""
+        monkeypatch.setenv("SHOPAI_LOG_BACKUPS", "xyz")
+        monkeypatch.delenv("SHOPAI_SKIP_CONFIG_CHECK", raising=False)
+        import cli
+        cli.main([])  # should NOT raise SystemExit from our validator
+        err = capsys.readouterr().err
+        assert "config error" not in err
+
+
 class TestConfigCheckCLI:
     def test_check_clean_env(self, capsys):
         import cli
