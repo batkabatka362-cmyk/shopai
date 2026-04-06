@@ -194,7 +194,8 @@ class DecisionEngine:
         if category == "pricing":
             price = float(data.get("price", 0) or 0)
             cost = float(data.get("cost", 0) or 0)
-            margin = (price - cost) / price if price > 0 and cost > 0 else 0
+            from utils.finance import margin as _margin
+            margin = _margin(price, cost)
 
             options.append({
                 "action": "keep_price",

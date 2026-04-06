@@ -12,6 +12,8 @@ import copy
 import time
 from typing import Any
 
+from utils.finance import margin as _margin
+
 ENGINE_NAME = "product_research"
 
 
@@ -103,8 +105,8 @@ def _score_products(products: list[dict], criteria: dict) -> list[dict[str, Any]
             score += 5
 
         # Margin analysis
-        if cost > 0 and price > 0:
-            margin = (price - cost) / price
+        margin = _margin(price, cost, default=-1.0)
+        if margin >= 0:
             if margin >= 0.6:
                 factors["margin"] = {"score": 25, "detail": f"{margin:.0%} excellent margin"}
                 score += 25
@@ -174,7 +176,7 @@ def _score_products(products: list[dict], criteria: dict) -> list[dict[str, Any]
             "verdict": verdict,
             "price": price,
             "cost": cost,
-            "margin": round((price - cost) / price, 3) if price > 0 and cost > 0 else 0,
+            "margin": _margin(price, cost, precision=3),
             "factors": factors,
         })
 

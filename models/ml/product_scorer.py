@@ -42,13 +42,11 @@ class ProductScorer:
         has_desc = bool(str(product.get("body_html", product.get("description", ""))).strip())
         name = product.get("name", product.get("title", ""))
 
+        from utils.finance import margin as _margin
         scores = {}
-        # Margin score (0-1)
-        if price > 0 and cost > 0:
-            margin = (price - cost) / price
-            scores["margin"] = min(1.0, margin / 0.6)
-        else:
-            scores["margin"] = 0.3
+        # Margin score (0-1) — fall back to neutral 0.3 when either side is missing
+        m = _margin(price, cost, default=-1.0)
+        scores["margin"] = min(1.0, m / 0.6) if m >= 0 else 0.3
 
         # Price competitiveness (moderate price = better)
         if price > 0:

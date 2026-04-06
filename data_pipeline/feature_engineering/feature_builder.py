@@ -99,7 +99,10 @@ class FeatureBuilder:
         cost = float(product.get("cost") or 0.0)
         compare_at = float(product.get("compare_at") or 0.0)
 
-        margin = (price - cost) / price if price > 0 else 0.0
+        from utils.finance import margin as _margin
+        # require_cost=False so zero-cost items get a full 100% margin
+        # (matches the original semantics of this feature)
+        margin = _margin(price, cost, require_cost=False)
         margin_pct = round(margin * 100, 2)
         price_tier = self._price_tier(price)
 

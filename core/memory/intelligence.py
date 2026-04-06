@@ -830,7 +830,8 @@ class MemoryIntelligence:
             features["has_price"] = price > 0
             features["has_cost"] = cost > 0
             if price > 0 and cost > 0:
-                features["margin"] = round((price - cost) / price, 2)
+                from utils.finance import margin as _margin
+                features["margin"] = _margin(price, cost, precision=2)
                 features["price_tier"] = "premium" if price > 50 else "mid" if price > 20 else "budget"
             features["has_images"] = bool(
                 content.get("images") or content.get("image") or content.get("image_url")

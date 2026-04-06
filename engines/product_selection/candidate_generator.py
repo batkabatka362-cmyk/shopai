@@ -42,7 +42,8 @@ def generate_candidates(
             if target_categories and category not in target_categories:
                 continue
 
-            margin = round((price - cost) / price, 4) if price > 0 else 0.0
+            from utils.finance import margin as _margin
+            margin = _margin(price, cost, require_cost=False, precision=4)
 
             candidates.append({
                 "id": pid,

@@ -178,7 +178,8 @@ class ModelCoordinator:
         name = product.get("name", "")
         price = product.get("price", 0)
         cost = product.get("cost", 0)
-        margin = (price - cost) / price if price > 0 and cost > 0 else 0
+        from utils.finance import margin as _margin
+        margin = _margin(price, cost)
 
         result = self.analyze(
             f"Pricing decision for {name}. Current: ${price}, Cost: ${cost}, Margin: {margin:.0%}. "

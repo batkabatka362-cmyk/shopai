@@ -24,7 +24,8 @@ class SmartPricingEngine:
             if price <= 0:
                 continue
 
-            margin = (price - cost) / price if cost > 0 else 0.5
+            from utils.finance import margin as _margin
+            margin = _margin(price, cost, default=0.5)
             rec = {"product_id": pid, "current": price, "action": "keep", "reason": ""}
 
             comp_price = float(comp.get(pid, 0) or 0)

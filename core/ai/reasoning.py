@@ -16,6 +16,7 @@ import os
 import time
 from typing import Any
 
+from utils.finance import margin as _margin
 from utils.logger import get_logger
 
 logger = get_logger("ai.reasoning")
@@ -240,7 +241,7 @@ class AIReasoning:
                 analysis_parts.append(f"{name}: cost unknown, cannot optimize")
                 continue
 
-            margin = (price - cost) / price if price > 0 else 0
+            margin = _margin(price, cost, require_cost=False)
             optimal_margin = 0.4  # 40% target
 
             # Multi-factor analysis
@@ -300,8 +301,8 @@ class AIReasoning:
             margin = 0
             price = float(p.get("price", 0) or 0)
             cost = float(p.get("cost", 0) or 0)
-            if price > 0 and cost > 0:
-                margin = (price - cost) / price
+            margin = _margin(price, cost, default=-1.0)
+            if margin >= 0:
                 if margin > 0.5:
                     score += 30
                     reasons.append(f"High margin ({margin:.0%})")

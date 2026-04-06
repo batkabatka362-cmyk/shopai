@@ -449,7 +449,8 @@ class DataArchitecture:
             price = float(data.get("price", 0) or 0)
             cost = float(data.get("cost", 0) or 0)
             if price > 0 and cost > 0:
-                features["margin"] = round((price - cost) / price, 3)
+                from utils.finance import margin as _margin
+                features["margin"] = _margin(price, cost, precision=3)
                 features["markup"] = round((price - cost) / cost, 3)
             features["price_tier"] = (
                 "premium" if price > 50 else "mid" if price > 20 else "budget"

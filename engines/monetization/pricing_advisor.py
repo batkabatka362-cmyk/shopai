@@ -57,11 +57,13 @@ def advise_pricing(
 
         # Check margin distribution
         margins = []
+        from utils.finance import margin as _margin
         for prod in prods:
             price = float(prod.get("price", 0))
             cost = float(prod.get("cost", prod.get("unit_cost", 0)))
-            if price > 0 and cost > 0:
-                margins.append((price - cost) / price)
+            m = _margin(price, cost, default=-1.0)
+            if m >= 0:
+                margins.append(m)
 
         if margins:
             avg_margin = sum(margins) / len(margins)

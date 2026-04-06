@@ -34,7 +34,8 @@ class ProductRotation:
             # Priority: stale > low margin > high price
             price = float(p.get("price", 0))
             cost = float(p.get("cost", 0))
-            margin = (price - cost) / price if price > 0 and cost > 0 else 0.5
+            from utils.finance import margin as _margin
+            margin = _margin(price, cost, default=0.5)
 
             priority = staleness * 0.5 + (1 - margin) * 100 + price * 0.1
             scored.append((priority, p))

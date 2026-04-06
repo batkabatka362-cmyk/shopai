@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from utils.finance import margin as _margin
 from utils.logger import get_logger
 
 logger = get_logger("price_history")
@@ -100,11 +101,11 @@ class PriceHistory:
                      source: str = "system", reason: str = "",
                      store_id: str = "") -> int:
         """Record a price point for a product."""
-        margin = (price - cost) / price if price > 0 and cost > 0 else 0.0
+        m = _margin(price, cost, precision=3)
         conn = self._conn()
         cur = conn.execute(
             "INSERT INTO price_points (product_id, store_id, price, cost, margin, source, reason, timestamp) VALUES (?,?,?,?,?,?,?,?)",
-            (str(product_id), store_id, price, cost, round(margin, 3), source, reason, time.time()),
+            (str(product_id), store_id, price, cost, m, source, reason, time.time()),
         )
         conn.commit()
         return cur.lastrowid or 0
@@ -131,10 +132,10 @@ class PriceHistory:
             if last and abs(last["price"] - price) < 0.01:
                 continue  # Price unchanged, skip
 
-            margin = (price - cost) / price if price > 0 and cost > 0 else 0.0
+            m = _margin(price, cost, precision=3)
             conn.execute(
                 "INSERT INTO price_points (product_id, store_id, price, cost, margin, source, timestamp) VALUES (?,?,?,?,?,?,?)",
-                (pid, store_id, price, cost, round(margin, 3), source, time.time()),
+                (pid, store_id, price, cost, m, source, time.time()),
             )
             count += 1
 

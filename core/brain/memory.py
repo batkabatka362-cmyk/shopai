@@ -382,7 +382,8 @@ class IntelligentMemory:
             price = float(data.get("price", 0) or 0)
             cost = float(data.get("cost", 0) or 0)
             if price > 0 and cost > 0:
-                features["margin"] = round((price - cost) / price, 2)
+                from utils.finance import margin as _margin
+                features["margin"] = _margin(price, cost, precision=2)
                 features["price_tier"] = "premium" if price > 40 else "mid" if price > 20 else "budget"
             features["has_images"] = bool(data.get("image_url") or data.get("images"))
             features["category"] = data.get("category", data.get("product_type", ""))

@@ -759,11 +759,11 @@ class CognitiveModule:
 # ═══════════════════════════════════════════════════════════
 
 def _margin(product: dict):
+    from utils.finance import margin as _margin
     price = float(product.get("price", 0))
     cost = float(product.get("cost", 0))
-    if price > 0 and cost > 0:
-        return (price - cost) / price
-    return None
+    m = _margin(price, cost, default=-1.0)
+    return m if m >= 0 else None
 
 def _to_float(val) -> float:
     if isinstance(val, bool):
