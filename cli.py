@@ -71,6 +71,31 @@ def build_parser() -> argparse.ArgumentParser:
     remove_p = store_sub.add_parser("remove", help="Remove a store")
     remove_p.add_argument("store_id", help="Store to remove")
 
+    configure_p = store_sub.add_parser(
+        "configure",
+        help="Auto-configure store settings (collections, discounts, shipping, emails, payments, etc.)",
+    )
+    configure_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    configure_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview what would be done without making changes",
+    )
+    configure_p.add_argument(
+        "--only", default="",
+        help=(
+            "Comma-separated features to run. Valid: collections, discounts, "
+            "shipping, content, product_tags, ai_config, gifts, loyalty, "
+            "referral, emails, payments. Default: all."
+        ),
+    )
+    configure_p.add_argument(
+        "--niche", default="",
+        help="Override store niche (default: use stored niche)",
+    )
+
     # ── Sync commands ────────────────────────────────────────
     sync_p = sub.add_parser("sync", help="Sync data from Shopify")
     sync_p.add_argument("store_id", nargs="?", help="Store ID (default: active)")
@@ -243,6 +268,107 @@ def _cmd_store_remove(args) -> None:
     sm = _get_store_manager()
     result = sm.remove_store(args.store_id)
     print(f"✓ Store removed: {args.store_id}")
+
+
+def _cmd_store_configure(args) -> None:
+    """Run the auto-configurator against a registered store."""
+    sm = _get_store_manager()
+    store_id = args.store_id or sm.active_store_id
+    if not store_id:
+        print("No store specified and no active store set.")
+        return
+
+    creds = sm.get_credentials(store_id)
+    if not creds or not creds.get("shop_url"):
+        print(f"Store {store_id!r} not found or has no shop_url.")
+        return
+    token = creds.get("api_key") or ""
+    if not token and creds.get("client_id") and creds.get("client_secret"):
+        # Try to resolve via OAuth cache
+        try:
+            from core.auth.shopify_auth import ShopifyAuth
+            token = ShopifyAuth(
+                creds["shop_url"], creds["client_id"], creds["client_secret"],
+            ).get_token()
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not resolve OAuth token: {exc}")
+            return
+    if not token:
+        print(f"Store {store_id!r} has no usable credentials.")
+        return
+
+    store_info = sm.db.get_store(store_id) if hasattr(sm, "db") else {}
+    niche = args.niche or (store_info or {}).get("niche") or "general"
+    store_name = (store_info or {}).get("name") or store_id
+
+    features = None
+    if args.only:
+        features = [f.strip() for f in args.only.split(",") if f.strip()]
+
+    from execution.store_configurator import StoreConfigurator, ALL_FEATURES
+
+    if args.dry_run:
+        print(f"Dry-run: configuring {store_id} (niche={niche})")
+    else:
+        print(f"Configuring {store_id} (niche={niche})...")
+    if features:
+        print(f"  Features: {', '.join(features)}")
+    else:
+        print(f"  Features: all ({len(ALL_FEATURES)})")
+
+    configurator = StoreConfigurator(dry_run=args.dry_run)
+    result = configurator.configure(
+        creds["shop_url"], token,
+        niche=niche, store_name=store_name, features=features,
+    )
+
+    # Summary
+    print()
+    print(f"Status: {result['status']}")
+    print(f"Niche:  {result['niche']}")
+    print()
+    print("Feature results:")
+    for name in sorted(result.get("results", {}).keys()):
+        data = result["results"][name]
+        summary = _format_feature_summary(name, data)
+        print(f"  {name:15s} {summary}")
+
+    if args.dry_run and result.get("plan"):
+        print()
+        print(f"Planned writes ({len(result['plan'])}):")
+        for step in result["plan"]:
+            print(f"  {step['method']:6s} {step['path']:45s} {step['description']}")
+
+
+def _format_feature_summary(name: str, data: dict) -> str:
+    if not isinstance(data, dict):
+        return str(data)
+    if name == "collections":
+        return f"created={data.get('created', 0)}, existing={data.get('existing', 0)}"
+    if name == "discounts":
+        codes = data.get("codes", [])
+        return f"created={data.get('created', 0)} ({', '.join(codes[:5])}{'…' if len(codes) > 5 else ''})"
+    if name == "shipping":
+        cov = "fully covered" if data.get("fully_covered") else f"{len(data.get('gap_countries', []))} missing"
+        return f"current={data.get('current_zones', 0)}, recommended={data.get('recommended_zones', 0)}, {cov}"
+    if name == "content":
+        return f"pages_created={data.get('pages_created', 0)}"
+    if name == "product_tags":
+        return f"tagged={data.get('tagged', 0)}"
+    if name == "ai_config":
+        return "saved" if data.get("saved") else "skip"
+    if name == "gifts":
+        prod = data.get("gift_product_id")
+        return f"threshold=${data.get('threshold', 0):.0f}, gift_product={prod}, tagged={data.get('tagged')}"
+    if name == "loyalty":
+        return f"earn/$={data.get('earn_per_dollar', 0)}, welcome_bonus={data.get('welcome_bonus', 0)}, tiers={data.get('tiers', 0)}"
+    if name == "referral":
+        return f"code={data.get('discount_code', '-')}, code_created={data.get('code_created')}"
+    if name == "emails":
+        return f"templates={data.get('template_count', 0)} ({', '.join(data.get('templates', []))})"
+    if name == "payments":
+        return f"active={data.get('active_count', 0)}, missing={data.get('missing_count', 0)}"
+    return str(data)[:60]
 
 
 # ── Database Commands ────────────────────────────────────────
@@ -776,12 +902,13 @@ def main(argv: list[str] | None = None) -> None:
             "status": _cmd_store_status,
             "connect": _cmd_store_connect,
             "remove": _cmd_store_remove,
+            "configure": _cmd_store_configure,
         }
         handler = dispatch.get(args.store_action)
         if handler:
             handler(args)
         else:
-            print("Usage: shopai store {add|list|switch|status|connect|remove}")
+            print("Usage: shopai store {add|list|switch|status|connect|remove|configure}")
         return
 
     if args.command == "db":

@@ -1125,6 +1125,118 @@ class TestAllFeaturesIncludesNewOnes:
         assert len(ALL_FEATURES) == 11
 
 
+class TestConfigureCLI:
+    """End-to-end tests for `shopai store configure`."""
+
+    def _setup_store(self, tmp_path, monkeypatch):
+        """Create a real StoreManager with one test store."""
+        from data_pipeline.store.db import ShopAIDatabase
+        from data_pipeline.store.store_manager import StoreManager
+        db_path = str(tmp_path / "shopai.db")
+        db = ShopAIDatabase(db_path)
+        sm = StoreManager(db)
+        sm.add_store("teststore", "teststore.myshopify.com",
+                     api_key="shpat_testtoken", niche="home")
+
+        import cli
+        monkeypatch.setattr(cli, "_get_store_manager", lambda: sm)
+        return sm
+
+    def test_configure_dry_run_prints_plan(self, tmp_path, monkeypatch, capsys):
+        self._setup_store(tmp_path, monkeypatch)
+        _install_fake_client(monkeypatch)
+
+        import cli
+        cli.main(["store", "configure", "teststore", "--dry-run", "--only", "collections"])
+        out = capsys.readouterr().out
+        assert "Dry-run" in out
+        assert "teststore" in out
+        assert "home" in out
+        assert "Status: planned" in out
+        assert "collections" in out
+        assert "Planned writes" in out
+
+    def test_configure_dry_run_all_features(self, tmp_path, monkeypatch, capsys):
+        self._setup_store(tmp_path, monkeypatch)
+        _install_fake_client(monkeypatch)
+
+        import cli
+        cli.main(["store", "configure", "teststore", "--dry-run"])
+        out = capsys.readouterr().out
+        assert "Status: planned" in out
+        # Summary should include every feature
+        for feature in ("collections", "discounts", "shipping", "content",
+                        "product_tags", "ai_config", "gifts", "loyalty",
+                        "referral", "emails", "payments"):
+            assert feature in out
+
+    def test_configure_respects_only_filter(self, tmp_path, monkeypatch, capsys):
+        self._setup_store(tmp_path, monkeypatch)
+        _install_fake_client(monkeypatch)
+
+        import cli
+        cli.main([
+            "store", "configure", "teststore",
+            "--dry-run", "--only", "discounts,emails",
+        ])
+        out = capsys.readouterr().out
+        assert "discounts" in out
+        assert "emails" in out
+        # Content shouldn't appear as a feature result line
+        lines = out.splitlines()
+        # Collect the feature lines (indented after "Feature results:")
+        in_features = False
+        feature_names = []
+        for line in lines:
+            if line.strip().startswith("Feature results:"):
+                in_features = True
+                continue
+            if in_features:
+                if not line.startswith("  "):
+                    break
+                feature_names.append(line.strip().split()[0])
+        assert "discounts" in feature_names
+        assert "emails" in feature_names
+        assert "collections" not in feature_names
+
+    def test_configure_niche_override(self, tmp_path, monkeypatch, capsys):
+        self._setup_store(tmp_path, monkeypatch)
+        _install_fake_client(monkeypatch)
+
+        import cli
+        cli.main([
+            "store", "configure", "teststore",
+            "--dry-run", "--niche", "beauty", "--only", "collections",
+        ])
+        out = capsys.readouterr().out
+        assert "Niche:  beauty" in out
+
+    def test_configure_uses_active_store_by_default(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        sm = self._setup_store(tmp_path, monkeypatch)
+        # teststore is the only store, should be active
+        assert sm.active_store_id == "teststore"
+        _install_fake_client(monkeypatch)
+
+        import cli
+        cli.main(["store", "configure", "--dry-run", "--only", "ai_config"])
+        out = capsys.readouterr().out
+        assert "teststore" in out
+        assert "Status: planned" in out
+
+    def test_configure_missing_store_reports_error(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        self._setup_store(tmp_path, monkeypatch)
+        _install_fake_client(monkeypatch)
+
+        import cli
+        cli.main(["store", "configure", "ghost", "--dry-run"])
+        out = capsys.readouterr().out
+        assert "not found" in out.lower() or "no usable credentials" in out.lower()
+
+
 class TestSingleton:
     def test_get_store_configurator_returns_singleton(self):
         from execution import store_configurator as mod
