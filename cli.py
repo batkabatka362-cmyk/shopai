@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     db_sub.add_parser("status", help="Show schema version for every DB")
     db_sub.add_parser("migrate", help="Apply pending migrations to all DBs")
 
+    # ── Config commands ──────────────────────────────────────
+    config_p = sub.add_parser("config", help="Inspect / validate configuration")
+    config_sub = config_p.add_subparsers(dest="config_action")
+    config_sub.add_parser("check", help="Validate env vars against schema")
+    config_sub.add_parser("show", help="Show current config values + defaults")
+
     # ── Engine commands ──────────────────────────────────────
     sub.add_parser("engines", help="List all registered engines")
 
@@ -281,6 +287,50 @@ def _cmd_db_migrate() -> None:
     print("Running pending migrations...")
     _import_registered_dbs()
     _cmd_db_status()
+
+
+# ── Config Commands ──────────────────────────────────────────
+
+def _cmd_config_check() -> int:
+    """Validate config and print issues. Returns exit code (0 = ok)."""
+    from infrastructure.config.schema import check_env_file, validate_config
+    env_warning = check_env_file()
+    if env_warning:
+        print(f"WARNING: {env_warning}")
+        print()
+
+    result = validate_config()
+
+    for err in result.errors:
+        print(f"ERROR:   {err}")
+    for warn in result.warnings:
+        print(f"WARNING: {warn}")
+
+    if result.ok() and not result.warnings and not env_warning:
+        print("OK: configuration is valid")
+    elif result.ok():
+        print()
+        print(f"OK: no errors ({len(result.warnings)} warning(s))")
+    else:
+        print()
+        print(f"FAILED: {len(result.errors)} error(s), {len(result.warnings)} warning(s)")
+
+    return 0 if result.ok() else 1
+
+
+def _cmd_config_show() -> None:
+    from infrastructure.config.schema import get_config_report
+    rows = get_config_report()
+    # Fit to terminal
+    name_w = max(len(r["name"]) for r in rows) + 2
+    print(f"{'NAME':{name_w}s} {'TYPE':7s} {'SET':5s} {'VALUE':30s} DESCRIPTION")
+    print("-" * min(120, name_w + 55 + 40))
+    for r in rows:
+        set_marker = "yes" if r["set"] else "no"
+        value = r["value"]
+        if len(value) > 30:
+            value = value[:27] + "..."
+        print(f"{r['name']:{name_w}s} {r['type']:7s} {set_marker:5s} {value:30s} {r['description']}")
 
 
 # ── Sync Commands ────────────────────────────────────────────
@@ -702,6 +752,15 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_db_migrate()
         else:
             print("Usage: shopai db {status|migrate}")
+        return
+
+    if args.command == "config":
+        if args.config_action == "check":
+            _cmd_config_check()
+        elif args.config_action == "show":
+            _cmd_config_show()
+        else:
+            print("Usage: shopai config {check|show}")
         return
 
     if args.command == "sync":
