@@ -79,7 +79,20 @@ ALL_FEATURES = (
     "loyalty",
     "referral",
     "emails",
+    "payments",
 )
+
+
+# Niche → recommended payment gateways. "shopify_payments" is always
+# strongly recommended (it's the cheapest built-in); the extras are
+# niche-specific conversion boosters.
+_RECOMMENDED_GATEWAYS = {
+    "home":    ["shopify_payments", "paypal", "shop_pay", "apple_pay", "google_pay"],
+    "fashion": ["shopify_payments", "paypal", "shop_pay", "apple_pay", "google_pay", "klarna", "afterpay"],
+    "tech":    ["shopify_payments", "paypal", "shop_pay", "apple_pay", "google_pay", "amazon_pay"],
+    "beauty":  ["shopify_payments", "paypal", "shop_pay", "apple_pay", "google_pay", "afterpay"],
+    "general": ["shopify_payments", "paypal", "shop_pay", "apple_pay", "google_pay"],
+}
 
 
 # Niche → email tone. Used when rendering template bodies.
@@ -254,6 +267,8 @@ class StoreConfigurator:
             results["referral"] = self._setup_referral(client, niche)
         if "emails" in selected:
             results["emails"] = self._setup_emails(client, niche, store_name)
+        if "payments" in selected:
+            results["payments"] = self._setup_payments(client, niche)
 
         self._record(results)
 
@@ -1218,6 +1233,90 @@ class StoreConfigurator:
             f'<p style="font-size:14px;color:#666;">{tone["sign_off"]}</p>'
             f'</div>'
         )
+
+    # ── Feature: Payment gateway detection ─────────────────────
+
+    def _setup_payments(
+        self, client: ShopifyClient, niche: str,
+    ) -> dict[str, Any]:
+        """Detect active payment gateways and recommend additions.
+
+        Shopify's REST Admin API does not expose the list of enabled
+        gateways directly — that's an admin-only setting. But the
+        ``payment_gateway_names`` field on recent orders is a reliable
+        proxy: every gateway that's been used in the last 250 orders
+        will appear there.
+
+        Approach:
+          1. Fetch the last 250 orders (Shopify's max per page).
+          2. Accumulate every distinct gateway name seen.
+          3. Read shop.json for the store's country + currency so the
+             recommendation can filter out gateways that don't apply
+             (e.g. Klarna isn't available everywhere).
+          4. Compare against _RECOMMENDED_GATEWAYS[niche] and compute
+             the gap.
+          5. Save the active + recommended + gap as shopai.payments
+             metafield.
+
+        This does NOT enable gateways — that requires admin login.
+        It produces an actionable report instead.
+        """
+        # Step 1+2: scan recent orders
+        orders_resp = client.get(
+            "orders.json",
+            params={"limit": 250, "status": "any", "fields": "payment_gateway_names"},
+        )
+        active_gateways: set[str] = set()
+        if "error" not in orders_resp:
+            for order in orders_resp.get("orders", []) or []:
+                for name in order.get("payment_gateway_names", []) or []:
+                    if name:
+                        active_gateways.add(name.lower().replace(" ", "_"))
+
+        # Step 3: shop country + currency (informational only)
+        shop_resp = client.get("shop.json")
+        shop = shop_resp.get("shop", {}) if "error" not in shop_resp else {}
+        country = shop.get("country_code", "") or ""
+        currency = shop.get("currency", "") or ""
+
+        # Step 4: recommendation gap
+        recommended = _RECOMMENDED_GATEWAYS.get(niche, _RECOMMENDED_GATEWAYS["general"])
+        missing = [g for g in recommended if g not in active_gateways]
+
+        # Step 5: save as metafield
+        program = {
+            "niche": niche,
+            "country": country,
+            "currency": currency,
+            "active_gateways": sorted(active_gateways),
+            "recommended_gateways": recommended,
+            "missing_gateways": missing,
+            "configured_at": time.time(),
+        }
+        result = self._write(
+            client, "POST", "metafields.json",
+            {
+                "metafield": {
+                    "namespace": "shopai",
+                    "key": "payments",
+                    "value": json.dumps(program),
+                    "type": "json",
+                }
+            },
+            description=(
+                f"Save payment recommendation ({len(active_gateways)} active, "
+                f"{len(missing)} missing)"
+            ),
+        )
+        return {
+            "saved": bool(result.get("metafield") or result.get("dry_run")),
+            "active_count": len(active_gateways),
+            "active_gateways": sorted(active_gateways),
+            "missing_count": len(missing),
+            "missing_gateways": missing,
+            "country": country,
+            "currency": currency,
+        }
 
     # ── Recording ──────────────────────────────────────────────
 

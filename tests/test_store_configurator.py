@@ -990,12 +990,139 @@ class TestEmails:
         assert "Our Store" in program["templates"]["order_confirmation"]["subject"]
 
 
+class TestPayments:
+    def _responses(self, gateway_names_per_order=None, shop=None):
+        orders = [
+            {"payment_gateway_names": names}
+            for names in (gateway_names_per_order or [])
+        ]
+        return {
+            "GET orders.json": {"orders": orders},
+            "GET shop.json": {"shop": shop or {"country_code": "US", "currency": "USD"}},
+            "POST metafields.json": {"metafield": {"id": 1}},
+        }
+
+    def test_detects_active_gateways_from_orders(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._responses(
+                gateway_names_per_order=[
+                    ["shopify_payments"],
+                    ["paypal"],
+                    ["shopify_payments", "shop_pay"],
+                ],
+            ),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["payments"],
+        )
+        p = result["results"]["payments"]
+        assert set(p["active_gateways"]) == {"shopify_payments", "paypal", "shop_pay"}
+        assert p["active_count"] == 3
+        # Home niche recommends 5 gateways; we have 3 → 2 missing
+        assert p["missing_count"] == 2
+        assert "apple_pay" in p["missing_gateways"]
+        assert "google_pay" in p["missing_gateways"]
+
+    def test_no_orders_means_no_active_gateways(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._responses(gateway_names_per_order=[]),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["payments"],
+        )
+        assert result["results"]["payments"]["active_count"] == 0
+        assert result["results"]["payments"]["missing_count"] == 5
+
+    def test_gateway_names_normalized(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._responses(
+                gateway_names_per_order=[
+                    ["Shopify Payments"],  # capitalized + space
+                    ["PayPal"],
+                ],
+            ),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["payments"],
+        )
+        assert "shopify_payments" in result["results"]["payments"]["active_gateways"]
+        assert "paypal" in result["results"]["payments"]["active_gateways"]
+
+    def test_fashion_niche_recommends_klarna_afterpay(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._responses(
+                gateway_names_per_order=[["shopify_payments"]],
+            ),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="fashion",
+            features=["payments"],
+        )
+        missing = result["results"]["payments"]["missing_gateways"]
+        assert "klarna" in missing
+        assert "afterpay" in missing
+
+    def test_shop_country_and_currency_captured(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._responses(
+                gateway_names_per_order=[],
+                shop={"country_code": "DE", "currency": "EUR"},
+            ),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="tech",
+            features=["payments"],
+        )
+        assert result["results"]["payments"]["country"] == "DE"
+        assert result["results"]["payments"]["currency"] == "EUR"
+
+    def test_metafield_body_contains_program(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses=self._responses(
+                gateway_names_per_order=[["shopify_payments"]],
+            ),
+        )
+        c = _make()
+        c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["payments"],
+        )
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        pay_body = next(b for b in mf_bodies if b["metafield"]["key"] == "payments")
+        program = json.loads(pay_body["metafield"]["value"])
+        assert program["niche"] == "home"
+        assert program["active_gateways"] == ["shopify_payments"]
+        assert "apple_pay" in program["missing_gateways"]
+
+    def test_saved_flag_true(self, monkeypatch):
+        _install_fake_client(monkeypatch, responses=self._responses())
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", features=["payments"],
+        )
+        assert result["results"]["payments"]["saved"] is True
+
+
 class TestAllFeaturesIncludesNewOnes:
     def test_all_features_count(self):
         from execution.store_configurator import ALL_FEATURES
-        for name in ("gifts", "loyalty", "referral", "emails"):
+        for name in ("gifts", "loyalty", "referral", "emails", "payments"):
             assert name in ALL_FEATURES
-        assert len(ALL_FEATURES) == 10
+        assert len(ALL_FEATURES) == 11
 
 
 class TestSingleton:
