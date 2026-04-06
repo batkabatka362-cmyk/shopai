@@ -28,6 +28,13 @@ from core.cognitive.curiosity import (
     CuriosityRecommendation,
     get_curiosity,
 )
+from core.cognitive.skill_registry import (
+    Skill,
+    SkillNotFound,
+    SkillNotInvocable,
+    SkillRegistry,
+    get_skill_registry,
+)
 from core.cognitive.goals import GoalManager, get_goal_manager
 from core.cognitive.imagination import (
     ImaginedOutcome,
@@ -62,4 +69,6 @@ __all__ = [
     "Curiosity", "CuriosityCandidate", "CuriosityRecommendation",
     "get_curiosity",
     "Consolidation", "ConsolidationReport", "get_consolidation",
+    "SkillRegistry", "Skill", "SkillNotFound", "SkillNotInvocable",
+    "get_skill_registry",
 ]
