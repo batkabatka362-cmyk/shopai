@@ -1,0 +1,65 @@
+# ShopAI autonomous daemon systemd unit.
+#
+# Install:
+#     sudo cp scripts/shopai-daemon.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now shopai-daemon
+#     sudo journalctl -u shopai-daemon -f
+#
+# Edit the [Service] section below to match your deployment:
+#   - User / Group       Linux user that owns the repo checkout
+#   - WorkingDirectory   Absolute path to the repo
+#   - ExecStart          Python path (virtualenv recommended)
+#   - EnvironmentFile    Path to .env with SHOPAI_* settings
+#
+# Hardening: runs as non-root, with a private /tmp, read-only system
+# paths, and a writable data directory scoped to WorkingDirectory/data.
+
+[Unit]
+Description=ShopAI autonomous daemon
+Documentation=https://github.com/batkabatka362-cmyk/shopai
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shopai
+Group=shopai
+WorkingDirectory=/opt/shopai
+EnvironmentFile=/opt/shopai/.env
+
+# Use the virtualenv python if you have one, otherwise system python
+ExecStart=/opt/shopai/venv/bin/python scripts/run_daemon.py
+
+# Graceful stop: SIGTERM, wait up to 30s before SIGKILL
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Restart policy: auto-restart on failure with backoff, but give up
+# if the process crashes 5 times in 60s (something is actually broken)
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logging: systemd-journald captures stdout/stderr.
+# Use SHOPAI_LOG_FORMAT=json in .env for structured logs.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shopai-daemon
+
+# ── Security hardening ─────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/shopai/data /opt/shopai/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target
