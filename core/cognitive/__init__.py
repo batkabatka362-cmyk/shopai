@@ -17,6 +17,28 @@ into a self-directed cognitive system:
 Each module is independently importable and testable. The `mind` module
 at the top ties them together into the main cognitive cycle.
 """
+from core.cognitive.goals import GoalManager, get_goal_manager
+from core.cognitive.planner import (
+    HeuristicPlanBackend,
+    LLMPlanBackend,
+    Plan,
+    Planner,
+    PlanStep,
+    get_planner,
+)
+from core.cognitive.reflection import (
+    Lesson,
+    Reflection,
+    ReflectionReport,
+    get_reflection,
+)
 from core.cognitive.self_model import SelfModel, get_self_model
 
-__all__ = ["SelfModel", "get_self_model"]
+__all__ = [
+    "SelfModel", "get_self_model",
+    "GoalManager", "get_goal_manager",
+    "Reflection", "ReflectionReport", "Lesson", "get_reflection",
+    "Planner", "Plan", "PlanStep",
+    "LLMPlanBackend", "HeuristicPlanBackend",
+    "get_planner",
+]
