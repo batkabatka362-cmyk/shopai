@@ -66,6 +66,80 @@ class TestIntelligentMemory:
         assert stats["total_memories"] == 2
 
 
+class TestGetRulesCache:
+    """Test get_rules cache invalidation on both memory backends."""
+
+    def test_brain_memory_caches_repeat_calls(self):
+        from core.brain.memory import IntelligentMemory
+        mem = IntelligentMemory(tempfile.mktemp(suffix=".db"))
+
+        # Prime the cache
+        first = mem.get_rules("pricing")
+        # Second call should return the SAME list object (cached)
+        second = mem.get_rules("pricing")
+        assert first is second
+
+    def test_brain_memory_cache_invalidates_on_new_rule(self):
+        from core.brain.memory import IntelligentMemory
+        mem = IntelligentMemory(tempfile.mktemp(suffix=".db"))
+        mem.get_rules("pricing")  # prime empty cache
+        gen_before = mem._rules_cache_gen
+        # Inject a rule via _generate_rule (pattern must be "condition→good|bad")
+        mem._generate_rule("pricing", "price_low→good", 4.5)
+        assert mem._rules_cache_gen > gen_before
+        # Next read should re-fetch and see the rule
+        rules = mem.get_rules("pricing")
+        assert len(rules) == 1
+
+    def test_brain_memory_cache_ttl_expires(self, monkeypatch):
+        from core.brain.memory import IntelligentMemory
+        mem = IntelligentMemory(tempfile.mktemp(suffix=".db"))
+        mem._rules_cache_ttl = 0.01  # 10ms
+        first = mem.get_rules("pricing")
+        import time as _t
+        _t.sleep(0.02)
+        second = mem.get_rules("pricing")
+        # TTL expired — new result list
+        assert first is not second
+
+    def test_intelligence_memory_caches_repeat_calls(self):
+        from core.memory.intelligence import MemoryIntelligence
+        mi = MemoryIntelligence(tempfile.mktemp(suffix=".db"))
+        a = mi.get_rules("product")
+        b = mi.get_rules("product")
+        assert a is b
+
+    def test_intelligence_memory_invalidates_on_create(self):
+        from core.memory.intelligence import MemoryIntelligence
+        mi = MemoryIntelligence(tempfile.mktemp(suffix=".db"))
+        mi.get_rules("marketing")
+        gen = mi._rules_cache_gen
+        mi.create("marketing", {"channel": "email"}, action="send", score=4.0)
+        assert mi._rules_cache_gen > gen
+
+    def test_intelligence_memory_invalidates_on_update_score(self):
+        from core.memory.intelligence import MemoryIntelligence
+        mi = MemoryIntelligence(tempfile.mktemp(suffix=".db"))
+        mid = mi.create("pricing", {"p": 10}, action="x", score=3.0)
+        mi.get_rules("pricing")
+        gen = mi._rules_cache_gen
+        mi.update_score(mid, 5.0, reason="worked")
+        assert mi._rules_cache_gen > gen
+
+    def test_intelligence_memory_separate_categories(self):
+        from core.memory.intelligence import MemoryIntelligence
+        mi = MemoryIntelligence(tempfile.mktemp(suffix=".db"))
+        # Prime multiple category caches
+        a = mi.get_rules("cat_a")
+        b = mi.get_rules("cat_b")
+        # Both should be cached
+        assert "cat_a" in mi._rules_cache
+        assert "cat_b" in mi._rules_cache
+        # Repeat reads hit cache
+        assert mi.get_rules("cat_a") is a
+        assert mi.get_rules("cat_b") is b
+
+
 class TestDecisionEngine:
     def test_decide_pricing(self):
         from core.brain.decision_engine import DecisionEngine
