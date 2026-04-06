@@ -92,6 +92,82 @@ _GIFT_THRESHOLDS = {
     "general": 60.0,
 }
 
+# Niche → recommended shipping zone set. Each zone is
+# {name, countries, rates}. Rates are stored as a list of dicts
+# so the admin (or a future Shopify Function) can render them.
+# Shopify's REST Admin API allows reading shipping_zones but the
+# write side requires Shopify Shipping to be enabled, so we save
+# the recommendation as a metafield (`shopai.shipping`) and let
+# whoever has admin rights apply it.
+_SHIPPING_ZONES = {
+    "home": [
+        {
+            "name": "Domestic",
+            "countries": ["US"],
+            "rates": [
+                {"name": "Free over $50", "type": "free_shipping", "min_subtotal": 50.0, "price": 0.0},
+                {"name": "Standard",      "type": "flat_rate",     "price": 5.99},
+            ],
+        },
+        {
+            "name": "North America",
+            "countries": ["CA", "MX"],
+            "rates": [{"name": "Standard", "type": "flat_rate", "price": 12.99}],
+        },
+    ],
+    "fashion": [
+        {
+            "name": "Worldwide",
+            "countries": ["*"],
+            "rates": [
+                {"name": "Free over $75", "type": "free_shipping", "min_subtotal": 75.0, "price": 0.0},
+                {"name": "Standard",      "type": "flat_rate",     "price": 9.99},
+            ],
+        },
+    ],
+    "tech": [
+        {
+            "name": "Domestic Fast",
+            "countries": ["US"],
+            "rates": [
+                {"name": "Standard", "type": "flat_rate", "price": 6.99},
+                {"name": "Express",  "type": "flat_rate", "price": 14.99},
+            ],
+        },
+        {
+            "name": "International",
+            "countries": ["CA", "GB", "DE", "FR", "AU"],
+            "rates": [{"name": "Standard", "type": "flat_rate", "price": 19.99}],
+        },
+    ],
+    "beauty": [
+        {
+            "name": "Worldwide",
+            "countries": ["*"],
+            "rates": [
+                {"name": "Free over $50", "type": "free_shipping", "min_subtotal": 50.0, "price": 0.0},
+                {"name": "Standard",      "type": "flat_rate",     "price": 7.99},
+            ],
+        },
+    ],
+    "general": [
+        {
+            "name": "Domestic",
+            "countries": ["US"],
+            "rates": [
+                {"name": "Free over $50", "type": "free_shipping", "min_subtotal": 50.0, "price": 0.0},
+                {"name": "Standard",      "type": "flat_rate",     "price": 5.99},
+            ],
+        },
+        {
+            "name": "International",
+            "countries": ["CA", "GB", "AU"],
+            "rates": [{"name": "Standard", "type": "flat_rate", "price": 14.99}],
+        },
+    ],
+}
+
+
 # Niche → loyalty point rules
 _LOYALTY_RULES = {
     "beauty":  {"earn_per_dollar": 2, "redeem_value_cents": 1, "welcome_bonus": 100},
@@ -152,7 +228,7 @@ class StoreConfigurator:
         if "discounts" in selected:
             results["discounts"] = self._setup_discounts(client, config, store_name)
         if "shipping" in selected:
-            results["shipping"] = self._check_shipping(client)
+            results["shipping"] = self._check_shipping(client, niche)
         if "content" in selected:
             results["content"] = self._create_niche_content(client, niche, config, products)
         if "product_tags" in selected:
@@ -592,17 +668,84 @@ class StoreConfigurator:
                 description=f"Attach discount code {code}",
             )
 
-    # ── Feature: Shipping (read-only for now) ──────────────────
+    # ── Feature: Shipping zones ────────────────────────────────
 
-    def _check_shipping(self, client: ShopifyClient) -> dict[str, Any]:
+    def _check_shipping(self, client: ShopifyClient, niche: str) -> dict[str, Any]:
+        """Compare current shipping zones against niche recommendation.
+
+        Shopify's REST Admin API can read shipping_zones on every plan
+        but only write them on stores with Shopify Shipping. To keep
+        the configurator store-agnostic we:
+
+        1. Read current zones.
+        2. Look up the niche's recommended zone set from _SHIPPING_ZONES.
+        3. Compute the coverage gap — which recommended countries are
+           not already covered.
+        4. Save the full recommendation as metafield ``shopai.shipping``
+           so the admin (or a downstream app) can apply it.
+
+        The metafield is the single source of truth — whatever UI /
+        function actually creates shipping_rates reads from there.
+        """
         resp = client.get("shipping_zones.json")
-        zones = resp.get("shipping_zones", []) if "error" not in resp else []
+        current_zones = resp.get("shipping_zones", []) if "error" not in resp else []
+
+        # Collect every country code currently covered
+        current_countries: set[str] = set()
+        for z in current_zones:
+            for c in z.get("countries", []) or []:
+                code = c.get("code", "") if isinstance(c, dict) else str(c)
+                if code:
+                    current_countries.add(code.upper())
+
+        recommended = _SHIPPING_ZONES.get(niche, _SHIPPING_ZONES["general"])
+
+        # Gap analysis
+        recommended_countries: set[str] = set()
+        for zone in recommended:
+            for code in zone["countries"]:
+                if code != "*":
+                    recommended_countries.add(code.upper())
+        # "*" means worldwide — treated as covered only if the store
+        # already has a zone with at least one country.
+        gap = recommended_countries - current_countries
+
+        # Save recommendation as metafield so the admin / app can apply it
+        program = {
+            "niche": niche,
+            "recommended_zones": recommended,
+            "current_zone_count": len(current_zones),
+            "current_countries": sorted(current_countries),
+            "gap_countries": sorted(gap),
+            "configured_at": time.time(),
+        }
+        result = self._write(
+            client, "POST", "metafields.json",
+            {
+                "metafield": {
+                    "namespace": "shopai",
+                    "key": "shipping",
+                    "value": json.dumps(program),
+                    "type": "json",
+                }
+            },
+            description=f"Save shipping recommendation for niche '{niche}'",
+        )
+        saved = bool(result.get("metafield") or result.get("dry_run"))
+
         return {
-            "zones": len(zones),
-            "details": [
-                {"name": z.get("name", ""), "countries": len(z.get("countries", []))}
-                for z in zones
+            "current_zones": len(current_zones),
+            "current_details": [
+                {
+                    "name": z.get("name", ""),
+                    "countries": len(z.get("countries", []) or []),
+                }
+                for z in current_zones
             ],
+            "recommended_zones": len(recommended),
+            "gap_countries": sorted(gap),
+            "fully_covered": not gap,
+            "saved": saved,
         }
 
     # ── Feature: Content ───────────────────────────────────────

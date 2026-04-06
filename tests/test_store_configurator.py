@@ -424,25 +424,93 @@ class TestSeasonalDiscountTable:
 
 
 class TestShipping:
-    def test_reads_zones(self, monkeypatch):
+    def _responses(self, zones):
+        return {
+            "GET shipping_zones.json": {"shipping_zones": zones},
+            "POST metafields.json": {"metafield": {"id": 1}},
+        }
+
+    def test_reads_current_zones(self, monkeypatch):
         _install_fake_client(
             monkeypatch,
-            responses={
-                "GET shipping_zones.json": {
-                    "shipping_zones": [
-                        {"name": "Domestic", "countries": [{"code": "US"}]},
-                        {"name": "International", "countries": [
-                            {"code": "CA"}, {"code": "GB"}]},
-                    ],
-                },
-            },
+            responses=self._responses([
+                {"name": "Domestic", "countries": [{"code": "US"}]},
+                {"name": "International", "countries": [
+                    {"code": "CA"}, {"code": "GB"}]},
+            ]),
         )
         c = _make()
         result = c.configure(
-            "x.myshopify.com", "tok", features=["shipping"],
+            "x.myshopify.com", "tok", niche="home", features=["shipping"],
         )
-        assert result["results"]["shipping"]["zones"] == 2
-        assert result["results"]["shipping"]["details"][1]["countries"] == 2
+        s = result["results"]["shipping"]
+        assert s["current_zones"] == 2
+        assert s["current_details"][1]["countries"] == 2
+
+    def test_gap_analysis_detects_missing_countries(self, monkeypatch):
+        # Home niche recommends US + CA + MX. We supply only US.
+        _install_fake_client(
+            monkeypatch,
+            responses=self._responses([
+                {"name": "Domestic", "countries": [{"code": "US"}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="home", features=["shipping"],
+        )
+        s = result["results"]["shipping"]
+        assert s["fully_covered"] is False
+        assert "CA" in s["gap_countries"]
+        assert "MX" in s["gap_countries"]
+        assert "US" not in s["gap_countries"]
+
+    def test_fully_covered_when_all_recommended_present(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._responses([
+                {"name": "Domestic", "countries": [{"code": "US"}]},
+                {"name": "NorthAm", "countries": [
+                    {"code": "CA"}, {"code": "MX"}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="home", features=["shipping"],
+        )
+        assert result["results"]["shipping"]["fully_covered"] is True
+        assert result["results"]["shipping"]["gap_countries"] == []
+
+    def test_recommendation_metafield_saved(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses=self._responses([]),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="beauty", features=["shipping"],
+        )
+        assert result["results"]["shipping"]["saved"] is True
+        mf_bodies = [b for m, p, b in calls if m == "POST" and p == "metafields.json"]
+        ship_body = next(b for b in mf_bodies if b["metafield"]["key"] == "shipping")
+        program = json.loads(ship_body["metafield"]["value"])
+        assert program["niche"] == "beauty"
+        assert len(program["recommended_zones"]) == 1  # beauty has 1 worldwide zone
+        assert program["recommended_zones"][0]["name"] == "Worldwide"
+        # Worldwide zone has free-over-50 + standard
+        rates = program["recommended_zones"][0]["rates"]
+        assert len(rates) == 2
+
+    def test_unknown_niche_falls_back_to_general(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._responses([]),
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="zzz", features=["shipping"],
+        )
+        assert result["results"]["shipping"]["recommended_zones"] == 2  # general
 
 
 class TestContent:
