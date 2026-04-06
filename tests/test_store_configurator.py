@@ -66,10 +66,8 @@ class TestConfigureBasic:
         _install_fake_client(monkeypatch)
         c = _make(dry_run=True)
         result = c.configure("x.myshopify.com", "tok", niche="home")
-        assert set(result["features"]) == {
-            "collections", "discounts", "shipping", "content",
-            "product_tags", "ai_config", "gifts", "loyalty", "referral",
-        }
+        from execution.store_configurator import ALL_FEATURES
+        assert set(result["features"]) == set(ALL_FEATURES)
 
     def test_selective_features(self, monkeypatch):
         _install_fake_client(monkeypatch)
@@ -870,13 +868,134 @@ class TestReferral:
         assert program["referred_reward"]["percent"] == 10
 
 
+class TestEmails:
+    def test_saves_all_four_templates(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            store_name="Cozy Corner",
+            features=["emails"],
+        )
+        e = result["results"]["emails"]
+        assert e["saved"] is True
+        assert e["template_count"] == 4
+        assert set(e["templates"]) == {
+            "order_confirmation", "shipping_update",
+            "abandoned_cart", "win_back",
+        }
+
+    def test_metafield_body_has_full_templates(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        c.configure(
+            "x.myshopify.com", "tok", niche="beauty",
+            store_name="Glow Co",
+            features=["emails"],
+        )
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        email_body = next(b for b in mf_bodies if b["metafield"]["key"] == "emails")
+        program = json.loads(email_body["metafield"]["value"])
+        assert program["niche"] == "beauty"
+        templates = program["templates"]
+        for key in ("order_confirmation", "shipping_update",
+                    "abandoned_cart", "win_back"):
+            t = templates[key]
+            assert t["subject"]
+            assert t["preheader"]
+            assert t["trigger"]
+            assert "delay_hours" in t
+            assert t["body_html"].startswith("<div")
+
+    def test_niche_tone_in_template_body(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        c.configure(
+            "x.myshopify.com", "tok", niche="beauty",
+            features=["emails"],
+        )
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        program = json.loads(next(
+            b for b in mf_bodies if b["metafield"]["key"] == "emails"
+        )["metafield"]["value"])
+        # Beauty tone: "Hi gorgeous," in greeting
+        body = program["templates"]["order_confirmation"]["body_html"]
+        assert "Hi gorgeous," in body
+        assert "Stay radiant," in body
+        # Beauty adj = "glow-worthy"
+        shipping_body = program["templates"]["shipping_update"]["body_html"]
+        assert "glow-worthy" in shipping_body
+
+    def test_abandoned_cart_has_delay(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        c.configure("x.myshopify.com", "tok", features=["emails"])
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        program = json.loads(mf_bodies[0]["metafield"]["value"])
+        cart = program["templates"]["abandoned_cart"]
+        assert cart["delay_hours"] == 1
+        assert "COMEBACK10" in cart["body_html"]
+
+    def test_win_back_delayed_60_days(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        c.configure("x.myshopify.com", "tok", features=["emails"])
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        program = json.loads(mf_bodies[0]["metafield"]["value"])
+        wb = program["templates"]["win_back"]
+        assert wb["delay_hours"] == 60 * 24
+        assert "WELCOME15" in wb["body_html"]
+
+    def test_placeholders_present(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        c.configure("x.myshopify.com", "tok", features=["emails"])
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        program = json.loads(mf_bodies[0]["metafield"]["value"])
+        # Order confirmation references {{order_number}} + {{order_status_url}}
+        oc = program["templates"]["order_confirmation"]["body_html"]
+        assert "{{order_number}}" in oc
+        assert "{{order_status_url}}" in oc
+        # Shipping references {{tracking_url}}
+        assert "{{tracking_url}}" in program["templates"]["shipping_update"]["body_html"]
+
+    def test_store_name_fallback(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        c.configure("x.myshopify.com", "tok", features=["emails"])  # no store_name
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        program = json.loads(mf_bodies[0]["metafield"]["value"])
+        # Fallback to "Our Store"
+        assert "Our Store" in program["templates"]["order_confirmation"]["subject"]
+
+
 class TestAllFeaturesIncludesNewOnes:
     def test_all_features_count(self):
         from execution.store_configurator import ALL_FEATURES
-        assert "gifts" in ALL_FEATURES
-        assert "loyalty" in ALL_FEATURES
-        assert "referral" in ALL_FEATURES
-        assert len(ALL_FEATURES) == 9
+        for name in ("gifts", "loyalty", "referral", "emails"):
+            assert name in ALL_FEATURES
+        assert len(ALL_FEATURES) == 10
 
 
 class TestSingleton:

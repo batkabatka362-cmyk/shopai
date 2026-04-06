@@ -78,7 +78,18 @@ ALL_FEATURES = (
     "gifts",
     "loyalty",
     "referral",
+    "emails",
 )
+
+
+# Niche → email tone. Used when rendering template bodies.
+_EMAIL_TONES = {
+    "home":    {"greeting": "Hi there,",        "sign_off": "Happy home-making,",   "adj": "stylish"},
+    "fashion": {"greeting": "Hey style star,",  "sign_off": "Stay fabulous,",       "adj": "trending"},
+    "tech":    {"greeting": "Hello,",           "sign_off": "Powering your day,",   "adj": "cutting-edge"},
+    "beauty":  {"greeting": "Hi gorgeous,",     "sign_off": "Stay radiant,",        "adj": "glow-worthy"},
+    "general": {"greeting": "Hi,",              "sign_off": "Thank you,",           "adj": "great"},
+}
 
 
 # Niche → free-gift threshold (USD). Stores a rule "orders >= N get a
@@ -241,6 +252,8 @@ class StoreConfigurator:
             results["loyalty"] = self._setup_loyalty(client, niche)
         if "referral" in selected:
             results["referral"] = self._setup_referral(client, niche)
+        if "emails" in selected:
+            results["emails"] = self._setup_emails(client, niche, store_name)
 
         self._record(results)
 
@@ -1041,6 +1054,170 @@ class StoreConfigurator:
             "discount_code": code,
             "code_created": code_created,
         }
+
+    # ── Feature: Email templates ───────────────────────────────
+
+    def _setup_emails(
+        self, client: ShopifyClient, niche: str, store_name: str,
+    ) -> dict[str, Any]:
+        """Generate niche-toned email templates and save them as a metafield.
+
+        Shopify's REST API for notification templates is narrowly scoped
+        (requires ``write_content`` and has a closed template set), so
+        instead of POSTing to ``email_templates.json`` we save the full
+        template definitions as ``shopai.emails`` metafield (json).
+        Downstream code — a Shopify Function, an admin UI button, or
+        a daemon task — can read the metafield and apply the templates
+        wherever it has permissions.
+
+        Four templates are generated:
+          order_confirmation  — sent right after checkout
+          shipping_update     — sent when the order ships
+          abandoned_cart      — sent 1h / 24h after cart abandonment
+          win_back            — sent 60 days after last purchase
+
+        Each template has:
+          subject, preheader, body_html (with {{placeholders}}),
+          trigger, delay_hours
+        """
+        tone = _EMAIL_TONES.get(niche, _EMAIL_TONES["general"])
+        store_display = store_name or "Our Store"
+
+        templates = {
+            "order_confirmation": {
+                "subject": f"Your {store_display} order is confirmed!",
+                "preheader": "Thanks for shopping with us",
+                "trigger": "order_created",
+                "delay_hours": 0,
+                "body_html": self._render_email_body(
+                    tone,
+                    heading=f"Order #{{{{order_number}}}} confirmed!",
+                    body_paragraphs=[
+                        f"Thanks for choosing {store_display}. "
+                        "We're thrilled to have you.",
+                        "Your order details are below. We'll send another "
+                        "email as soon as it ships.",
+                    ],
+                    cta_text="View order",
+                    cta_url="{{order_status_url}}",
+                ),
+            },
+            "shipping_update": {
+                "subject": f"Your {store_display} order is on the way 📦",
+                "preheader": "Track your package",
+                "trigger": "order_fulfilled",
+                "delay_hours": 0,
+                "body_html": self._render_email_body(
+                    tone,
+                    heading="Your order is on the way!",
+                    body_paragraphs=[
+                        f"Great news — your {tone['adj']} items have shipped. "
+                        "You can track them with the link below.",
+                        "Most orders arrive in 3-7 business days.",
+                    ],
+                    cta_text="Track package",
+                    cta_url="{{tracking_url}}",
+                ),
+            },
+            "abandoned_cart": {
+                "subject": "You left something behind...",
+                "preheader": f"Come back and save 10% with COMEBACK10",
+                "trigger": "checkout_abandoned",
+                "delay_hours": 1,
+                "body_html": self._render_email_body(
+                    tone,
+                    heading="Still thinking it over?",
+                    body_paragraphs=[
+                        f"We noticed you left some {tone['adj']} items in "
+                        "your cart. No pressure — they'll be here when you "
+                        "come back.",
+                        "Need a little push? Use code "
+                        "<strong>COMEBACK10</strong> for 10% off your order.",
+                    ],
+                    cta_text="Finish checking out",
+                    cta_url="{{cart_url}}",
+                ),
+            },
+            "win_back": {
+                "subject": f"We miss you at {store_display}",
+                "preheader": "Here's 15% off to welcome you back",
+                "trigger": "customer_inactive",
+                "delay_hours": 60 * 24,  # 60 days
+                "body_html": self._render_email_body(
+                    tone,
+                    heading="It's been a while!",
+                    body_paragraphs=[
+                        f"We haven't seen you around {store_display} lately. "
+                        f"We've been adding lots of {tone['adj']} new arrivals "
+                        "you'll love.",
+                        "Come back and save 15% with code "
+                        "<strong>WELCOME15</strong>.",
+                    ],
+                    cta_text="Shop new arrivals",
+                    cta_url="{{shop_url}}/collections/new-arrivals",
+                ),
+            },
+        }
+
+        program = {
+            "enabled": True,
+            "niche": niche,
+            "tone": tone,
+            "templates": templates,
+            "configured_at": time.time(),
+        }
+        result = self._write(
+            client, "POST", "metafields.json",
+            {
+                "metafield": {
+                    "namespace": "shopai",
+                    "key": "emails",
+                    "value": json.dumps(program),
+                    "type": "json",
+                }
+            },
+            description=f"Save email templates ({len(templates)} templates)",
+        )
+        return {
+            "saved": bool(result.get("metafield") or result.get("dry_run")),
+            "template_count": len(templates),
+            "templates": sorted(templates.keys()),
+            "tone": tone,
+        }
+
+    @staticmethod
+    def _render_email_body(
+        tone: dict,
+        *,
+        heading: str,
+        body_paragraphs: list[str],
+        cta_text: str,
+        cta_url: str,
+    ) -> str:
+        """Render a tone-appropriate HTML email body.
+
+        The output is a self-contained HTML fragment (no <html>
+        wrapper — that's added by the email service). Uses inline
+        styles because most email clients strip <style> blocks.
+        """
+        paragraphs_html = "\n".join(
+            f'<p style="font-size:16px;line-height:1.5;color:#333;">{p}</p>'
+            for p in body_paragraphs
+        )
+        return (
+            f'<div style="font-family:Arial,sans-serif;max-width:600px;'
+            f'margin:0 auto;padding:24px;">'
+            f'<p style="font-size:16px;color:#333;">{tone["greeting"]}</p>'
+            f'<h1 style="font-size:24px;color:#111;margin:16px 0;">{heading}</h1>'
+            f'{paragraphs_html}'
+            f'<p style="margin:24px 0;">'
+            f'<a href="{cta_url}" style="background:#000;color:#fff;'
+            f'padding:12px 24px;text-decoration:none;border-radius:4px;'
+            f'display:inline-block;font-weight:bold;">{cta_text}</a>'
+            f'</p>'
+            f'<p style="font-size:14px;color:#666;">{tone["sign_off"]}</p>'
+            f'</div>'
+        )
 
     # ── Recording ──────────────────────────────────────────────
 
