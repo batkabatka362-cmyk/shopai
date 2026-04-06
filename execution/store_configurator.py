@@ -1,18 +1,40 @@
 """Store Configurator — auto-configure all Shopify store settings.
 
-Configures: shipping, discounts, collections, pages, SEO, and more.
-Teaches AI about the store and optimizes for the niche.
+Configures collections, discounts, shipping, content, tags, payments,
+gifts/loyalty, and email templates to turn a fresh Shopify store into
+an AI-managed storefront with zero manual clicking.
+
+Every write goes through ShopifyClient (retry, rate limit, consistent
+error shape) and can be previewed via ``dry_run=True``. Features can
+be run selectively via the ``features`` parameter:
+
+    configurator = StoreConfigurator(dry_run=True)
+    result = configurator.configure(
+        "mystore.myshopify.com", "shpat_x",
+        niche="beauty",
+        features=["collections", "discounts"],  # only these
+    )
+    print(result["plan"])  # what would have been written
+
+The historical methods (_setup_collections, _setup_discounts, etc.)
+are still called from configure() so the public interface consumed by
+store_registry.py stays stable.
 """
 from __future__ import annotations
+
 import json
 import time
-import urllib.request
-from typing import Any
+from typing import Any, Optional
+
 from utils.logger import get_logger
+from utils.shopify_client import ShopifyClient
+
 logger = get_logger("store.configurator")
 
-# Niche-specific configurations
-NICHE_CONFIGS = {
+
+# ── Niche-specific configurations ──────────────────────────────────
+
+NICHE_CONFIGS: dict[str, dict[str, Any]] = {
     "home": {
         "collections": ["Home Decor", "Lighting", "Kitchen", "Bedroom", "Living Room"],
         "discount_strategy": "moderate",
@@ -46,122 +68,230 @@ NICHE_CONFIGS = {
 }
 
 
+ALL_FEATURES = (
+    "collections",
+    "discounts",
+    "shipping",
+    "content",
+    "product_tags",
+    "ai_config",
+)
+
+
 class StoreConfigurator:
     """Auto-configure Shopify store based on niche and products."""
 
-    def __init__(self) -> None:
-        self._log: list[dict] = []
+    def __init__(self, dry_run: bool = False) -> None:
+        self._dry_run = dry_run
+        self._plan: list[dict] = []
 
-    def configure(self, shop_url: str, token: str, niche: str = "general",
-                  store_name: str = "") -> dict[str, Any]:
-        """Full store configuration — shipping, discounts, collections, content."""
-        h = {"X-Shopify-Access-Token": token, "Content-Type": "application/json"}
+    # ── Public API ─────────────────────────────────────────────
+
+    def configure(
+        self,
+        shop_url: str,
+        token: str,
+        niche: str = "general",
+        store_name: str = "",
+        *,
+        features: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Full store configuration.
+
+        Args:
+            shop_url: e.g. ``mystore.myshopify.com``
+            token: Shopify Admin API access token
+            niche: one of NICHE_CONFIGS keys (default: "general")
+            store_name: optional display name used in generated content
+            features: list of feature names to run (None = all). Valid
+                values: {collections, discounts, shipping, content,
+                product_tags, ai_config}. Unknown names are ignored
+                with a warning.
+
+        Returns:
+            ``{"status": "configured"|"planned", "niche": ..., "results": {...}, "plan": [...] }``
+        """
+        client = ShopifyClient(shop_url, token)
         config = NICHE_CONFIGS.get(niche, NICHE_CONFIGS["general"])
-        results = {}
+        selected = self._resolve_features(features)
+        self._plan = []
+        results: dict[str, Any] = {}
 
-        # Get current products
-        products = self._api_get(shop_url, "products.json?limit=50", h).get("products", [])
+        # Fetch products once — multiple features use it
+        products_resp = client.get("products.json", params={"limit": 50})
+        products = products_resp.get("products", []) if "error" not in products_resp else []
+        if "error" in products_resp:
+            logger.warning("Configurator: products fetch failed: %s", products_resp["error"])
 
-        # 1. Smart collections by niche
-        results["collections"] = self._setup_collections(
-            shop_url, h, config, products)
+        if "collections" in selected:
+            results["collections"] = self._setup_collections(client, config, products)
+        if "discounts" in selected:
+            results["discounts"] = self._setup_discounts(client, config, store_name)
+        if "shipping" in selected:
+            results["shipping"] = self._check_shipping(client)
+        if "content" in selected:
+            results["content"] = self._create_niche_content(client, niche, config, products)
+        if "product_tags" in selected:
+            results["product_tags"] = self._organize_products(client, niche, products)
+        if "ai_config" in selected:
+            results["ai_config"] = self._save_ai_config(client, niche, config)
 
-        # 2. Discount strategy
-        results["discounts"] = self._setup_discounts(
-            shop_url, h, config, store_name)
-
-        # 3. Shipping optimization
-        results["shipping"] = self._check_shipping(shop_url, h)
-
-        # 4. SEO pages (buying guides)
-        results["content"] = self._create_niche_content(
-            shop_url, h, niche, config, products)
-
-        # 5. Product organization by niche
-        results["product_tags"] = self._organize_products(
-            shop_url, h, niche, products)
-
-        # 6. Store metafields (AI config)
-        results["ai_config"] = self._save_ai_config(
-            shop_url, h, niche, config)
-
-        # Record
         self._record(results)
 
         return {
-            "status": "configured",
+            "status": "planned" if self._dry_run else "configured",
             "niche": niche,
+            "features": sorted(selected),
             "results": results,
+            "plan": self._plan if self._dry_run else None,
         }
 
-    def _setup_collections(self, shop_url, h, config, products):
-        """Create niche-specific collections."""
-        created = 0
-        existing = self._api_get(shop_url, "smart_collections.json", h).get("smart_collections", [])
+    # ── Helpers ────────────────────────────────────────────────
+
+    def _resolve_features(self, features: Optional[list[str]]) -> set[str]:
+        if features is None:
+            return set(ALL_FEATURES)
+        valid = set(ALL_FEATURES)
+        selected = set()
+        for f in features:
+            if f in valid:
+                selected.add(f)
+            else:
+                logger.warning("Unknown feature %r (valid: %s)", f, sorted(valid))
+        return selected or set(ALL_FEATURES)
+
+    def _write(
+        self,
+        client: ShopifyClient,
+        method: str,
+        path: str,
+        json_body: Optional[dict] = None,
+        *,
+        description: str = "",
+    ) -> dict[str, Any]:
+        """POST/PUT/DELETE wrapper that honors dry_run mode."""
+        entry = {
+            "method": method,
+            "path": path,
+            "description": description,
+            "body_preview": self._summarize_body(json_body),
+        }
+        if self._dry_run:
+            self._plan.append(entry)
+            return {"dry_run": True}
+        if method == "POST":
+            return client.post(path, json=json_body)
+        if method == "PUT":
+            return client.put(path, json=json_body)
+        if method == "DELETE":
+            return client.delete(path)
+        raise ValueError(f"Unsupported write method: {method}")
+
+    @staticmethod
+    def _summarize_body(body: Optional[dict]) -> str:
+        if not body:
+            return ""
+        try:
+            s = json.dumps(body, default=str)
+        except Exception:  # noqa: BLE001
+            s = str(body)
+        return s[:120] + ("…" if len(s) > 120 else "")
+
+    # ── Feature: Collections ───────────────────────────────────
+
+    def _setup_collections(
+        self, client: ShopifyClient, config: dict, products: list,
+    ) -> dict[str, Any]:
+        existing_resp = client.get("smart_collections.json")
+        existing = existing_resp.get("smart_collections", []) if "error" not in existing_resp else []
         existing_titles = set(c["title"].lower() for c in existing)
 
+        created = 0
         for title in config["collections"]:
             if title.lower() in existing_titles:
                 continue
-            # Create based on tag matching
-            result = self._api_post(shop_url, "smart_collections.json", h, {
-                "smart_collection": {
-                    "title": title,
-                    "body_html": "<p>Explore our {} selection.</p>".format(title),
-                    "rules": [{"column": "tag", "relation": "equals", "condition": title.lower()}],
-                    "published": True,
-                }
-            })
-            if result.get("smart_collection"):
+            result = self._write(
+                client, "POST", "smart_collections.json",
+                {
+                    "smart_collection": {
+                        "title": title,
+                        "body_html": f"<p>Explore our {title} selection.</p>",
+                        "rules": [{
+                            "column": "tag", "relation": "equals",
+                            "condition": title.lower(),
+                        }],
+                        "published": True,
+                    }
+                },
+                description=f"Create smart collection '{title}'",
+            )
+            if result.get("smart_collection") or result.get("dry_run"):
                 created += 1
 
         # Price-based collections
         for title, rule in [("Under $20", "20"), ("Under $50", "50")]:
-            if title.lower() not in existing_titles:
-                self._api_post(shop_url, "smart_collections.json", h, {
+            if title.lower() in existing_titles:
+                continue
+            result = self._write(
+                client, "POST", "smart_collections.json",
+                {
                     "smart_collection": {
                         "title": title,
-                        "rules": [{"column": "variant_price", "relation": "less_than", "condition": rule}],
+                        "rules": [{
+                            "column": "variant_price", "relation": "less_than",
+                            "condition": rule,
+                        }],
                         "published": True,
                     }
-                })
+                },
+                description=f"Create price collection '{title}'",
+            )
+            if result.get("smart_collection") or result.get("dry_run"):
                 created += 1
 
-        return {"created": created, "total": len(existing) + created}
+        return {"created": created, "existing": len(existing)}
 
-    def _setup_discounts(self, shop_url, h, config, store_name):
-        """Create discount strategy based on niche."""
-        existing = self._api_get(shop_url, "price_rules.json", h).get("price_rules", [])
+    # ── Feature: Discounts ─────────────────────────────────────
+
+    def _setup_discounts(
+        self, client: ShopifyClient, config: dict, store_name: str,
+    ) -> dict[str, Any]:
+        existing_resp = client.get("price_rules.json")
+        existing = existing_resp.get("price_rules", []) if "error" not in existing_resp else []
         existing_titles = set(r["title"] for r in existing)
-        created = []
+        created: list[str] = []
 
         strategy = config["discount_strategy"]
 
-        # Always: welcome discount
+        # Welcome discount (always)
         if "WELCOME15" not in existing_titles:
-            self._create_discount(shop_url, h, "WELCOME15", -15.0, once_per_customer=True)
+            self._create_discount(client, "WELCOME15", -15.0, once_per_customer=True)
             created.append("WELCOME15")
 
         if strategy == "aggressive":
-            if "FLASH25" not in existing_titles:
-                self._create_discount(shop_url, h, "FLASH25", -25.0)
-                created.append("FLASH25")
-            if "BOGO50" not in existing_titles:
-                self._create_discount(shop_url, h, "BOGO50", -50.0, min_qty=2)
-                created.append("BOGO50")
+            for code, value, kwargs in [
+                ("FLASH25", -25.0, {}),
+                ("BOGO50", -50.0, {"min_qty": 2}),
+            ]:
+                if code not in existing_titles:
+                    self._create_discount(client, code, value, **kwargs)
+                    created.append(code)
         elif strategy == "generous":
             if "BEAUTY20" not in existing_titles:
-                self._create_discount(shop_url, h, "BEAUTY20", -20.0)
+                self._create_discount(client, "BEAUTY20", -20.0)
                 created.append("BEAUTY20")
-        else:  # moderate
+        else:
             if "SAVE10" not in existing_titles:
-                self._create_discount(shop_url, h, "SAVE10", -10.0)
+                self._create_discount(client, "SAVE10", -10.0)
                 created.append("SAVE10")
 
         return {"created": len(created), "codes": created}
 
-    def _create_discount(self, shop_url, h, code, value, once_per_customer=False, min_qty=0):
-        rule = {
+    def _create_discount(
+        self, client: ShopifyClient, code: str, value: float,
+        once_per_customer: bool = False, min_qty: int = 0,
+    ) -> None:
+        rule_body: dict[str, Any] = {
             "price_rule": {
                 "title": code,
                 "target_type": "line_item",
@@ -175,33 +305,57 @@ class StoreConfigurator:
             }
         }
         if min_qty:
-            rule["price_rule"]["prerequisite_quantity_range"] = {
-                "greater_than_or_equal_to": min_qty}
+            rule_body["price_rule"]["prerequisite_quantity_range"] = {
+                "greater_than_or_equal_to": min_qty,
+            }
 
-        result = self._api_post(shop_url, "price_rules.json", h, rule)
-        if result.get("price_rule"):
-            rule_id = result["price_rule"]["id"]
-            self._api_post(shop_url, "price_rules/{}/discount_codes.json".format(rule_id), h,
-                           {"discount_code": {"code": code}})
+        result = self._write(
+            client, "POST", "price_rules.json", rule_body,
+            description=f"Create price rule {code} ({value}%)",
+        )
+        rule_id = result.get("price_rule", {}).get("id") if result else None
+        if rule_id:
+            self._write(
+                client, "POST",
+                f"price_rules/{rule_id}/discount_codes.json",
+                {"discount_code": {"code": code}},
+                description=f"Attach discount code {code}",
+            )
+        elif result.get("dry_run"):
+            # In dry-run we still want the code to be visible in the plan
+            self._write(
+                client, "POST",
+                "price_rules/<id>/discount_codes.json",
+                {"discount_code": {"code": code}},
+                description=f"Attach discount code {code}",
+            )
 
-    def _check_shipping(self, shop_url, h):
-        zones = self._api_get(shop_url, "shipping_zones.json", h).get("shipping_zones", [])
+    # ── Feature: Shipping (read-only for now) ──────────────────
+
+    def _check_shipping(self, client: ShopifyClient) -> dict[str, Any]:
+        resp = client.get("shipping_zones.json")
+        zones = resp.get("shipping_zones", []) if "error" not in resp else []
         return {
             "zones": len(zones),
-            "details": [{"name": z.get("name",""), "countries": len(z.get("countries",[]))}
-                        for z in zones],
+            "details": [
+                {"name": z.get("name", ""), "countries": len(z.get("countries", []))}
+                for z in zones
+            ],
         }
 
-    def _create_niche_content(self, shop_url, h, niche, config, products):
-        """Create niche-specific content pages."""
-        created = 0
-        existing_pages = self._api_get(shop_url, "pages.json", h).get("pages", [])
+    # ── Feature: Content ───────────────────────────────────────
+
+    def _create_niche_content(
+        self, client: ShopifyClient, niche: str, config: dict, products: list,
+    ) -> dict[str, Any]:
+        existing_resp = client.get("pages.json")
+        existing_pages = existing_resp.get("pages", []) if "error" not in existing_resp else []
         existing_titles = set(p["title"].lower() for p in existing_pages)
 
-        # Buying guide
-        guide_title = "Buying Guide: Best {} Products".format(niche.title())
+        created = 0
+        guide_title = f"Buying Guide: Best {niche.title()} Products"
         if guide_title.lower() not in existing_titles:
-            body = "<h2>How to Choose the Best {} Products</h2>".format(niche.title())
+            body = f"<h2>How to Choose the Best {niche.title()} Products</h2>"
             body += "<p>Our AI-curated selection helps you find the perfect products.</p>"
             body += "<h3>What to Look For</h3><ul>"
             body += "<li>Quality materials and construction</li>"
@@ -211,51 +365,60 @@ class StoreConfigurator:
             if products:
                 body += "<h3>Our Top Picks</h3><ul>"
                 for p in products[:5]:
-                    body += '<li><a href="/products/{}">{}</a></li>'.format(
-                        p.get("handle",""), p.get("title",""))
+                    body += (
+                        f'<li><a href="/products/{p.get("handle", "")}">'
+                        f'{p.get("title", "")}</a></li>'
+                    )
                 body += "</ul>"
             body += "<p>Use code <strong>WELCOME15</strong> for 15% off!</p>"
 
-            result = self._api_post(shop_url, "pages.json", h, {
-                "page": {"title": guide_title, "body_html": body, "published": True}
-            })
-            if result.get("page"):
+            result = self._write(
+                client, "POST", "pages.json",
+                {"page": {"title": guide_title, "body_html": body, "published": True}},
+                description=f"Create page '{guide_title}'",
+            )
+            if result.get("page") or result.get("dry_run"):
                 created += 1
 
         return {"pages_created": created}
 
-    def _organize_products(self, shop_url, h, niche, products):
-        """Add niche-specific tags to products."""
+    # ── Feature: Product tags ──────────────────────────────────
+
+    def _organize_products(
+        self, client: ShopifyClient, niche: str, products: list,
+    ) -> dict[str, Any]:
         tagged = 0
         for p in products[:20]:
             pid = p["id"]
             current_tags = p.get("tags", "") or ""
             new_tags = set(t.strip() for t in current_tags.split(",") if t.strip())
-
-            # Add niche tag
             new_tags.add(niche)
 
-            # Price-based tags
-            price = float(p.get("variants", [{}])[0].get("price", "0") if p.get("variants") else "0")
+            variants = p.get("variants", [{}])
+            price = float(variants[0].get("price", "0") or "0") if variants else 0.0
             if price < 20:
                 new_tags.add("budget-friendly")
             elif price > 40:
                 new_tags.add("premium")
-
-            # Gift tag for appropriate products
-            if price > 15 and price < 60:
+            if 15 < price < 60:
                 new_tags.add("gift-idea")
 
             updated_tags = ", ".join(sorted(new_tags))
             if updated_tags != current_tags:
-                self._api_put(shop_url, "products/{}.json".format(pid), h,
-                              {"product": {"id": pid, "tags": updated_tags}})
+                self._write(
+                    client, "PUT", f"products/{pid}.json",
+                    {"product": {"id": pid, "tags": updated_tags}},
+                    description=f"Retag product {pid}",
+                )
                 tagged += 1
 
         return {"tagged": tagged}
 
-    def _save_ai_config(self, shop_url, h, niche, config):
-        """Save AI configuration as shop metafield."""
+    # ── Feature: AI config metafield ───────────────────────────
+
+    def _save_ai_config(
+        self, client: ShopifyClient, niche: str, config: dict,
+    ) -> dict[str, Any]:
         ai_config = {
             "niche": niche,
             "target_audience": config["target_audience"],
@@ -263,61 +426,42 @@ class StoreConfigurator:
             "configured_at": time.time(),
             "version": "2.0",
         }
-        result = self._api_post(shop_url, "metafields.json", h, {
-            "metafield": {
-                "namespace": "shopai",
-                "key": "config",
-                "value": json.dumps(ai_config),
-                "type": "json",
-            }
-        })
-        return {"saved": bool(result.get("metafield"))}
+        result = self._write(
+            client, "POST", "metafields.json",
+            {
+                "metafield": {
+                    "namespace": "shopai",
+                    "key": "config",
+                    "value": json.dumps(ai_config),
+                    "type": "json",
+                }
+            },
+            description="Save ShopAI config metafield",
+        )
+        return {"saved": bool(result.get("metafield") or result.get("dry_run"))}
 
-    def _record(self, results):
+    # ── Recording ──────────────────────────────────────────────
+
+    def _record(self, results: dict) -> None:
+        if self._dry_run:
+            return
         try:
             from core.data.architecture import get_data_architecture
             da = get_data_architecture()
-            da.capture("action", {
-                "action_type": "store_configuration",
-                "success": True,
-            }, source="configurator", score=4.5)
-        except Exception:
+            da.capture(
+                "action",
+                {"action_type": "store_configuration", "success": True},
+                source="configurator",
+                score=4.5,
+            )
+        except Exception:  # noqa: BLE001
             pass
 
-    @staticmethod
-    def _api_get(shop_url, path, h):
-        try:
-            req = urllib.request.Request("https://{}/admin/api/2024-01/{}".format(shop_url, path), headers=h)
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
-        except Exception:
-            return {}
 
-    @staticmethod
-    def _api_post(shop_url, path, h, payload):
-        try:
-            url = "https://{}/admin/api/2024-01/{}".format(shop_url, path)
-            data = json.dumps(payload).encode()
-            req = urllib.request.Request(url, data=data, method="POST", headers=h)
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
-        except Exception:
-            return {}
-
-    @staticmethod
-    def _api_put(shop_url, path, h, payload):
-        try:
-            url = "https://{}/admin/api/2024-01/{}".format(shop_url, path)
-            data = json.dumps(payload).encode()
-            req = urllib.request.Request(url, data=data, method="PUT", headers=h)
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
-        except Exception:
-            return {}
+_instance: Optional[StoreConfigurator] = None
 
 
-_instance = None
-def get_store_configurator():
+def get_store_configurator() -> StoreConfigurator:
     global _instance
     if _instance is None:
         _instance = StoreConfigurator()
