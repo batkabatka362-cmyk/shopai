@@ -18,6 +18,12 @@ Each module is independently importable and testable. The `mind` module
 at the top ties them together into the main cognitive cycle.
 """
 from core.cognitive.goals import GoalManager, get_goal_manager
+from core.cognitive.imagination import (
+    ImaginedOutcome,
+    ImaginedPlan,
+    Imagination,
+    get_imagination,
+)
 from core.cognitive.planner import (
     HeuristicPlanBackend,
     LLMPlanBackend,
@@ -41,4 +47,5 @@ __all__ = [
     "Planner", "Plan", "PlanStep",
     "LLMPlanBackend", "HeuristicPlanBackend",
     "get_planner",
+    "Imagination", "ImaginedOutcome", "ImaginedPlan", "get_imagination",
 ]
