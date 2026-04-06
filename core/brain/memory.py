@@ -74,6 +74,12 @@ class IntelligentMemory:
         # In-memory pattern cache
         self._pattern_cache: dict[str, dict] = {}
         self._rules: list[dict] = []
+        # get_rules() cache: category → (generation, expires_at, rows).
+        # Hot callers: strategy_planner, multi_store_brain, reasoning_chain,
+        # rule_health, strategy_expander, autonomous/controller.
+        self._rules_cache: dict[str, tuple[int, float, list[dict[str, Any]]]] = {}
+        self._rules_cache_gen = 0
+        self._rules_cache_ttl = 2.0
 
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "c") or self._local.c is None:
@@ -259,6 +265,7 @@ class IntelligentMemory:
                 (rule_text, category, condition, action, confidence, pattern, time.time()),
             )
             conn.commit()
+            self._rules_cache_gen += 1
             logger.info("New rule: %s", rule_text)
 
     # ── Retrieval (CRITICAL for decisions) ───────────────────
@@ -311,13 +318,22 @@ class IntelligentMemory:
         }
 
     def get_rules(self, category: str = "") -> list[dict[str, Any]]:
+        now = time.time()
+        cached = self._rules_cache.get(category)
+        if cached:
+            gen, expires, result = cached
+            if gen == self._rules_cache_gen and now < expires:
+                return result
+
         if category:
             rows = self._conn().execute(
                 "SELECT * FROM rules WHERE category = ? ORDER BY confidence DESC", (category,),
             ).fetchall()
         else:
             rows = self._conn().execute("SELECT * FROM rules ORDER BY confidence DESC").fetchall()
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows]
+        self._rules_cache[category] = (self._rules_cache_gen, now + self._rules_cache_ttl, result)
+        return result
 
     # ── Bad Data Storage ─────────────────────────────────────
 

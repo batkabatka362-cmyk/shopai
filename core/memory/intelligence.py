@@ -97,7 +97,17 @@ class MemoryIntelligence:
         self._db_path = str(db_path or _DB_PATH)
         self._local = threading.local()
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        # get_rules() cache: (category → (generation, expires_at, result))
+        # Many hot-path callers (model_router, data_driven_enhancer, promoter,
+        # dashboard, product_scorer) re-query rules on every cycle; without a
+        # cache each call hits SQLite.
+        self._rules_cache: dict[str, tuple[int, float, list[dict[str, Any]]]] = {}
+        self._rules_cache_gen = 0
+        self._rules_cache_ttl = 2.0
         self._init_schema()
+
+    def _invalidate_rules_cache(self) -> None:
+        self._rules_cache_gen += 1
 
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "c") or self._local.c is None:
@@ -229,6 +239,8 @@ class MemoryIntelligence:
         # Check if this triggers a promotion
         self._check_promotion(category)
 
+        # Any new memory may have promoted to/from a rule — invalidate cache
+        self._invalidate_rules_cache()
         return mid
 
     def create_from_decision(self, category: str, input_data: dict,
@@ -377,6 +389,7 @@ class MemoryIntelligence:
                 (memory_id,),
             )
         conn.commit()
+        self._invalidate_rules_cache()  # confidence drives get_rules ordering
         # Meta tracking
         conn.execute(
             "INSERT INTO meta_memory (memory_id, event, outcome, timestamp) VALUES (?,?,?,?)",
@@ -929,7 +942,15 @@ class MemoryIntelligence:
     # == CONVENIENCE GETTERS =======================================
 
     def get_rules(self, category: str = "") -> list[dict[str, Any]]:
-        """Get all level-2 rule memories."""
+        """Get all level-2 rule memories. Cached per category with TTL +
+        generation counter (invalidated on create/update_score)."""
+        now = time.time()
+        cached = self._rules_cache.get(category)
+        if cached:
+            gen, expires, result = cached
+            if gen == self._rules_cache_gen and now < expires:
+                return result
+
         conn = self._conn()
         if category:
             rows = conn.execute(
@@ -940,7 +961,9 @@ class MemoryIntelligence:
             rows = conn.execute(
                 "SELECT * FROM memories WHERE level = 2 ORDER BY confidence DESC",
             ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        result = [self._row_to_dict(r) for r in rows]
+        self._rules_cache[category] = (self._rules_cache_gen, now + self._rules_cache_ttl, result)
+        return result
 
     def get_strategies(self, category: str = "") -> list[dict[str, Any]]:
         """Get all level-3 strategy memories."""
