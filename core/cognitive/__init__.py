@@ -17,6 +17,11 @@ into a self-directed cognitive system:
 Each module is independently importable and testable. The `mind` module
 at the top ties them together into the main cognitive cycle.
 """
+from core.cognitive.consolidation import (
+    Consolidation,
+    ConsolidationReport,
+    get_consolidation,
+)
 from core.cognitive.curiosity import (
     Curiosity,
     CuriosityCandidate,
@@ -56,4 +61,5 @@ __all__ = [
     "Imagination", "ImaginedOutcome", "ImaginedPlan", "get_imagination",
     "Curiosity", "CuriosityCandidate", "CuriosityRecommendation",
     "get_curiosity",
+    "Consolidation", "ConsolidationReport", "get_consolidation",
 ]
