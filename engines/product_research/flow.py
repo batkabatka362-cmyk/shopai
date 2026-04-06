@@ -38,6 +38,10 @@ def run(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     start = time.monotonic()
     data = copy.deepcopy(input_data or {})
 
+    # Propagate upstream failures instead of silently returning success
+    if data.get("status") == "fail":
+        return _fail(data.get("error") or "Upstream failure", start)
+
     products = data.get("products", [])
     niche = data.get("niche", "")
     criteria = data.get("criteria", {})
