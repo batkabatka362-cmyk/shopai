@@ -28,6 +28,44 @@ logger = get_logger("store.registry")
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "store_registry.db"
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: stores + store_events."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS stores (
+            store_id    TEXT PRIMARY KEY,
+            shop_url    TEXT NOT NULL,
+            token       TEXT NOT NULL,
+            name        TEXT DEFAULT '',
+            niche       TEXT DEFAULT '',
+            store_type  TEXT DEFAULT 'dropshipping',
+            status      TEXT DEFAULT 'pending',
+            owner       TEXT DEFAULT '',
+            telegram_chat_id INTEGER DEFAULT 0,
+            products_count INTEGER DEFAULT 0,
+            orders_count INTEGER DEFAULT 0,
+            customers_count INTEGER DEFAULT 0,
+            last_sync   REAL DEFAULT 0,
+            last_cycle  REAL DEFAULT 0,
+            health_score INTEGER DEFAULT 0,
+            created_at  REAL NOT NULL,
+            config      TEXT DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS store_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id    TEXT NOT NULL,
+            event       TEXT NOT NULL,
+            details     TEXT DEFAULT '',
+            timestamp   REAL NOT NULL
+        );
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class StoreRegistry:
     """Central registry for all stores. Zero-code store onboarding."""
 
@@ -42,34 +80,13 @@ class StoreRegistry:
         return c
 
     def _init_schema(self) -> None:
-        self._conn().executescript("""
-            CREATE TABLE IF NOT EXISTS stores (
-                store_id    TEXT PRIMARY KEY,
-                shop_url    TEXT NOT NULL,
-                token       TEXT NOT NULL,
-                name        TEXT DEFAULT '',
-                niche       TEXT DEFAULT '',
-                store_type  TEXT DEFAULT 'dropshipping',
-                status      TEXT DEFAULT 'pending',
-                owner       TEXT DEFAULT '',
-                telegram_chat_id INTEGER DEFAULT 0,
-                products_count INTEGER DEFAULT 0,
-                orders_count INTEGER DEFAULT 0,
-                customers_count INTEGER DEFAULT 0,
-                last_sync   REAL DEFAULT 0,
-                last_cycle  REAL DEFAULT 0,
-                health_score INTEGER DEFAULT 0,
-                created_at  REAL NOT NULL,
-                config      TEXT DEFAULT '{}'
-            );
-            CREATE TABLE IF NOT EXISTS store_events (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id    TEXT NOT NULL,
-                event       TEXT NOT NULL,
-                details     TEXT DEFAULT '',
-                timestamp   REAL NOT NULL
-            );
-        """)
+        from core.db.migrations import Migrator, register_schema
+        conn = self._conn()
+        try:
+            Migrator(conn, "store_registry", _MIGRATIONS).run()
+        finally:
+            conn.close()
+        register_schema("store_registry", Path(self._db_path), _SCHEMA_VERSION)
 
     # ── REGISTER ─────────────────────────────────
 

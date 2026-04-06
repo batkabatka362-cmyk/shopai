@@ -27,6 +27,52 @@ logger = get_logger("price_history")
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "price_history.db"
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: price_points + price_outcomes + competitor_prices."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS price_points (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id  TEXT NOT NULL,
+            store_id    TEXT DEFAULT '',
+            price       REAL NOT NULL,
+            cost        REAL DEFAULT 0.0,
+            margin      REAL DEFAULT 0.0,
+            source      TEXT DEFAULT 'system',
+            reason      TEXT DEFAULT '',
+            timestamp   REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS price_outcomes (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id      TEXT NOT NULL,
+            price           REAL NOT NULL,
+            revenue_after   REAL DEFAULT 0.0,
+            orders_after    INTEGER DEFAULT 0,
+            conversion_rate REAL DEFAULT 0.0,
+            period_days     INTEGER DEFAULT 7,
+            score           REAL DEFAULT 3.0,
+            timestamp       REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS competitor_prices (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id  TEXT NOT NULL,
+            competitor  TEXT DEFAULT '',
+            price       REAL NOT NULL,
+            source      TEXT DEFAULT 'scan',
+            timestamp   REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pp_product ON price_points(product_id);
+        CREATE INDEX IF NOT EXISTS idx_pp_ts ON price_points(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_po_product ON price_outcomes(product_id);
+        CREATE INDEX IF NOT EXISTS idx_cp_product ON competitor_prices(product_id);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class PriceHistory:
     """Tracks all price changes and their outcomes."""
 
@@ -44,43 +90,9 @@ class PriceHistory:
         return self._local.c
 
     def _init_schema(self) -> None:
-        self._conn().executescript("""
-            CREATE TABLE IF NOT EXISTS price_points (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_id  TEXT NOT NULL,
-                store_id    TEXT DEFAULT '',
-                price       REAL NOT NULL,
-                cost        REAL DEFAULT 0.0,
-                margin      REAL DEFAULT 0.0,
-                source      TEXT DEFAULT 'system',
-                reason      TEXT DEFAULT '',
-                timestamp   REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS price_outcomes (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_id      TEXT NOT NULL,
-                price           REAL NOT NULL,
-                revenue_after   REAL DEFAULT 0.0,
-                orders_after    INTEGER DEFAULT 0,
-                conversion_rate REAL DEFAULT 0.0,
-                period_days     INTEGER DEFAULT 7,
-                score           REAL DEFAULT 3.0,
-                timestamp       REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS competitor_prices (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_id  TEXT NOT NULL,
-                competitor  TEXT DEFAULT '',
-                price       REAL NOT NULL,
-                source      TEXT DEFAULT 'scan',
-                timestamp   REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_pp_product ON price_points(product_id);
-            CREATE INDEX IF NOT EXISTS idx_pp_ts ON price_points(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_po_product ON price_outcomes(product_id);
-            CREATE INDEX IF NOT EXISTS idx_cp_product ON competitor_prices(product_id);
-        """)
-        self._conn().commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._conn(), "price_history", _MIGRATIONS).run()
+        register_schema("price_history", Path(self._db_path), _SCHEMA_VERSION)
 
     # == RECORD PRICES =============================================
 

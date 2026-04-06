@@ -27,6 +27,88 @@ logger = get_logger("experience")
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "experience.db"
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: product_knowledge, decision_outcomes, strategy_knowledge,
+    mistake_log, tool_knowledge, market_intelligence."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS product_knowledge (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id  TEXT NOT NULL,
+            store_id    TEXT DEFAULT '',
+            knowledge_type TEXT NOT NULL,
+            insight     TEXT NOT NULL,
+            confidence  REAL DEFAULT 0.5,
+            evidence    TEXT DEFAULT '{}',
+            learned_at  REAL NOT NULL,
+            times_confirmed INTEGER DEFAULT 1,
+            last_confirmed REAL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS decision_outcomes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_type TEXT NOT NULL,
+            decision_data TEXT NOT NULL,
+            outcome     TEXT NOT NULL,
+            success     INTEGER DEFAULT 0,
+            impact_score REAL DEFAULT 0,
+            store_id    TEXT DEFAULT '',
+            engine      TEXT DEFAULT '',
+            created_at  REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS strategy_knowledge (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy    TEXT NOT NULL,
+            category    TEXT NOT NULL,
+            effectiveness REAL DEFAULT 0.5,
+            conditions  TEXT DEFAULT '{}',
+            evidence_count INTEGER DEFAULT 1,
+            last_used   REAL DEFAULT 0,
+            created_at  REAL NOT NULL,
+            notes       TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS mistake_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            mistake_type TEXT NOT NULL,
+            description TEXT NOT NULL,
+            cause       TEXT DEFAULT '',
+            prevention  TEXT DEFAULT '',
+            severity    TEXT DEFAULT 'medium',
+            store_id    TEXT DEFAULT '',
+            created_at  REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS tool_knowledge (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_name   TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            success_rate REAL DEFAULT 0.5,
+            avg_duration REAL DEFAULT 0,
+            total_uses  INTEGER DEFAULT 0,
+            best_for    TEXT DEFAULT '',
+            updated_at  REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS market_intelligence (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic       TEXT NOT NULL,
+            insight     TEXT NOT NULL,
+            source      TEXT DEFAULT '',
+            confidence  REAL DEFAULT 0.5,
+            relevance   TEXT DEFAULT 'general',
+            expires_at  REAL DEFAULT 0,
+            created_at  REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pk_product ON product_knowledge(product_id);
+        CREATE INDEX IF NOT EXISTS idx_pk_type ON product_knowledge(knowledge_type);
+        CREATE INDEX IF NOT EXISTS idx_do_type ON decision_outcomes(decision_type);
+        CREATE INDEX IF NOT EXISTS idx_sk_category ON strategy_knowledge(category);
+        CREATE INDEX IF NOT EXISTS idx_mi_topic ON market_intelligence(topic);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class ExperienceAccumulator:
     """Permanent learning storage — the AI's growing brain."""
 
@@ -44,90 +126,9 @@ class ExperienceAccumulator:
         return self._local.conn
 
     def _init_schema(self) -> None:
-        self._get_conn().executescript("""
-            -- What the AI has learned about products
-            CREATE TABLE IF NOT EXISTS product_knowledge (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_id  TEXT NOT NULL,
-                store_id    TEXT DEFAULT '',
-                knowledge_type TEXT NOT NULL,
-                insight     TEXT NOT NULL,
-                confidence  REAL DEFAULT 0.5,
-                evidence    TEXT DEFAULT '{}',
-                learned_at  REAL NOT NULL,
-                times_confirmed INTEGER DEFAULT 1,
-                last_confirmed REAL DEFAULT 0
-            );
-
-            -- Decisions and their outcomes (what worked, what didn't)
-            CREATE TABLE IF NOT EXISTS decision_outcomes (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                decision_type TEXT NOT NULL,
-                decision_data TEXT NOT NULL,
-                outcome     TEXT NOT NULL,
-                success     INTEGER DEFAULT 0,
-                impact_score REAL DEFAULT 0,
-                store_id    TEXT DEFAULT '',
-                engine      TEXT DEFAULT '',
-                created_at  REAL NOT NULL
-            );
-
-            -- Strategies that work (or don't)
-            CREATE TABLE IF NOT EXISTS strategy_knowledge (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                strategy    TEXT NOT NULL,
-                category    TEXT NOT NULL,
-                effectiveness REAL DEFAULT 0.5,
-                conditions  TEXT DEFAULT '{}',
-                evidence_count INTEGER DEFAULT 1,
-                last_used   REAL DEFAULT 0,
-                created_at  REAL NOT NULL,
-                notes       TEXT DEFAULT ''
-            );
-
-            -- Mistakes to never repeat
-            CREATE TABLE IF NOT EXISTS mistake_log (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                mistake_type TEXT NOT NULL,
-                description TEXT NOT NULL,
-                cause       TEXT DEFAULT '',
-                prevention  TEXT DEFAULT '',
-                severity    TEXT DEFAULT 'medium',
-                store_id    TEXT DEFAULT '',
-                created_at  REAL NOT NULL
-            );
-
-            -- Tool effectiveness tracking
-            CREATE TABLE IF NOT EXISTS tool_knowledge (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                tool_name   TEXT NOT NULL,
-                action      TEXT NOT NULL,
-                success_rate REAL DEFAULT 0.5,
-                avg_duration REAL DEFAULT 0,
-                total_uses  INTEGER DEFAULT 0,
-                best_for    TEXT DEFAULT '',
-                updated_at  REAL NOT NULL
-            );
-
-            -- Market intelligence gathered
-            CREATE TABLE IF NOT EXISTS market_intelligence (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                topic       TEXT NOT NULL,
-                insight     TEXT NOT NULL,
-                source      TEXT DEFAULT '',
-                confidence  REAL DEFAULT 0.5,
-                relevance   TEXT DEFAULT 'general',
-                expires_at  REAL DEFAULT 0,
-                created_at  REAL NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_pk_product ON product_knowledge(product_id);
-            CREATE INDEX IF NOT EXISTS idx_pk_type ON product_knowledge(knowledge_type);
-            CREATE INDEX IF NOT EXISTS idx_do_type ON decision_outcomes(decision_type);
-            CREATE INDEX IF NOT EXISTS idx_sk_category ON strategy_knowledge(category);
-            CREATE INDEX IF NOT EXISTS idx_mi_topic ON market_intelligence(topic);
-        """)
-        self._get_conn().commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._get_conn(), "experience", _MIGRATIONS).run()
+        register_schema("experience", Path(self._db_path), _SCHEMA_VERSION)
 
     # ── Learn About Products ─────────────────────────────────
 

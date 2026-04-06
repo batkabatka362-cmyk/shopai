@@ -248,24 +248,26 @@ def _cmd_store_remove(args) -> None:
 # ── Database Commands ────────────────────────────────────────
 
 def _import_registered_dbs() -> None:
-    """Import DB modules so they call register_schema() at import time."""
-    # Each import triggers the module-level register_schema() via _init_schema.
-    # We need to actually construct default instances to populate the registry.
-    try:
-        from core.memory.intelligence import MemoryIntelligence
-        MemoryIntelligence()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from core.brain.memory import IntelligentMemory
-        IntelligentMemory()
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from data_pipeline.store.db import ShopAIDatabase
-        ShopAIDatabase()
-    except Exception:  # noqa: BLE001
-        pass
+    """Import DB modules so they call register_schema() at import time.
+    Construct default instances to populate the registry for `db status`."""
+    constructors: list[tuple[str, str]] = [
+        ("core.memory.intelligence", "MemoryIntelligence"),
+        ("core.brain.memory", "IntelligentMemory"),
+        ("data_pipeline.store.db", "ShopAIDatabase"),
+        ("core.system.ab_testing", "ABTestingFramework"),
+        ("core.ai.experience", "ExperienceAccumulator"),
+        ("core.data.architecture", "DataArchitecture"),
+        ("data_pipeline.tracking.event_collector", "EventCollector"),
+        ("data_pipeline.tracking.price_history", "PriceHistory"),
+        ("core.system.store_registry", "StoreRegistry"),
+        ("models.rl.pricing_agent", "PricingAgent"),
+    ]
+    for module_name, class_name in constructors:
+        try:
+            module = __import__(module_name, fromlist=[class_name])
+            getattr(module, class_name)()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _cmd_db_status() -> None:

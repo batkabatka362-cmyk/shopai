@@ -21,6 +21,49 @@ logger = get_logger("event_collector")
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "events.db"
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: events + price_history + training_data."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id    TEXT NOT NULL,
+            event_type  TEXT NOT NULL,
+            entity_type TEXT DEFAULT '',
+            entity_id   TEXT DEFAULT '',
+            data        TEXT DEFAULT '{}',
+            outcome     TEXT DEFAULT '',
+            timestamp   REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS price_history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id    TEXT NOT NULL,
+            product_id  TEXT NOT NULL,
+            old_price   REAL DEFAULT 0,
+            new_price   REAL DEFAULT 0,
+            reason      TEXT DEFAULT '',
+            timestamp   REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS training_data (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_type  TEXT NOT NULL,
+            features    TEXT NOT NULL,
+            label       TEXT NOT NULL,
+            weight      REAL DEFAULT 1.0,
+            created_at  REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_store ON events(store_id, event_type);
+        CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_price_product ON price_history(store_id, product_id);
+        CREATE INDEX IF NOT EXISTS idx_training_model ON training_data(model_type);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class EventCollector:
     """Collects and stores all store events for ML training."""
 
@@ -41,43 +84,9 @@ class EventCollector:
         return self._local.conn
 
     def _init_schema(self) -> None:
-        self._get_conn().executescript("""
-            CREATE TABLE IF NOT EXISTS events (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id    TEXT NOT NULL,
-                event_type  TEXT NOT NULL,
-                entity_type TEXT DEFAULT '',
-                entity_id   TEXT DEFAULT '',
-                data        TEXT DEFAULT '{}',
-                outcome     TEXT DEFAULT '',
-                timestamp   REAL NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS price_history (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id    TEXT NOT NULL,
-                product_id  TEXT NOT NULL,
-                old_price   REAL DEFAULT 0,
-                new_price   REAL DEFAULT 0,
-                reason      TEXT DEFAULT '',
-                timestamp   REAL NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS training_data (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_type  TEXT NOT NULL,
-                features    TEXT NOT NULL,
-                label       TEXT NOT NULL,
-                weight      REAL DEFAULT 1.0,
-                created_at  REAL NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_events_store ON events(store_id, event_type);
-            CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_price_product ON price_history(store_id, product_id);
-            CREATE INDEX IF NOT EXISTS idx_training_model ON training_data(model_type);
-        """)
-        self._get_conn().commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._get_conn(), "events", _MIGRATIONS).run()
+        register_schema("events", Path(self._db_path), _SCHEMA_VERSION)
 
     # ── Record Events ──────���─────────────────────────────────
 

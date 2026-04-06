@@ -49,6 +49,51 @@ PRICE_ACTIONS = {
 ACTION_NAMES = list(PRICE_ACTIONS.keys())
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: arm_stats + decisions + outcomes."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS arm_stats (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id  TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            alpha       REAL DEFAULT 1.0,
+            beta        REAL DEFAULT 1.0,
+            pulls       INTEGER DEFAULT 0,
+            total_reward REAL DEFAULT 0.0,
+            avg_reward  REAL DEFAULT 0.0,
+            last_pulled REAL DEFAULT 0.0,
+            UNIQUE(product_id, action)
+        );
+        CREATE TABLE IF NOT EXISTS decisions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id  TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            current_price REAL NOT NULL,
+            recommended_price REAL NOT NULL,
+            confidence  REAL DEFAULT 0.5,
+            context     TEXT DEFAULT '{}',
+            timestamp   REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS outcomes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id INTEGER NOT NULL,
+            product_id  TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            reward      REAL DEFAULT 0.0,
+            revenue_impact REAL DEFAULT 0.0,
+            timestamp   REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_arm_product ON arm_stats(product_id);
+        CREATE INDEX IF NOT EXISTS idx_dec_product ON decisions(product_id);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class PricingAgent:
     """RL pricing agent using Thompson Sampling."""
 
@@ -66,42 +111,9 @@ class PricingAgent:
         return self._local.c
 
     def _init_schema(self) -> None:
-        self._conn().executescript("""
-            CREATE TABLE IF NOT EXISTS arm_stats (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_id  TEXT NOT NULL,
-                action      TEXT NOT NULL,
-                alpha       REAL DEFAULT 1.0,
-                beta        REAL DEFAULT 1.0,
-                pulls       INTEGER DEFAULT 0,
-                total_reward REAL DEFAULT 0.0,
-                avg_reward  REAL DEFAULT 0.0,
-                last_pulled REAL DEFAULT 0.0,
-                UNIQUE(product_id, action)
-            );
-            CREATE TABLE IF NOT EXISTS decisions (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_id  TEXT NOT NULL,
-                action      TEXT NOT NULL,
-                current_price REAL NOT NULL,
-                recommended_price REAL NOT NULL,
-                confidence  REAL DEFAULT 0.5,
-                context     TEXT DEFAULT '{}',
-                timestamp   REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS outcomes (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                decision_id INTEGER NOT NULL,
-                product_id  TEXT NOT NULL,
-                action      TEXT NOT NULL,
-                reward      REAL DEFAULT 0.0,
-                revenue_impact REAL DEFAULT 0.0,
-                timestamp   REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_arm_product ON arm_stats(product_id);
-            CREATE INDEX IF NOT EXISTS idx_dec_product ON decisions(product_id);
-        """)
-        self._conn().commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._conn(), "rl_pricing", _MIGRATIONS).run()
+        register_schema("rl_pricing", Path(self._db_path), _SCHEMA_VERSION)
 
     # == INITIALIZE ARMS ==========================================
 

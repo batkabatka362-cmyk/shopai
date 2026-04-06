@@ -33,6 +33,41 @@ logger = get_logger("ab_testing")
 _DB_PATH = Path(__file__).resolve().parents[1] / "data" / "ab_testing.db"
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: experiments + observations tables."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS experiments (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            hypothesis  TEXT NOT NULL,
+            category    TEXT DEFAULT '',
+            variants    TEXT DEFAULT '[]',
+            status      TEXT DEFAULT 'active',
+            winner      TEXT DEFAULT '',
+            metrics     TEXT DEFAULT '{}',
+            sample_sizes TEXT DEFAULT '{}',
+            created_at  REAL NOT NULL,
+            completed_at REAL DEFAULT 0.0
+        );
+        CREATE TABLE IF NOT EXISTS observations (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_id TEXT NOT NULL,
+            variant     TEXT NOT NULL,
+            metric_name TEXT NOT NULL,
+            value       REAL NOT NULL,
+            timestamp   REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_obs_exp ON observations(experiment_id);
+        CREATE INDEX IF NOT EXISTS idx_obs_var ON observations(experiment_id, variant);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class Experiment:
     """A single A/B experiment."""
 
@@ -77,32 +112,9 @@ class ABTestingFramework:
         return self._local.c
 
     def _init_schema(self) -> None:
-        self._conn().executescript("""
-            CREATE TABLE IF NOT EXISTS experiments (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                hypothesis  TEXT NOT NULL,
-                category    TEXT DEFAULT '',
-                variants    TEXT DEFAULT '[]',
-                status      TEXT DEFAULT 'active',
-                winner      TEXT DEFAULT '',
-                metrics     TEXT DEFAULT '{}',
-                sample_sizes TEXT DEFAULT '{}',
-                created_at  REAL NOT NULL,
-                completed_at REAL DEFAULT 0.0
-            );
-            CREATE TABLE IF NOT EXISTS observations (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                experiment_id TEXT NOT NULL,
-                variant     TEXT NOT NULL,
-                metric_name TEXT NOT NULL,
-                value       REAL NOT NULL,
-                timestamp   REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_obs_exp ON observations(experiment_id);
-            CREATE INDEX IF NOT EXISTS idx_obs_var ON observations(experiment_id, variant);
-        """)
-        self._conn().commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._conn(), "ab_testing", _MIGRATIONS).run()
+        register_schema("ab_testing", Path(self._db_path), _SCHEMA_VERSION)
 
     # == CREATE EXPERIMENT =========================================
 

@@ -41,6 +41,57 @@ logger = get_logger("data.architecture")
 
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "data_architecture.db"
 
+
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: records + domain_stats + action_results."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS records (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain      TEXT NOT NULL,
+            data        TEXT DEFAULT '{}',
+            features    TEXT DEFAULT '{}',
+            result      TEXT DEFAULT '{}',
+            score       REAL DEFAULT 0.0,
+            tags        TEXT DEFAULT '[]',
+            source      TEXT DEFAULT '',
+            action_id   TEXT DEFAULT '',
+            store_id    TEXT DEFAULT '',
+            timestamp   REAL NOT NULL,
+            ttl         INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS domain_stats (
+            domain      TEXT PRIMARY KEY,
+            total       INTEGER DEFAULT 0,
+            avg_score   REAL DEFAULT 0.0,
+            last_write  REAL DEFAULT 0.0
+        );
+        CREATE TABLE IF NOT EXISTS action_results (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            action_id   TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            action_data TEXT DEFAULT '{}',
+            result_data TEXT DEFAULT '{}',
+            score       REAL DEFAULT 0.0,
+            latency_s   REAL DEFAULT 0.0,
+            timestamp   REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_rec_domain ON records(domain);
+        CREATE INDEX IF NOT EXISTS idx_rec_score ON records(score);
+        CREATE INDEX IF NOT EXISTS idx_rec_tags ON records(tags);
+        CREATE INDEX IF NOT EXISTS idx_rec_ts ON records(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_rec_action ON records(action_id);
+        CREATE INDEX IF NOT EXISTS idx_rec_store ON records(store_id);
+        CREATE INDEX IF NOT EXISTS idx_ar_action ON action_results(action_id);
+        CREATE INDEX IF NOT EXISTS idx_ar_type ON action_results(action_type);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 # ── Domain Definitions ───────────────────────────────────────
 
 DOMAINS = {
@@ -160,47 +211,9 @@ class DataArchitecture:
         return self._local.c
 
     def _init_schema(self) -> None:
-        self._conn().executescript("""
-            CREATE TABLE IF NOT EXISTS records (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                domain      TEXT NOT NULL,
-                data        TEXT DEFAULT '{}',
-                features    TEXT DEFAULT '{}',
-                result      TEXT DEFAULT '{}',
-                score       REAL DEFAULT 0.0,
-                tags        TEXT DEFAULT '[]',
-                source      TEXT DEFAULT '',
-                action_id   TEXT DEFAULT '',
-                store_id    TEXT DEFAULT '',
-                timestamp   REAL NOT NULL,
-                ttl         INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS domain_stats (
-                domain      TEXT PRIMARY KEY,
-                total       INTEGER DEFAULT 0,
-                avg_score   REAL DEFAULT 0.0,
-                last_write  REAL DEFAULT 0.0
-            );
-            CREATE TABLE IF NOT EXISTS action_results (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                action_id   TEXT NOT NULL,
-                action_type TEXT NOT NULL,
-                action_data TEXT DEFAULT '{}',
-                result_data TEXT DEFAULT '{}',
-                score       REAL DEFAULT 0.0,
-                latency_s   REAL DEFAULT 0.0,
-                timestamp   REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_rec_domain ON records(domain);
-            CREATE INDEX IF NOT EXISTS idx_rec_score ON records(score);
-            CREATE INDEX IF NOT EXISTS idx_rec_tags ON records(tags);
-            CREATE INDEX IF NOT EXISTS idx_rec_ts ON records(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_rec_action ON records(action_id);
-            CREATE INDEX IF NOT EXISTS idx_rec_store ON records(store_id);
-            CREATE INDEX IF NOT EXISTS idx_ar_action ON action_results(action_id);
-            CREATE INDEX IF NOT EXISTS idx_ar_type ON action_results(action_type);
-        """)
-        self._conn().commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._conn(), "data_architecture", _MIGRATIONS).run()
+        register_schema("data_architecture", Path(self._db_path), _SCHEMA_VERSION)
 
     # ══════════════════════════════════════════════════════════
     # CAPTURE — data enters the system
