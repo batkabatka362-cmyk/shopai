@@ -64,15 +64,15 @@ def scan_revenue(
             cost = float(prod.get("cost", prod.get("unit_cost", 0)))
             demand = float(prod.get("quantity_sold", prod.get("demand", 0)))
 
-            if price > 0 and cost > 0:
-                margin = (price - cost) / price
-                if margin < 0.2 and demand > 50:
-                    opportunities.append({
-                        "type": "price_optimization",
-                        "potential_revenue": round(demand * price * 0.05, 2),
-                        "effort": "low",
-                        "description": f"Product '{prod.get('title', prod.get('id', ''))}' has thin margin ({round(margin*100)}%) with high demand",
-                    })
+            from utils.finance import margin as _margin
+            margin = _margin(price, cost, default=-1.0)
+            if margin >= 0 and margin < 0.2 and demand > 50:
+                opportunities.append({
+                    "type": "price_optimization",
+                    "potential_revenue": round(demand * price * 0.05, 2),
+                    "effort": "low",
+                    "description": f"Product '{prod.get('title', prod.get('id', ''))}' has thin margin ({round(margin*100)}%) with high demand",
+                })
 
         return {
             "status": "success",

@@ -34,12 +34,14 @@ def advise_strategy(
 
         # Build our margin map
         margin_map: dict[str, float] = {}
+        from utils.finance import margin_pct
         for prod in our_products:
             pid = str(prod.get("product_id", ""))
-            price = float(prod.get("price", 0.0))
-            cost = float(prod.get("cost", 0.0))
-            if price > 0:
-                margin_map[pid] = round((price - cost) / price * 100.0, 1)
+            if float(prod.get("price", 0.0)) > 0:
+                margin_map[pid] = margin_pct(
+                    prod.get("price", 0), prod.get("cost", 0),
+                    require_cost=False, precision=1,
+                )
 
         # Track competitors with most aggressive moves
         comp_aggression: dict[str, int] = {}

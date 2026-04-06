@@ -160,7 +160,8 @@ class DataContext:
         cost = float(product.get("cost", 0))
 
         if price > 0:
-            features["margin_pct"] = round((price - cost) / price * 100, 2) if cost > 0 else 100.0
+            from utils.finance import margin_pct
+            features["margin_pct"] = margin_pct(price, cost, require_cost=False)
             features["price_tier"] = (
                 "budget" if price < 20
                 else "mid" if price < 50

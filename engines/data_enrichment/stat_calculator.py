@@ -42,11 +42,12 @@ def calculate_stats(
 
             # Derived stats
             if "price" in record_stats and "cost" in record_stats:
+                from utils.finance import margin_pct
                 price = record_stats["price"]
                 cost = record_stats["cost"]
                 record_stats["margin"] = round(price - cost, 2)
-                record_stats["margin_pct"] = (
-                    round((price - cost) / price * 100, 2) if price > 0 else 0.0
+                record_stats["margin_pct"] = margin_pct(
+                    price, cost, require_cost=False,
                 )
 
             if "quantity_sold" in record_stats and "quantity_available" in record_stats:

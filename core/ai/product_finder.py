@@ -129,8 +129,9 @@ class AIProductFinder:
         cost = float(product.get("estimated_cost", 10))
 
         # Margin score (0-25)
-        if price > 0 and cost > 0:
-            margin = (price - cost) / price
+        from utils.finance import margin as _margin
+        margin = _margin(price, cost, default=-1.0)
+        if margin >= 0:
             score += min(25, margin * 40)
 
         # Price sweet spot (0-15) — $15-$40 is ideal

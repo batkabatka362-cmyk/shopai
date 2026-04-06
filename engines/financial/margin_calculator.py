@@ -51,10 +51,8 @@ def calculate_margins(
             cost = float(prod.get("cost", prod.get("unit_cost", 0)))
             prod_rev = rev_per_product.get(pid, 0.0)
 
-            if price > 0:
-                prod_margin = round((price - cost) / price * 100, 2)
-            else:
-                prod_margin = 0.0
+            from utils.finance import margin_pct
+            prod_margin = margin_pct(price, cost, require_cost=False)
 
             margin_by_product.append({
                 "product_id": pid,

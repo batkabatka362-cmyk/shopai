@@ -279,7 +279,8 @@ class FinancialBrain:
                 continue
 
             if cost > 0:
-                margin_pct = (price - cost) / price * 100
+                from utils.finance import margin_pct as _margin_pct
+                margin_pct = _margin_pct(price, cost, precision=None)
                 if margin_pct < 0:
                     alerts.append({
                         "product": name,

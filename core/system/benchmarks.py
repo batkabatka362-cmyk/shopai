@@ -27,12 +27,12 @@ class PerformanceBenchmarks:
         results = {}
 
         # Gross margin
+        from utils.finance import margin as _margin
         margins = []
         for p in products:
-            price = float(p.get("price", 0))
-            cost = float(p.get("cost", 0))
-            if price > 0 and cost > 0:
-                margins.append((price - cost) / price)
+            m = _margin(p.get("price", 0), p.get("cost", 0), default=-1.0)
+            if m >= 0:
+                margins.append(m)
         avg_margin = sum(margins) / max(len(margins), 1) if margins else 0
         results["gross_margin"] = self._compare("gross_margin", avg_margin)
 

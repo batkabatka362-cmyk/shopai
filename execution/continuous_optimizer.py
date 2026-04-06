@@ -92,12 +92,12 @@ class ContinuousOptimizer:
     @staticmethod
     def _check_pricing(products: list[dict]) -> list[dict]:
         fixes = []
+        from utils.finance import margin as _margin
         for p in products:
             price = float(p.get("price", 0))
             cost = float(p.get("cost", 0))
-            if price > 0 and cost > 0:
-                margin = (price - cost) / price
-                if margin < 0.1:
+            margin = _margin(price, cost, default=-1.0)
+            if margin >= 0 and margin < 0.1:
                     fixes.append({
                         "type": "pricing_warning",
                         "product": str(p.get("id", "")),

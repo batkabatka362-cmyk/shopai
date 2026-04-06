@@ -13,6 +13,7 @@ import math
 from typing import Any
 
 from core.intelligence.pricing_intelligence import PricingIntelligence
+from utils.finance import margin_pct
 
 _pi = PricingIntelligence()
 
@@ -104,10 +105,9 @@ class PricingLogic:
     def _analyze_margins(self, products: list[dict]) -> dict[str, Any]:
         margins = []
         for p in products:
-            price = float(p.get("price", 0))
-            cost = float(p.get("cost", 0))
-            if price > 0 and cost > 0:
-                margins.append((price - cost) / price * 100)
+            m = margin_pct(p.get("price", 0), p.get("cost", 0), default=-1.0, precision=None)
+            if m >= 0:
+                margins.append(m)
 
         if not margins:
             return {"has_data": False}
@@ -140,7 +140,7 @@ class PricingLogic:
             price = float(p.get("price", 0))
             cost = float(p.get("cost", 0))
             compare = float(p.get("compare_at_price", 0))
-            margin = (price - cost) / price * 100 if price > 0 and cost > 0 else 0
+            margin = margin_pct(price, cost, precision=None)
 
             if margin > 60:
                 opportunities.append({"product": p.get("name"), "type": "discount_room", "detail": f"{margin:.0f}% margin allows discounting"})
@@ -154,7 +154,7 @@ class PricingLogic:
     def _recommend_price(self, product: dict, analysis: dict) -> dict:
         price = float(product.get("price", 0))
         cost = float(product.get("cost", 0))
-        margin = (price - cost) / price * 100 if price > 0 else 0
+        margin = margin_pct(price, cost, require_cost=False, precision=None)
 
         rec = {"name": product.get("name"), "current_price": price, "current_margin": round(margin, 1)}
 
@@ -287,9 +287,8 @@ class PricingLogic:
 
     @staticmethod
     def _margin(p: dict) -> float:
-        price = float(p.get("price", 0))
-        cost = float(p.get("cost", 0))
-        return (price - cost) / price * 100 if price > 0 else 0
+        return margin_pct(p.get("price", 0), p.get("cost", 0),
+                          require_cost=False, precision=None)
 
     @staticmethod
     def _std(values: list[float]) -> float:

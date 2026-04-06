@@ -26,6 +26,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from utils.finance import margin as _margin
 from utils.logger import get_logger
 
 logger = get_logger("brain.decision")
@@ -73,10 +74,9 @@ class StoreState:
     def avg_margin(self) -> float:
         margins = []
         for p in self.products:
-            price = float(p.get("price", 0) or 0)
-            cost = float(p.get("cost", 0) or 0)
-            if price > 0 and cost > 0:
-                margins.append((price - cost) / price)
+            m = _margin(p.get("price", 0), p.get("cost", 0), default=-1.0)
+            if m >= 0:
+                margins.append(m)
         return sum(margins) / len(margins) if margins else 0
 
     @property
@@ -395,13 +395,12 @@ class DecisionBrain:
 
         # Low margins
         for p in state.products:
-            price = float(p.get("price", 0) or 0)
-            cost = float(p.get("cost", 0) or 0)
-            if price > 0 and cost > 0 and (price - cost) / price < 0.3:
+            m = _margin(p.get("price", 0), p.get("cost", 0), default=-1.0)
+            if 0 <= m < 0.3:
                 problems.append({
                     "type": "low_margin",
                     "severity": "medium",
-                    "detail": f"{p.get('name', '?')[:30]} has {(price-cost)/price:.0%} margin (below 30%)",
+                    "detail": f"{p.get('name', '?')[:30]} has {m:.0%} margin (below 30%)",
                     "action": "raise_price",
                     "product": p.get("name", ""),
                     "impact": "medium",
@@ -418,9 +417,7 @@ class DecisionBrain:
         # High margin products to promote
         stars = []
         for p in state.products:
-            price = float(p.get("price", 0) or 0)
-            cost = float(p.get("cost", 0) or 0)
-            if price > 0 and cost > 0 and (price - cost) / price > 0.6:
+            if _margin(p.get("price", 0), p.get("cost", 0)) > 0.6:
                 stars.append(p)
 
         if stars:

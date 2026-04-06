@@ -98,10 +98,10 @@ class DataEnricher:
         for p in products:
             if not isinstance(p, dict):
                 continue
-            price = safe_float(p.get("price"))
-            cost = safe_float(p.get("cost"))
-            if price > 0 and cost > 0:
-                margins.append((price - cost) / price * 100)
+            from utils.finance import margin_pct
+            m = margin_pct(p.get("price"), p.get("cost"), default=-1.0, precision=None)
+            if m >= 0:
+                margins.append(m)
 
         if margins:
             sorted_margins = sorted(margins)

@@ -110,12 +110,13 @@ class LearningModel:
         products = data.get("products", [])
 
         # Pattern: price tier vs margin
+        from utils.finance import margin as _margin
         tiers: dict[str, list] = {"budget": [], "mid": [], "premium": []}
         for p in products:
             price = float(p.get("price", 0) or 0)
             cost = float(p.get("cost", 0) or 0)
-            if price > 0 and cost > 0:
-                margin = (price - cost) / price
+            margin = _margin(price, cost, default=-1.0)
+            if margin >= 0:
                 tier = "premium" if price > 40 else "mid" if price > 20 else "budget"
                 tiers[tier].append(margin)
 

@@ -69,9 +69,10 @@ def calculate_shipping_margin_impact(product, shipping_cost):
                 "impact_severity": "critical",
                 "detail": "Product price is zero or negative — cannot evaluate margin."}
 
+    from utils.finance import margin_pct
     shipping_pct = (shipping_cost / price) * 100
     cost = product.get("cost", price * 0.6)
-    margin_before = ((price - cost) / price) * 100
+    margin_before = margin_pct(price, cost, require_cost=False, precision=None)
     margin_after = margin_before - shipping_pct
 
     if shipping_pct > 15:

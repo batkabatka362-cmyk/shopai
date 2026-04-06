@@ -245,11 +245,10 @@ class ModelWorkerSystem:
     def _heuristic_response(task_name: str, data: dict) -> str:
         """Fallback heuristic response when no LLM available."""
         if task_name == "analyze_product":
-            margin = 0
+            from utils.finance import margin as _margin
             price = float(data.get("price", 0))
             cost = float(data.get("cost", 0))
-            if price > 0 and cost > 0:
-                margin = (price - cost) / price
+            margin = _margin(price, cost)
             if margin > 0.5:
                 return "High margin product ({:.0%}). Good profit potential. Consider promotion.".format(margin)
             elif margin > 0.2:
