@@ -120,6 +120,33 @@ class TestAPIServerRoutes:
         assert hasattr(ShopAIHandler, '_get_experience')
         assert hasattr(ShopAIHandler, '_list_webhooks')
         assert hasattr(ShopAIHandler, '_list_stores')
+        assert hasattr(ShopAIHandler, '_liveness')
+
+    def test_liveness_endpoint_responds(self):
+        """/health should return immediately with a small JSON payload."""
+        import json
+        import threading
+        import time
+        import urllib.request
+        from http.server import HTTPServer
+        from api.server import ShopAIHandler
+
+        server = HTTPServer(("127.0.0.1", 0), ShopAIHandler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            time.sleep(0.1)
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/health", timeout=2,
+            ) as resp:
+                assert resp.status == 200
+                payload = json.loads(resp.read())
+                assert payload["status"] == "ok"
+                assert payload["service"] == "shopai"
+                assert "ts" in payload
+        finally:
+            server.shutdown()
 
 
 class TestCLIServerCommand:

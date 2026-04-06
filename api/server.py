@@ -28,6 +28,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         routes = {
+            "/health": self._liveness,       # lightweight probe for load balancers
             "/api/health": self._health,
             "/api/status": self._status,
             "/api/engines": self._list_engines,
@@ -75,6 +76,18 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": f"Not found: {path}"})
 
     # --- GET handlers ---
+
+    def _liveness(self) -> None:
+        """Lightweight liveness probe. Returns immediately without any
+        deep checks — intended for load balancers / k8s probes.
+        Returns 200 if the process is running and the HTTP loop is
+        responsive."""
+        import time
+        self._json_response(200, {
+            "status": "ok",
+            "service": "shopai",
+            "ts": time.time(),
+        })
 
     def _health(self) -> None:
         from core.self_monitor import HealthChecker

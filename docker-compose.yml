@@ -1,36 +1,79 @@
-version: "3.8"
+# ShopAI docker-compose stack.
+#
+# Services:
+#   shopai-daemon  — autonomous cycle loop (no ports, only talks to
+#                    Shopify + the local Ollama container)
+#   shopai-api     — HTTP API server (port 8080, /health for probes)
+#   ollama         — local LLM server (optional; comment out if using
+#                    a hosted LLM endpoint via SHOPAI_OLLAMA_URL)
+#
+# Usage:
+#     cp .env.example .env
+#     # edit .env — set SHOPAI_SHOPIFY_URL + SHOPAI_SHOPIFY_CLIENT_ID/SECRET
+#     docker compose up -d
+#     docker compose logs -f shopai-daemon
+#
+# The daemon and API share the same data volume so they see the same
+# SQLite files, memory, and OAuth token cache.
 
 services:
-  shopai:
+  shopai-daemon:
     build: .
+    image: shopai:latest
+    container_name: shopai-daemon
+    command: ["daemon"]
+    env_file: .env
+    environment:
+      SHOPAI_ENV: production
+      SHOPAI_LOG_FORMAT: json
+      SHOPAI_OLLAMA_URL: http://ollama:11434
+    volumes:
+      - shopai_data:/app/data
+      - shopai_logs:/app/logs
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    # Daemon doesn't expose HTTP, so disable the image's /health
+    # healthcheck (which targets port 8080).
+    healthcheck:
+      disable: true
+
+  shopai-api:
+    image: shopai:latest
+    container_name: shopai-api
+    command: ["api"]
+    env_file: .env
+    environment:
+      SHOPAI_ENV: production
+      SHOPAI_LOG_FORMAT: json
+      SHOPAI_OLLAMA_URL: http://ollama:11434
     ports:
       - "8080:8080"
-    environment:
-      - SHOPAI_ENV=production
-      - SHOPAI_SHOPIFY_URL=${SHOPAI_SHOPIFY_URL}
-      - SHOPAI_SHOPIFY_KEY=${SHOPAI_SHOPIFY_KEY}
-      - SHOPAI_OLLAMA_URL=http://ollama:11434
     volumes:
-      - shopai_data:/tmp/shopai_learning
-      - shopai_memory:/tmp/shopai_memory
+      - shopai_data:/app/data
+      - shopai_logs:/app/logs
     depends_on:
+      - shopai-daemon  # build once via the daemon service
       - ollama
     restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
+    container_name: shopai-ollama
     ports:
       - "11434:11434"
     volumes:
       - ollama_models:/root/.ollama
+    restart: unless-stopped
+    # GPU is optional — comment this block out on CPU-only hosts
     deploy:
       resources:
         reservations:
           devices:
-            - capabilities: [gpu]
-    restart: unless-stopped
+            - driver: nvidia
+              capabilities: ["gpu"]
 
 volumes:
-  shopai_data:
-  shopai_memory:
-  ollama_models:
+  shopai_data:   # SQLite databases + caches
+  shopai_logs:   # rotated log files
+  ollama_models: # downloaded LLM weights
