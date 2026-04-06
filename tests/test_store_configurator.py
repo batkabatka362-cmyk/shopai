@@ -68,7 +68,7 @@ class TestConfigureBasic:
         result = c.configure("x.myshopify.com", "tok", niche="home")
         assert set(result["features"]) == {
             "collections", "discounts", "shipping", "content",
-            "product_tags", "ai_config",
+            "product_tags", "ai_config", "gifts", "loyalty", "referral",
         }
 
     def test_selective_features(self, monkeypatch):
@@ -95,7 +95,8 @@ class TestConfigureBasic:
         _install_fake_client(monkeypatch)
         c = _make(dry_run=True)
         result = c.configure("x.myshopify.com", "tok", features=[])
-        assert len(result["features"]) == 6
+        from execution.store_configurator import ALL_FEATURES
+        assert len(result["features"]) == len(ALL_FEATURES)
 
 
 class TestCollections:
@@ -598,6 +599,216 @@ class TestDryRun:
             c = _make(dry_run=True)
             c.configure("x.myshopify.com", "tok", features=["ai_config"])
         assert called["n"] == 0
+
+
+class TestGifts:
+    _PRODUCTS = [
+        {"id": 1, "title": "Cheap Candle", "tags": "home",
+         "variants": [{"price": "8", "inventory_quantity": 25}]},
+        {"id": 2, "title": "Mid Lamp", "tags": "home",
+         "variants": [{"price": "40", "inventory_quantity": 10}]},
+        {"id": 3, "title": "Premium Sofa", "tags": "home, premium",
+         "variants": [{"price": "500", "inventory_quantity": 3}]},
+        {"id": 4, "title": "Out of stock", "tags": "home",
+         "variants": [{"price": "5", "inventory_quantity": 0}]},
+    ]
+
+    def test_picks_cheapest_eligible_product(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={
+                "GET products.json": {"products": self._PRODUCTS},
+                "POST metafields.json": {"metafield": {"id": 1}},
+            },
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["gifts"],
+        )
+        g = result["results"]["gifts"]
+        assert g["saved"] is True
+        assert g["gift_product_id"] == 1  # cheapest in-stock, not premium
+        assert g["threshold"] == 75.0  # home niche
+        assert g["tagged"] is True
+
+    def test_premium_product_excluded(self, monkeypatch):
+        products = [
+            {"id": 1, "title": "Premium", "tags": "premium",
+             "variants": [{"price": "5", "inventory_quantity": 10}]},
+            {"id": 2, "title": "Regular", "tags": "home",
+             "variants": [{"price": "15", "inventory_quantity": 10}]},
+        ]
+        _install_fake_client(
+            monkeypatch,
+            responses={
+                "GET products.json": {"products": products},
+                "POST metafields.json": {"metafield": {"id": 1}},
+            },
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", features=["gifts"],
+        )
+        assert result["results"]["gifts"]["gift_product_id"] == 2
+
+    def test_no_gift_tag_excluded(self, monkeypatch):
+        products = [
+            {"id": 1, "title": "Skip me", "tags": "no-gift",
+             "variants": [{"price": "5", "inventory_quantity": 10}]},
+            {"id": 2, "title": "Use me", "tags": "home",
+             "variants": [{"price": "20", "inventory_quantity": 10}]},
+        ]
+        _install_fake_client(
+            monkeypatch,
+            responses={
+                "GET products.json": {"products": products},
+                "POST metafields.json": {"metafield": {"id": 1}},
+            },
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", features=["gifts"],
+        )
+        assert result["results"]["gifts"]["gift_product_id"] == 2
+
+    def test_no_eligible_product_still_saves_program(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses={
+                "GET products.json": {"products": []},
+                "POST metafields.json": {"metafield": {"id": 1}},
+            },
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", features=["gifts"],
+        )
+        assert result["results"]["gifts"]["saved"] is True
+        assert result["results"]["gifts"]["gift_product_id"] is None
+        assert result["results"]["gifts"]["tagged"] is False
+
+    def test_metafield_body_contains_program(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={
+                "GET products.json": {"products": self._PRODUCTS},
+                "POST metafields.json": {"metafield": {"id": 1}},
+            },
+        )
+        c = _make()
+        c.configure("x.myshopify.com", "tok", niche="beauty",
+                    features=["gifts"])
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        gift_body = next(b for b in mf_bodies if b["metafield"]["key"] == "gifts")
+        program = json.loads(gift_body["metafield"]["value"])
+        assert program["enabled"] is True
+        assert program["threshold_usd"] == 50.0
+        assert "free gift" in program["message"].lower()
+
+
+class TestLoyalty:
+    def test_saves_program_metafield(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="beauty",
+            features=["loyalty"],
+        )
+        assert result["results"]["loyalty"]["saved"] is True
+        # Beauty has the richest loyalty rules
+        assert result["results"]["loyalty"]["earn_per_dollar"] == 2
+        assert result["results"]["loyalty"]["welcome_bonus"] == 100
+        assert result["results"]["loyalty"]["tiers"] == 4
+
+    def test_metafield_body_has_tier_structure(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={"POST metafields.json": {"metafield": {"id": 1}}},
+        )
+        c = _make()
+        c.configure("x.myshopify.com", "tok", niche="home",
+                    features=["loyalty"])
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        loyalty_body = next(b for b in mf_bodies if b["metafield"]["key"] == "loyalty")
+        program = json.loads(loyalty_body["metafield"]["value"])
+        tiers = program["tiers"]
+        assert [t["name"] for t in tiers] == ["Bronze", "Silver", "Gold", "Platinum"]
+        # Tiers should have monotonically increasing thresholds
+        thresholds = [t["min_points"] for t in tiers]
+        assert thresholds == sorted(thresholds)
+        # Multipliers should also be monotonic
+        assert [t["multiplier"] for t in tiers] == [1.0, 1.25, 1.5, 2.0]
+
+
+class TestReferral:
+    def test_creates_friend10_and_metafield(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={
+                "GET price_rules.json": {"price_rules": []},
+                "POST price_rules.json": {"price_rule": {"id": 55}},
+                "POST metafields.json": {"metafield": {"id": 1}},
+            },
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", features=["referral"],
+        )
+        r = result["results"]["referral"]
+        assert r["saved"] is True
+        assert r["discount_code"] == "FRIEND10"
+        assert r["code_created"] is True
+        # FRIEND10 price_rule was POSTed
+        titles = [b["price_rule"]["title"] for m, p, b in calls
+                  if m == "POST" and p == "price_rules.json" and b]
+        assert "FRIEND10" in titles
+
+    def test_skips_rule_creation_if_exists(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses={
+                "GET price_rules.json": {"price_rules": [{"title": "FRIEND10"}]},
+                "POST metafields.json": {"metafield": {"id": 1}},
+            },
+        )
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", features=["referral"],
+        )
+        assert result["results"]["referral"]["code_created"] is False
+        assert result["results"]["referral"]["saved"] is True  # metafield still saved
+
+    def test_metafield_body_has_reward_config(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses={
+                "GET price_rules.json": {"price_rules": []},
+                "POST price_rules.json": {"price_rule": {"id": 55}},
+                "POST metafields.json": {"metafield": {"id": 1}},
+            },
+        )
+        c = _make()
+        c.configure("x.myshopify.com", "tok", features=["referral"])
+        mf_bodies = [b for m, p, b in calls if p == "metafields.json" and m == "POST"]
+        ref_body = next(b for b in mf_bodies if b["metafield"]["key"] == "referral")
+        program = json.loads(ref_body["metafield"]["value"])
+        assert program["enabled"] is True
+        assert program["discount_code"] == "FRIEND10"
+        assert program["referrer_reward"]["type"] == "points"
+        assert program["referred_reward"]["percent"] == 10
+
+
+class TestAllFeaturesIncludesNewOnes:
+    def test_all_features_count(self):
+        from execution.store_configurator import ALL_FEATURES
+        assert "gifts" in ALL_FEATURES
+        assert "loyalty" in ALL_FEATURES
+        assert "referral" in ALL_FEATURES
+        assert len(ALL_FEATURES) == 9
 
 
 class TestSingleton:

@@ -75,7 +75,31 @@ ALL_FEATURES = (
     "content",
     "product_tags",
     "ai_config",
+    "gifts",
+    "loyalty",
+    "referral",
 )
+
+
+# Niche → free-gift threshold (USD). Stores a rule "orders >= N get a
+# free gift" as a metafield. Consumed by a Shopify Function or a cart
+# page snippet — the configurator just lays down the data.
+_GIFT_THRESHOLDS = {
+    "beauty": 50.0,
+    "fashion": 75.0,
+    "tech": 100.0,
+    "home": 75.0,
+    "general": 60.0,
+}
+
+# Niche → loyalty point rules
+_LOYALTY_RULES = {
+    "beauty":  {"earn_per_dollar": 2, "redeem_value_cents": 1, "welcome_bonus": 100},
+    "fashion": {"earn_per_dollar": 1, "redeem_value_cents": 1, "welcome_bonus": 50},
+    "tech":    {"earn_per_dollar": 1, "redeem_value_cents": 1, "welcome_bonus": 25},
+    "home":    {"earn_per_dollar": 1, "redeem_value_cents": 1, "welcome_bonus": 50},
+    "general": {"earn_per_dollar": 1, "redeem_value_cents": 1, "welcome_bonus": 25},
+}
 
 
 class StoreConfigurator:
@@ -135,6 +159,12 @@ class StoreConfigurator:
             results["product_tags"] = self._organize_products(client, niche, products)
         if "ai_config" in selected:
             results["ai_config"] = self._save_ai_config(client, niche, config)
+        if "gifts" in selected:
+            results["gifts"] = self._setup_gifts(client, niche, products)
+        if "loyalty" in selected:
+            results["loyalty"] = self._setup_loyalty(client, niche)
+        if "referral" in selected:
+            results["referral"] = self._setup_referral(client, niche)
 
         self._record(results)
 
@@ -671,6 +701,203 @@ class StoreConfigurator:
             description="Save ShopAI config metafield",
         )
         return {"saved": bool(result.get("metafield") or result.get("dry_run"))}
+
+    # ── Feature: Free gift with purchase ───────────────────────
+
+    def _setup_gifts(
+        self, client: ShopifyClient, niche: str, products: list,
+    ) -> dict[str, Any]:
+        """Configure a "free gift with purchase" program.
+
+        Shopify REST doesn't natively support "free gift at threshold"
+        — that's typically done via a Shopify Function, cart script, or
+        a third-party app. The configurator lays down the data as a
+        shop metafield (``shopai.gifts``) so downstream code can read
+        a single source of truth.
+
+        It also picks an eligible gift product (lowest-priced item in
+        the store that isn't tagged ``no-gift``) and retags it with
+        ``free-gift-eligible`` so the storefront UI can highlight it.
+        """
+        threshold = _GIFT_THRESHOLDS.get(niche, _GIFT_THRESHOLDS["general"])
+
+        gift_product = self._pick_gift_product(products)
+        eligible_id = gift_product.get("id") if gift_product else None
+
+        program = {
+            "enabled": True,
+            "threshold_usd": threshold,
+            "gift_product_id": eligible_id,
+            "gift_product_title": gift_product.get("title") if gift_product else None,
+            "message": f"Spend ${threshold:.0f}+ and get a free gift!",
+            "configured_at": time.time(),
+        }
+        result = self._write(
+            client, "POST", "metafields.json",
+            {
+                "metafield": {
+                    "namespace": "shopai",
+                    "key": "gifts",
+                    "value": json.dumps(program),
+                    "type": "json",
+                }
+            },
+            description=f"Save gift program (threshold ${threshold:.0f})",
+        )
+        saved = bool(result.get("metafield") or result.get("dry_run"))
+
+        # Tag the gift product so the storefront can find it
+        tagged = False
+        if gift_product:
+            current_tags = gift_product.get("tags", "") or ""
+            tag_set = {t.strip() for t in current_tags.split(",") if t.strip()}
+            if "free-gift-eligible" not in tag_set:
+                tag_set.add("free-gift-eligible")
+                updated = ", ".join(sorted(tag_set))
+                self._write(
+                    client, "PUT", f"products/{eligible_id}.json",
+                    {"product": {"id": eligible_id, "tags": updated}},
+                    description=f"Tag gift product {eligible_id}",
+                )
+                tagged = True
+
+        return {
+            "saved": saved,
+            "threshold": threshold,
+            "gift_product_id": eligible_id,
+            "tagged": tagged,
+        }
+
+    @staticmethod
+    def _pick_gift_product(products: list) -> Optional[dict]:
+        """Pick the lowest-priced product that's eligible to be a free gift.
+
+        Eligibility: has a positive price, isn't tagged ``no-gift`` or
+        ``premium``, and has at least 1 in stock across variants.
+        """
+        candidates = []
+        for p in products:
+            tags_raw = p.get("tags", "") or ""
+            tags = {t.strip().lower() for t in tags_raw.split(",") if t.strip()}
+            if "no-gift" in tags or "premium" in tags:
+                continue
+            variants = p.get("variants") or []
+            if not variants:
+                continue
+            try:
+                price = float(variants[0].get("price", "0") or "0")
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            # Need at least 1 in stock
+            total_inv = 0
+            for v in variants:
+                try:
+                    total_inv += int(v.get("inventory_quantity", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+            if total_inv < 1:
+                continue
+            candidates.append((price, p))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
+
+    # ── Feature: Loyalty points ────────────────────────────────
+
+    def _setup_loyalty(
+        self, client: ShopifyClient, niche: str,
+    ) -> dict[str, Any]:
+        """Configure a loyalty-point program as a shop metafield.
+
+        Like gifts, this is a data-only configuration — the actual
+        point accrual/redemption is handled by a Shopify Function or
+        an app that reads ``shopai.loyalty``.
+        """
+        rules = _LOYALTY_RULES.get(niche, _LOYALTY_RULES["general"])
+        program = {
+            "enabled": True,
+            "earn_per_dollar": rules["earn_per_dollar"],
+            "redeem_value_cents": rules["redeem_value_cents"],
+            "welcome_bonus": rules["welcome_bonus"],
+            "tiers": [
+                {"name": "Bronze",   "min_points": 0,    "multiplier": 1.0},
+                {"name": "Silver",   "min_points": 500,  "multiplier": 1.25},
+                {"name": "Gold",     "min_points": 2000, "multiplier": 1.5},
+                {"name": "Platinum", "min_points": 5000, "multiplier": 2.0},
+            ],
+            "configured_at": time.time(),
+        }
+        result = self._write(
+            client, "POST", "metafields.json",
+            {
+                "metafield": {
+                    "namespace": "shopai",
+                    "key": "loyalty",
+                    "value": json.dumps(program),
+                    "type": "json",
+                }
+            },
+            description=(
+                f"Save loyalty program ({rules['earn_per_dollar']}x earn, "
+                f"{rules['welcome_bonus']} welcome bonus)"
+            ),
+        )
+        return {
+            "saved": bool(result.get("metafield") or result.get("dry_run")),
+            "earn_per_dollar": rules["earn_per_dollar"],
+            "welcome_bonus": rules["welcome_bonus"],
+            "tiers": 4,
+        }
+
+    # ── Feature: Referral program ──────────────────────────────
+
+    def _setup_referral(
+        self, client: ShopifyClient, niche: str,
+    ) -> dict[str, Any]:
+        """Create a referral program: a FRIEND10 code + metafield config."""
+        # The discount itself (created idempotently — it's fine if it
+        # already exists because _create_discount checks existing)
+        existing_resp = client.get("price_rules.json")
+        existing = existing_resp.get("price_rules", []) if "error" not in existing_resp else []
+        existing_titles = {r["title"] for r in existing}
+        code = "FRIEND10"
+        code_created = False
+        if code not in existing_titles:
+            self._create_discount(
+                client, code, -10.0,
+                description="Referral reward (given to the friend)",
+            )
+            code_created = True
+
+        program = {
+            "enabled": True,
+            "discount_code": code,
+            "referrer_reward": {"type": "points", "value": 100},
+            "referred_reward": {"type": "discount", "code": code, "percent": 10},
+            "max_referrals_per_customer": 10,
+            "configured_at": time.time(),
+        }
+        result = self._write(
+            client, "POST", "metafields.json",
+            {
+                "metafield": {
+                    "namespace": "shopai",
+                    "key": "referral",
+                    "value": json.dumps(program),
+                    "type": "json",
+                }
+            },
+            description=f"Save referral program ({code})",
+        )
+        return {
+            "saved": bool(result.get("metafield") or result.get("dry_run")),
+            "discount_code": code,
+            "code_created": code_created,
+        }
 
     # ── Recording ──────────────────────────────────────────────
 
