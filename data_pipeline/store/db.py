@@ -20,6 +20,120 @@ logger = get_logger("data_pipeline.db")
 _DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "shopai.db"
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: Original ShopAIDatabase schema (stores, products, orders, customers,
+    analytics_snapshots, sync_log)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS stores (
+            store_id    TEXT PRIMARY KEY,
+            shop_url    TEXT NOT NULL,
+            name        TEXT DEFAULT '',
+            niche       TEXT DEFAULT '',
+            store_type  TEXT DEFAULT 'dropshipping',
+            status      TEXT DEFAULT 'active',
+            created_at  REAL NOT NULL,
+            updated_at  REAL NOT NULL,
+            config      TEXT DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS products (
+            id              TEXT NOT NULL,
+            store_id        TEXT NOT NULL,
+            shopify_id      TEXT DEFAULT '',
+            title           TEXT NOT NULL,
+            price           REAL DEFAULT 0,
+            cost            REAL DEFAULT 0,
+            compare_at_price REAL DEFAULT 0,
+            vendor          TEXT DEFAULT '',
+            product_type    TEXT DEFAULT '',
+            tags            TEXT DEFAULT '[]',
+            status          TEXT DEFAULT 'active',
+            inventory_qty   INTEGER DEFAULT 0,
+            weight          REAL DEFAULT 0,
+            image_url       TEXT DEFAULT '',
+            description     TEXT DEFAULT '',
+            variants        TEXT DEFAULT '[]',
+            raw_data        TEXT DEFAULT '{}',
+            created_at      REAL NOT NULL,
+            updated_at      REAL NOT NULL,
+            synced_at       REAL DEFAULT 0,
+            PRIMARY KEY (id, store_id),
+            FOREIGN KEY (store_id) REFERENCES stores(store_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS orders (
+            id              TEXT NOT NULL,
+            store_id        TEXT NOT NULL,
+            shopify_id      TEXT DEFAULT '',
+            total           REAL DEFAULT 0,
+            subtotal        REAL DEFAULT 0,
+            financial_status TEXT DEFAULT '',
+            fulfillment_status TEXT DEFAULT '',
+            item_count      INTEGER DEFAULT 0,
+            customer_id     TEXT DEFAULT '',
+            line_items      TEXT DEFAULT '[]',
+            raw_data        TEXT DEFAULT '{}',
+            order_date      REAL DEFAULT 0,
+            created_at      REAL NOT NULL,
+            synced_at       REAL DEFAULT 0,
+            PRIMARY KEY (id, store_id),
+            FOREIGN KEY (store_id) REFERENCES stores(store_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS customers (
+            id              TEXT NOT NULL,
+            store_id        TEXT NOT NULL,
+            shopify_id      TEXT DEFAULT '',
+            name            TEXT DEFAULT '',
+            email           TEXT DEFAULT '',
+            orders_count    INTEGER DEFAULT 0,
+            total_spent     REAL DEFAULT 0,
+            tags            TEXT DEFAULT '[]',
+            raw_data        TEXT DEFAULT '{}',
+            first_order_at  REAL DEFAULT 0,
+            last_order_at   REAL DEFAULT 0,
+            created_at      REAL NOT NULL,
+            synced_at       REAL DEFAULT 0,
+            PRIMARY KEY (id, store_id),
+            FOREIGN KEY (store_id) REFERENCES stores(store_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS analytics_snapshots (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id    TEXT NOT NULL,
+            snapshot_type TEXT NOT NULL,
+            data        TEXT NOT NULL,
+            created_at  REAL NOT NULL,
+            FOREIGN KEY (store_id) REFERENCES stores(store_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id    TEXT NOT NULL,
+            sync_type   TEXT NOT NULL,
+            status      TEXT NOT NULL,
+            records     INTEGER DEFAULT 0,
+            duration_s  REAL DEFAULT 0,
+            error       TEXT DEFAULT '',
+            created_at  REAL NOT NULL,
+            FOREIGN KEY (store_id) REFERENCES stores(store_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_id);
+        CREATE INDEX IF NOT EXISTS idx_orders_store ON orders(store_id);
+        CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(store_id, order_date);
+        CREATE INDEX IF NOT EXISTS idx_customers_store ON customers(store_id);
+        CREATE INDEX IF NOT EXISTS idx_snapshots_store ON analytics_snapshots(store_id, snapshot_type);
+        CREATE INDEX IF NOT EXISTS idx_sync_log_store ON sync_log(store_id, created_at);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class ShopAIDatabase:
     """SQLite database for persistent Shopify data storage."""
 
@@ -49,111 +163,9 @@ class ShopAIDatabase:
     # ── Schema ───────────────────────────────────────────────
 
     def _init_schema(self) -> None:
-        conn = self._get_conn()
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS stores (
-                store_id    TEXT PRIMARY KEY,
-                shop_url    TEXT NOT NULL,
-                name        TEXT DEFAULT '',
-                niche       TEXT DEFAULT '',
-                store_type  TEXT DEFAULT 'dropshipping',
-                status      TEXT DEFAULT 'active',
-                created_at  REAL NOT NULL,
-                updated_at  REAL NOT NULL,
-                config      TEXT DEFAULT '{}'
-            );
-
-            CREATE TABLE IF NOT EXISTS products (
-                id              TEXT NOT NULL,
-                store_id        TEXT NOT NULL,
-                shopify_id      TEXT DEFAULT '',
-                title           TEXT NOT NULL,
-                price           REAL DEFAULT 0,
-                cost            REAL DEFAULT 0,
-                compare_at_price REAL DEFAULT 0,
-                vendor          TEXT DEFAULT '',
-                product_type    TEXT DEFAULT '',
-                tags            TEXT DEFAULT '[]',
-                status          TEXT DEFAULT 'active',
-                inventory_qty   INTEGER DEFAULT 0,
-                weight          REAL DEFAULT 0,
-                image_url       TEXT DEFAULT '',
-                description     TEXT DEFAULT '',
-                variants        TEXT DEFAULT '[]',
-                raw_data        TEXT DEFAULT '{}',
-                created_at      REAL NOT NULL,
-                updated_at      REAL NOT NULL,
-                synced_at       REAL DEFAULT 0,
-                PRIMARY KEY (id, store_id),
-                FOREIGN KEY (store_id) REFERENCES stores(store_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS orders (
-                id              TEXT NOT NULL,
-                store_id        TEXT NOT NULL,
-                shopify_id      TEXT DEFAULT '',
-                total           REAL DEFAULT 0,
-                subtotal        REAL DEFAULT 0,
-                financial_status TEXT DEFAULT '',
-                fulfillment_status TEXT DEFAULT '',
-                item_count      INTEGER DEFAULT 0,
-                customer_id     TEXT DEFAULT '',
-                line_items      TEXT DEFAULT '[]',
-                raw_data        TEXT DEFAULT '{}',
-                order_date      REAL DEFAULT 0,
-                created_at      REAL NOT NULL,
-                synced_at       REAL DEFAULT 0,
-                PRIMARY KEY (id, store_id),
-                FOREIGN KEY (store_id) REFERENCES stores(store_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS customers (
-                id              TEXT NOT NULL,
-                store_id        TEXT NOT NULL,
-                shopify_id      TEXT DEFAULT '',
-                name            TEXT DEFAULT '',
-                email           TEXT DEFAULT '',
-                orders_count    INTEGER DEFAULT 0,
-                total_spent     REAL DEFAULT 0,
-                tags            TEXT DEFAULT '[]',
-                raw_data        TEXT DEFAULT '{}',
-                first_order_at  REAL DEFAULT 0,
-                last_order_at   REAL DEFAULT 0,
-                created_at      REAL NOT NULL,
-                synced_at       REAL DEFAULT 0,
-                PRIMARY KEY (id, store_id),
-                FOREIGN KEY (store_id) REFERENCES stores(store_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS analytics_snapshots (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id    TEXT NOT NULL,
-                snapshot_type TEXT NOT NULL,
-                data        TEXT NOT NULL,
-                created_at  REAL NOT NULL,
-                FOREIGN KEY (store_id) REFERENCES stores(store_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS sync_log (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id    TEXT NOT NULL,
-                sync_type   TEXT NOT NULL,
-                status      TEXT NOT NULL,
-                records     INTEGER DEFAULT 0,
-                duration_s  REAL DEFAULT 0,
-                error       TEXT DEFAULT '',
-                created_at  REAL NOT NULL,
-                FOREIGN KEY (store_id) REFERENCES stores(store_id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_id);
-            CREATE INDEX IF NOT EXISTS idx_orders_store ON orders(store_id);
-            CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(store_id, order_date);
-            CREATE INDEX IF NOT EXISTS idx_customers_store ON customers(store_id);
-            CREATE INDEX IF NOT EXISTS idx_snapshots_store ON analytics_snapshots(store_id, snapshot_type);
-            CREATE INDEX IF NOT EXISTS idx_sync_log_store ON sync_log(store_id, created_at);
-        """)
-        conn.commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._get_conn(), "shopai", _MIGRATIONS).run()
+        register_schema("shopai", Path(self._db_path), _SCHEMA_VERSION)
         logger.info("Database initialized at %s", self._db_path)
 
     # ── Stores ───────────────────────────────────────────────

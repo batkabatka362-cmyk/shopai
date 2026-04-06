@@ -44,6 +44,75 @@ PROMOTION_THRESHOLDS = {"event_to_pattern": 3, "pattern_to_rule": 5, "rule_to_st
 SCORE_THRESHOLDS = {"useless": 1.0, "weak": 2.0, "neutral": 3.0, "useful": 4.0, "critical": 5.0}
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: Original MemoryIntelligence schema (memories + promotions + meta)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            level           INTEGER NOT NULL DEFAULT 0,
+            memory_type     TEXT NOT NULL DEFAULT 'episodic',
+            category        TEXT NOT NULL,
+            content         TEXT DEFAULT '{}',
+            features        TEXT DEFAULT '{}',
+            action          TEXT DEFAULT '',
+            result          TEXT DEFAULT '{}',
+            score           REAL DEFAULT 3.0,
+            confidence      REAL DEFAULT 0.5,
+            tags            TEXT DEFAULT '[]',
+            evidence_count  INTEGER DEFAULT 1,
+            use_count       INTEGER DEFAULT 0,
+            success_count   INTEGER DEFAULT 0,
+            source_ids      TEXT DEFAULT '[]',
+            parent_id       INTEGER DEFAULT 0,
+            timestamp       REAL NOT NULL,
+            last_used       REAL DEFAULT 0.0,
+            last_updated    REAL DEFAULT 0.0
+        );
+        CREATE TABLE IF NOT EXISTS promotions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id   INTEGER NOT NULL,
+            target_id   INTEGER NOT NULL,
+            from_level  INTEGER NOT NULL,
+            to_level    INTEGER NOT NULL,
+            reason      TEXT DEFAULT '',
+            timestamp   REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS meta_memory (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id   INTEGER NOT NULL,
+            event       TEXT NOT NULL,
+            outcome     TEXT DEFAULT '',
+            timestamp   REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS failure_analysis (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            failure_data TEXT DEFAULT '{}',
+            root_cause  TEXT DEFAULT '',
+            pattern_id  INTEGER DEFAULT 0,
+            rule_id     INTEGER DEFAULT 0,
+            category    TEXT NOT NULL,
+            severity    TEXT DEFAULT 'medium',
+            resolved    INTEGER DEFAULT 0,
+            timestamp   REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mi_level ON memories(level);
+        CREATE INDEX IF NOT EXISTS idx_mi_type ON memories(memory_type);
+        CREATE INDEX IF NOT EXISTS idx_mi_cat ON memories(category);
+        CREATE INDEX IF NOT EXISTS idx_mi_score ON memories(score);
+        CREATE INDEX IF NOT EXISTS idx_mi_tags ON memories(tags);
+        CREATE INDEX IF NOT EXISTS idx_mi_parent ON memories(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_mi_ts ON memories(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_meta_mid ON meta_memory(memory_id);
+        CREATE INDEX IF NOT EXISTS idx_fa_cat ON failure_analysis(category);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class MemoryEntry:
     """A single memory with full context."""
 
@@ -117,66 +186,9 @@ class MemoryIntelligence:
         return self._local.c
 
     def _init_schema(self) -> None:
-        self._conn().executescript("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                level           INTEGER NOT NULL DEFAULT 0,
-                memory_type     TEXT NOT NULL DEFAULT 'episodic',
-                category        TEXT NOT NULL,
-                content         TEXT DEFAULT '{}',
-                features        TEXT DEFAULT '{}',
-                action          TEXT DEFAULT '',
-                result          TEXT DEFAULT '{}',
-                score           REAL DEFAULT 3.0,
-                confidence      REAL DEFAULT 0.5,
-                tags            TEXT DEFAULT '[]',
-                evidence_count  INTEGER DEFAULT 1,
-                use_count       INTEGER DEFAULT 0,
-                success_count   INTEGER DEFAULT 0,
-                source_ids      TEXT DEFAULT '[]',
-                parent_id       INTEGER DEFAULT 0,
-                timestamp       REAL NOT NULL,
-                last_used       REAL DEFAULT 0.0,
-                last_updated    REAL DEFAULT 0.0
-            );
-            CREATE TABLE IF NOT EXISTS promotions (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_id   INTEGER NOT NULL,
-                target_id   INTEGER NOT NULL,
-                from_level  INTEGER NOT NULL,
-                to_level    INTEGER NOT NULL,
-                reason      TEXT DEFAULT '',
-                timestamp   REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS meta_memory (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                memory_id   INTEGER NOT NULL,
-                event       TEXT NOT NULL,
-                outcome     TEXT DEFAULT '',
-                timestamp   REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS failure_analysis (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                failure_data TEXT DEFAULT '{}',
-                root_cause  TEXT DEFAULT '',
-                pattern_id  INTEGER DEFAULT 0,
-                rule_id     INTEGER DEFAULT 0,
-                category    TEXT NOT NULL,
-                severity    TEXT DEFAULT 'medium',
-                resolved    INTEGER DEFAULT 0,
-                timestamp   REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_mi_level ON memories(level);
-            CREATE INDEX IF NOT EXISTS idx_mi_type ON memories(memory_type);
-            CREATE INDEX IF NOT EXISTS idx_mi_cat ON memories(category);
-            CREATE INDEX IF NOT EXISTS idx_mi_score ON memories(score);
-            CREATE INDEX IF NOT EXISTS idx_mi_tags ON memories(tags);
-            CREATE INDEX IF NOT EXISTS idx_mi_parent ON memories(parent_id);
-            CREATE INDEX IF NOT EXISTS idx_mi_ts ON memories(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_meta_mid ON meta_memory(memory_id);
-            CREATE INDEX IF NOT EXISTS idx_fa_cat ON failure_analysis(category);
-        """)
-        self._conn().commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._conn(), "memory_intelligence", _MIGRATIONS).run()
+        register_schema("memory_intelligence", Path(self._db_path), _SCHEMA_VERSION)
 
 
     # == CREATION - data enters memory ============================

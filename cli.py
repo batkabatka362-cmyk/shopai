@@ -77,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
     sync_p.add_argument("--auto", action="store_true", help="Start auto-sync")
     sync_p.add_argument("--interval", type=int, default=300, help="Auto-sync interval (seconds)")
 
+    # ── Database schema commands ─────────────────────────────
+    db_p = sub.add_parser("db", help="Inspect / migrate databases")
+    db_sub = db_p.add_subparsers(dest="db_action")
+    db_sub.add_parser("status", help="Show schema version for every DB")
+    db_sub.add_parser("migrate", help="Apply pending migrations to all DBs")
+
     # ── Engine commands ──────────────────────────────────────
     sub.add_parser("engines", help="List all registered engines")
 
@@ -231,6 +237,50 @@ def _cmd_store_remove(args) -> None:
     sm = _get_store_manager()
     result = sm.remove_store(args.store_id)
     print(f"✓ Store removed: {args.store_id}")
+
+
+# ── Database Commands ────────────────────────────────────────
+
+def _import_registered_dbs() -> None:
+    """Import DB modules so they call register_schema() at import time."""
+    # Each import triggers the module-level register_schema() via _init_schema.
+    # We need to actually construct default instances to populate the registry.
+    try:
+        from core.memory.intelligence import MemoryIntelligence
+        MemoryIntelligence()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from core.brain.memory import IntelligentMemory
+        IntelligentMemory()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from data_pipeline.store.db import ShopAIDatabase
+        ShopAIDatabase()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cmd_db_status() -> None:
+    from core.db.migrations import get_all_schema_info
+    _import_registered_dbs()
+    infos = get_all_schema_info()
+    if not infos:
+        print("No databases registered.")
+        return
+    print(f"{'NAME':25s} {'VERSION':12s} {'STATUS':12s} PATH")
+    print("-" * 80)
+    for info in infos:
+        ver = f"v{info['current_version']}/{info['target_version']}"
+        print(f"{info['name']:25s} {ver:12s} {info['status']:12s} {info['path']}")
+
+
+def _cmd_db_migrate() -> None:
+    # Construction triggers Migrator.run() automatically — status shows result.
+    print("Running pending migrations...")
+    _import_registered_dbs()
+    _cmd_db_status()
 
 
 # ── Sync Commands ────────────────────────────────────────────
@@ -643,6 +693,15 @@ def main(argv: list[str] | None = None) -> None:
             handler(args)
         else:
             print("Usage: shopai store {add|list|switch|status|connect|remove}")
+        return
+
+    if args.command == "db":
+        if args.db_action == "status":
+            _cmd_db_status()
+        elif args.db_action == "migrate":
+            _cmd_db_migrate()
+        else:
+            print("Usage: shopai db {status|migrate}")
         return
 
     if args.command == "sync":

@@ -30,6 +30,68 @@ logger = get_logger("brain.memory")
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "brain_memory.db"
 
 
+def _v1_initial_schema(conn: sqlite3.Connection) -> None:
+    """v1: Original IntelligentMemory schema (memories, patterns, rules, bad_data)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            layer       INTEGER NOT NULL,
+            category    TEXT NOT NULL,
+            input_data  TEXT DEFAULT '{}',
+            action      TEXT DEFAULT '',
+            result      TEXT DEFAULT '{}',
+            score       REAL DEFAULT 3.0,
+            tags        TEXT DEFAULT '[]',
+            features    TEXT DEFAULT '{}',
+            source      TEXT DEFAULT '',
+            store_id    TEXT DEFAULT '',
+            timestamp   REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS patterns (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern     TEXT NOT NULL,
+            category    TEXT NOT NULL,
+            frequency   INTEGER DEFAULT 1,
+            avg_score   REAL DEFAULT 3.0,
+            evidence    TEXT DEFAULT '[]',
+            created_at  REAL NOT NULL,
+            updated_at  REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS rules (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule        TEXT NOT NULL,
+            category    TEXT NOT NULL,
+            condition   TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            confidence  REAL DEFAULT 0.5,
+            uses        INTEGER DEFAULT 0,
+            successes   INTEGER DEFAULT 0,
+            source_pattern TEXT DEFAULT '',
+            created_at  REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS bad_data (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            category    TEXT NOT NULL,
+            data        TEXT NOT NULL,
+            reason      TEXT NOT NULL,
+            score       REAL DEFAULT 1.0,
+            analyzed    INTEGER DEFAULT 0,
+            timestamp   REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mem_layer ON memories(layer, category);
+        CREATE INDEX IF NOT EXISTS idx_mem_score ON memories(score);
+        CREATE INDEX IF NOT EXISTS idx_mem_tags ON memories(tags);
+        CREATE INDEX IF NOT EXISTS idx_patterns_cat ON patterns(category);
+        CREATE INDEX IF NOT EXISTS idx_rules_cat ON rules(category);
+    """)
+
+
+_MIGRATIONS: list[tuple[int, str, Any]] = [
+    (1, "initial schema", _v1_initial_schema),
+]
+_SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
+
+
 class MemoryRecord:
     """A single memory entry with full context."""
 
@@ -89,59 +151,9 @@ class IntelligentMemory:
         return self._local.c
 
     def _init_schema(self) -> None:
-        self._conn().executescript("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                layer       INTEGER NOT NULL,
-                category    TEXT NOT NULL,
-                input_data  TEXT DEFAULT '{}',
-                action      TEXT DEFAULT '',
-                result      TEXT DEFAULT '{}',
-                score       REAL DEFAULT 3.0,
-                tags        TEXT DEFAULT '[]',
-                features    TEXT DEFAULT '{}',
-                source      TEXT DEFAULT '',
-                store_id    TEXT DEFAULT '',
-                timestamp   REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS patterns (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                pattern     TEXT NOT NULL,
-                category    TEXT NOT NULL,
-                frequency   INTEGER DEFAULT 1,
-                avg_score   REAL DEFAULT 3.0,
-                evidence    TEXT DEFAULT '[]',
-                created_at  REAL NOT NULL,
-                updated_at  REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS rules (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                rule        TEXT NOT NULL,
-                category    TEXT NOT NULL,
-                condition   TEXT NOT NULL,
-                action      TEXT NOT NULL,
-                confidence  REAL DEFAULT 0.5,
-                uses        INTEGER DEFAULT 0,
-                successes   INTEGER DEFAULT 0,
-                source_pattern TEXT DEFAULT '',
-                created_at  REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS bad_data (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                category    TEXT NOT NULL,
-                data        TEXT NOT NULL,
-                reason      TEXT NOT NULL,
-                score       REAL DEFAULT 1.0,
-                analyzed    INTEGER DEFAULT 0,
-                timestamp   REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_mem_layer ON memories(layer, category);
-            CREATE INDEX IF NOT EXISTS idx_mem_score ON memories(score);
-            CREATE INDEX IF NOT EXISTS idx_mem_tags ON memories(tags);
-            CREATE INDEX IF NOT EXISTS idx_patterns_cat ON patterns(category);
-            CREATE INDEX IF NOT EXISTS idx_rules_cat ON rules(category);
-        """)
-        self._conn().commit()
+        from core.db.migrations import Migrator, register_schema
+        Migrator(self._conn(), "brain_memory", _MIGRATIONS).run()
+        register_schema("brain_memory", Path(self._db_path), _SCHEMA_VERSION)
 
     # ── L0: Raw Buffer ───────────────────────────────────────
 
