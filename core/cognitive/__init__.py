@@ -35,6 +35,12 @@ from core.cognitive.skill_registry import (
     SkillRegistry,
     get_skill_registry,
 )
+from core.cognitive.theory_of_mind import (
+    Agent,
+    Prediction,
+    TheoryOfMind,
+    get_theory_of_mind,
+)
 from core.cognitive.goals import GoalManager, get_goal_manager
 from core.cognitive.imagination import (
     ImaginedOutcome,
@@ -71,4 +77,5 @@ __all__ = [
     "Consolidation", "ConsolidationReport", "get_consolidation",
     "SkillRegistry", "Skill", "SkillNotFound", "SkillNotInvocable",
     "get_skill_registry",
+    "TheoryOfMind", "Agent", "Prediction", "get_theory_of_mind",
 ]
