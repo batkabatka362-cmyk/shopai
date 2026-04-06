@@ -17,6 +17,12 @@ into a self-directed cognitive system:
 Each module is independently importable and testable. The `mind` module
 at the top ties them together into the main cognitive cycle.
 """
+from core.cognitive.curiosity import (
+    Curiosity,
+    CuriosityCandidate,
+    CuriosityRecommendation,
+    get_curiosity,
+)
 from core.cognitive.goals import GoalManager, get_goal_manager
 from core.cognitive.imagination import (
     ImaginedOutcome,
@@ -48,4 +54,6 @@ __all__ = [
     "LLMPlanBackend", "HeuristicPlanBackend",
     "get_planner",
     "Imagination", "ImaginedOutcome", "ImaginedPlan", "get_imagination",
+    "Curiosity", "CuriosityCandidate", "CuriosityRecommendation",
+    "get_curiosity",
 ]
