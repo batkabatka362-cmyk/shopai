@@ -256,19 +256,33 @@ class Curiosity:
     def propose_exploration_goal(self) -> Optional[str]:
         """If the recommendation is to explore, create a goal for it.
 
-        Returns the new goal ID, or None if no exploration was
-        recommended (or no GoalManager is wired).
+        Skips creation when an active goal already targets the same
+        capability (prevents pile-ups across cycles). Returns the new
+        goal ID, or None if no exploration was recommended / a
+        duplicate exists / no GoalManager is wired.
         """
         rec = self.recommend()
         if rec.action_kind != "explore" or not rec.target:
             return None
         if self._goal_manager is None:
             return None
+
+        # Dedup: skip when an active goal already targets this capability
+        target_source = f"curiosity:{rec.target}"
+        try:
+            for goal in self._goal_manager.active():
+                if not isinstance(goal, dict):
+                    continue
+                if goal.get("source") == target_source:
+                    return None
+        except Exception:  # noqa: BLE001
+            pass
+
         try:
             return self._goal_manager.propose(
                 what=f"Explore unknown capability '{rec.target}'",
                 why=rec.reason,
-                source=f"curiosity:{rec.target}",
+                source=target_source,
                 impact=0.5,
                 urgency=0.3,
                 confidence=0.3,
