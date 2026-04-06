@@ -381,14 +381,68 @@ class Mind:
     # ── Phase 8: LEARN ────────────────────────────────────────
 
     def _phase_learn(self, ctx: CycleContext, report: CycleReport) -> None:
-        """Record cycle outcomes back into SelfModel."""
+        """Record cycle outcomes back into SelfModel.
+
+        Two paths:
+          1. Format the cycle as a controller-style result and let
+             SelfModel.ingest_cycle_result extract phase/engine
+             signals from it.
+          2. Always record cognitive-level signals directly via
+             assess() so the SelfModel grows with every cycle even
+             when no engine ran.
+        """
         if self.self_model is None:
             return
+        updates = 0
         try:
-            updates = self.self_model.ingest_cycle_result(report.to_dict())
-            report.learning_updates = updates
+            # Path 1: feed the controller-style fields that
+            # ingest_cycle_result understands. The Mind's report
+            # uses different keys, so we synthesize a minimal cycle
+            # dict with the bits SelfModel knows how to parse.
+            synthetic = {
+                "status": "success" if not report.error else "error",
+                "phases": {},
+                "executions": [
+                    {"engine": a.get("skill", "unknown"),
+                     "status": a.get("result", {}).get("status", "ok")}
+                    for a in report.actions_taken
+                    if a.get("kind") == "skill"
+                ],
+                "error": report.error,
+            }
+            updates = self.self_model.ingest_cycle_result(synthetic)
         except Exception as exc:  # noqa: BLE001
-            report.notes.append(f"learn: {exc}")
+            report.notes.append(f"learn (ingest): {exc}")
+
+        # Path 2: cognitive-level assessments — always recorded.
+        try:
+            self.self_model.assess(
+                "mind.cycle_duration",
+                # Score: under 1s = perfect, over 30s = bad
+                max(0.0, min(1.0, 1.0 - (report.duration_s() - 1.0) / 29.0)),
+                source="mind",
+                notes=f"duration={report.duration_s():.2f}s",
+            )
+            updates += 1
+            if report.plan is not None:
+                self.self_model.assess(
+                    "mind.planning",
+                    min(1.0, report.plan.step_count() / 6.0),
+                    source="mind",
+                    notes=f"steps={report.plan.step_count()}",
+                )
+                updates += 1
+            if report.imagined_plan is not None:
+                self.self_model.assess(
+                    "mind.imagination_quality",
+                    float(report.imagined_plan.overall_confidence),
+                    source="mind",
+                )
+                updates += 1
+        except Exception as exc:  # noqa: BLE001
+            report.notes.append(f"learn (assess): {exc}")
+
+        report.learning_updates = updates
 
     # ── Phase 9: CONSOLIDATE (every Nth cycle) ────────────────
 
