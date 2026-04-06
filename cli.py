@@ -114,6 +114,17 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub.add_parser("check", help="Validate env vars against schema")
     config_sub.add_parser("show", help="Show current config values + defaults")
 
+    # ── Cognitive (Mind) commands ────────────────────────────
+    mind_p = sub.add_parser("mind", help="Inspect / drive the cognitive Mind")
+    mind_sub = mind_p.add_subparsers(dest="mind_action")
+    mind_sub.add_parser("status", help="Show self-narrative + active goals")
+    mind_sub.add_parser("cycle", help="Run one cognitive cycle")
+    mind_sub.add_parser("reflect", help="Force a reflection pass")
+    mind_sub.add_parser("goals", help="List active goals")
+    mind_sub.add_parser("skills", help="List registered skills")
+    mind_explain = mind_sub.add_parser("explain", help="Explain a goal: plan + imagination")
+    mind_explain.add_argument("goal_id", help="Goal ID to explain")
+
     # ── Engine commands ──────────────────────────────────────
     sub.add_parser("engines", help="List all registered engines")
 
@@ -459,6 +470,269 @@ def _cmd_config_show() -> None:
         if len(value) > 30:
             value = value[:27] + "..."
         print(f"{r['name']:{name_w}s} {r['type']:7s} {set_marker:5s} {value:30s} {r['description']}")
+
+
+# ── Cognitive Mind Commands ─────────────────────────────────
+
+def _get_mind():
+    """Lazily build the singleton Mind for CLI calls."""
+    from core.cognitive.mind import get_mind
+    return get_mind()
+
+
+def _cmd_mind_status(args=None) -> None:
+    """Print the AI's self-narrative + active goals + recent reflection."""
+    mind = _get_mind()
+    print()
+    print("─" * 70)
+    print("  COGNITIVE MIND — STATUS")
+    print("─" * 70)
+    if mind.self_model is not None:
+        print()
+        print("Self-narrative:")
+        print(f"  {mind.self_model.narrative()}")
+        strengths = mind.self_model.strengths(top_n=3)
+        if strengths:
+            print()
+            print("Top strengths:")
+            for s in strengths:
+                print(f"  - {s['name']:30s} score={s['score']:.2f}  conf={s['confidence']:.2f}")
+        weaknesses = mind.self_model.weaknesses(top_n=3)
+        if weaknesses:
+            print()
+            print("Top weaknesses:")
+            for w in weaknesses:
+                print(f"  - {w['name']:30s} score={w['score']:.2f}  conf={w['confidence']:.2f}")
+        gaps = mind.self_model.knowledge_gaps(top_n=3)
+        if gaps:
+            print()
+            print("Knowledge gaps:")
+            for g in gaps:
+                print(f"  - {g['name']:30s} only {g['evidence_count']} obs")
+    if mind.goal_manager is not None:
+        active = mind.goal_manager.active(limit=10)
+        print()
+        print(f"Active goals ({len(active)}):")
+        for g in active[:10]:
+            print(f"  [{g['state']:11s}] priority={g['priority']:.2f}  {g['what']}")
+    print()
+    print(f"Total cycles run: {mind.cycle_count()}")
+    print()
+
+
+def _cmd_mind_cycle(args=None) -> None:
+    """Run one cognitive cycle and print the report."""
+    mind = _get_mind()
+    print("Running cognitive cycle...")
+    report = mind.run_cycle()
+
+    print()
+    print("─" * 70)
+    print(f"  CYCLE {report.cycle_number} — {report.duration_s():.3f}s")
+    print("─" * 70)
+    if report.error:
+        print(f"  ERROR: {report.error}")
+        return
+
+    if report.reflection:
+        print()
+        print("Reflection:")
+        print(f"  episodes reviewed: {report.reflection.episodes_reviewed}")
+        print(f"  lessons:           {len(report.reflection.lessons)}")
+        for lesson in report.reflection.lessons[:5]:
+            print(f"    [{lesson.type}] {lesson.evidence[:80]}")
+
+    if report.goals_proposed:
+        print()
+        print(f"Goals proposed this cycle: {len(report.goals_proposed)}")
+        for gid in report.goals_proposed:
+            g = mind.goal_manager.get(gid) if mind.goal_manager else None
+            if g:
+                print(f"  {gid[:14]} priority={g['priority']:.2f}  {g['what']}")
+
+    if report.selected_goal_id:
+        g = mind.goal_manager.get(report.selected_goal_id) if mind.goal_manager else None
+        if g:
+            print()
+            print(f"Selected goal: {g['what']}")
+
+    if report.plan:
+        print()
+        print(f"Plan ({report.plan.backend}, {report.plan.step_count()} steps):")
+        for i, step in enumerate(report.plan.steps[:10], 1):
+            print(f"  {i}. {step.description}")
+
+    if report.imagined_plan:
+        print()
+        print(
+            f"Imagined: expected_score={report.imagined_plan.expected_score:.2f}, "
+            f"cost={report.imagined_plan.expected_cost:.2f}, "
+            f"confidence={report.imagined_plan.overall_confidence:.2f}"
+        )
+
+    if report.predictions:
+        print()
+        print(f"Agent predictions ({len(report.predictions)}):")
+        for p in report.predictions[:5]:
+            print(
+                f"  [{p.agent_id}] for '{p.action_proposed[:40]}' → "
+                f"{p.predicted_response} (conf {p.confidence:.2f})"
+            )
+
+    if report.actions_taken:
+        print()
+        print(f"Actions ({len(report.actions_taken)}):")
+        for a in report.actions_taken:
+            kind = a.get("kind", "?")
+            if kind == "skill":
+                print(f"  skill: {a.get('skill', '?')}")
+            else:
+                print(f"  recommendation: {a.get('description', '')[:60]}")
+
+    if report.consolidation_ran:
+        print()
+        print("Memory consolidation: ran this cycle")
+
+    if report.notes:
+        print()
+        print("Notes:")
+        for n in report.notes:
+            print(f"  - {n}")
+    print()
+
+
+def _cmd_mind_reflect(args=None) -> None:
+    """Force a reflection pass without running a full cycle."""
+    mind = _get_mind()
+    if mind.reflection is None:
+        print("No reflection module wired into the Mind.")
+        return
+    report = mind.reflection.reflect(apply=True)
+    print()
+    print("Reflection report:")
+    print(f"  episodes reviewed:    {report.episodes_reviewed}")
+    print(f"  lessons:              {len(report.lessons)}")
+    print(f"  self_model updates:   {report.self_model_updates}")
+    print(f"  goal revisions:       {report.goal_revisions}")
+    print()
+    if report.lessons:
+        print("Lessons:")
+        for lesson in report.lessons:
+            print(f"  [{lesson.type}] {lesson.evidence}")
+            if lesson.recommended_action:
+                print(f"    → {lesson.recommended_action}")
+    print()
+    print(f"NARRATIVE: {report.narrative}")
+    print()
+
+
+def _cmd_mind_goals(args=None) -> None:
+    """List active goals (proposed + active + in_progress)."""
+    mind = _get_mind()
+    if mind.goal_manager is None:
+        print("No goal manager wired into the Mind.")
+        return
+    goals = mind.goal_manager.active(limit=50)
+    if not goals:
+        print("No active goals.")
+        return
+    print()
+    print(f"{'ID':14s} {'STATE':12s} {'PRIORITY':9s} WHAT")
+    print("-" * 80)
+    for g in goals:
+        print(
+            f"{g['id'][:14]:14s} {g['state']:12s} "
+            f"{g['priority']:9.2f} {g['what'][:50]}"
+        )
+    print()
+    print(f"Total: {len(goals)}")
+    print()
+
+
+def _cmd_mind_skills(args=None) -> None:
+    """List registered skills."""
+    mind = _get_mind()
+    if mind.skill_registry is None:
+        print("No skill registry wired into the Mind.")
+        return
+    skills = mind.skill_registry.list_skills()
+    if not skills:
+        print("No skills registered.")
+        return
+    print()
+    print(f"{'NAME':25s} {'STATE':14s} {'ACCURACY':10s} USES")
+    print("-" * 70)
+    for s in skills:
+        print(
+            f"{s.name[:25]:25s} {s.state:14s} "
+            f"{s.accuracy:10.2f} {s.use_count}"
+        )
+    print()
+    stats = mind.skill_registry.stats()
+    print(f"Total: {stats['total']}, validated: {stats['validated']}, "
+          f"avg accuracy: {stats['avg_accuracy']:.2f}")
+    print()
+
+
+def _cmd_mind_explain(args) -> None:
+    """Explain a goal: show its plan + imagined outcome."""
+    mind = _get_mind()
+    if mind.goal_manager is None:
+        print("No goal manager wired into the Mind.")
+        return
+    goal = mind.goal_manager.get(args.goal_id)
+    if goal is None:
+        print(f"Goal {args.goal_id!r} not found.")
+        return
+
+    print()
+    print("─" * 70)
+    print(f"  GOAL: {goal['what']}")
+    print("─" * 70)
+    print(f"  id:         {goal['id']}")
+    print(f"  state:      {goal['state']}")
+    print(f"  source:     {goal.get('source') or '(manual)'}")
+    print(f"  priority:   {goal['priority']:.2f}")
+    print(f"  impact:     {goal['impact']:.2f}")
+    print(f"  urgency:    {goal['urgency']:.2f}")
+    print(f"  confidence: {goal['confidence']:.2f}")
+    print(f"  cost:       {goal['cost']:.2f}")
+    print(f"  progress:   {goal['progress']:.0%}")
+    if goal.get("why"):
+        print(f"  why:        {goal['why']}")
+
+    if mind.planner is not None:
+        plan = mind.planner.plan(goal)
+        print()
+        print(f"Plan ({plan.backend}, {plan.step_count()} steps):")
+        for i, step in enumerate(plan.steps, 1):
+            print(f"  {i}. {step.description}")
+            if step.rationale:
+                print(f"      ↳ {step.rationale[:60]}")
+
+        if mind.imagination is not None:
+            imagined = mind.imagination.imagine_plan(plan)
+            print()
+            print(
+                f"Imagined: score={imagined.expected_score:.2f}, "
+                f"cost={imagined.expected_cost:.2f}, "
+                f"confidence={imagined.overall_confidence:.2f}"
+            )
+
+    children = mind.goal_manager.children(goal["id"])
+    if children:
+        print()
+        print(f"Sub-goals ({len(children)}):")
+        for c in children:
+            print(f"  [{c['state']}] {c['what']}")
+
+    events = mind.goal_manager.events(goal["id"], limit=10)
+    if events:
+        print()
+        print(f"Recent events ({len(events)}):")
+        for e in events[:5]:
+            print(f"  {e['event_type']:14s} {e['old_value']} → {e['new_value']}")
+    print()
 
 
 # ── Sync Commands ────────────────────────────────────────────
@@ -927,6 +1201,22 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_config_show()
         else:
             print("Usage: shopai config {check|show}")
+        return
+
+    if args.command == "mind":
+        dispatch = {
+            "status": _cmd_mind_status,
+            "cycle": _cmd_mind_cycle,
+            "reflect": _cmd_mind_reflect,
+            "goals": _cmd_mind_goals,
+            "skills": _cmd_mind_skills,
+            "explain": _cmd_mind_explain,
+        }
+        handler = dispatch.get(args.mind_action)
+        if handler:
+            handler(args)
+        else:
+            print("Usage: shopai mind {status|cycle|reflect|goals|skills|explain}")
         return
 
     if args.command == "sync":
