@@ -413,48 +413,117 @@ class StoreConfigurator:
 
     # ── Feature: Discounts ─────────────────────────────────────
 
+    # Month → (code, percent off, description) for the seasonal rule.
+    # Shopify stores a single seasonal code at a time; whichever month
+    # the configurator runs in drives the choice.
+    _SEASONAL_CODES = {
+        1:  ("NEWYEAR10",    -10.0, "New Year kickoff"),
+        2:  ("VALENTINE15",  -15.0, "Valentine's Day"),
+        3:  ("SPRING10",     -10.0, "Spring sale"),
+        4:  ("EASTER15",     -15.0, "Easter"),
+        5:  ("MAYFLASH10",   -10.0, "May sale"),
+        6:  ("SUMMER15",     -15.0, "Summer kickoff"),
+        7:  ("JULY4",        -15.0, "Mid-summer sale"),
+        8:  ("BACKTOSCHOOL", -15.0, "Back to school"),
+        9:  ("AUTUMN10",     -10.0, "Autumn sale"),
+        10: ("HALLOWEEN15",  -15.0, "Halloween"),
+        11: ("BLACKFRIDAY25",-25.0, "Black Friday"),
+        12: ("HOLIDAY20",    -20.0, "Holiday season"),
+    }
+
     def _setup_discounts(
         self, client: ShopifyClient, config: dict, store_name: str,
     ) -> dict[str, Any]:
+        """Comprehensive discount strategy.
+
+        Every store gets:
+          WELCOME15       — first-time buyer (-15%, once per customer)
+          COMEBACK10      — abandoned-cart recovery (-10%, once per customer)
+          BUNDLE15        — volume discount when buying 3+ items (-15%)
+          FREESHIP50      — free shipping on orders >= $50 (shipping type)
+          <SEASONAL>      — one code for the current calendar month
+          LOYAL20         — repeat-customer loyalty discount (-20%, once per customer)
+
+        Niche strategy adds on top:
+          aggressive → FLASH25, BOGO50
+          generous   → BEAUTY20
+          moderate   → SAVE10
+        """
         existing_resp = client.get("price_rules.json")
         existing = existing_resp.get("price_rules", []) if "error" not in existing_resp else []
         existing_titles = set(r["title"] for r in existing)
         created: list[str] = []
 
+        def _add(code: str, value: float, **kwargs: Any) -> None:
+            if code in existing_titles:
+                return
+            self._create_discount(client, code, value, **kwargs)
+            created.append(code)
+
+        # Core discounts every store gets
+        _add("WELCOME15", -15.0, once_per_customer=True,
+             description="First-time buyer welcome")
+        _add("COMEBACK10", -10.0, once_per_customer=True,
+             description="Abandoned cart recovery")
+        _add("BUNDLE15", -15.0, min_qty=3,
+             description="Volume discount (3+ items)")
+        _add("FREESHIP50", -100.0, min_subtotal=50.0, target_type="shipping_line",
+             description="Free shipping on orders >= $50")
+        _add("LOYAL20", -20.0, once_per_customer=True,
+             description="Loyalty reward for repeat customers")
+
+        # One seasonal code based on current month
+        month = time.gmtime().tm_mon
+        seasonal_code, seasonal_value, seasonal_desc = self._SEASONAL_CODES[month]
+        _add(seasonal_code, seasonal_value,
+             description=f"Seasonal: {seasonal_desc}")
+
+        # Niche-strategy discounts
         strategy = config["discount_strategy"]
-
-        # Welcome discount (always)
-        if "WELCOME15" not in existing_titles:
-            self._create_discount(client, "WELCOME15", -15.0, once_per_customer=True)
-            created.append("WELCOME15")
-
         if strategy == "aggressive":
-            for code, value, kwargs in [
-                ("FLASH25", -25.0, {}),
-                ("BOGO50", -50.0, {"min_qty": 2}),
-            ]:
-                if code not in existing_titles:
-                    self._create_discount(client, code, value, **kwargs)
-                    created.append(code)
+            _add("FLASH25", -25.0, description="Flash sale")
+            _add("BOGO50", -50.0, min_qty=2,
+                 description="Buy-one-get-one 50%")
         elif strategy == "generous":
-            if "BEAUTY20" not in existing_titles:
-                self._create_discount(client, "BEAUTY20", -20.0)
-                created.append("BEAUTY20")
-        else:
-            if "SAVE10" not in existing_titles:
-                self._create_discount(client, "SAVE10", -10.0)
-                created.append("SAVE10")
+            _add("BEAUTY20", -20.0, description="Generous beauty discount")
+        else:  # moderate
+            _add("SAVE10", -10.0, description="Moderate savings")
 
-        return {"created": len(created), "codes": created}
+        return {
+            "created": len(created),
+            "codes": created,
+            "seasonal": seasonal_code,
+            "strategy": strategy,
+        }
 
     def _create_discount(
-        self, client: ShopifyClient, code: str, value: float,
-        once_per_customer: bool = False, min_qty: int = 0,
+        self,
+        client: ShopifyClient,
+        code: str,
+        value: float,
+        *,
+        once_per_customer: bool = False,
+        min_qty: int = 0,
+        min_subtotal: float = 0.0,
+        target_type: str = "line_item",
+        description: str = "",
     ) -> None:
+        """Create a price rule + attach a discount code.
+
+        Args:
+            code: the discount code users enter at checkout
+            value: negative percentage (e.g. -15.0 = 15% off)
+            once_per_customer: restrict to one use per customer
+            min_qty: minimum line-item quantity (volume discount)
+            min_subtotal: minimum cart subtotal (free-shipping threshold)
+            target_type: "line_item" for product discounts or
+                         "shipping_line" for shipping discounts
+            description: human-readable summary shown in the dry-run plan
+        """
         rule_body: dict[str, Any] = {
             "price_rule": {
                 "title": code,
-                "target_type": "line_item",
+                "target_type": target_type,
                 "target_selection": "all",
                 "allocation_method": "across",
                 "value_type": "percentage",
@@ -468,10 +537,14 @@ class StoreConfigurator:
             rule_body["price_rule"]["prerequisite_quantity_range"] = {
                 "greater_than_or_equal_to": min_qty,
             }
+        if min_subtotal > 0:
+            rule_body["price_rule"]["prerequisite_subtotal_range"] = {
+                "greater_than_or_equal_to": str(min_subtotal),
+            }
 
+        desc = description or f"Create price rule {code} ({value}%)"
         result = self._write(
-            client, "POST", "price_rules.json", rule_body,
-            description=f"Create price rule {code} ({value}%)",
+            client, "POST", "price_rules.json", rule_body, description=desc,
         )
         rule_id = result.get("price_rule", {}).get("id") if result else None
         if rule_id:
@@ -482,7 +555,6 @@ class StoreConfigurator:
                 description=f"Attach discount code {code}",
             )
         elif result.get("dry_run"):
-            # In dry-run we still want the code to be visible in the plan
             self._write(
                 client, "POST",
                 "price_rules/<id>/discount_codes.json",

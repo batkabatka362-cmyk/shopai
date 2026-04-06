@@ -275,46 +275,53 @@ class TestSmartCollections:
 
 
 class TestDiscounts:
-    def test_creates_welcome_and_moderate(self, monkeypatch):
-        calls = _install_fake_client(
-            monkeypatch,
-            responses={
-                "GET price_rules.json": {"price_rules": []},
-                "POST price_rules.json": {"price_rule": {"id": 42}},
-            },
-        )
+    _CORE_CODES = {"WELCOME15", "COMEBACK10", "BUNDLE15", "FREESHIP50", "LOYAL20"}
+
+    def _responses(self, existing=None):
+        return {
+            "GET price_rules.json": {"price_rules": existing or []},
+            "POST price_rules.json": {"price_rule": {"id": 42}},
+        }
+
+    def test_creates_all_core_discounts(self, monkeypatch):
+        _install_fake_client(monkeypatch, responses=self._responses())
         c = _make()
         result = c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
-        assert "WELCOME15" in result["results"]["discounts"]["codes"]
-        assert "SAVE10" in result["results"]["discounts"]["codes"]
+        codes = set(result["results"]["discounts"]["codes"])
+        assert self._CORE_CODES.issubset(codes)
+        # Plus the moderate-strategy SAVE10 and one seasonal code
+        assert "SAVE10" in codes
+        assert result["results"]["discounts"]["seasonal"] in codes
+
+    def test_seasonal_code_matches_current_month(self, monkeypatch):
+        import time as _t
+        _install_fake_client(monkeypatch, responses=self._responses())
+        c = _make()
+        result = c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["discounts"],
+        )
+        from execution.store_configurator import StoreConfigurator
+        expected = StoreConfigurator._SEASONAL_CODES[_t.gmtime().tm_mon][0]
+        assert result["results"]["discounts"]["seasonal"] == expected
+        assert expected in result["results"]["discounts"]["codes"]
 
     def test_aggressive_strategy_adds_flash_and_bogo(self, monkeypatch):
-        _install_fake_client(
-            monkeypatch,
-            responses={
-                "GET price_rules.json": {"price_rules": []},
-                "POST price_rules.json": {"price_rule": {"id": 42}},
-            },
-        )
+        _install_fake_client(monkeypatch, responses=self._responses())
         c = _make()
         result = c.configure(
             "x.myshopify.com", "tok", niche="fashion",
             features=["discounts"],
         )
         codes = set(result["results"]["discounts"]["codes"])
-        assert {"WELCOME15", "FLASH25", "BOGO50"}.issubset(codes)
+        assert {"FLASH25", "BOGO50"}.issubset(codes)
+        assert self._CORE_CODES.issubset(codes)
 
     def test_generous_strategy_adds_beauty(self, monkeypatch):
-        _install_fake_client(
-            monkeypatch,
-            responses={
-                "GET price_rules.json": {"price_rules": []},
-                "POST price_rules.json": {"price_rule": {"id": 42}},
-            },
-        )
+        _install_fake_client(monkeypatch, responses=self._responses())
         c = _make()
         result = c.configure(
             "x.myshopify.com", "tok", niche="beauty",
@@ -325,12 +332,7 @@ class TestDiscounts:
     def test_existing_discount_not_recreated(self, monkeypatch):
         _install_fake_client(
             monkeypatch,
-            responses={
-                "GET price_rules.json": {
-                    "price_rules": [{"title": "WELCOME15"}],
-                },
-                "POST price_rules.json": {"price_rule": {"id": 42}},
-            },
+            responses=self._responses(existing=[{"title": "WELCOME15"}]),
         )
         c = _make()
         result = c.configure(
@@ -338,6 +340,86 @@ class TestDiscounts:
             features=["discounts"],
         )
         assert "WELCOME15" not in result["results"]["discounts"]["codes"]
+        # But other core codes still created
+        codes = set(result["results"]["discounts"]["codes"])
+        assert "COMEBACK10" in codes
+        assert "BUNDLE15" in codes
+
+    def test_bundle_has_min_quantity_rule(self, monkeypatch):
+        calls = _install_fake_client(monkeypatch, responses=self._responses())
+        c = _make()
+        c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["discounts"],
+        )
+        bundle_body = None
+        for m, p, b in calls:
+            if m == "POST" and p == "price_rules.json" and b:
+                if b["price_rule"]["title"] == "BUNDLE15":
+                    bundle_body = b
+                    break
+        assert bundle_body is not None
+        assert bundle_body["price_rule"]["prerequisite_quantity_range"] == {
+            "greater_than_or_equal_to": 3,
+        }
+
+    def test_free_shipping_uses_shipping_target_and_min_subtotal(self, monkeypatch):
+        calls = _install_fake_client(monkeypatch, responses=self._responses())
+        c = _make()
+        c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["discounts"],
+        )
+        ship_body = None
+        for m, p, b in calls:
+            if m == "POST" and p == "price_rules.json" and b:
+                if b["price_rule"]["title"] == "FREESHIP50":
+                    ship_body = b
+                    break
+        assert ship_body is not None
+        assert ship_body["price_rule"]["target_type"] == "shipping_line"
+        assert ship_body["price_rule"]["prerequisite_subtotal_range"] == {
+            "greater_than_or_equal_to": "50.0",
+        }
+        assert ship_body["price_rule"]["value"] == "-100.0"
+
+    def test_welcome_and_loyal_once_per_customer(self, monkeypatch):
+        calls = _install_fake_client(monkeypatch, responses=self._responses())
+        c = _make()
+        c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["discounts"],
+        )
+        opc_codes = set()
+        for m, p, b in calls:
+            if m == "POST" and p == "price_rules.json" and b:
+                if b["price_rule"].get("once_per_customer"):
+                    opc_codes.add(b["price_rule"]["title"])
+        assert {"WELCOME15", "COMEBACK10", "LOYAL20"}.issubset(opc_codes)
+
+    def test_discount_codes_attached_after_rule(self, monkeypatch):
+        calls = _install_fake_client(monkeypatch, responses=self._responses())
+        c = _make()
+        c.configure(
+            "x.myshopify.com", "tok", niche="home",
+            features=["discounts"],
+        )
+        code_attachments = [
+            (p, b) for m, p, b in calls
+            if m == "POST" and "discount_codes.json" in p
+        ]
+        # One attach per core code + seasonal + SAVE10
+        attached_codes = {b["discount_code"]["code"] for _, b in code_attachments if b}
+        assert self._CORE_CODES.issubset(attached_codes)
+
+
+class TestSeasonalDiscountTable:
+    def test_all_months_defined(self):
+        from execution.store_configurator import StoreConfigurator
+        assert set(StoreConfigurator._SEASONAL_CODES.keys()) == set(range(1, 13))
+        for month, (code, value, _desc) in StoreConfigurator._SEASONAL_CODES.items():
+            assert isinstance(code, str) and code
+            assert -50 <= value < 0, f"month {month} value {value} out of range"
 
 
 class TestShipping:
