@@ -202,54 +202,214 @@ class StoreConfigurator:
     def _setup_collections(
         self, client: ShopifyClient, config: dict, products: list,
     ) -> dict[str, Any]:
+        """Create niche-specific + smart data-driven collections.
+
+        Three tiers of collections are created:
+
+        1. Niche category collections (tag-based) — "Home Decor",
+           "Lighting", etc. — matches products with a lowercased tag.
+        2. Price bands — "Under $20", "Under $50".
+        3. Smart data-driven collections derived from the actual
+           product data that was fetched:
+             * "Bestsellers"     — tag-rule on `bestseller`
+             * "New Arrivals"    — products created in the last 30 days
+             * "Low Stock"       — total inventory <= 5 (urgency)
+             * "Top Rated"       — tag-rule on `top-rated`
+             * "Back in Stock"   — tag-rule on `back-in-stock`
+             * "Gift Ideas"      — tag-rule on `gift-idea`
+           Each smart collection is skipped when the product set has no
+           candidates (e.g. no low-stock items) so stores don't end up
+           with empty storefront sections.
+        """
         existing_resp = client.get("smart_collections.json")
         existing = existing_resp.get("smart_collections", []) if "error" not in existing_resp else []
         existing_titles = set(c["title"].lower() for c in existing)
 
         created = 0
+        skipped_empty = 0
+
+        def _try_create(
+            title: str,
+            rules: list[dict],
+            description: str,
+            body_html: str = "",
+        ) -> None:
+            nonlocal created
+            if title.lower() in existing_titles:
+                return
+            body = {
+                "smart_collection": {
+                    "title": title,
+                    "rules": rules,
+                    "published": True,
+                }
+            }
+            if body_html:
+                body["smart_collection"]["body_html"] = body_html
+            result = self._write(
+                client, "POST", "smart_collections.json", body,
+                description=description,
+            )
+            if result.get("smart_collection") or result.get("dry_run"):
+                created += 1
+
+        # Tier 1 — niche category collections
         for title in config["collections"]:
-            if title.lower() in existing_titles:
-                continue
-            result = self._write(
-                client, "POST", "smart_collections.json",
-                {
-                    "smart_collection": {
-                        "title": title,
-                        "body_html": f"<p>Explore our {title} selection.</p>",
-                        "rules": [{
-                            "column": "tag", "relation": "equals",
-                            "condition": title.lower(),
-                        }],
-                        "published": True,
-                    }
-                },
-                description=f"Create smart collection '{title}'",
+            _try_create(
+                title,
+                [{"column": "tag", "relation": "equals", "condition": title.lower()}],
+                f"Create smart collection '{title}'",
+                body_html=f"<p>Explore our {title} selection.</p>",
             )
-            if result.get("smart_collection") or result.get("dry_run"):
-                created += 1
 
-        # Price-based collections
-        for title, rule in [("Under $20", "20"), ("Under $50", "50")]:
-            if title.lower() in existing_titles:
-                continue
-            result = self._write(
-                client, "POST", "smart_collections.json",
-                {
-                    "smart_collection": {
-                        "title": title,
-                        "rules": [{
-                            "column": "variant_price", "relation": "less_than",
-                            "condition": rule,
-                        }],
-                        "published": True,
-                    }
-                },
-                description=f"Create price collection '{title}'",
+        # Tier 2 — price bands
+        for title, cond in [("Under $20", "20"), ("Under $50", "50")]:
+            _try_create(
+                title,
+                [{"column": "variant_price", "relation": "less_than", "condition": cond}],
+                f"Create price collection '{title}'",
             )
-            if result.get("smart_collection") or result.get("dry_run"):
-                created += 1
 
-        return {"created": created, "existing": len(existing)}
+        # Tier 3 — smart data-driven collections.
+        # We inspect the actual products to decide whether each one is
+        # worth creating, then point the collection at a tag the system
+        # maintains elsewhere (bestseller, top-rated, back-in-stock, etc).
+        analysis = self._analyze_products_for_collections(products)
+
+        smart_specs = [
+            ("Bestsellers", "bestseller",
+             "Our top-selling products based on real order data",
+             analysis["has_bestsellers"]),
+            ("New Arrivals", None,  # special: date-based rule
+             "Recently added — still hot",
+             analysis["has_new_arrivals"]),
+            ("Low Stock", None,  # special: inventory rule
+             "Selling fast — grab them before they're gone",
+             analysis["has_low_stock"]),
+            ("Top Rated", "top-rated",
+             "Customer-favorite products with the best ratings",
+             analysis["has_top_rated"]),
+            ("Back in Stock", "back-in-stock",
+             "Just restocked — don't miss out again",
+             analysis["has_back_in_stock"]),
+            ("Gift Ideas", "gift-idea",
+             "Perfect picks for any occasion",
+             analysis["has_gift_ideas"]),
+        ]
+
+        for title, tag, blurb, should_create in smart_specs:
+            if not should_create:
+                skipped_empty += 1
+                continue
+            if title == "New Arrivals":
+                # Products published in the last 30 days
+                cutoff = time.strftime(
+                    "%Y-%m-%dT00:00:00Z",
+                    time.gmtime(time.time() - 30 * 86400),
+                )
+                rules = [{
+                    "column": "created_at",
+                    "relation": "greater_than",
+                    "condition": cutoff,
+                }]
+            elif title == "Low Stock":
+                rules = [{
+                    "column": "inventory_stock",
+                    "relation": "less_than",
+                    "condition": "6",
+                }]
+            else:
+                rules = [{
+                    "column": "tag", "relation": "equals", "condition": tag,
+                }]
+            _try_create(
+                title, rules,
+                f"Create smart collection '{title}' (data-driven)",
+                body_html=f"<p>{blurb}</p>",
+            )
+
+        return {
+            "created": created,
+            "existing": len(existing),
+            "skipped_empty": skipped_empty,
+            "analysis": analysis,
+        }
+
+    @staticmethod
+    def _analyze_products_for_collections(products: list) -> dict[str, Any]:
+        """Inspect products and decide which smart collections make sense.
+
+        Returns a dict of boolean flags that _setup_collections uses to
+        decide which data-driven collections to create. Flags are based
+        on simple signals visible in the Shopify product payload:
+
+        - has_bestsellers: any product tagged ``bestseller``
+        - has_new_arrivals: any product with created_at in last 30 days
+        - has_low_stock: total inventory across variants <= 5
+        - has_top_rated: any product tagged ``top-rated``
+        - has_back_in_stock: any product tagged ``back-in-stock``
+        - has_gift_ideas: any product tagged ``gift-idea`` or title
+                         contains "gift"
+        """
+        analysis = {
+            "has_bestsellers": False,
+            "has_new_arrivals": False,
+            "has_low_stock": False,
+            "has_top_rated": False,
+            "has_back_in_stock": False,
+            "has_gift_ideas": False,
+            "total_products": len(products),
+            "new_count": 0,
+            "low_stock_count": 0,
+        }
+        if not products:
+            return analysis
+
+        cutoff_ts = time.time() - 30 * 86400
+        for p in products:
+            tags_raw = p.get("tags", "") or ""
+            tags = {t.strip().lower() for t in tags_raw.split(",") if t.strip()}
+            title = (p.get("title") or "").lower()
+
+            if "bestseller" in tags:
+                analysis["has_bestsellers"] = True
+            if "top-rated" in tags:
+                analysis["has_top_rated"] = True
+            if "back-in-stock" in tags:
+                analysis["has_back_in_stock"] = True
+            if "gift-idea" in tags or "gift" in title:
+                analysis["has_gift_ideas"] = True
+
+            # New arrivals: parse created_at if present
+            created_str = p.get("created_at", "") or ""
+            if created_str:
+                try:
+                    # Shopify returns ISO 8601 with TZ, e.g. 2026-01-15T12:00:00-05:00
+                    from datetime import datetime
+                    try:
+                        ts = datetime.fromisoformat(
+                            created_str.replace("Z", "+00:00")
+                        ).timestamp()
+                    except ValueError:
+                        ts = 0
+                    if ts >= cutoff_ts:
+                        analysis["has_new_arrivals"] = True
+                        analysis["new_count"] += 1
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # Low stock: sum inventory across variants
+            total_inv = 0
+            for v in p.get("variants") or []:
+                try:
+                    total_inv += int(v.get("inventory_quantity", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+            if 0 < total_inv <= 5:
+                analysis["has_low_stock"] = True
+                analysis["low_stock_count"] += 1
+
+        return analysis
 
     # ── Feature: Discounts ─────────────────────────────────────
 

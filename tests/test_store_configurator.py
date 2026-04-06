@@ -112,7 +112,7 @@ class TestCollections:
                              features=["collections"])
         assert result["results"]["collections"]["created"] > 0
         post_paths = [p for m, p, _ in calls if m == "POST" and "smart_collections" in p]
-        # 5 niche + 2 price-based = 7
+        # 5 niche + 2 price-based + 0 smart (no products) = 7
         assert len(post_paths) == 7
 
     def test_skips_existing_collections(self, monkeypatch):
@@ -131,6 +131,147 @@ class TestCollections:
                          if m == "POST" and "smart_collections" in p)
         # 7 total - 2 existing = 5 created
         assert post_count == 5
+
+
+class TestSmartCollections:
+    """Data-driven collections derived from actual product data."""
+
+    def _products_response(self, products):
+        return {
+            "GET smart_collections.json": {"smart_collections": []},
+            "GET products.json": {"products": products},
+            "POST smart_collections.json": {"smart_collection": {"id": 1}},
+        }
+
+    def test_bestsellers_created_when_tag_present(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses=self._products_response([
+                {"id": 1, "title": "Widget", "tags": "bestseller, home",
+                 "variants": [{"price": "25"}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure("x.myshopify.com", "tok", niche="home",
+                             features=["collections"])
+        descriptions = [b["smart_collection"]["title"]
+                        for m, p, b in calls
+                        if m == "POST" and "smart_collections" in p and b]
+        assert "Bestsellers" in descriptions
+        assert result["results"]["collections"]["analysis"]["has_bestsellers"] is True
+
+    def test_bestsellers_skipped_when_no_tag(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses=self._products_response([
+                {"id": 1, "title": "Plain", "tags": "home",
+                 "variants": [{"price": "25"}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure("x.myshopify.com", "tok", niche="home",
+                             features=["collections"])
+        titles = [b["smart_collection"]["title"]
+                  for m, p, b in calls
+                  if m == "POST" and "smart_collections" in p and b]
+        assert "Bestsellers" not in titles
+        assert result["results"]["collections"]["skipped_empty"] >= 1
+
+    def test_new_arrivals_based_on_created_at(self, monkeypatch):
+        import time as _t
+        recent = _t.strftime("%Y-%m-%dT00:00:00+00:00",
+                              _t.gmtime(_t.time() - 5 * 86400))  # 5 days ago
+        old = "2020-01-01T00:00:00+00:00"
+        calls = _install_fake_client(
+            monkeypatch,
+            responses=self._products_response([
+                {"id": 1, "title": "New", "tags": "home",
+                 "created_at": recent, "variants": [{"price": "25"}]},
+                {"id": 2, "title": "Old", "tags": "home",
+                 "created_at": old, "variants": [{"price": "25"}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure("x.myshopify.com", "tok", niche="home",
+                             features=["collections"])
+        assert result["results"]["collections"]["analysis"]["has_new_arrivals"] is True
+        assert result["results"]["collections"]["analysis"]["new_count"] == 1
+        titles = [b["smart_collection"]["title"]
+                  for m, p, b in calls
+                  if m == "POST" and b]
+        assert "New Arrivals" in titles
+
+    def test_low_stock_flagged_when_inventory_low(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses=self._products_response([
+                {"id": 1, "title": "Running out", "tags": "home",
+                 "variants": [{"price": "25", "inventory_quantity": 3}]},
+                {"id": 2, "title": "Plenty", "tags": "home",
+                 "variants": [{"price": "25", "inventory_quantity": 50}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure("x.myshopify.com", "tok", niche="home",
+                             features=["collections"])
+        assert result["results"]["collections"]["analysis"]["has_low_stock"] is True
+        assert result["results"]["collections"]["analysis"]["low_stock_count"] == 1
+
+    def test_gift_ideas_from_title_or_tag(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses=self._products_response([
+                {"id": 1, "title": "Gift Basket", "tags": "home",
+                 "variants": [{"price": "25"}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure("x.myshopify.com", "tok", niche="home",
+                             features=["collections"])
+        assert result["results"]["collections"]["analysis"]["has_gift_ideas"] is True
+
+    def test_empty_product_list_creates_no_smart_collections(self, monkeypatch):
+        calls = _install_fake_client(
+            monkeypatch,
+            responses=self._products_response([]),
+        )
+        c = _make()
+        result = c.configure("x.myshopify.com", "tok", niche="home",
+                             features=["collections"])
+        # 7 baseline (5 niche + 2 price), 0 smart
+        assert result["results"]["collections"]["created"] == 7
+        assert result["results"]["collections"]["skipped_empty"] == 6
+
+    def test_top_rated_and_back_in_stock_flags(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._products_response([
+                {"id": 1, "title": "Great", "tags": "top-rated",
+                 "variants": [{"price": "25"}]},
+                {"id": 2, "title": "Restocked", "tags": "back-in-stock",
+                 "variants": [{"price": "25"}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure("x.myshopify.com", "tok", niche="home",
+                             features=["collections"])
+        a = result["results"]["collections"]["analysis"]
+        assert a["has_top_rated"] is True
+        assert a["has_back_in_stock"] is True
+
+    def test_malformed_created_at_does_not_crash(self, monkeypatch):
+        _install_fake_client(
+            monkeypatch,
+            responses=self._products_response([
+                {"id": 1, "title": "Bad date", "tags": "home",
+                 "created_at": "not-a-date",
+                 "variants": [{"price": "25"}]},
+            ]),
+        )
+        c = _make()
+        result = c.configure("x.myshopify.com", "tok", niche="home",
+                             features=["collections"])
+        assert result["results"]["collections"]["analysis"]["new_count"] == 0
 
 
 class TestDiscounts:
