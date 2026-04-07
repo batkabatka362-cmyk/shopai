@@ -6,6 +6,12 @@ engine pipeline into a self-directed cognitive system. It does
 `core/intelligence/` — it sits on top of them and orchestrates the
 modules already there into a richer cycle.
 
+**ShopAI is built ON TOP of AI models**, not as one. The cognitive
+modules use local Ollama (Mistral / Qwen / LLaMA) and remote
+APIs (OpenAI / Anthropic) through `core/system/llm_adapter.py`
+when available, and fall back to deterministic heuristics when
+not. See `core/system/LLM_COOKBOOK.md` for the LLM stack.
+
 ## The 9 modules
 
 Each module is independently importable and testable. The `mind`

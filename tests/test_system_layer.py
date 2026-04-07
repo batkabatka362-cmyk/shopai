@@ -207,7 +207,8 @@ class TestLLMAdapter:
         llm = LLMAdapter()
         stats = llm.get_stats()
         assert "models" in stats
-        assert "roles" in stats
+        # Adapter upgraded: field renamed to role_map (more specific)
+        assert "role_map" in stats
 
     def test_singleton(self):
         from core.system.llm_adapter import get_llm
