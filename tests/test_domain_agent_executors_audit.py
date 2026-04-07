@@ -161,6 +161,44 @@ class TestEnginePresentButNoneError:
         assert result["failed_steps"] == 1
 
 
+# ── Enrichment function raises ───────────────────────────────
+
+
+@pytest.mark.parametrize("module_path", AGENT_MODULES)
+class TestEnrichmentRaises:
+    def test_enrichment_exception_does_not_crash_plan(self, module_path, monkeypatch):
+        """Regression: a buggy ``_enrich_from_dependencies`` used
+        to take down the entire plan. Audit pass 34 moved
+        enrichment behind a try/except in the shared base so a
+        single bad step is recorded as failed and the runner
+        moves on."""
+        mod = importlib.import_module(module_path)
+
+        class _OkEngine:
+            def run(self, inp):
+                return {"status": "success", "data": {}, "error": None}
+
+        _patch_engine(monkeypatch, module_path, _OkEngine)
+
+        # Force the agent's enrichment to blow up by handing it
+        # a non-list ``depends_on`` it can't iterate cleanly.
+        # Every agent's enrichment opens with ``for dep_name in
+        # dependencies`` — passing an int triggers TypeError.
+        result = mod.execute_plan(
+            plan={
+                "engines": [
+                    {"name": "x", "input": {}, "depends_on": 12345},
+                    {"name": "y", "input": {}},  # this one should still run
+                ],
+            },
+            context={},
+        )
+        # The bad step is failed, the good step ran.
+        assert result["completed_steps"] == 1
+        assert result["failed_steps"] == 1
+        assert "y" in result["engine_results"]
+
+
 # ── Engine raises ────────────────────────────────────────────
 
 
