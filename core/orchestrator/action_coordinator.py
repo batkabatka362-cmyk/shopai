@@ -99,70 +99,86 @@ class ActionCoordinator:
 
         Returns:
             {"allowed": True/False, "reason": str, "risk": str, "conflicts": [...]}
+
+        NOTE: this is a read-only inspection. Two threads can both
+        pass `check()` before either calls `start_action()` —
+        callers that need atomic check-and-start should use
+        `try_start()` instead.
         """
         with self._lock:
-            risk = ACTION_RISK.get(action_type, "low")
-            conflicts = []
-            reasons = []
+            return self._check_unlocked(action_type, target_id, context)
 
-            # Check cooldowns
-            cooldown = ACTION_COOLDOWNS.get(action_type, 0)
-            if cooldown > 0:
-                last = self._find_last_action(action_type, target_id)
-                if last:
-                    elapsed = time.time() - last["timestamp"]
-                    if elapsed < cooldown:
-                        remaining = int(cooldown - elapsed)
-                        reasons.append(f"Cooldown active: {remaining}s remaining")
-                        conflicts.append({
-                            "type": "cooldown",
-                            "action": action_type,
-                            "target": target_id,
-                            "remaining_seconds": remaining,
-                        })
+    def _check_unlocked(
+        self,
+        action_type: str,
+        target_id: str = "",
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Inner implementation of `check()` that assumes the
+        caller already holds `self._lock`. Extracted so `try_start`
+        can run check + reservation under a single lock acquire."""
+        risk = ACTION_RISK.get(action_type, "low")
+        conflicts: list[dict[str, Any]] = []
+        reasons: list[str] = []
 
-            # Check conflict rules
-            for rule in CONFLICT_RULES:
-                if action_type in (rule["action_a"], rule["action_b"]):
-                    conflicting_type = (
-                        rule["action_b"] if action_type == rule["action_a"]
-                        else rule["action_a"]
-                    )
-                    scope_key = rule["scope"]
-                    # Check if conflicting action is in-flight or recently executed
-                    conflict = self._find_conflict(
-                        conflicting_type, target_id, scope_key
-                    )
-                    if conflict:
-                        reasons.append(
-                            f"Conflicts with {conflicting_type} on {scope_key}={target_id}"
-                        )
-                        conflicts.append({
-                            "type": "conflict",
-                            "action": conflicting_type,
-                            "target": target_id,
-                            "rule": rule,
-                        })
+        # Check cooldowns
+        cooldown = ACTION_COOLDOWNS.get(action_type, 0)
+        if cooldown > 0:
+            last = self._find_last_action(action_type, target_id)
+            if last:
+                elapsed = time.time() - last["timestamp"]
+                if elapsed < cooldown:
+                    remaining = int(cooldown - elapsed)
+                    reasons.append(f"Cooldown active: {remaining}s remaining")
+                    conflicts.append({
+                        "type": "cooldown",
+                        "action": action_type,
+                        "target": target_id,
+                        "remaining_seconds": remaining,
+                    })
 
-            # Check in-flight duplicates
-            flight_key = f"{action_type}:{target_id}"
-            if flight_key in self._in_flight:
-                reasons.append("Same action already in-flight")
-                conflicts.append({"type": "in_flight", "action": action_type, "target": target_id})
-
-            allowed = len(conflicts) == 0
-            if not allowed:
-                logger.warning(
-                    "Action BLOCKED: %s on %s — %s",
-                    action_type, target_id, "; ".join(reasons),
+        # Check conflict rules
+        for rule in CONFLICT_RULES:
+            if action_type in (rule["action_a"], rule["action_b"]):
+                conflicting_type = (
+                    rule["action_b"] if action_type == rule["action_a"]
+                    else rule["action_a"]
                 )
+                scope_key = rule["scope"]
+                # Check if conflicting action is in-flight or recently executed
+                conflict = self._find_conflict(
+                    conflicting_type, target_id, scope_key
+                )
+                if conflict:
+                    reasons.append(
+                        f"Conflicts with {conflicting_type} on {scope_key}={target_id}"
+                    )
+                    conflicts.append({
+                        "type": "conflict",
+                        "action": conflicting_type,
+                        "target": target_id,
+                        "rule": rule,
+                    })
 
-            return {
-                "allowed": allowed,
-                "reason": "; ".join(reasons) if reasons else "OK",
-                "risk": risk,
-                "conflicts": conflicts,
-            }
+        # Check in-flight duplicates
+        flight_key = f"{action_type}:{target_id}"
+        if flight_key in self._in_flight:
+            reasons.append("Same action already in-flight")
+            conflicts.append({"type": "in_flight", "action": action_type, "target": target_id})
+
+        allowed = len(conflicts) == 0
+        if not allowed:
+            logger.warning(
+                "Action BLOCKED: %s on %s — %s",
+                action_type, target_id, "; ".join(reasons),
+            )
+
+        return {
+            "allowed": allowed,
+            "reason": "; ".join(reasons) if reasons else "OK",
+            "risk": risk,
+            "conflicts": conflicts,
+        }
 
     def record(
         self,
@@ -194,10 +210,25 @@ class ActionCoordinator:
 
             return action_id
 
-    def start_action(self, action_type: str, target_id: str = "") -> str:
-        """Mark an action as in-flight (about to execute)."""
+    def start_action(self, action_type: str, target_id: str = "") -> str | None:
+        """Mark an action as in-flight (about to execute).
+
+        Returns the new action_id, or None if an action of the same
+        type + target is already in-flight. Previously this method
+        unconditionally overwrote any existing in_flight entry, so
+        two concurrent starters silently shared the same flight_key
+        and the first finish_action removed BOTH entries' tracking.
+        Refusing the second start makes the in-flight bookkeeping
+        actually authoritative.
+        """
         with self._lock:
             flight_key = f"{action_type}:{target_id}"
+            if flight_key in self._in_flight:
+                logger.warning(
+                    "ActionCoordinator: start_action refused — %s already in-flight",
+                    flight_key,
+                )
+                return None
             action_id = generate_id("action")
             self._in_flight[flight_key] = {
                 "action_id": action_id,
@@ -206,6 +237,37 @@ class ActionCoordinator:
                 "started_at": time.time(),
             }
             return action_id
+
+    def try_start(
+        self,
+        action_type: str,
+        target_id: str = "",
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically check + start an action under a single lock
+        acquire. Returns the same shape as `check()` plus an
+        ``action_id`` field on success.
+
+        The previous `check()` then `start_action()` pattern had a
+        TOCTOU race window: two threads could both pass `check()`
+        before either called `start_action()`, then both proceed
+        with the same target. This atomic variant closes the gap
+        for callers that need it.
+        """
+        with self._lock:
+            verdict = self._check_unlocked(action_type, target_id, context)
+            if not verdict["allowed"]:
+                return verdict
+            flight_key = f"{action_type}:{target_id}"
+            action_id = generate_id("action")
+            self._in_flight[flight_key] = {
+                "action_id": action_id,
+                "action_type": action_type,
+                "target_id": target_id,
+                "started_at": time.time(),
+            }
+            verdict["action_id"] = action_id
+            return verdict
 
     def finish_action(
         self,
@@ -227,8 +289,10 @@ class ActionCoordinator:
         with self._lock:
             actions = self._ledger
             if action_type:
-                actions = [a for a in actions if a["action_type"] == action_type]
-            return actions[-limit:]
+                actions = [a for a in actions if a.get("action_type") == action_type]
+            # Defensive copy so caller mutation can't poison the
+            # ledger entries.
+            return [dict(a) for a in actions[-limit:]]
 
     def get_stats(self) -> dict[str, Any]:
         """Get action coordinator statistics."""
@@ -237,8 +301,13 @@ class ActionCoordinator:
             by_type: dict[str, int] = {}
             by_result: dict[str, int] = {}
             for a in self._ledger:
-                by_type[a["action_type"]] = by_type.get(a["action_type"], 0) + 1
-                by_result[a["result"]] = by_result.get(a["result"], 0) + 1
+                # Use .get so a malformed ledger entry (missing
+                # action_type or result) doesn't crash the whole
+                # stats call with KeyError.
+                at = a.get("action_type") or "unknown"
+                rs = a.get("result") or "unknown"
+                by_type[at] = by_type.get(at, 0) + 1
+                by_result[rs] = by_result.get(rs, 0) + 1
             return {
                 "total_actions": total,
                 "in_flight": len(self._in_flight),
@@ -249,8 +318,8 @@ class ActionCoordinator:
     def _find_last_action(self, action_type: str, target_id: str) -> dict[str, Any] | None:
         """Find the most recent matching action in the ledger."""
         for entry in reversed(self._ledger):
-            if entry["action_type"] == action_type:
-                if not target_id or entry["target_id"] == target_id:
+            if entry.get("action_type") == action_type:
+                if not target_id or entry.get("target_id") == target_id:
                     return entry
         return None
 
@@ -258,16 +327,16 @@ class ActionCoordinator:
         """Find a conflicting action that's in-flight or within cooldown."""
         # Check in-flight
         for flight in self._in_flight.values():
-            if flight["action_type"] == action_type and flight["target_id"] == target_id:
+            if flight.get("action_type") == action_type and flight.get("target_id") == target_id:
                 return flight
 
         # Check recent ledger (within cooldown period)
         cooldown = ACTION_COOLDOWNS.get(action_type, 3600)
         cutoff = time.time() - cooldown
         for entry in reversed(self._ledger):
-            if entry["timestamp"] < cutoff:
+            if entry.get("timestamp", 0) < cutoff:
                 break
-            if entry["action_type"] == action_type and entry["target_id"] == target_id:
+            if entry.get("action_type") == action_type and entry.get("target_id") == target_id:
                 return entry
 
         return None
