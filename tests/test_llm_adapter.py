@@ -629,6 +629,81 @@ class TestStats:
         stats = a.get_stats()
         assert stats["models"]["openai"]["fallback_uses"] >= 1
 
+    def test_failed_provider_in_chain_records_failure_stats(self, monkeypatch):
+        """Regression: previously, a provider that failed during the
+        fallback chain was completely invisible in stats — calls=0,
+        errors=0 forever. The dashboard couldn't tell a 100%-failing
+        model from one that had never been used."""
+        a = _adapter()
+        _add_ollama(a)
+        _add_openai(a)
+        a.set_retry_policy(1, base_delay=0.0)
+
+        def fake_urlopen(req, timeout=None):
+            if "ollama" in req.full_url:
+                raise urllib.error.URLError("dead")
+            return _FakeResp({
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"total_tokens": 3},
+            })
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        a.ask("analyzer", "ping")
+
+        stats = a.get_stats()["models"]
+        # The failing ollama model now appears in stats with 1 call
+        # and 1 error.
+        assert stats["mistral"]["calls"] == 1
+        assert stats["mistral"]["errors"] == 1
+        # And the successful openai call is still recorded.
+        assert stats["openai"]["calls"] == 1
+        assert stats["openai"]["errors"] == 0
+
+    def test_total_failure_records_every_provider(self, monkeypatch):
+        """When ALL providers fail, every model in the chain should
+        appear in stats with errors > 0. Previously this scenario
+        produced an empty stats dict because nothing was recorded
+        on the silent-failure path."""
+        a = _adapter()
+        _add_ollama(a)
+        _add_openai(a)
+        a.set_retry_policy(1, base_delay=0.0)
+
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.URLError("everything is down")
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        resp = a.ask("analyzer", "ping")
+        assert resp.success is False
+
+        stats = a.get_stats()["models"]
+        assert "mistral" in stats
+        assert "openai" in stats
+        assert stats["mistral"]["errors"] == 1
+        assert stats["openai"]["errors"] == 1
+        assert stats["mistral"]["calls"] == 1
+        assert stats["openai"]["calls"] == 1
+
+    def test_failed_provider_records_attempts_and_duration(self, monkeypatch):
+        """The synthetic failure response should carry the retry
+        attempt count and a non-zero duration so the dashboard can
+        surface latency even on failure."""
+        a = _adapter()
+        _add_ollama(a)
+        a.set_retry_policy(2, base_delay=0.0)
+
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.URLError("dead")
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        a.ask("analyzer", "ping")
+        stats = a.get_stats()["models"]["mistral"]
+        # 1 call recorded, total_time >= 0 (sometimes microseconds
+        # but the field is populated, not missing).
+        assert stats["calls"] == 1
+        assert stats["errors"] == 1
+        assert "total_time" in stats
+
 
 # ── Singleton accessor ──────────────────────────────────────
 

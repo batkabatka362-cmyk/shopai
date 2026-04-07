@@ -356,6 +356,7 @@ class LLMAdapter:
 
         for model_name in candidates:
             config = self._configs[model_name]
+            call_started = time.monotonic()
             response, error = self._call_with_retry(
                 config, full_prompt, system_prompt,
             )
@@ -365,11 +366,32 @@ class LLMAdapter:
                 response.fallback_used = (model_name != first_choice)
                 self._record_stats(model_name, response)
                 return response
+
+            # Persistent failure on this provider. Previously the loop
+            # silently fell through to the next provider and the
+            # failed model never showed up in stats — `calls=0,
+            # errors=0` forever, so the dashboard couldn't tell a
+            # 100%-failing provider from one that was never used.
+            # Build a synthetic failure response and record it so
+            # the operator can see the failure.
+            failure = LLMResponse(
+                text="",
+                model=config.model,
+                provider=config.provider,
+                success=False,
+                error=error,
+                duration_s=round(time.monotonic() - call_started, 3),
+                attempts=self._retry_attempts,
+                fallback_used=(model_name != first_choice),
+            )
+            self._record_stats(model_name, failure)
             logger.warning(
                 "LLM %s failed (%s); trying next in chain", model_name, error,
             )
 
-        # Everything failed
+        # Everything failed. Per-provider stats were already recorded
+        # inside the loop above, so the dashboard reflects the full
+        # picture. Just synthesize the final response for the caller.
         return LLMResponse(
             text="", model=last_model, provider="none",
             success=False, error=last_error or "All providers failed",
