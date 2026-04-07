@@ -61,6 +61,9 @@ LOOKALIKE_TIERS = {
 class MarketingTactics:
     """Real-world marketing intelligence engine."""
 
+    def __init__(self, *, llm: Any = None) -> None:
+        self._llm = llm
+
     def full_analysis(
         self,
         campaigns: list[dict[str, Any]] | None = None,
@@ -385,3 +388,107 @@ class MarketingTactics:
             "overlap_pct": overlap_pct,
             "action": "Consolidate or exclude" if overlap_pct > 50 else "Monitor",
         }
+
+    # ── LLM strategy synthesizer ──────────────────────────────
+
+    def synthesize_strategy_with_llm(
+        self,
+        campaigns: list[dict[str, Any]] | None = None,
+        products: list[dict[str, Any]] | None = None,
+        customers: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Run the heuristic full_analysis, then ask the LLM to
+        synthesize the findings into a prioritized action plan.
+
+        Returns:
+            {
+                "heuristic": <full_analysis output>,
+                "llm": {priorities, top_action, expected_lift,
+                        confidence, reasoning} or {"error": "..."},
+                "source": "llm" | "heuristic_only",
+            }
+        """
+        heuristic = self.full_analysis(
+            campaigns=campaigns, products=products, customers=customers,
+        )
+        result: dict[str, Any] = {
+            "heuristic": heuristic,
+            "llm": None,
+            "source": "heuristic_only",
+        }
+
+        if not heuristic:
+            return result
+
+        llm = self._get_llm()
+        if llm is None:
+            return result
+        try:
+            if not llm.is_available():
+                return result
+        except Exception:  # noqa: BLE001
+            return result
+
+        try:
+            from core.system.prompt_library import get_prompt
+        except Exception:  # noqa: BLE001
+            return result
+        template = get_prompt("marketing.synthesize_strategy")
+        if template is None:
+            return result
+
+        # Build a compact JSON summary so the LLM has the full context
+        try:
+            import json
+            summary_json = json.dumps(heuristic, default=str)[:3000]
+        except Exception:  # noqa: BLE001
+            return result
+
+        rendered = template.render(
+            campaign_count=len(campaigns or []),
+            product_count=len(products or []),
+            customer_count=len(customers or []),
+            heuristic_summary=summary_json,
+        )
+
+        try:
+            structured = llm.ask_structured(
+                role=template.role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["llm"] = {"error": str(exc)[:200]}
+            return result
+
+        if not getattr(structured, "ok", False):
+            result["llm"] = {"error": structured.error or "unparseable"}
+            return result
+
+        data = structured.data or {}
+        try:
+            priorities = data.get("priorities") or []
+            if not isinstance(priorities, list):
+                priorities = []
+            result["llm"] = {
+                "priorities": [str(p) for p in priorities[:8]],
+                "top_action": str(data.get("top_action", "")),
+                "expected_lift_pct": float(data.get("expected_lift_pct", 0)),
+                "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
+                "reasoning": str(data.get("reasoning", ""))[:500],
+            }
+            result["source"] = "llm"
+        except (TypeError, ValueError) as exc:
+            result["llm"] = {"error": f"normalization failed: {exc}"}
+        return result
+
+    def _get_llm(self) -> Any:
+        """Lazily resolve the LLM adapter."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from core.system.llm_adapter import get_llm
+            return get_llm()
+        except Exception:  # noqa: BLE001
+            return None

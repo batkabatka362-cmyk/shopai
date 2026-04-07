@@ -388,6 +388,42 @@ BUILT_IN_PROMPTS: list[PromptTemplate] = [
     ),
 
     PromptTemplate(
+        name="marketing.synthesize_strategy",
+        version=1,
+        purpose="Turn heuristic marketing analysis into a prioritized plan",
+        role="reasoner",
+        system=(
+            "You are a senior growth marketer reviewing a structured "
+            "report from an automated marketing analyzer. Your job is "
+            "to read the findings and produce a prioritized action "
+            "plan for the next 7 days.\n\n"
+            "Output ONLY a JSON object:\n"
+            '{"priorities": ["...", "..."], '
+            '"top_action": "the single most important thing to do first", '
+            '"expected_lift_pct": float, '
+            '"confidence": 0.0-1.0, '
+            '"reasoning": "..."}\n'
+            "Be specific. Reference numbers from the report when "
+            "possible. Bias toward 1-2 high-impact moves over 10 "
+            "small ones."
+        ),
+        template=(
+            "Inputs: {campaign_count} campaigns, "
+            "{product_count} products, {customer_count} customers.\n"
+            "\n"
+            "Heuristic analyzer report:\n"
+            "{heuristic_summary}\n"
+            "\n"
+            "Synthesize a prioritized 7-day plan. Return JSON only."
+        ),
+        placeholders=[
+            "campaign_count", "product_count", "customer_count",
+            "heuristic_summary",
+        ],
+        schema_hint='{"priorities": [str], "top_action": str, "expected_lift_pct": float, "confidence": float, "reasoning": str}',
+    ),
+
+    PromptTemplate(
         name="content.ad_copy",
         version=1,
         purpose="Rewrite a heuristic ad into platform-appropriate copy",
