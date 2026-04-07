@@ -190,9 +190,22 @@ class IntelligenceLoop:
                     elif item is not None:
                         cleaned.append(item)
                 data[key] = cleaned
+                # Re-bind val so the empty-removal check below sees
+                # the cleaned list. Previously `val` still pointed at
+                # the *original* list, so a list whose every item got
+                # filtered out would leave a zombie empty list in
+                # `data` instead of being removed — which then leaked
+                # into stage 2 as a non-empty `data[key]` field that
+                # downstream isinstance(...) and len(...) checks
+                # treated as valid input.
+                val = cleaned
 
             if val is None or val == "" or val == []:
-                del data[key]
+                # `key` may already have been deleted earlier in the
+                # loop body if a previous branch popped it. Use pop
+                # so we don't double-delete.
+                if key in data:
+                    del data[key]
                 fixes.append(f"{key}: removed empty")
 
         # Business logic validation
@@ -322,8 +335,11 @@ class IntelligenceLoop:
                         analysis["findings"].append(f"Revenue forecast: {growth:.1f}% decline — action needed")
                     else:
                         analysis["findings"].append(f"Revenue forecast: {growth:+.1f}% — stable")
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "IntelligenceLoop: revenue forecasting failed (%s); "
+                    "analysis will proceed without forecast", exc,
+                )
 
         # ── Consume enriched context from CoreOrchestrator ──
         financial_ctx = data.get("_financial", {})
@@ -380,6 +396,12 @@ class IntelligenceLoop:
         revenue = analysis.get("revenue", {})
         forecast = analysis.get("forecast", {})
         opp_score = analysis.get("opportunity_score", 50)
+        # `top` is used below in the past-advice gate. Previously this
+        # variable was undefined in _stage_decide and only existed in
+        # the helper _generate_options, so any cycle where the
+        # outcome tracker had set `avoid_below_score` would crash with
+        # NameError. Hoist the same extraction up here.
+        top = safe_dict(products.get("top_product"))
 
         # Generate options FROM DATA — not hardcoded menu
         options = self._generate_options(products, customers, revenue, forecast, past_advice)
@@ -403,7 +425,11 @@ class IntelligenceLoop:
         try:
             from core.intelligence.strategy_optimizer import StrategyOptimizer
             strategy_weights = StrategyOptimizer().get_adjusted_weights(goal)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "IntelligenceLoop: strategy_optimizer.get_adjusted_weights "
+                "failed (%s); using unadjusted weights", exc,
+            )
             strategy_weights = {}
 
         for opt in options:
@@ -745,8 +771,15 @@ class IntelligenceLoop:
                 "decision_type": decision.get("decision_type", ""),
                 "options_evaluated": decision.get("options_evaluated", 0),
             })
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Tracking is what closes the learn-feedback loop. A
+            # silent swallow here means the learning flywheel
+            # silently stops turning — log so the operator notices
+            # the system has stopped accumulating evidence.
+            logger.warning(
+                "IntelligenceLoop: outcome tracking failed for loop %s "
+                "(%s); learn flywheel may stall", loop_id, exc,
+            )
 
     # ── Stage 7: LEARN — Bayesian incremental updates ──────
 
