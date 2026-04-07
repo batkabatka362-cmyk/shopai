@@ -119,28 +119,75 @@ class IntelligenceCycle:
         else:
             stages["execution"] = {"status": "skipped" if not action_fn else "no_action"}
 
-        # Stage 7: RESULT - capture outcome
-        result_data = self._capture_result(category, decision, execution_result, store_id)
+        # Stage 7: RESULT - capture outcome.
+        # Wrapped in try/except so a data-architecture write failure
+        # (locked DB, schema drift, etc.) doesn't abort the cycle
+        # before learning + update can run. The fallback action_id
+        # keeps stage 8 useful for in-memory learning even when
+        # persistence is broken.
+        try:
+            result_data = self._capture_result(category, decision, execution_result, store_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "IntelligenceCycle: capture_result failed (%s)", exc,
+            )
+            result_data = {
+                "action_id": f"{category}_{int(time.time())}_fallback",
+                "captured": False,
+                "error": str(exc)[:100],
+            }
         stages["result"] = result_data
 
         # Stage 8: EVALUATION - score the outcome
         score = self._evaluate(category, decision, execution_result, features)
         stages["evaluation"] = {"score": score, "rating": self._score_label(score)}
 
-        # Attach evaluation as result (even without execution — the score IS the result)
-        self._data_arch.attach_result(
-            result_data["action_id"],
-            {"score": score, "rating": self._score_label(score),
-             "executed": bool(execution_result), **execution_result},
-            score=score,
-        )
+        # Attach evaluation as result (even without execution — the score IS the result).
+        # Build the payload in this order so the evaluator's
+        # score/rating/executed fields ALWAYS win over anything an
+        # action_fn happened to return. Previously the literal keys
+        # came first and `**execution_result` was spread after them,
+        # so a buggy action_fn returning {"score": 0, ...} would
+        # silently overwrite the evaluator's score in the data
+        # architecture — the cycle then "remembered" a corrupted
+        # outcome score for future decisions.
+        attach_payload = {
+            **(execution_result if isinstance(execution_result, dict) else {}),
+            "score": score,
+            "rating": self._score_label(score),
+            "executed": bool(execution_result),
+        }
+        try:
+            self._data_arch.attach_result(
+                result_data["action_id"],
+                attach_payload,
+                score=score,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Stage 8 attach failures used to abort the whole cycle
+            # before learning + update could run. Isolate them so
+            # the rest of the cycle still completes.
+            stages.setdefault("evaluation", {})["attach_error"] = str(exc)[:100]
+            logger.warning(
+                "IntelligenceCycle: attach_result failed (%s)", exc,
+            )
 
         # Stage 9: LEARNING - extract insights
-        learning = self._learn(category, features, decision, execution_result, score)
+        try:
+            learning = self._learn(category, features, decision, execution_result, score)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("IntelligenceCycle: learning failed (%s)", exc)
+            learning = {"error": str(exc)[:100]}
         stages["learning"] = learning
 
         # Stage 10: UPDATE - update memory
-        update = self._update_memory(category, filtered, decision, execution_result, score, features)
+        try:
+            update = self._update_memory(
+                category, filtered, decision, execution_result, score, features,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("IntelligenceCycle: memory update failed (%s)", exc)
+            update = {"error": str(exc)[:100]}
         stages["update"] = update
 
         elapsed = time.monotonic() - start

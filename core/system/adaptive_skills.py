@@ -182,13 +182,30 @@ class AdaptiveSkills:
 
     # ── Learning ─────────────────────────────────────────────
 
-    def record_outcome(self, skill_name: str, success: bool, impact: float = 0) -> None:
-        """Record the outcome of using a skill."""
+    def record_outcome(self, skill_name: str, success: bool, impact: float = 0) -> bool:
+        """Record the outcome of using a skill.
+
+        Returns True iff the skill was found and updated. Previously
+        this method silently no-op'd when ``skill_name`` was unknown
+        — callers had no signal that their typo / stale skill name
+        had been swallowed and the running success score was being
+        computed off a different sample than they thought.
+        """
         skill = self._skills.get(skill_name)
-        if skill:
-            skill.record_use(success, impact)
-            logger.info("Skill %s: %s (score: %.3f after %d uses)",
-                       skill_name, "success" if success else "fail", skill.score, skill.uses)
+        if skill is None:
+            logger.warning(
+                "AdaptiveSkills.record_outcome: unknown skill %r "
+                "(known: %d). Outcome not recorded.",
+                skill_name, len(self._skills),
+            )
+            return False
+        skill.record_use(success, impact)
+        logger.info(
+            "Skill %s: %s (score: %.3f after %d uses)",
+            skill_name, "success" if success else "fail",
+            skill.score, skill.uses,
+        )
+        return True
 
     def add_skill(self, name: str, category: str, description: str,
                   conditions: dict | None = None) -> Skill:

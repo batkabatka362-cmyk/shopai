@@ -94,10 +94,16 @@ class SharedMemory:
 
     def exists(self, namespace: str, key: str) -> bool:
         with self._lock:
-            entry = self._store.get(namespace, {}).get(key)
+            ns = self._store.get(namespace, {})
+            entry = ns.get(key)
             if not entry:
                 return False
             if entry["expires_at"] > 0 and time.time() > entry["expires_at"]:
+                # Drop the expired entry on detection so subsequent
+                # `get_stats()` calls don't double-count it and the
+                # store doesn't accumulate stale rows that only get
+                # cleared when someone happens to call get()/get_all().
+                ns.pop(key, None)
                 return False
             return True
 
