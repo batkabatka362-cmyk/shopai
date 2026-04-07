@@ -187,12 +187,52 @@ class LLMPlanBackend(PlanBackend):
         return plan
 
     @staticmethod
+    def _extract_first_json_object(text: str) -> Optional[str]:
+        """Return the substring of `text` that contains the FIRST
+        balanced JSON object, or None if there isn't one.
+
+        Replaces a greedy `re.search(r"\\{.*\\}", text, re.DOTALL)`
+        which grabbed from the first `{` all the way to the LAST
+        `}` — when an LLM emitted multiple JSON-looking blocks
+        (or trailing chatter with braces), the resulting substring
+        was syntactically broken and json.loads silently returned
+        an empty plan instead of using the legitimate first block.
+        """
+        depth = 0
+        start = -1
+        in_string = False
+        escape = False
+        for i, ch in enumerate(text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        return text[start:i + 1]
+        return None
+
+    @staticmethod
     def _parse_steps(text: str) -> list[PlanStep]:
         """Pull a JSON object out of a model response and convert to steps.
 
         Tolerant of:
         - Markdown code fences (```json ... ```)
         - Leading/trailing chatter
+        - Multiple JSON blocks (picks the first balanced one)
         - Missing optional fields
         """
         if not text:
@@ -202,13 +242,13 @@ class LLMPlanBackend(PlanBackend):
         cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
         cleaned = re.sub(r"\s*```\s*$", "", cleaned, flags=re.MULTILINE)
 
-        # Find the first {...} block
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if not match:
+        # Find the FIRST balanced {...} block (not the longest one)
+        block = LLMPlanBackend._extract_first_json_object(cleaned)
+        if block is None:
             return []
 
         try:
-            payload = json.loads(match.group(0))
+            payload = json.loads(block)
         except json.JSONDecodeError:
             return []
 
@@ -441,14 +481,33 @@ class Planner:
             f"{', evidence: ' + evidence if evidence else ''})"
         )
         sub_plan = self.plan(new_goal)
+
+        # If the re-plan produced nothing, KEEP the original failed
+        # step instead of silently dropping it. The previous version
+        # spliced an empty list into the merged plan, which removed
+        # the step from the chain entirely — leaving a "completed"
+        # plan whose owner thought the failure had been recovered
+        # when in fact the step was just gone.
+        if not sub_plan.steps:
+            logger.warning(
+                "Planner.replan: sub-plan produced no steps for "
+                "failed step %d; keeping original step in place",
+                failed_step_index,
+            )
+            replacement_steps = [failed]
+            replan_marker = f"{plan.backend}-replan-empty"
+        else:
+            replacement_steps = sub_plan.steps
+            replan_marker = f"{plan.backend}+{sub_plan.backend}-replan"
+
         merged = Plan(
             goal_id=plan.goal_id,
             goal_what=plan.goal_what,
-            backend=f"{plan.backend}+{sub_plan.backend}-replan",
+            backend=replan_marker,
         )
         merged.steps = (
             plan.steps[:failed_step_index]
-            + sub_plan.steps
+            + replacement_steps
             + plan.steps[failed_step_index + 1:]
         )
         if merged.steps:
