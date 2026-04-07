@@ -30,26 +30,83 @@ class OutcomeTracker:
         self._lock = threading.Lock()
         os.makedirs(_OUTCOME_DIR, exist_ok=True)
 
+    # Keys we strip from decision dicts before persisting — these
+    # are caller bookkeeping, not part of the learnable signal.
+    _DECISION_STRIP_KEYS = frozenset({"request_id", "model", "role"})
+
     def record_decision(self, decision_id: str, engine: str, decision: dict[str, Any]) -> None:
-        """Record a decision that was made."""
+        """Record a decision that was made.
+
+        Defensive against non-dict `decision` arguments — previously
+        a string / list / None would crash with AttributeError on
+        the `.items()` call inside the dict comprehension. Callers
+        in heterogeneous code paths sometimes pass the raw response
+        object instead of a dict; we now coerce gracefully.
+        """
+        if isinstance(decision, dict):
+            clean_decision = {
+                k: v for k, v in decision.items()
+                if isinstance(k, str)
+                and not k.startswith("_")
+                and k not in self._DECISION_STRIP_KEYS
+            }
+        else:
+            # Preserve the raw value under a single field so the
+            # learner can still see it without crashing.
+            clean_decision = {"raw": str(decision)[:500]}
         entry = {
             "decision_id": decision_id,
             "engine": engine,
-            "decision": {k: v for k, v in decision.items() if not k.startswith("_") and k not in ("request_id", "model", "role")},
+            "decision": clean_decision,
             "timestamp": time.time(),
             "outcome": None,
         }
         self._append(engine, entry)
 
+    @staticmethod
+    def _normalize_success(outcome: dict[str, Any]) -> bool:
+        """Coerce an outcome dict's success signal to an explicit
+        bool. Previously `outcome.get("success", default)` returned
+        None when the key existed with value None, and the
+        downstream filters bucket None as "failure" — silently
+        misclassifying explicit "outcome unknown" entries.
+        """
+        if not isinstance(outcome, dict):
+            return False
+        raw = outcome.get("success")
+        if raw is None:
+            # Fall back to revenue-as-signal: positive revenue → success.
+            return safe_float(outcome.get("revenue")) > 0
+        if isinstance(raw, bool):
+            return raw
+        # Normalize truthy strings/numbers explicitly so a future
+        # caller passing "true"/"yes"/1 doesn't mis-bucket.
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"true", "yes", "ok", "success", "1"}
+        return bool(raw)
+
     def record_outcome(self, decision_id: str, engine: str, outcome: dict[str, Any]) -> bool:
-        """Record the real outcome of a decision — thread-safe."""
+        """Record the real outcome of a decision — thread-safe.
+
+        Returns True iff a matching decision was found AND updated.
+        Defensive against non-dict outcome values.
+        """
+        if not isinstance(outcome, dict):
+            logger.warning(
+                "OutcomeTracker.record_outcome: outcome for %s/%s is "
+                "%s, not a dict — wrapping",
+                engine, decision_id, type(outcome).__name__,
+            )
+            outcome = {"raw": str(outcome)[:500]}
+
+        success_flag = self._normalize_success(outcome)
         with self._lock:
             entries = self._load_unlocked(engine)
             for entry in reversed(entries):
                 if entry.get("decision_id") == decision_id:
                     entry["outcome"] = outcome
                     entry["outcome_timestamp"] = time.time()
-                    entry["success"] = outcome.get("success", safe_float(outcome.get("revenue")) > 0)
+                    entry["success"] = success_flag
                     self._save_unlocked(engine, entries)
                     return True
         return False
