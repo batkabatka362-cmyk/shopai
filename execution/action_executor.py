@@ -7,7 +7,10 @@ Safety: All actions go through approval pipeline before execution.
 """
 from __future__ import annotations
 
+import copy
+import threading
 import time
+import uuid
 import json
 from typing import Any
 
@@ -24,6 +27,12 @@ class ActionExecutor:
         self._action_log: list[dict[str, Any]] = []
         self._auto_approve = False  # Safety: manual approval by default
         self._pending_actions: list[dict[str, Any]] = []
+        # Lock guarding _pending_actions / _action_log mutations.
+        # Multiple cycles + the approval CLI can race on these
+        # lists; without the lock, two callers could see the
+        # same pending action at once or interleave appends to
+        # the audit log.
+        self._lock = threading.Lock()
 
     def set_store_manager(self, sm: Any) -> None:
         self._store_manager = sm
@@ -37,12 +46,24 @@ class ActionExecutor:
 
     def propose_action(self, action: dict[str, Any]) -> dict[str, Any]:
         """Propose an action for approval. Returns action with ID and status."""
-        action_id = f"act_{int(time.time()*1000)}"
+        # Use uuid4 instead of int(time.time()*1000): millisecond
+        # timestamps collide when multiple actions are proposed in
+        # the same millisecond (rapid-fire automation, multi-thread
+        # cycles). A collision broke _find_pending (first-match
+        # wins) and the dedup filters that re-build _pending_actions
+        # by id, so removing one action removed both with the same
+        # id.
+        action_id = f"act_{uuid.uuid4().hex[:16]}"
+        # Defensive deep-copy of params: previously the proposed
+        # dict held a REFERENCE to the caller's params dict, so any
+        # mutation by the caller (or by `_dispatch_action`'s
+        # `params.pop("product_id")` below) leaked into the audit
+        # log entry and any retry logic.
         proposed = {
             "id": action_id,
             "type": action.get("type", "unknown"),
             "store_id": action.get("store_id", ""),
-            "params": action.get("params", {}),
+            "params": copy.deepcopy(action.get("params", {})),
             "reason": action.get("reason", ""),
             "engine": action.get("engine", ""),
             "confidence": action.get("confidence", 0),
@@ -53,7 +74,8 @@ class ActionExecutor:
         if self._auto_approve:
             return self.execute_action(proposed)
 
-        self._pending_actions.append(proposed)
+        with self._lock:
+            self._pending_actions.append(proposed)
         logger.info("Action proposed: %s [%s] — awaiting approval", action_id, proposed["type"])
         return proposed
 
@@ -72,20 +94,33 @@ class ActionExecutor:
         action["status"] = "rejected"
         action["rejected_reason"] = reason
         action["rejected_at"] = time.time()
-        self._pending_actions = [a for a in self._pending_actions if a["id"] != action_id]
-        self._action_log.append(action)
+        with self._lock:
+            self._pending_actions = [a for a in self._pending_actions if a["id"] != action_id]
+            self._action_log.append(action)
         return action
 
     def approve_all(self) -> list[dict[str, Any]]:
         """Approve and execute all pending actions."""
+        # Snapshot under the lock so a concurrent propose_action
+        # doesn't bloat the iteration.
+        with self._lock:
+            snapshot = list(self._pending_actions)
         results = []
-        for action in list(self._pending_actions):
+        for action in snapshot:
             results.append(self.execute_action(action))
-        self._pending_actions.clear()
+        with self._lock:
+            # Drop only the snapshot we just processed; new
+            # pending entries that arrived during the loop stay.
+            snapshot_ids = {a["id"] for a in snapshot}
+            self._pending_actions = [
+                a for a in self._pending_actions
+                if a["id"] not in snapshot_ids
+            ]
         return results
 
     def get_pending(self) -> list[dict[str, Any]]:
-        return list(self._pending_actions)
+        with self._lock:
+            return list(self._pending_actions)
 
     # ── Execution ────────────────────────────────────────────
 
@@ -93,7 +128,10 @@ class ActionExecutor:
         """Execute an approved action on Shopify."""
         action_type = action.get("type", "")
         store_id = action.get("store_id", "")
-        params = action.get("params", {})
+        # Hand the dispatcher its own copy of params so its
+        # destructive ops (e.g. `params.pop("product_id")`) don't
+        # mutate the action stored in pending / audit log.
+        params = copy.deepcopy(action.get("params", {}))
 
         start = time.monotonic()
         try:
@@ -109,20 +147,21 @@ class ActionExecutor:
             action["executed_at"] = time.time()
             action["duration_s"] = round(elapsed, 3)
 
-            # Remove from pending
-            self._pending_actions = [a for a in self._pending_actions if a["id"] != action.get("id")]
-            self._action_log.append(action)
+            with self._lock:
+                self._pending_actions = [a for a in self._pending_actions if a["id"] != action.get("id")]
+                self._action_log.append(action)
 
             logger.info("Action executed: %s [%s] in %.2fs", action.get("id"), action_type, elapsed)
             return action
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             elapsed = time.monotonic() - start
             action["status"] = "failed"
             action["error"] = str(exc)
             action["duration_s"] = round(elapsed, 3)
-            self._pending_actions = [a for a in self._pending_actions if a["id"] != action.get("id")]
-            self._action_log.append(action)
+            with self._lock:
+                self._pending_actions = [a for a in self._pending_actions if a["id"] != action.get("id")]
+                self._action_log.append(action)
             logger.error("Action failed: %s [%s]: %s", action.get("id"), action_type, exc)
             return action
 
@@ -183,24 +222,29 @@ class ActionExecutor:
         return None
 
     def _find_pending(self, action_id: str) -> dict[str, Any] | None:
-        for a in self._pending_actions:
-            if a["id"] == action_id:
-                return a
+        with self._lock:
+            for a in self._pending_actions:
+                if a.get("id") == action_id:
+                    return a
         return None
 
     def get_action_log(self, limit: int = 50) -> list[dict[str, Any]]:
-        return self._action_log[-limit:]
+        with self._lock:
+            return self._action_log[-limit:]
 
     def get_stats(self) -> dict[str, Any]:
-        executed = [a for a in self._action_log if a["status"] == "executed"]
-        failed = [a for a in self._action_log if a["status"] == "failed"]
-        rejected = [a for a in self._action_log if a["status"] == "rejected"]
+        with self._lock:
+            log_snapshot = list(self._action_log)
+            pending_count = len(self._pending_actions)
+        executed = sum(1 for a in log_snapshot if a.get("status") == "executed")
+        failed = sum(1 for a in log_snapshot if a.get("status") == "failed")
+        rejected = sum(1 for a in log_snapshot if a.get("status") == "rejected")
         return {
-            "pending": len(self._pending_actions),
-            "executed": len(executed),
-            "failed": len(failed),
-            "rejected": len(rejected),
-            "total": len(self._action_log),
+            "pending": pending_count,
+            "executed": executed,
+            "failed": failed,
+            "rejected": rejected,
+            "total": len(log_snapshot),
             "auto_approve": self._auto_approve,
         }
 
