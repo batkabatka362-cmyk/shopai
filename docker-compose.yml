@@ -4,8 +4,8 @@
 #   shopai-daemon  — autonomous cycle loop (no ports, only talks to
 #                    Shopify + the local Ollama container)
 #   shopai-api     — HTTP API server (port 8080, /health for probes)
-#   ollama         — local LLM server (optional; comment out if using
-#                    a hosted LLM endpoint via SHOPAI_OLLAMA_URL)
+#   ollama         — local LLM server (Mistral / Qwen / LLaMA family)
+#   ollama-init    — one-shot pulls the models ShopAI needs on first start
 #
 # Usage:
 #     cp .env.example .env
@@ -14,7 +14,12 @@
 #     docker compose logs -f shopai-daemon
 #
 # The daemon and API share the same data volume so they see the same
-# SQLite files, memory, and OAuth token cache.
+# SQLite files, memory, and OAuth token cache. Both depend on ollama
+# being HEALTHY (not just started) so the cognitive layer always has
+# its reasoning substrate ready.
+#
+# Override the model set via the SHOPAI_OLLAMA_MODELS env var
+# (space-separated tags). Default: mistral qwen2.5 llama3.2
 
 services:
   shopai-daemon:
@@ -31,7 +36,10 @@ services:
       - shopai_data:/app/data
       - shopai_logs:/app/logs
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     # Daemon doesn't expose HTTP, so disable the image's /health
     # healthcheck (which targets port 8080).
@@ -53,8 +61,10 @@ services:
       - shopai_data:/app/data
       - shopai_logs:/app/logs
     depends_on:
-      - shopai-daemon  # build once via the daemon service
-      - ollama
+      shopai-daemon:
+        condition: service_started  # built once via daemon
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
 
   ollama:
@@ -65,7 +75,17 @@ services:
     volumes:
       - ollama_models:/root/.ollama
     restart: unless-stopped
-    # GPU is optional — comment this block out on CPU-only hosts
+    healthcheck:
+      # Ollama exposes /api/tags as a no-auth list of installed models.
+      # If it returns 200 the daemon is alive AND the model store is
+      # mounted correctly.
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:11434/api/tags > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # GPU is optional — comment this block out on CPU-only hosts.
+    # Without GPU, Ollama still runs but inference is slower.
     deploy:
       resources:
         reservations:
@@ -73,7 +93,39 @@ services:
             - driver: nvidia
               capabilities: ["gpu"]
 
+  # One-shot init container that pulls the required models so the
+  # main daemon doesn't have to wait for the first cycle to be slow.
+  # Exits cleanly once every requested model is present in the
+  # ollama_models volume.
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: shopai-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # Override the default set with SHOPAI_OLLAMA_MODELS in .env
+      SHOPAI_OLLAMA_MODELS: ${SHOPAI_OLLAMA_MODELS:-mistral qwen2.5 llama3.2}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        echo "[ollama-init] waiting for ollama at ollama:11434..."
+        until wget -q -O - http://ollama:11434/api/tags > /dev/null 2>&1; do
+          sleep 2
+        done
+        echo "[ollama-init] ollama is up; pulling models: $$SHOPAI_OLLAMA_MODELS"
+        for model in $$SHOPAI_OLLAMA_MODELS; do
+          echo "[ollama-init] pulling $$model..."
+          OLLAMA_HOST=http://ollama:11434 ollama pull "$$model" || \
+            echo "[ollama-init] WARN: failed to pull $$model (continuing)"
+        done
+        echo "[ollama-init] done. Installed models:"
+        OLLAMA_HOST=http://ollama:11434 ollama list || true
+    restart: "no"
+
 volumes:
   shopai_data:   # SQLite databases + caches
   shopai_logs:   # rotated log files
-  ollama_models: # downloaded LLM weights
+  ollama_models: # downloaded LLM weights (~5-15GB depending on tags)
