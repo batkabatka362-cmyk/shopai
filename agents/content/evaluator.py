@@ -1,96 +1,54 @@
 """Content Agent evaluator — assess quality of content generation results.
 
-Evaluates:
-  - Copy quality (is the written content compelling and accurate?)
-  - SEO readiness (is content optimized for search engines?)
-  - Visual guidance (are image/video specs actionable?)
-  - Completeness (did all requested content get generated?)
+Thin wrapper around ``agents.base.evaluator.evaluate_results_base``.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from agents.base.evaluator import ScoreComponent, evaluate_results_base
+
 
 def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
-    """Evaluate content quality.
-
-    Returns score 0-100 with detailed breakdown.
-    """
-    # Defensive: caller contract says ``results: dict``
-    # but a misbehaving upstream can pass None. Audit
-    # pass 36.
-    results = results if isinstance(results, dict) else {}
-    goal = goal if isinstance(goal, str) else ""
-    engine_results = results.get("engine_results") or {}
-    if not isinstance(engine_results, dict):
-        engine_results = {}
-    # ``.get(k, default)`` only returns default when k is
-    # MISSING; present-but-None would crash the int math.
-    completed = results.get("completed_steps") or 0
-    total = results.get("total_steps") or 1
-    if not isinstance(completed, (int, float)):
-        completed = 0
-    if not isinstance(total, (int, float)) or total <= 0:
-        total = 1
-
-    scores: dict[str, float] = {}
-    issues: list[str] = []
-    strengths: list[str] = []
-
-    # 1. Copy quality (0-25): Is the written content good?
-    copy_quality = _score_copy_quality(engine_results)
-    scores["copy_quality"] = copy_quality
-    if copy_quality >= 20:
-        strengths.append("Written content is compelling with strong product messaging")
-    elif copy_quality < 10:
-        issues.append("Copy quality is low — descriptions lack detail or persuasion")
-
-    # 2. SEO readiness (0-25): Is content search-optimized?
-    seo_readiness = _score_seo_readiness(engine_results)
-    scores["seo_readiness"] = seo_readiness
-    if seo_readiness >= 20:
-        strengths.append("Content is well-optimized for target keywords")
-    elif seo_readiness < 10:
-        issues.append("SEO optimization is missing or incomplete")
-
-    # 3. Visual guidance (0-25): Are visual specs actionable?
-    visual_guidance = _score_visual_guidance(engine_results)
-    scores["visual_guidance"] = visual_guidance
-    if visual_guidance >= 20:
-        strengths.append("Visual content specs are detailed and production-ready")
-    elif visual_guidance < 10:
-        issues.append("Visual content guidance is lacking")
-
-    # 4. Completeness (0-25): Did we generate everything needed?
-    completeness = _score_completeness(engine_results, completed, total)
-    scores["completeness"] = completeness
-    if completeness >= 20:
-        strengths.append(f"All {total} content engines completed successfully")
-    elif completeness < 10:
-        issues.append(f"{total - completed}/{total} content engines failed")
-
-    total_score = sum(scores.values())
-    total_score = max(0, min(100, round(total_score)))
-
-    quality = "high" if total_score >= 70 else "medium" if total_score >= 40 else "low"
-
-    return {
-        "score": total_score,
-        "quality": quality,
-        "scores": scores,
-        "issues": issues,
-        "strengths": strengths,
-        "recommendation": _overall_recommendation(total_score, engine_results),
-    }
+    """Evaluate content quality."""
+    return evaluate_results_base(
+        results, goal,
+        components=[
+            ScoreComponent(
+                name="copy_quality",
+                scorer=lambda er, meta: _score_copy_quality(er),
+                strong_text="Written content is compelling with strong product messaging",
+                weak_text="Copy quality is low — descriptions lack detail or persuasion",
+            ),
+            ScoreComponent(
+                name="seo_readiness",
+                scorer=lambda er, meta: _score_seo_readiness(er),
+                strong_text="Content is well-optimized for target keywords",
+                weak_text="SEO optimization is missing or incomplete",
+            ),
+            ScoreComponent(
+                name="visual_guidance",
+                scorer=lambda er, meta: _score_visual_guidance(er),
+                strong_text="Visual content specs are detailed and production-ready",
+                weak_text="Visual content guidance is lacking",
+            ),
+            ScoreComponent(
+                name="completeness",
+                scorer=lambda er, meta: _score_completeness(er, meta["completed"], meta["total"]),
+                strong_text="Content generation completeness is high with rich output",
+                weak_text="Content generation is incomplete or sparse",
+            ),
+        ],
+        recommendation_fn=_overall_recommendation,
+    )
 
 
 def _score_copy_quality(results: dict[str, Any]) -> float:
     """Score written content quality."""
     score = 0
 
-    # Product descriptions
     pd = results.get("product_description", {})
-    if pd.get("status") == "success":
+    if isinstance(pd, dict) and pd.get("status") == "success":
         pd_data = pd.get("data") or {}
         if pd_data.get("descriptions"):
             descs = pd_data["descriptions"]
@@ -100,9 +58,8 @@ def _score_copy_quality(results: dict[str, Any]) -> float:
         if pd_data.get("bullet_points"):
             score += 5
 
-    # Blog / ad copy
     cg = results.get("content_generation", {})
-    if cg.get("status") == "success":
+    if isinstance(cg, dict) and cg.get("status") == "success":
         cg_data = cg.get("data") or {}
         if cg_data.get("blog_posts"):
             score += 5
@@ -117,7 +74,7 @@ def _score_seo_readiness(results: dict[str, Any]) -> float:
     score = 0
 
     seo = results.get("search_optimization", {})
-    if seo.get("status") == "success":
+    if isinstance(seo, dict) and seo.get("status") == "success":
         seo_data = seo.get("data") or {}
         if seo_data.get("seo_analysis"):
             score += 10
@@ -142,18 +99,16 @@ def _score_visual_guidance(results: dict[str, Any]) -> float:
     """Score visual content specs."""
     score = 0
 
-    # Image optimization
     img = results.get("image_optimization", {})
-    if img.get("status") == "success":
+    if isinstance(img, dict) and img.get("status") == "success":
         img_data = img.get("data") or {}
         if img_data.get("image_specs"):
             score += 8
         if img_data.get("alt_text"):
             score += 5
 
-    # Video marketing
     vid = results.get("video_marketing", {})
-    if vid.get("status") == "success":
+    if isinstance(vid, dict) and vid.get("status") == "success":
         vid_data = vid.get("data") or {}
         if vid_data.get("video_scripts"):
             score += 7
@@ -164,7 +119,7 @@ def _score_visual_guidance(results: dict[str, Any]) -> float:
 
 
 def _score_completeness(results: dict[str, Any], completed: int, total: int) -> float:
-    """Score overall content generation completeness."""
+    """Score overall content generation completeness with a richness bonus."""
     if total == 0:
         return 0
 
@@ -174,7 +129,6 @@ def _score_completeness(results: dict[str, Any], completed: int, total: int) -> 
     # Bonus for data richness in completed engines
     bonus = 0
     for engine_name, result in results.items():
-        # Defensive: skip non-dict engine results. Audit pass 36.
         if not isinstance(result, dict):
             continue
         if result.get("status") == "success":
@@ -190,10 +144,13 @@ def _score_completeness(results: dict[str, Any], completed: int, total: int) -> 
 
 def _overall_recommendation(score: int, results: dict[str, Any]) -> str:
     """Generate final recommendation text."""
-    has_seo = results.get("search_optimization", {}).get("status") == "success"
+    seo = results.get("search_optimization", {})
+    has_seo = isinstance(seo, dict) and seo.get("status") == "success"
+    img = results.get("image_optimization", {})
+    vid = results.get("video_marketing", {})
     has_visuals = (
-        results.get("image_optimization", {}).get("status") == "success"
-        or results.get("video_marketing", {}).get("status") == "success"
+        (isinstance(img, dict) and img.get("status") == "success")
+        or (isinstance(vid, dict) and vid.get("status") == "success")
     )
 
     if score >= 70:

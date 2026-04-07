@@ -1,87 +1,46 @@
 """Operations Agent evaluator — assess quality of operations results.
 
-Evaluates:
-  - Stock health (are inventory levels optimal?)
-  - Supplier reliability (are suppliers dependable?)
-  - Shipping efficiency (is fulfillment on track?)
-  - Forecast accuracy (are predictions reliable?)
+Thin wrapper around ``agents.base.evaluator.evaluate_results_base``.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from agents.base.evaluator import ScoreComponent, evaluate_results_base
+
 
 def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
-    """Evaluate operations quality.
-
-    Returns score 0-100 with detailed breakdown.
-    """
-    # Defensive: caller contract says ``results: dict``
-    # but a misbehaving upstream can pass None. Audit
-    # pass 36.
-    results = results if isinstance(results, dict) else {}
-    goal = goal if isinstance(goal, str) else ""
-    engine_results = results.get("engine_results") or {}
-    if not isinstance(engine_results, dict):
-        engine_results = {}
-    # ``.get(k, default)`` only returns default when k is
-    # MISSING; present-but-None would crash the int math.
-    completed = results.get("completed_steps") or 0
-    total = results.get("total_steps") or 1
-    if not isinstance(completed, (int, float)):
-        completed = 0
-    if not isinstance(total, (int, float)) or total <= 0:
-        total = 1
-
-    scores: dict[str, float] = {}
-    issues: list[str] = []
-    strengths: list[str] = []
-
-    # 1. Stock health (0-25): Is inventory in good shape?
-    stock_health = _score_stock_health(engine_results)
-    scores["stock_health"] = stock_health
-    if stock_health >= 20:
-        strengths.append("Inventory levels are healthy with minimal stockout risk")
-    elif stock_health < 10:
-        issues.append("Inventory health is poor — stockout risks detected")
-
-    # 2. Supplier reliability (0-25): Are suppliers dependable?
-    supplier_reliability = _score_supplier_reliability(engine_results)
-    scores["supplier_reliability"] = supplier_reliability
-    if supplier_reliability >= 20:
-        strengths.append("Suppliers are reliable with strong performance scores")
-    elif supplier_reliability < 10:
-        issues.append("Supplier reliability is low — consider backup suppliers")
-
-    # 3. Shipping efficiency (0-25): Is fulfillment optimized?
-    shipping_efficiency = _score_shipping_efficiency(engine_results)
-    scores["shipping_efficiency"] = shipping_efficiency
-    if shipping_efficiency >= 20:
-        strengths.append("Shipping operations are efficient and cost-effective")
-    elif shipping_efficiency < 10:
-        issues.append("Shipping efficiency needs improvement")
-
-    # 4. Forecast accuracy (0-25): Are predictions reliable?
-    forecast_accuracy = _score_forecast_accuracy(engine_results)
-    scores["forecast_accuracy"] = forecast_accuracy
-    if forecast_accuracy >= 20:
-        strengths.append("Demand forecasts are accurate and actionable")
-    elif forecast_accuracy < 10:
-        issues.append("Forecast data is thin — predictions may be unreliable")
-
-    total_score = sum(scores.values())
-    total_score = max(0, min(100, round(total_score)))
-
-    quality = "high" if total_score >= 70 else "medium" if total_score >= 40 else "low"
-
-    return {
-        "score": total_score,
-        "quality": quality,
-        "scores": scores,
-        "issues": issues,
-        "strengths": strengths,
-        "recommendation": _overall_recommendation(total_score, engine_results),
-    }
+    """Evaluate operations quality."""
+    return evaluate_results_base(
+        results, goal,
+        components=[
+            ScoreComponent(
+                name="stock_health",
+                scorer=lambda er, meta: _score_stock_health(er),
+                strong_text="Inventory levels are healthy with minimal stockout risk",
+                weak_text="Inventory health is poor — stockout risks detected",
+            ),
+            ScoreComponent(
+                name="supplier_reliability",
+                scorer=lambda er, meta: _score_supplier_reliability(er),
+                strong_text="Suppliers are reliable with strong performance scores",
+                weak_text="Supplier reliability is low — consider backup suppliers",
+            ),
+            ScoreComponent(
+                name="shipping_efficiency",
+                scorer=lambda er, meta: _score_shipping_efficiency(er),
+                strong_text="Shipping operations are efficient and cost-effective",
+                weak_text="Shipping efficiency needs improvement",
+            ),
+            ScoreComponent(
+                name="forecast_accuracy",
+                scorer=lambda er, meta: _score_forecast_accuracy(er),
+                strong_text="Demand forecasts are accurate and actionable",
+                weak_text="Forecast data is thin — predictions may be unreliable",
+            ),
+        ],
+        recommendation_fn=_overall_recommendation,
+    )
 
 
 def _score_stock_health(results: dict[str, Any]) -> float:
@@ -89,7 +48,7 @@ def _score_stock_health(results: dict[str, Any]) -> float:
     score = 0
 
     inv = results.get("inventory", {})
-    if inv.get("status") == "success":
+    if isinstance(inv, dict) and inv.get("status") == "success":
         inv_data = inv.get("data") or {}
         if inv_data.get("inventory_health"):
             score += 8
@@ -112,7 +71,7 @@ def _score_supplier_reliability(results: dict[str, Any]) -> float:
     score = 0
 
     sup = results.get("supplier", {})
-    if sup.get("status") == "success":
+    if isinstance(sup, dict) and sup.get("status") == "success":
         sup_data = sup.get("data") or {}
         if sup_data.get("supplier_scores"):
             score += 12
@@ -121,7 +80,7 @@ def _score_supplier_reliability(results: dict[str, Any]) -> float:
                 score += 5
 
     sd = results.get("supplier_discovery", {})
-    if sd.get("status") == "success":
+    if isinstance(sd, dict) and sd.get("status") == "success":
         sd_data = sd.get("data") or {}
         if sd_data.get("new_suppliers"):
             score += 8
@@ -134,7 +93,7 @@ def _score_shipping_efficiency(results: dict[str, Any]) -> float:
     score = 0
 
     ship = results.get("shipping_optimization", {})
-    if ship.get("status") == "success":
+    if isinstance(ship, dict) and ship.get("status") == "success":
         ship_data = ship.get("data") or {}
         if ship_data.get("shipping_plan"):
             score += 15
@@ -152,7 +111,7 @@ def _score_forecast_accuracy(results: dict[str, Any]) -> float:
     score = 0
 
     sp = results.get("stock_prediction", {})
-    if sp.get("status") == "success":
+    if isinstance(sp, dict) and sp.get("status") == "success":
         sp_data = sp.get("data") or {}
         if sp_data.get("stock_forecast"):
             score += 12
@@ -172,7 +131,7 @@ def _overall_recommendation(score: int, results: dict[str, Any]) -> str:
     """Generate final recommendation text."""
     inv = results.get("inventory", {})
     has_stockout_risks = False
-    if inv.get("status") == "success":
+    if isinstance(inv, dict) and inv.get("status") == "success":
         risks = (inv.get("data") or {}).get("stockout_risks", [])
         has_stockout_risks = isinstance(risks, list) and len(risks) > 0
 

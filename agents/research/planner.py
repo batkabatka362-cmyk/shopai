@@ -1,18 +1,16 @@
 """Research Agent planner — decides which engines to use and in what order.
 
-Planning logic:
-  1. Always start with Market Research (understand the market)
-  2. Then Trend Discovery (find opportunities within the market)
-  3. Combine results for final recommendation
-
-If goal is specific:
-  - "find trending products" → Trend Discovery first
-  - "evaluate market size" → Market Research only
-  - "full research" → both engines, full pipeline
+Thin wrapper around ``agents.base.planner.create_plan_base``.
+Only the domain knowledge (which engines exist, which goal
+substrings select which engines, how each engine's input
+payload is built) lives here. The defensive coercion, step
+assembly, and return shape live in the shared base.
 """
 from __future__ import annotations
 
 from typing import Any
+
+from agents.base.planner import create_plan_base, wrap_engine_input
 
 
 # Engine capabilities mapping
@@ -39,60 +37,20 @@ GOAL_ENGINE_MAP = {
     "find_opportunities": ["market_research", "trend_discovery"],
 }
 
+DEFAULT_ENGINES = ["market_research", "trend_discovery"]
+
 
 def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
-    """Create an execution plan for the Research Agent.
-
-    Returns list of engines to call, in order, with their inputs.
-    """
-    # Defensive: the agent contract says ``goal: str`` /
-    # ``context: dict`` / ``constraints: dict`` but a misbehaving
-    # caller (e.g. a planner upstream that returned None on
-    # error) used to crash this function with AttributeError on
-    # ``goal.lower()`` or with TypeError on ``context.get``.
-    goal = goal if isinstance(goal, str) else ""
-    context = context if isinstance(context, dict) else {}
-    constraints = constraints if isinstance(constraints, dict) else {}
-
-    goal_lower = goal.lower().replace(" ", "_")
-    engines_needed = _select_engines(goal_lower, context)
-
-    # Build engine input for each
-    steps = []
-    for engine_name in engines_needed:
-        engine_input = _build_engine_input(engine_name, context, constraints)
-        steps.append({
-            "name": engine_name,
-            # ``ENGINE_CAPABILITIES[engine_name]`` used to do a
-            # direct dict lookup; if a goal mapping ever pointed
-            # at an engine missing from CAPABILITIES (or with an
-            # empty ``provides`` list) this crashed with
-            # KeyError / IndexError.
-            "purpose": _engine_purpose(engine_name),
-            "input": engine_input,
-            "depends_on": _get_dependencies(engine_name, steps),
-        })
-
-    # Determine strategy
-    strategy = _determine_strategy(goal_lower, context)
-
-    return {
-        "engines": steps,
-        "strategy": strategy,
-        "estimated_steps": len(steps),
-        "goal": goal,
-    }
-
-
-def _select_engines(goal: str, context: dict[str, Any]) -> list[str]:
-    """Select which engines to use based on goal."""
-    # Check goal mapping
-    for key, engines in GOAL_ENGINE_MAP.items():
-        if key in goal:
-            return engines
-
-    # Default: full research
-    return ["market_research", "trend_discovery"]
+    """Create an execution plan for the Research Agent."""
+    return create_plan_base(
+        goal, context, constraints,
+        engine_capabilities=ENGINE_CAPABILITIES,
+        goal_engine_map=GOAL_ENGINE_MAP,
+        default_engines=DEFAULT_ENGINES,
+        build_engine_input=_build_engine_input,
+        get_dependencies=_get_dependencies,
+        determine_strategy=_determine_strategy,
+    )
 
 
 def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
@@ -100,59 +58,34 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
     category = context.get("category", "")
 
     if engine_name == "market_research":
-        return {
-            "status": "success",
-            "data": {
-                "category": category,
-                "products": context.get("products", []),
-                "competitors": context.get("competitors", []),
-                "search_data": context.get("search_data", {}),
-                "pricing": context.get("pricing", {}),
-                "reviews": context.get("reviews", []),
-                "trend_signals": context.get("trend_signals", {}),
-                "sub_niche_pct": context.get("sub_niche_pct", 0.1),
-                "store_maturity": context.get("store_maturity", "new_store"),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "category": category,
+            "products": context.get("products", []),
+            "competitors": context.get("competitors", []),
+            "search_data": context.get("search_data", {}),
+            "pricing": context.get("pricing", {}),
+            "reviews": context.get("reviews", []),
+            "trend_signals": context.get("trend_signals", {}),
+            "sub_niche_pct": context.get("sub_niche_pct", 0.1),
+            "store_maturity": context.get("store_maturity", "new_store"),
+        })
 
     if engine_name == "trend_discovery":
-        return {
-            "status": "success",
-            "data": {
-                "category": category,
-                "keywords": context.get("keywords", []),
-                "trend_signals": context.get("trend_signals", {}),
-                "social_data": context.get("social_data", {}),
-                "marketplace_data": context.get("marketplace_data", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "category": category,
+            "keywords": context.get("keywords", []),
+            "trend_signals": context.get("trend_signals", {}),
+            "social_data": context.get("social_data", {}),
+            "marketplace_data": context.get("marketplace_data", {}),
+        })
 
-    # Defensive fallback: an unknown engine name MUST NOT leak
-    # the entire context dict downstream. The original code
-    # returned ``{"data": context}`` which exposed every
-    # auth token / customer record / api key the caller put in
-    # the context bag.
-    return {"status": "success", "data": {}, "meta": {}, "error": None}
-
-
-def _engine_purpose(engine_name: str) -> str:
-    """Safe lookup for an engine's primary purpose string.
-
-    Returns ``"unknown"`` when the engine is missing from
-    ENGINE_CAPABILITIES or its ``provides`` list is empty.
-    """
-    cap = ENGINE_CAPABILITIES.get(engine_name) or {}
-    provides = cap.get("provides") or []
-    return provides[0] if provides else "unknown"
+    # Defensive fallback: never leak the entire context bag to
+    # an unknown engine name. Pass 35 security fix.
+    return wrap_engine_input({})
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:
     """Determine which previous steps this engine depends on."""
-    # Trend discovery can use market research results
     if engine_name == "trend_discovery" and any(s["name"] == "market_research" for s in existing_steps):
         return ["market_research"]
     return []

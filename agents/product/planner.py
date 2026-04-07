@@ -1,25 +1,14 @@
 """Product Agent planner — decides which engines to use and in what order.
 
-Planning logic:
-  1. Start with product filtering (narrow the pool)
-  2. Score and rank (identify winners)
-  3. Validate (check risk)
-  4. Price (set optimal prices)
-  5. Catalog (publish)
-
-If goal is specific:
-  - "find_products" → filter, score, rank
-  - "validate_products" → validation + risk
-  - "price_products" → pricing + profitability
-  - "launch_product" → full pipeline
-  - "optimize_catalog" → ranking + catalog
+Thin wrapper around ``agents.base.planner.create_plan_base``.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from agents.base.planner import create_plan_base, wrap_engine_input
 
-# Engine capabilities mapping
+
 ENGINE_CAPABILITIES = {
     "product_filter": {
         "provides": ["filtered_products"],
@@ -58,7 +47,6 @@ ENGINE_CAPABILITIES = {
     },
 }
 
-# Goal → engine mapping
 GOAL_ENGINE_MAP = {
     "find_products": ["product_filter", "product_scoring", "product_ranking"],
     "validate_products": ["product_validation", "product_risk"],
@@ -67,53 +55,20 @@ GOAL_ENGINE_MAP = {
     "optimize_catalog": ["product_ranking", "catalog"],
 }
 
+DEFAULT_ENGINES = ["product_filter", "product_scoring", "product_ranking"]
+
 
 def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
-    """Create an execution plan for the Product Agent.
-
-    Returns list of engines to call, in order, with their inputs.
-    """
-    # Defensive: coerce caller args. Audit pass 35.
-    goal = goal if isinstance(goal, str) else ""
-    context = context if isinstance(context, dict) else {}
-    constraints = constraints if isinstance(constraints, dict) else {}
-
-    goal_lower = goal.lower().replace(" ", "_")
-    engines_needed = _select_engines(goal_lower, context)
-
-    # Build engine input for each
-    steps = []
-    for engine_name in engines_needed:
-        engine_input = _build_engine_input(engine_name, context, constraints)
-        steps.append({
-            "name": engine_name,
-            "purpose": (
-                (ENGINE_CAPABILITIES.get(engine_name) or {}).get("provides")
-                or ["unknown"]
-            )[0],
-            "input": engine_input,
-            "depends_on": _get_dependencies(engine_name, steps),
-        })
-
-    # Determine strategy
-    strategy = _determine_strategy(goal_lower, context)
-
-    return {
-        "engines": steps,
-        "strategy": strategy,
-        "estimated_steps": len(steps),
-        "goal": goal,
-    }
-
-
-def _select_engines(goal: str, context: dict[str, Any]) -> list[str]:
-    """Select which engines to use based on goal."""
-    for key, engines in GOAL_ENGINE_MAP.items():
-        if key in goal:
-            return engines
-
-    # Default: full product discovery pipeline
-    return ["product_filter", "product_scoring", "product_ranking"]
+    """Create an execution plan for the Product Agent."""
+    return create_plan_base(
+        goal, context, constraints,
+        engine_capabilities=ENGINE_CAPABILITIES,
+        goal_engine_map=GOAL_ENGINE_MAP,
+        default_engines=DEFAULT_ENGINES,
+        build_engine_input=_build_engine_input,
+        get_dependencies=_get_dependencies,
+        determine_strategy=_determine_strategy,
+    )
 
 
 def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
@@ -124,109 +79,68 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
     costs = context.get("costs", {})
 
     if engine_name == "product_filter":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "criteria": criteria,
-                "category": context.get("category", ""),
-                "price_range": context.get("price_range", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "criteria": criteria,
+            "category": context.get("category", ""),
+            "price_range": context.get("price_range", {}),
+        })
 
     if engine_name == "product_scoring":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "scoring_weights": context.get("scoring_weights", {}),
-                "market_data": market_data,
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "scoring_weights": context.get("scoring_weights", {}),
+            "market_data": market_data,
+        })
 
     if engine_name == "product_validation":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "risk_thresholds": context.get("risk_thresholds", {}),
-                "market_data": market_data,
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "risk_thresholds": context.get("risk_thresholds", {}),
+            "market_data": market_data,
+        })
 
     if engine_name == "product_ranking":
-        return {
-            "status": "success",
-            "data": {
-                "scored_products": context.get("scored_products", products),
-                "ranking_strategy": context.get("ranking_strategy", "score_desc"),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "scored_products": context.get("scored_products", products),
+            "ranking_strategy": context.get("ranking_strategy", "score_desc"),
+        })
 
     if engine_name == "pricing":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "market_data": market_data,
-                "competitor_prices": context.get("competitor_prices", {}),
-                "margins": context.get("margins", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "market_data": market_data,
+            "competitor_prices": context.get("competitor_prices", {}),
+            "margins": context.get("margins", {}),
+        })
 
     if engine_name == "profitability_calculator":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "costs": costs,
-                "shipping_costs": context.get("shipping_costs", {}),
-                "tax_rates": context.get("tax_rates", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "costs": costs,
+            "shipping_costs": context.get("shipping_costs", {}),
+            "tax_rates": context.get("tax_rates", {}),
+        })
 
     if engine_name == "catalog":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "descriptions": context.get("descriptions", {}),
-                "images": context.get("images", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "descriptions": context.get("descriptions", {}),
+            "images": context.get("images", {}),
+        })
 
-    # Defensive fallback: never leak the entire caller context
-    # dict downstream when an engine name isn't recognised.
-    # Audit pass 35.
-    return {"status": "success", "data": {}, "meta": {}, "error": None}
+    # Defensive fallback: never leak context. Pass 35.
+    return wrap_engine_input({})
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:
     """Determine which previous steps this engine depends on."""
-    # Product ranking depends on scoring
     if engine_name == "product_ranking" and any(s["name"] == "product_scoring" for s in existing_steps):
         return ["product_scoring"]
-    # Pricing depends on filtering/validation
     if engine_name == "pricing" and any(s["name"] == "product_filter" for s in existing_steps):
         return ["product_filter"]
-    # Catalog depends on pricing
     if engine_name == "catalog" and any(s["name"] == "pricing" for s in existing_steps):
         return ["pricing"]
-    # Profitability depends on pricing
     if engine_name == "profitability_calculator" and any(s["name"] == "pricing" for s in existing_steps):
         return ["pricing"]
     return []

@@ -1,24 +1,14 @@
 """Operations Agent planner — decides which engines to use and in what order.
 
-Planning logic:
-  1. Inventory engine to assess current stock health
-  2. Stock prediction for demand forecasting
-  3. Supplier engine for sourcing decisions
-  4. Shipping optimization for fulfillment
-  5. Returns management for reverse logistics
-
-If goal is specific:
-  - "manage_inventory" → Inventory + Stock Prediction
-  - "optimize_shipping" → Shipping Optimization + Inventory
-  - "evaluate_suppliers" → Supplier + Supplier Discovery
-  - "full_operations" → all engines
+Thin wrapper around ``agents.base.planner.create_plan_base``.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from agents.base.planner import create_plan_base, wrap_engine_input
 
-# Engine capabilities mapping
+
 ENGINE_CAPABILITIES = {
     "inventory": {
         "provides": ["inventory_health", "reorder_plan", "stockout_risks"],
@@ -52,7 +42,6 @@ ENGINE_CAPABILITIES = {
     },
 }
 
-# Goal → engine mapping
 GOAL_ENGINE_MAP = {
     "manage_inventory": ["inventory", "stock_prediction"],
     "optimize_shipping": ["shipping_optimization", "inventory"],
@@ -62,51 +51,20 @@ GOAL_ENGINE_MAP = {
     "restock": ["inventory", "stock_prediction", "supplier"],
 }
 
+DEFAULT_ENGINES = ["inventory", "stock_prediction", "supplier"]
+
 
 def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
-    """Create an execution plan for the Operations Agent.
-
-    Returns list of engines to call, in order, with their inputs.
-    """
-    # Defensive: coerce caller args. Audit pass 35.
-    goal = goal if isinstance(goal, str) else ""
-    context = context if isinstance(context, dict) else {}
-    constraints = constraints if isinstance(constraints, dict) else {}
-
-    goal_lower = goal.lower().replace(" ", "_")
-    engines_needed = _select_engines(goal_lower, context)
-
-    # Build engine input for each
-    steps = []
-    for engine_name in engines_needed:
-        engine_input = _build_engine_input(engine_name, context, constraints)
-        steps.append({
-            "name": engine_name,
-            "purpose": _engine_purpose(engine_name),
-            "input": engine_input,
-            "depends_on": _get_dependencies(engine_name, steps),
-        })
-
-    # Determine strategy
-    strategy = _determine_strategy(goal_lower, context)
-
-    return {
-        "engines": steps,
-        "strategy": strategy,
-        "estimated_steps": len(steps),
-        "goal": goal,
-    }
-
-
-def _select_engines(goal: str, context: dict[str, Any]) -> list[str]:
-    """Select which engines to use based on goal."""
-    # Check goal mapping
-    for key, engines in GOAL_ENGINE_MAP.items():
-        if key in goal:
-            return engines
-
-    # Default: core operations
-    return ["inventory", "stock_prediction", "supplier"]
+    """Create an execution plan for the Operations Agent."""
+    return create_plan_base(
+        goal, context, constraints,
+        engine_capabilities=ENGINE_CAPABILITIES,
+        goal_engine_map=GOAL_ENGINE_MAP,
+        default_engines=DEFAULT_ENGINES,
+        build_engine_input=_build_engine_input,
+        get_dependencies=_get_dependencies,
+        determine_strategy=_determine_strategy,
+    )
 
 
 def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
@@ -114,100 +72,59 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
     products = context.get("products", [])
 
     if engine_name == "inventory":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "orders": context.get("orders", []),
-                "warehouse_data": context.get("warehouse_data", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "orders": context.get("orders", []),
+            "warehouse_data": context.get("warehouse_data", {}),
+        })
 
     if engine_name == "stock_prediction":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "orders": context.get("orders", []),
-                "seasonality": context.get("seasonality", {}),
-                "trend_data": context.get("trend_data", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "orders": context.get("orders", []),
+            "seasonality": context.get("seasonality", {}),
+            "trend_data": context.get("trend_data", {}),
+        })
 
     if engine_name == "supplier":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "supplier_data": context.get("supplier_data", []),
-                "lead_times": context.get("lead_times", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "supplier_data": context.get("supplier_data", []),
+            "lead_times": context.get("lead_times", {}),
+        })
 
     if engine_name == "supplier_discovery":
-        return {
-            "status": "success",
-            "data": {
-                "category": context.get("category", ""),
-                "region": context.get("region", ""),
-                "min_rating": context.get("min_rating", 0),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "category": context.get("category", ""),
+            "region": context.get("region", ""),
+            "min_rating": context.get("min_rating", 0),
+        })
 
     if engine_name == "shipping_optimization":
-        return {
-            "status": "success",
-            "data": {
-                "orders": context.get("orders", []),
-                "products": products,
-                "carriers": context.get("carriers", []),
-                "warehouse_locations": context.get("warehouse_locations", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "orders": context.get("orders", []),
+            "products": products,
+            "carriers": context.get("carriers", []),
+            "warehouse_locations": context.get("warehouse_locations", []),
+        })
 
     if engine_name == "returns_management":
-        return {
-            "status": "success",
-            "data": {
-                "returns": context.get("returns", []),
-                "products": products,
-                "policies": context.get("policies", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "returns": context.get("returns", []),
+            "products": products,
+            "policies": context.get("policies", {}),
+        })
 
-    # Defensive: never leak the entire caller context dict.
-    # Audit pass 35.
-    return {"status": "success", "data": {}, "meta": {}, "error": None}
-
-
-def _engine_purpose(engine_name: str) -> str:
-    """Safe lookup for an engine's primary purpose string."""
-    cap = ENGINE_CAPABILITIES.get(engine_name) or {}
-    provides = cap.get("provides") or []
-    return provides[0] if provides else "unknown"
+    # Defensive fallback: never leak context. Pass 35.
+    return wrap_engine_input({})
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:
     """Determine which previous steps this engine depends on."""
-    # Stock prediction can use inventory results
     if engine_name == "stock_prediction" and any(s["name"] == "inventory" for s in existing_steps):
         return ["inventory"]
-    # Supplier discovery can use supplier scores
     if engine_name == "supplier_discovery" and any(s["name"] == "supplier" for s in existing_steps):
         return ["supplier"]
-    # Shipping optimization can use inventory data
     if engine_name == "shipping_optimization" and any(s["name"] == "inventory" for s in existing_steps):
         return ["inventory"]
     return []

@@ -1,96 +1,53 @@
 """Research Agent evaluator — assess quality of research results.
 
-Evaluates:
-  - Data completeness (did all engines return data?)
-  - Signal agreement (do engines agree on opportunity?)
-  - Confidence level (how confident are the results?)
-  - Actionability (can we make decisions from this?)
+Thin wrapper around ``agents.base.evaluator.evaluate_results_base``.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from agents.base.evaluator import (
+    ScoreComponent,
+    completeness_component,
+    evaluate_results_base,
+)
+
 
 def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
-    """Evaluate research quality.
-
-    Returns score 0-100 with detailed breakdown.
-    """
-    # Defensive: caller contract says ``results: dict``
-    # but a misbehaving upstream can pass None. Audit
-    # pass 36.
-    results = results if isinstance(results, dict) else {}
-    goal = goal if isinstance(goal, str) else ""
-    engine_results = results.get("engine_results") or {}
-    if not isinstance(engine_results, dict):
-        engine_results = {}
-    # ``.get(k, default)`` only returns default when k is
-    # MISSING; present-but-None would crash the int math.
-    completed = results.get("completed_steps") or 0
-    total = results.get("total_steps") or 1
-    if not isinstance(completed, (int, float)):
-        completed = 0
-    if not isinstance(total, (int, float)) or total <= 0:
-        total = 1
-
-    scores: dict[str, float] = {}
-    issues: list[str] = []
-    strengths: list[str] = []
-
-    # 1. Completeness (0-25): Did all engines succeed?
-    completeness = round(completed / max(total, 1) * 25)
-    scores["completeness"] = completeness
-    if completed == total:
-        strengths.append(f"All {total} engines completed successfully")
-    else:
-        issues.append(f"{total - completed}/{total} engines failed")
-
-    # 2. Data richness (0-25): How much data did we get?
-    richness = _score_data_richness(engine_results)
-    scores["data_richness"] = richness
-    if richness >= 20:
-        strengths.append("Rich data across multiple dimensions")
-    elif richness < 10:
-        issues.append("Thin data — results may be unreliable")
-
-    # 3. Signal agreement (0-25): Do engines agree?
-    agreement = _score_signal_agreement(engine_results)
-    scores["signal_agreement"] = agreement
-    if agreement >= 20:
-        strengths.append("Multiple engines agree on opportunity assessment")
-    elif agreement < 10:
-        issues.append("Engines disagree — conflicting signals")
-
-    # 4. Actionability (0-25): Can we make decisions?
-    actionability = _score_actionability(engine_results)
-    scores["actionability"] = actionability
-    if actionability >= 20:
-        strengths.append("Clear actionable recommendations available")
-    elif actionability < 10:
-        issues.append("No clear actionable recommendation")
-
-    total_score = sum(scores.values())
-    total_score = max(0, min(100, round(total_score)))
-
-    quality = "high" if total_score >= 70 else "medium" if total_score >= 40 else "low"
-
-    return {
-        "score": total_score,
-        "quality": quality,
-        "scores": scores,
-        "issues": issues,
-        "strengths": strengths,
-        "recommendation": _overall_recommendation(total_score, engine_results),
-    }
+    """Evaluate research quality."""
+    return evaluate_results_base(
+        results, goal,
+        components=[
+            completeness_component(),
+            ScoreComponent(
+                name="data_richness",
+                scorer=lambda er, meta: _score_data_richness(er),
+                strong_text="Rich data across multiple dimensions",
+                weak_text="Thin data — results may be unreliable",
+            ),
+            ScoreComponent(
+                name="signal_agreement",
+                scorer=lambda er, meta: _score_signal_agreement(er),
+                strong_text="Multiple engines agree on opportunity assessment",
+                weak_text="Engines disagree — conflicting signals",
+            ),
+            ScoreComponent(
+                name="actionability",
+                scorer=lambda er, meta: _score_actionability(er),
+                strong_text="Clear actionable recommendations available",
+                weak_text="No clear actionable recommendation",
+            ),
+        ],
+        recommendation_fn=_overall_recommendation,
+    )
 
 
 def _score_data_richness(results: dict[str, Any]) -> float:
     """Score how rich/complete the data is."""
     score = 0
 
-    # Market Research richness
     mr = results.get("market_research", {})
-    if mr.get("status") == "success":
+    if isinstance(mr, dict) and mr.get("status") == "success":
         mr_data = mr.get("data") or {}
         if mr_data.get("market_size"):
             score += 5
@@ -105,9 +62,8 @@ def _score_data_richness(results: dict[str, Any]) -> float:
         if isinstance(saturation, dict) and saturation.get("data"):
             score += 4
 
-    # Trend Discovery richness
     td = results.get("trend_discovery", {})
-    if td.get("status") == "success":
+    if isinstance(td, dict) and td.get("status") == "success":
         td_data = td.get("data") or {}
         if td_data.get("search_trends"):
             score += 3
@@ -127,17 +83,15 @@ def _score_signal_agreement(results: dict[str, Any]) -> float:
     """Score whether different engines agree on the opportunity."""
     signals = []
 
-    # Market Research verdict
     mr = results.get("market_research", {})
-    if mr.get("status") == "success":
+    if isinstance(mr, dict) and mr.get("status") == "success":
         verdict = (mr.get("data") or {}).get("verdict", {})
         if isinstance(verdict, dict):
             mr_score = verdict.get("score", 50)
             signals.append(mr_score)
 
-    # Trend Discovery verdict
     td = results.get("trend_discovery", {})
-    if td.get("status") == "success":
+    if isinstance(td, dict) and td.get("status") == "success":
         td_data = td.get("data") or {}
         if td_data.get("trend_scores"):
             score_data = td_data["trend_scores"]
@@ -147,7 +101,6 @@ def _score_signal_agreement(results: dict[str, Any]) -> float:
     if len(signals) < 2:
         return 10  # Can't assess agreement with 1 signal
 
-    # Agreement = low variance between signals
     avg = sum(signals) / len(signals)
     variance = sum((s - avg) ** 2 for s in signals) / len(signals)
     max_variance = 2500  # Max possible variance (0 vs 100)
@@ -160,18 +113,16 @@ def _score_actionability(results: dict[str, Any]) -> float:
     """Score how actionable the results are."""
     score = 0
 
-    # Market Research provides clear verdict?
     mr = results.get("market_research", {})
-    if mr.get("status") == "success":
+    if isinstance(mr, dict) and mr.get("status") == "success":
         verdict = (mr.get("data") or {}).get("verdict", {})
         if isinstance(verdict, dict) and verdict.get("verdict"):
             score += 10
         if (mr.get("data") or {}).get("summary"):
             score += 5
 
-    # Trend Discovery provides clear opportunities?
     td = results.get("trend_discovery", {})
-    if td.get("status") == "success":
+    if isinstance(td, dict) and td.get("status") == "success":
         td_data = td.get("data") or {}
         search_trends = td_data.get("search_trends")
         if isinstance(search_trends, dict) and (search_trends.get("data") or {}).get("top_opportunities"):
@@ -187,7 +138,7 @@ def _overall_recommendation(score: int, results: dict[str, Any]) -> str:
     """Generate final recommendation text."""
     mr = results.get("market_research", {})
     mr_verdict = ""
-    if mr.get("status") == "success":
+    if isinstance(mr, dict) and mr.get("status") == "success":
         verdict = (mr.get("data") or {}).get("verdict", {})
         if isinstance(verdict, dict):
             mr_verdict = verdict.get("verdict", "")

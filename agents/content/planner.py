@@ -1,26 +1,14 @@
 """Content Agent planner — decides which engines to use and in what order.
 
-Planning logic:
-  1. Product Description for listing copy
-  2. Content Generation for blog and ad copy
-  3. Search Optimization for SEO readiness
-  4. Image Optimization for visual assets
-  5. Video Marketing for video scripts
-  6. Tag Management for product taxonomy
-
-If goal is specific:
-  - "write_descriptions" → Product Description only
-  - "generate_blog" → Content Generation + Search Optimization
-  - "optimize_seo" → Search Optimization + Content Generation
-  - "create_visuals" → Image Optimization + Video Marketing
-  - "full_content" → all content engines
+Thin wrapper around ``agents.base.planner.create_plan_base``.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from agents.base.planner import create_plan_base, wrap_engine_input
 
-# Engine capabilities mapping
+
 ENGINE_CAPABILITIES = {
     "product_description": {
         "provides": ["descriptions", "bullet_points"],
@@ -54,7 +42,6 @@ ENGINE_CAPABILITIES = {
     },
 }
 
-# Goal → engine mapping
 GOAL_ENGINE_MAP = {
     "write_descriptions": ["product_description"],
     "generate_blog": ["content_generation", "search_optimization"],
@@ -63,52 +50,20 @@ GOAL_ENGINE_MAP = {
     "full_content": ["product_description", "content_generation", "search_optimization", "image_optimization", "video_marketing"],
 }
 
+DEFAULT_ENGINES = ["product_description", "search_optimization"]
+
 
 def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
-    """Create an execution plan for the Content Agent.
-
-    Returns list of engines to call, in order, with their inputs.
-    """
-    # Defensive: coerce caller-supplied args to safe types
-    # before any attribute access. Audit pass 35.
-    goal = goal if isinstance(goal, str) else ""
-    context = context if isinstance(context, dict) else {}
-    constraints = constraints if isinstance(constraints, dict) else {}
-
-    goal_lower = goal.lower().replace(" ", "_")
-    engines_needed = _select_engines(goal_lower, context)
-
-    # Build engine input for each
-    steps = []
-    for engine_name in engines_needed:
-        engine_input = _build_engine_input(engine_name, context, constraints)
-        steps.append({
-            "name": engine_name,
-            "purpose": _engine_purpose(engine_name),
-            "input": engine_input,
-            "depends_on": _get_dependencies(engine_name, steps),
-        })
-
-    # Determine strategy
-    strategy = _determine_strategy(goal_lower, context)
-
-    return {
-        "engines": steps,
-        "strategy": strategy,
-        "estimated_steps": len(steps),
-        "goal": goal,
-    }
-
-
-def _select_engines(goal: str, context: dict[str, Any]) -> list[str]:
-    """Select which engines to use based on goal."""
-    # Check goal mapping
-    for key, engines in GOAL_ENGINE_MAP.items():
-        if key in goal:
-            return engines
-
-    # Default: descriptions + SEO
-    return ["product_description", "search_optimization"]
+    """Create an execution plan for the Content Agent."""
+    return create_plan_base(
+        goal, context, constraints,
+        engine_capabilities=ENGINE_CAPABILITIES,
+        goal_engine_map=GOAL_ENGINE_MAP,
+        default_engines=DEFAULT_ENGINES,
+        build_engine_input=_build_engine_input,
+        get_dependencies=_get_dependencies,
+        determine_strategy=_determine_strategy,
+    )
 
 
 def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
@@ -116,103 +71,61 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
     products = context.get("products", [])
 
     if engine_name == "product_description":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "tone": context.get("tone", "professional"),
-                "keywords": context.get("keywords", []),
-                "competitors": context.get("competitors", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "tone": context.get("tone", "professional"),
+            "keywords": context.get("keywords", []),
+            "competitors": context.get("competitors", []),
+        })
 
     if engine_name == "content_generation":
-        return {
-            "status": "success",
-            "data": {
-                "topics": context.get("topics", []),
-                "tone": context.get("tone", "professional"),
-                "audience": context.get("audience", ""),
-                "word_count": context.get("word_count", 800),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "topics": context.get("topics", []),
+            "tone": context.get("tone", "professional"),
+            "audience": context.get("audience", ""),
+            "word_count": context.get("word_count", 800),
+        })
 
     if engine_name == "search_optimization":
-        return {
-            "status": "success",
-            "data": {
-                "content": context.get("content", ""),
-                "target_keywords": context.get("target_keywords", []),
-                "competitors": context.get("competitors", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "content": context.get("content", ""),
+            "target_keywords": context.get("target_keywords", []),
+            "competitors": context.get("competitors", []),
+        })
 
     if engine_name == "image_optimization":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "brand_guidelines": context.get("brand_guidelines", {}),
-                "dimensions": context.get("dimensions", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "brand_guidelines": context.get("brand_guidelines", {}),
+            "dimensions": context.get("dimensions", {}),
+        })
 
     if engine_name == "video_marketing":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "duration": context.get("duration", 60),
-                "platform": context.get("platform", ""),
-                "style": context.get("style", ""),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "duration": context.get("duration", 60),
+            "platform": context.get("platform", ""),
+            "style": context.get("style", ""),
+        })
 
     if engine_name == "tag_management":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "taxonomy": context.get("taxonomy", {}),
-                "existing_tags": context.get("existing_tags", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "taxonomy": context.get("taxonomy", {}),
+            "existing_tags": context.get("existing_tags", []),
+        })
 
-    # Defensive: never leak the entire caller context dict
-    # downstream when an engine name isn't recognised. Audit
-    # pass 35 — was a security smell (auth tokens / customer
-    # PII could be in the context bag).
-    return {"status": "success", "data": {}, "meta": {}, "error": None}
-
-
-def _engine_purpose(engine_name: str) -> str:
-    """Safe lookup for an engine's primary purpose string."""
-    cap = ENGINE_CAPABILITIES.get(engine_name) or {}
-    provides = cap.get("provides") or []
-    return provides[0] if provides else "unknown"
+    # Defensive fallback: never leak context. Pass 35.
+    return wrap_engine_input({})
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:
     """Determine which previous steps this engine depends on."""
-    # Search optimization can use product descriptions or generated content
     if engine_name == "search_optimization":
         if any(s["name"] == "product_description" for s in existing_steps):
             return ["product_description"]
         if any(s["name"] == "content_generation" for s in existing_steps):
             return ["content_generation"]
-    # Video marketing can use product descriptions
     if engine_name == "video_marketing" and any(s["name"] == "product_description" for s in existing_steps):
         return ["product_description"]
     return []

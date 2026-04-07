@@ -1,24 +1,14 @@
 """Finance Agent planner — decides which engines to use and in what order.
 
-Planning logic:
-  1. Start with financial analysis (understand current state)
-  2. Then forecasting (project future)
-  3. Then pricing/profitability (optimize)
-  4. Then discount/dynamic pricing (execute)
-
-If goal is specific:
-  - "optimize_profit" → financial, profitability, pricing, profit_optimization
-  - "forecast_revenue" → financial, forecasting, kpi_tracking
-  - "manage_pricing" → pricing, dynamic_pricing, price_elasticity
-  - "reduce_costs" → financial, profitability, payment_optimization
-  - "financial_health" → financial, kpi_tracking
+Thin wrapper around ``agents.base.planner.create_plan_base``.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from agents.base.planner import create_plan_base, wrap_engine_input
 
-# Engine capabilities mapping
+
 ENGINE_CAPABILITIES = {
     "financial": {
         "provides": ["pnl", "margins", "health_grade"],
@@ -67,7 +57,6 @@ ENGINE_CAPABILITIES = {
     },
 }
 
-# Goal → engine mapping
 GOAL_ENGINE_MAP = {
     "optimize_profit": ["financial", "profitability_calculator", "pricing", "profit_optimization"],
     "forecast_revenue": ["financial", "forecasting", "kpi_tracking"],
@@ -76,57 +65,20 @@ GOAL_ENGINE_MAP = {
     "financial_health": ["financial", "kpi_tracking"],
 }
 
+DEFAULT_ENGINES = ["financial", "kpi_tracking"]
+
 
 def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
-    """Create an execution plan for the Finance Agent.
-
-    Returns list of engines to call, in order, with their inputs.
-    """
-    # Defensive: coerce caller args. Audit pass 35.
-    goal = goal if isinstance(goal, str) else ""
-    context = context if isinstance(context, dict) else {}
-    constraints = constraints if isinstance(constraints, dict) else {}
-
-    goal_lower = goal.lower().replace(" ", "_")
-    engines_needed = _select_engines(goal_lower, context)
-
-    # Build engine input for each
-    steps = []
-    for engine_name in engines_needed:
-        engine_input = _build_engine_input(engine_name, context, constraints)
-        steps.append({
-            "name": engine_name,
-            # Use ``or []`` to also survive a CAPABILITIES entry
-            # whose ``provides`` list is empty (the original
-            # ``["unknown"][0]`` only handled the missing-key
-            # case).
-            "purpose": (
-                (ENGINE_CAPABILITIES.get(engine_name) or {}).get("provides")
-                or ["unknown"]
-            )[0],
-            "input": engine_input,
-            "depends_on": _get_dependencies(engine_name, steps),
-        })
-
-    # Determine strategy
-    strategy = _determine_strategy(goal_lower, context)
-
-    return {
-        "engines": steps,
-        "strategy": strategy,
-        "estimated_steps": len(steps),
-        "goal": goal,
-    }
-
-
-def _select_engines(goal: str, context: dict[str, Any]) -> list[str]:
-    """Select which engines to use based on goal."""
-    for key, engines in GOAL_ENGINE_MAP.items():
-        if key in goal:
-            return engines
-
-    # Default: financial health check
-    return ["financial", "kpi_tracking"]
+    """Create an execution plan for the Finance Agent."""
+    return create_plan_base(
+        goal, context, constraints,
+        engine_capabilities=ENGINE_CAPABILITIES,
+        goal_engine_map=GOAL_ENGINE_MAP,
+        default_engines=DEFAULT_ENGINES,
+        build_engine_input=_build_engine_input,
+        get_dependencies=_get_dependencies,
+        determine_strategy=_determine_strategy,
+    )
 
 
 def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
@@ -137,147 +89,93 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
     market_data = context.get("market_data", {})
 
     if engine_name == "financial":
-        return {
-            "status": "success",
-            "data": {
-                "orders": orders,
-                "products": products,
-                "date_range": context.get("date_range", {}),
-                "currency": context.get("currency", "USD"),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "orders": orders,
+            "products": products,
+            "date_range": context.get("date_range", {}),
+            "currency": context.get("currency", "USD"),
+        })
 
     if engine_name == "kpi_tracking":
-        return {
-            "status": "success",
-            "data": {
-                "orders": orders,
-                "kpi_list": context.get("kpi_list", ["revenue", "aov", "conversion_rate", "cac"]),
-                "period": context.get("period", "monthly"),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "orders": orders,
+            "kpi_list": context.get("kpi_list", ["revenue", "aov", "conversion_rate", "cac"]),
+            "period": context.get("period", "monthly"),
+        })
 
     if engine_name == "forecasting":
-        return {
-            "status": "success",
-            "data": {
-                "orders": orders,
-                "forecast_horizon": context.get("forecast_horizon", 90),
-                "seasonality": context.get("seasonality", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "orders": orders,
+            "forecast_horizon": context.get("forecast_horizon", 90),
+            "seasonality": context.get("seasonality", {}),
+        })
 
     if engine_name == "pricing":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "market_data": market_data,
-                "competitor_prices": context.get("competitor_prices", {}),
-                "margins": context.get("margins", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "market_data": market_data,
+            "competitor_prices": context.get("competitor_prices", {}),
+            "margins": context.get("margins", {}),
+        })
 
     if engine_name == "dynamic_pricing":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "demand_signals": context.get("demand_signals", {}),
-                "rules": context.get("pricing_rules", {}),
-                "bounds": context.get("price_bounds", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "demand_signals": context.get("demand_signals", {}),
+            "rules": context.get("pricing_rules", {}),
+            "bounds": context.get("price_bounds", {}),
+        })
 
     if engine_name == "price_elasticity":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "price_history": context.get("price_history", []),
-                "test_data": context.get("test_data", {}),
-                "segments": context.get("segments", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "price_history": context.get("price_history", []),
+            "test_data": context.get("test_data", {}),
+            "segments": context.get("segments", []),
+        })
 
     if engine_name == "discount_strategy":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "margins": context.get("margins", {}),
-                "current_discounts": context.get("current_discounts", []),
-                "goals": context.get("discount_goals", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "margins": context.get("margins", {}),
+            "current_discounts": context.get("current_discounts", []),
+            "goals": context.get("discount_goals", {}),
+        })
 
     if engine_name == "profit_optimization":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "costs": costs,
-                "constraints": constraints,
-                "targets": context.get("profit_targets", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "costs": costs,
+            "constraints": constraints,
+            "targets": context.get("profit_targets", {}),
+        })
 
     if engine_name == "profitability_calculator":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "costs": costs,
-                "shipping_costs": context.get("shipping_costs", {}),
-                "tax_rates": context.get("tax_rates", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "costs": costs,
+            "shipping_costs": context.get("shipping_costs", {}),
+            "tax_rates": context.get("tax_rates", {}),
+        })
 
-    # Fallback for engines like payment_optimization
-    # Defensive fallback: never leak the entire caller context.
-    # Audit pass 35.
-    return {"status": "success", "data": {}, "meta": {}, "error": None}
+    # Defensive fallback: never leak context. Pass 35.
+    return wrap_engine_input({})
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:
     """Determine which previous steps this engine depends on."""
-    # Forecasting depends on financial analysis
     if engine_name == "forecasting" and any(s["name"] == "financial" for s in existing_steps):
         return ["financial"]
-    # KPI tracking depends on financial analysis
     if engine_name == "kpi_tracking" and any(s["name"] == "financial" for s in existing_steps):
         return ["financial"]
-    # Pricing depends on profitability calculator
     if engine_name == "pricing" and any(s["name"] == "profitability_calculator" for s in existing_steps):
         return ["profitability_calculator"]
-    # Profit optimization depends on pricing
     if engine_name == "profit_optimization" and any(s["name"] == "pricing" for s in existing_steps):
         return ["pricing"]
-    # Dynamic pricing depends on pricing
     if engine_name == "dynamic_pricing" and any(s["name"] == "pricing" for s in existing_steps):
         return ["pricing"]
-    # Price elasticity depends on pricing
     if engine_name == "price_elasticity" and any(s["name"] == "pricing" for s in existing_steps):
         return ["pricing"]
-    # Discount strategy depends on financial
     if engine_name == "discount_strategy" and any(s["name"] == "financial" for s in existing_steps):
         return ["financial"]
     return []

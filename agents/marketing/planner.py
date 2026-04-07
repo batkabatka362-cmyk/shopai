@@ -1,24 +1,14 @@
 """Marketing Agent planner — decides which engines to use and in what order.
 
-Planning logic:
-  1. Start with content generation (create the message)
-  2. Then distribute across channels (email, social, etc.)
-  3. Set up testing (A/B tests)
-  4. Add amplification (influencer, affiliate)
-
-If goal is specific:
-  - "launch_campaign" → content, email, social, A/B testing
-  - "email_campaign" → content, email
-  - "social_campaign" → content, social, video
-  - "influencer_campaign" → influencer, content, social
-  - "full_marketing" → all engines
+Thin wrapper around ``agents.base.planner.create_plan_base``.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from agents.base.planner import create_plan_base, wrap_engine_input
 
-# Engine capabilities mapping
+
 ENGINE_CAPABILITIES = {
     "content_generation": {
         "provides": ["marketing_copy", "ad_copy"],
@@ -62,7 +52,6 @@ ENGINE_CAPABILITIES = {
     },
 }
 
-# Goal → engine mapping
 GOAL_ENGINE_MAP = {
     "launch_campaign": ["content_generation", "email_marketing", "social_media", "ab_testing"],
     "email_campaign": ["content_generation", "email_marketing"],
@@ -74,53 +63,20 @@ GOAL_ENGINE_MAP = {
     ],
 }
 
+DEFAULT_ENGINES = ["content_generation", "email_marketing", "social_media"]
+
 
 def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
-    """Create an execution plan for the Marketing Agent.
-
-    Returns list of engines to call, in order, with their inputs.
-    """
-    # Defensive: coerce caller args. Audit pass 35.
-    goal = goal if isinstance(goal, str) else ""
-    context = context if isinstance(context, dict) else {}
-    constraints = constraints if isinstance(constraints, dict) else {}
-
-    goal_lower = goal.lower().replace(" ", "_")
-    engines_needed = _select_engines(goal_lower, context)
-
-    # Build engine input for each
-    steps = []
-    for engine_name in engines_needed:
-        engine_input = _build_engine_input(engine_name, context, constraints)
-        steps.append({
-            "name": engine_name,
-            "purpose": (
-                (ENGINE_CAPABILITIES.get(engine_name) or {}).get("provides")
-                or ["unknown"]
-            )[0],
-            "input": engine_input,
-            "depends_on": _get_dependencies(engine_name, steps),
-        })
-
-    # Determine strategy
-    strategy = _determine_strategy(goal_lower, context)
-
-    return {
-        "engines": steps,
-        "strategy": strategy,
-        "estimated_steps": len(steps),
-        "goal": goal,
-    }
-
-
-def _select_engines(goal: str, context: dict[str, Any]) -> list[str]:
-    """Select which engines to use based on goal."""
-    for key, engines in GOAL_ENGINE_MAP.items():
-        if key in goal:
-            return engines
-
-    # Default: basic campaign pipeline
-    return ["content_generation", "email_marketing", "social_media"]
+    """Create an execution plan for the Marketing Agent."""
+    return create_plan_base(
+        goal, context, constraints,
+        engine_capabilities=ENGINE_CAPABILITIES,
+        goal_engine_map=GOAL_ENGINE_MAP,
+        default_engines=DEFAULT_ENGINES,
+        build_engine_input=_build_engine_input,
+        get_dependencies=_get_dependencies,
+        determine_strategy=_determine_strategy,
+    )
 
 
 def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
@@ -130,127 +86,81 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
     content = context.get("content", {})
 
     if engine_name == "content_generation":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "brand_voice": context.get("brand_voice", ""),
-                "target_audience": context.get("target_audience", {}),
-                "content_types": context.get("content_types", ["ad_copy", "marketing_copy"]),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "brand_voice": context.get("brand_voice", ""),
+            "target_audience": context.get("target_audience", {}),
+            "content_types": context.get("content_types", ["ad_copy", "marketing_copy"]),
+        })
 
     if engine_name == "email_marketing":
-        return {
-            "status": "success",
-            "data": {
-                "content": content,
-                "audiences": audiences,
-                "send_schedule": context.get("send_schedule", {}),
-                "segmentation": context.get("segmentation", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "content": content,
+            "audiences": audiences,
+            "send_schedule": context.get("send_schedule", {}),
+            "segmentation": context.get("segmentation", {}),
+        })
 
     if engine_name == "social_media":
-        return {
-            "status": "success",
-            "data": {
-                "content": content,
-                "platforms": context.get("platforms", ["instagram", "facebook", "tiktok"]),
-                "hashtags": context.get("hashtags", []),
-                "schedule": context.get("schedule", {}),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "content": content,
+            "platforms": context.get("platforms", ["instagram", "facebook", "tiktok"]),
+            "hashtags": context.get("hashtags", []),
+            "schedule": context.get("schedule", {}),
+        })
 
     if engine_name == "ab_testing":
-        return {
-            "status": "success",
-            "data": {
-                "campaign_data": context.get("campaign_data", {}),
-                "test_duration": context.get("test_duration", 7),
-                "metrics": context.get("metrics", ["ctr", "conversion_rate"]),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "campaign_data": context.get("campaign_data", {}),
+            "test_duration": context.get("test_duration", 7),
+            "metrics": context.get("metrics", ["ctr", "conversion_rate"]),
+        })
 
     if engine_name == "influencer":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "audience": context.get("target_audience", {}),
-                "budget": constraints.get("budget", 0),
-                "platforms": context.get("platforms", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "audience": context.get("target_audience", {}),
+            "budget": constraints.get("budget", 0),
+            "platforms": context.get("platforms", []),
+        })
 
     if engine_name == "affiliate":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "commission_rates": context.get("commission_rates", {}),
-                "partners": context.get("partners", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "commission_rates": context.get("commission_rates", {}),
+            "partners": context.get("partners", []),
+        })
 
     if engine_name == "landing_page":
-        return {
-            "status": "success",
-            "data": {
-                "content": content,
-                "products": products,
-                "templates": context.get("templates", []),
-                "cta_variants": context.get("cta_variants", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "content": content,
+            "products": products,
+            "templates": context.get("templates", []),
+            "cta_variants": context.get("cta_variants", []),
+        })
 
     if engine_name == "video_marketing":
-        return {
-            "status": "success",
-            "data": {
-                "products": products,
-                "style": context.get("video_style", ""),
-                "duration": context.get("video_duration", 30),
-                "platforms": context.get("platforms", []),
-            },
-            "meta": {},
-            "error": None,
-        }
+        return wrap_engine_input({
+            "products": products,
+            "style": context.get("video_style", ""),
+            "duration": context.get("video_duration", 30),
+            "platforms": context.get("platforms", []),
+        })
 
-    # Defensive fallback: never leak the entire caller context.
-    # Audit pass 35.
-    return {"status": "success", "data": {}, "meta": {}, "error": None}
+    # Defensive fallback: never leak context. Pass 35.
+    return wrap_engine_input({})
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:
     """Determine which previous steps this engine depends on."""
-    # Email marketing depends on content generation
     if engine_name == "email_marketing" and any(s["name"] == "content_generation" for s in existing_steps):
         return ["content_generation"]
-    # Social media depends on content generation
     if engine_name == "social_media" and any(s["name"] == "content_generation" for s in existing_steps):
         return ["content_generation"]
-    # A/B testing depends on content generation
     if engine_name == "ab_testing" and any(s["name"] == "content_generation" for s in existing_steps):
         return ["content_generation"]
-    # Landing page depends on content generation
     if engine_name == "landing_page" and any(s["name"] == "content_generation" for s in existing_steps):
         return ["content_generation"]
-    # Video marketing depends on content generation
     if engine_name == "video_marketing" and any(s["name"] == "content_generation" for s in existing_steps):
         return ["content_generation"]
     return []
