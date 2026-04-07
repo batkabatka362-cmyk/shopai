@@ -42,12 +42,28 @@ class CoreOrchestrator:
         self._cycle_count = 0
         self._history: list[dict[str, Any]] = []
         self._initialized = False
+        # Per-module init failure messages. Mirrors the
+        # LayerDispatcher / AgentDispatcher / UnifiedMemory
+        # observability hooks so dashboards and tests can see
+        # exactly which of the ~35 intelligence modules failed
+        # to load. Empty dict means everything came up clean.
+        self._init_errors: dict[str, str] = {}
         # New coordination components
         self.snapshot = StoreSnapshot.load()
         self.priority_engine = PriorityEngine()
         self.action_coordinator = ActionCoordinator()
         self.journal = CycleJournal()
         self._init_modules()
+
+    def get_init_errors(self) -> dict[str, str]:
+        """Return per-module initialization error messages.
+
+        Empty dict means every module loaded successfully. Each
+        entry is ``"TypeName: message"`` — symmetric with the
+        LayerDispatcher / AgentDispatcher / UnifiedMemory init-
+        error APIs added in earlier passes.
+        """
+        return dict(self._init_errors)
 
     def _init_modules(self) -> None:
         """Initialize all intelligence modules. Each is optional — failure doesn't block others."""
@@ -98,15 +114,17 @@ class CoreOrchestrator:
             "multi_store": ("core.multi_store.store_manager", "MultiStoreManager", {}),
         }
 
+        import importlib
         for name, (module_path, class_name, kwargs) in module_specs.items():
             try:
-                import importlib
                 mod = importlib.import_module(module_path)
                 cls = getattr(mod, class_name)
                 self._modules[name] = cls(**kwargs)
                 logger.info("Module loaded: %s", name)
-            except Exception as exc:
-                logger.warning("Module %s failed to load: %s", name, exc)
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+                self._init_errors[name] = err
+                logger.warning("Module %s failed to load: %s", name, err)
 
         # Initialize thinking layers that need cross-references
         try:
@@ -128,14 +146,24 @@ class CoreOrchestrator:
             if cap:
                 cap._memory = self._modules.get("episodic_memory")
             logger.info("Thinking layers initialized (judgment, failure_prevention, root_cause, capability)")
-        except Exception as exc:
-            logger.warning("Thinking layers failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
+            self._init_errors["thinking_layers"] = err
+            logger.warning("Thinking layers failed: %s", err)
 
         self._initialized = True
-        logger.info(
-            "CoreOrchestrator initialized: %d/%d modules loaded",
-            len(self._modules), len(module_specs) + 2,  # +2 for thinking layers
-        )
+        if self._init_errors:
+            logger.warning(
+                "CoreOrchestrator initialized: %d/%d modules loaded (%d failed: %s)",
+                len(self._modules), len(module_specs) + 2,
+                len(self._init_errors),
+                ", ".join(sorted(self._init_errors.keys())),
+            )
+        else:
+            logger.info(
+                "CoreOrchestrator initialized: %d/%d modules loaded",
+                len(self._modules), len(module_specs) + 2,
+            )
 
     def get_module(self, name: str) -> Any | None:
         """Get a loaded module by name."""
@@ -166,14 +194,29 @@ class CoreOrchestrator:
         cfg = config or {}
 
         # ── Phase 0: GOAL SELECTION ──
+        # Callers can pass goal="" or goal=None to request automatic
+        # goal selection from the GoalManager; otherwise the provided
+        # goal wins. The previous code had two mutually-exclusive
+        # `goal is None` branches that were both unreachable because
+        # the signature defaults `goal: str = "maximize_profit"` —
+        # collapsing to a single clear condition here.
         goal_mgr = self._modules.get("goal_manager")
-        if goal_mgr and goal is None:
-            goal_result = goal_mgr.select_goal(
-                self.snapshot.get_situation(), cycle_number=self._cycle_count,
-            )
-            goal = goal_result["goal"]
-        elif goal is None:
-            goal = "maximize_profit"
+        if not goal:
+            if goal_mgr:
+                try:
+                    goal_result = goal_mgr.select_goal(
+                        self.snapshot.get_situation(),
+                        cycle_number=self._cycle_count,
+                    )
+                    goal = (goal_result or {}).get("goal") or "maximize_profit"
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "CoreOrchestrator: goal_manager.select_goal failed (%s); "
+                        "falling back to maximize_profit", exc,
+                    )
+                    goal = "maximize_profit"
+            else:
+                goal = "maximize_profit"
 
         results: dict[str, Any] = {
             "cycle_id": cycle_id,
@@ -289,8 +332,11 @@ class CoreOrchestrator:
         if opt:
             try:
                 strategy_weights = opt.get_adjusted_weights(goal)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "CoreOrchestrator: strategy_optimizer.get_adjusted_weights "
+                    "failed (%s); using unweighted priorities", exc,
+                )
         priorities = self.priority_engine.compute(
             self.snapshot.get_situation(), goal=goal, strategy_weights=strategy_weights,
         )
@@ -312,7 +358,11 @@ class CoreOrchestrator:
         if narrator:
             try:
                 results["narrative"] = narrator.narrate(results)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "CoreOrchestrator: decision_narrator.narrate failed (%s)",
+                    exc,
+                )
                 results["narrative"] = ""
 
         # ── Record Episode ──
@@ -633,14 +683,21 @@ class CoreOrchestrator:
 
             eb = ExecutionBridge()
 
-            # Register available executors
+            # Register available executors. Previously a bare
+            # `except Exception: pass` silently swallowed any import
+            # or registration failure, so later Shopify executions
+            # would return "no executor found" with no hint that
+            # registration had failed at startup.
             try:
                 from execution.shopify.product_creator import ProductCreator
                 from execution.shopify.product_updater import ProductUpdater
                 eb.register_executor("shopify", "product.create_listing", ProductCreator())
                 eb.register_executor("shopify", "pricing.update", ProductUpdater())
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "CoreOrchestrator: Shopify executor registration failed (%s)",
+                    exc,
+                )
 
             # Convert IntelligenceLoop output to ExecutionBridge format
             decision = intel.get("decision", {})

@@ -62,9 +62,14 @@ class SystemOrchestrator:
         self._ensure_init()
         start = time.monotonic()
 
-        # Load context from shared memory
+        # Load context from shared memory and merge with caller data.
+        # Caller-provided `data` MUST win over cached context — it's
+        # the freshest, most-specific signal. Previously the order was
+        # `{**(data or {}), **context}` which let cached products /
+        # orders / decisions silently overwrite whatever the caller
+        # had explicitly passed in, producing stale task inputs.
         context = self._memory.get_context_for_task(task_type)
-        task_data = {**(data or {}), **context}
+        task_data = {**context, **(data or {})}
 
         # Execute
         from engines.registry import get_engine
@@ -77,7 +82,10 @@ class SystemOrchestrator:
             # Store result in shared memory
             self._memory.put("cache", f"result_{task_type}", result, ttl_seconds=300)
             return result if isinstance(result, dict) else {"output": result}
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SystemOrchestrator: engine %r raised: %s", task_type, exc,
+            )
             return {"status": "error", "error": str(exc)}
 
     def run_flow(self, flow_name: str, store_id: str = "") -> dict[str, Any]:
