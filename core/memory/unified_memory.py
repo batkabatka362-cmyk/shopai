@@ -38,71 +38,109 @@ class UnifiedMemory:
         self._memory_intel = None     # 4-level memory intelligence
         self._intel_cycle = None      # 10-stage intelligence cycle
         self._initialized = False
+        # Per-backend init failure messages, keyed by backend name.
+        # Empty dict means everything loaded clean. Operators can
+        # introspect this to see which subsystems are missing instead
+        # of trying to read between the lines of the status dict.
+        self._init_errors: dict[str, str] = {}
+
+    def _try_init(
+        self, name: str, loader,
+    ) -> bool:
+        """Run a backend loader and capture any failure with a real
+        traceback log. Returns True iff the loader succeeded.
+
+        Replaces the previous bare ``except Exception: pass`` blocks,
+        which silently set every backend to None and left the
+        operator with no signal that anything had broken.
+        """
+        try:
+            loader()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
+            self._init_errors[name] = err
+            logger.warning(
+                "UnifiedMemory: backend %r failed to initialize (%s)",
+                name, err,
+            )
+            return False
 
     def initialize(self) -> dict[str, bool]:
-        """Initialize all memory backends. Lazy — only loads what's available."""
+        """Initialize all memory backends. Lazy — only loads what's available.
+
+        Each backend loader runs inside ``_try_init`` so a single
+        broken backend never silently disables observability for the
+        rest. Failure messages are captured on ``self._init_errors``
+        and logged at WARNING level with full type+message.
+        """
+        self._init_errors.clear()
         status: dict[str, bool] = {}
 
-        try:
+        def _load_shared():
             from core.system.shared_memory import get_shared_memory
             self._shared = get_shared_memory()
-            status["shared_memory"] = True
-        except Exception:
-            status["shared_memory"] = False
+        status["shared_memory"] = self._try_init("shared_memory", _load_shared)
 
-        try:
+        def _load_brain():
             from core.brain.memory import get_brain_memory
             self._brain = get_brain_memory()
-            status["brain_memory"] = True
-        except Exception:
-            status["brain_memory"] = False
+        status["brain_memory"] = self._try_init("brain_memory", _load_brain)
 
-        try:
+        def _load_experience():
             from core.ai.experience import get_experience
             self._experience = get_experience()
-            status["experience"] = True
-        except Exception:
-            status["experience"] = False
+        status["experience"] = self._try_init("experience", _load_experience)
 
-        try:
+        def _load_cross_cache():
             from core.shared_memory import CrossEngineCache
             self._cross_cache = CrossEngineCache()
-            status["cross_cache"] = True
-        except Exception:
-            status["cross_cache"] = False
+        status["cross_cache"] = self._try_init("cross_cache", _load_cross_cache)
 
-        try:
+        def _load_persistent():
             from memory.long_term.persistent_store import PersistentStore
             self._persistent = PersistentStore()
-            status["persistent"] = True
-        except Exception:
-            status["persistent"] = False
+        status["persistent"] = self._try_init("persistent", _load_persistent)
 
-        # New intelligence systems
-        try:
+        def _load_data_arch():
             from core.data.architecture import get_data_architecture
             self._data_arch = get_data_architecture()
-            status["data_architecture"] = True
-        except Exception:
-            status["data_architecture"] = False
+        status["data_architecture"] = self._try_init(
+            "data_architecture", _load_data_arch,
+        )
 
-        try:
+        def _load_memory_intel():
             from core.memory.intelligence import get_memory_intelligence
             self._memory_intel = get_memory_intelligence()
-            status["memory_intelligence"] = True
-        except Exception:
-            status["memory_intelligence"] = False
+        status["memory_intelligence"] = self._try_init(
+            "memory_intelligence", _load_memory_intel,
+        )
 
-        try:
+        def _load_intel_cycle():
             from core.intelligence_cycle import get_intelligence_cycle
             self._intel_cycle = get_intelligence_cycle()
-            status["intelligence_cycle"] = True
-        except Exception:
-            status["intelligence_cycle"] = False
+        status["intelligence_cycle"] = self._try_init(
+            "intelligence_cycle", _load_intel_cycle,
+        )
 
         self._initialized = True
-        logger.info("UnifiedMemory initialized: %s", status)
+        if self._init_errors:
+            logger.warning(
+                "UnifiedMemory initialized with %d failed backends: %s",
+                len(self._init_errors),
+                ", ".join(self._init_errors.keys()),
+            )
+        else:
+            logger.info("UnifiedMemory initialized: all %d backends ok", len(status))
         return status
+
+    def get_init_errors(self) -> dict[str, str]:
+        """Return per-backend initialization error messages.
+
+        Empty dict means every backend loaded successfully. Useful
+        for status dashboards and tests that want to assert clean
+        startup."""
+        return dict(self._init_errors)
 
     def _ensure_init(self) -> None:
         if not self._initialized:
@@ -174,28 +212,52 @@ class UnifiedMemory:
     def record_decision(self, category: str, input_data: dict, action: str,
                         result: dict, score: float, tags: list[str] | None = None,
                         store_id: str = "") -> None:
-        """Record a decision + outcome → BrainMemory L3 + Experience DB."""
+        """Record a decision + outcome across every available backend.
+
+        Each backend write is isolated in its own try/except so a
+        single broken backend never silently skips the others.
+        Previously a failure in `brain.record_decision` would
+        short-circuit the whole call, leaving Experience and
+        SharedMemory missing the same decision and producing a
+        divergent record across the memory backends.
+        """
         self._ensure_init()
 
         # BrainMemory — scored, tagged, pattern detection triggers
         if self._brain:
-            self._brain.record_decision(category, input_data, action, result,
-                                       score, tags, store_id)
+            try:
+                self._brain.record_decision(category, input_data, action, result,
+                                           score, tags, store_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "UnifiedMemory: brain.record_decision failed: %s", exc,
+                )
 
         # Experience DB — permanent decision outcome storage
         if self._experience:
-            success = score >= 3.0
-            impact = score / 5.0
-            self._experience.record_decision_outcome(
-                category, input_data, result, success, impact, store_id,
-            )
+            try:
+                success = score >= 3.0
+                impact = score / 5.0
+                self._experience.record_decision_outcome(
+                    category, input_data, result, success, impact, store_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "UnifiedMemory: experience.record_decision_outcome failed: %s",
+                    exc,
+                )
 
         # SharedMemory — recent decisions for quick access
         if self._shared:
-            self._shared.record_decision(f"{category}_{int(time.time())}", {
-                "category": category, "action": action,
-                "score": score, "timestamp": time.time(),
-            })
+            try:
+                self._shared.record_decision(f"{category}_{int(time.time())}", {
+                    "category": category, "action": action,
+                    "score": score, "timestamp": time.time(),
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "UnifiedMemory: shared.record_decision failed: %s", exc,
+                )
 
     def record_mistake(self, mistake_type: str, description: str,
                        cause: str = "", prevention: str = "",
