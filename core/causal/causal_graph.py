@@ -168,7 +168,15 @@ class CausalGraph:
         return "\n".join(parts)
 
     def _normalize_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Normalize event types and compute days_ago."""
+        """Normalize event types and compute days_ago.
+
+        Events without a usable timestamp / days_ago are dropped
+        rather than defaulted to days_ago=0. The previous default
+        silently treated "unknown when" as "happened right now",
+        which gave the strongest possible temporal weight to
+        events the system actually had no time information for —
+        producing false-positive causal chains anchored on noise.
+        """
         now = time.time()
         normalized = []
 
@@ -178,41 +186,90 @@ class CausalGraph:
 
             event_type = event.get("type", event.get("event_type", ""))
             event_type = EVENT_SYNONYMS.get(event_type, event_type)
+            if not event_type:
+                continue
 
-            ts = event.get("timestamp", 0)
-            days_ago = event.get("days_ago", 0)
-            if ts and not days_ago:
+            ts = event.get("timestamp")
+            days_ago = event.get("days_ago")
+            if days_ago is None and ts:
                 days_ago = max(0, (now - ts) / 86400)
+            if days_ago is None:
+                # No usable temporal signal — skip rather than
+                # synthesizing days_ago=0.
+                continue
 
             normalized.append({
                 "type": event_type,
-                "days_ago": round(days_ago, 1),
+                "days_ago": round(float(days_ago), 1),
                 "data": event.get("data", {}),
             })
 
         return normalized
 
+    # Tolerance (in days) for "same day" events when checking
+    # the cause-before-effect temporal order. Without this slack,
+    # two events recorded the same morning would be rejected as
+    # out-of-order.
+    _TEMPORAL_ORDER_SLACK_DAYS = 1.0
+    _MIN_CHAIN_STRENGTH = 0.30
+
     def _match_template(self, template: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any] | None:
-        """Try to match a causal template against observed events."""
+        """Try to match a causal template against observed events.
+
+        The template lists chain steps in cause→effect order. We
+        walk the chain step-by-step, picking events that satisfy
+        TWO constraints the previous version did not enforce:
+
+          1. Cause-before-effect temporal order. Each next step
+             must happen at the same time as or LATER than (smaller
+             days_ago) the previous step. Without this an "effect"
+             event recorded BEFORE its claimed cause was still
+             flagged as a valid causal chain — the whole point of
+             "causal" is temporal order, so this was a real
+             correctness bug.
+
+          2. Greedy chronological picking. We sort events by
+             days_ago DESCENDING (oldest first) before matching,
+             so for each chain step we naturally pick the earliest
+             available event of that type — and then only events
+             that happen on or after that time are eligible for
+             subsequent steps.
+        """
         chain_events = template["chain"]
         max_days = template["max_days"]
 
-        # Check if we have events matching the chain
-        matched = []
+        # Sort by days_ago descending so we walk the timeline from
+        # oldest to newest. Stable so equal-day events keep their
+        # original order.
+        ordered = sorted(events, key=lambda e: -e["days_ago"])
+
+        matched: list[dict[str, Any]] = []
+        last_days_ago: float | None = None
         for chain_event in chain_events:
             found = None
-            for event in events:
-                if event["type"] == chain_event:
-                    found = event
-                    break
+            for event in ordered:
+                if event["type"] != chain_event:
+                    continue
+                if last_days_ago is not None:
+                    # Cause must come at or before effect. Allow a
+                    # small slack for same-day events.
+                    if event["days_ago"] > last_days_ago + self._TEMPORAL_ORDER_SLACK_DAYS:
+                        continue
+                if event in matched:
+                    continue
+                found = event
+                break
             if found:
                 matched.append(found)
+                last_days_ago = found["days_ago"]
 
         # Need at least 2 events in the chain to count
         if len(matched) < 2:
             return None
 
-        # Check temporal order and proximity
+        # Check temporal proximity between consecutive matched
+        # events. Uses abs() because we already enforced order
+        # above; this is just the gap test.
         for i in range(len(matched) - 1):
             day_diff = abs(matched[i]["days_ago"] - matched[i + 1]["days_ago"])
             if day_diff > max_days:
@@ -228,7 +285,7 @@ class CausalGraph:
             3,
         )
 
-        if strength < 0.3:
+        if strength < self._MIN_CHAIN_STRENGTH:
             return None
 
         return {
