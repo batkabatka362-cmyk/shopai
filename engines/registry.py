@@ -6,7 +6,12 @@ and stub (BaseEngine). 86 engines + base framework.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
+
+from utils.logger import get_logger
+
+logger = get_logger("engines.registry")
 
 if TYPE_CHECKING:
     from engines.base import BaseEngine
@@ -203,14 +208,34 @@ _ENGINE_MAP: dict[str, str] = {
     "brand_positioning": "engines.brand_positioning",
 }
 
-# Cache for instantiated engines
+# Cache for instantiated engines + the lock that protects it.
+# Without the lock, two threads calling get_engine() concurrently
+# could double-instantiate the same engine and one would silently
+# overwrite the other in `_cache`.
 _cache: dict[str, "BaseEngine"] = {}
+_cache_lock = threading.Lock()
+
+# Per-engine load failures captured by get_engine(). Mirrors the
+# `get_init_errors()` observability hooks added in earlier audit
+# passes (LayerDispatcher / AgentDispatcher / UnifiedMemory /
+# CoreOrchestrator). Without this, a broken engine module would
+# silently return None forever and the operator had no way to tell
+# a missing engine apart from a broken one.
+_load_errors: dict[str, str] = {}
 
 
 def get_engine(name: str) -> "BaseEngine | None":
-    """Get an engine instance by name (lazy-loaded, cached)."""
-    if name in _cache:
-        return _cache[name]
+    """Get an engine instance by name (lazy-loaded, cached).
+
+    Returns None when the engine is unknown OR when its module
+    fails to import / instantiate. In the failure case the error
+    is logged at WARNING level and recorded in `_load_errors`
+    keyed by engine name so callers can introspect what broke
+    via `get_load_errors()`.
+    """
+    with _cache_lock:
+        if name in _cache:
+            return _cache[name]
 
     module_path = _ENGINE_MAP.get(name)
     if module_path is None:
@@ -219,23 +244,61 @@ def get_engine(name: str) -> "BaseEngine | None":
     try:
         import importlib
         mod = importlib.import_module(module_path)
-        # Find the engine class (first class ending with 'Engine')
+
+        # Find the engine class. Previously this picked the first
+        # alphabetically-ordered attribute whose name ended with
+        # "Engine" — that's non-deterministic when a module imports
+        # other Engine classes (e.g. `from engines.base import
+        # SomeBaseEngine`). Prefer classes whose `__module__`
+        # matches the module we just loaded so we always get the
+        # class actually defined in that file, not a re-export.
         engine_cls = None
+        fallback_cls = None
         for attr_name in dir(mod):
-            attr = getattr(mod, attr_name)
-            if isinstance(attr, type) and attr_name.endswith("Engine") and attr_name != "BaseEngine":
+            attr = getattr(mod, attr_name, None)
+            if not isinstance(attr, type):
+                continue
+            if not attr_name.endswith("Engine") or attr_name == "BaseEngine":
+                continue
+            attr_module = getattr(attr, "__module__", "")
+            if attr_module == module_path or attr_module.startswith(module_path + "."):
                 engine_cls = attr
                 break
+            if fallback_cls is None:
+                fallback_cls = attr
+        engine_cls = engine_cls or fallback_cls
 
         if engine_cls is None:
+            err = "no class ending with 'Engine' found in module"
+            with _cache_lock:
+                _load_errors[name] = err
+            logger.warning(
+                "engines.registry: %s — %s (module=%s)",
+                name, err, module_path,
+            )
             return None
 
         engine = engine_cls()
-        _cache[name] = engine
-        return engine
-
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        err = f"{type(exc).__name__}: {exc}"
+        with _cache_lock:
+            _load_errors[name] = err
+        logger.warning(
+            "engines.registry: failed to load engine %r (%s)",
+            name, err,
+        )
         return None
+
+    with _cache_lock:
+        # Re-check inside the lock so two concurrent loaders agree
+        # on which instance wins.
+        existing = _cache.get(name)
+        if existing is not None:
+            return existing
+        _cache[name] = engine
+        # Clear any prior failure record now that the load succeeded.
+        _load_errors.pop(name, None)
+    return engine
 
 
 def list_engines() -> list[str]:
@@ -254,5 +317,20 @@ def is_registered(name: str) -> bool:
 
 
 def clear_cache() -> None:
-    """Clear the engine instance cache."""
-    _cache.clear()
+    """Clear the engine instance cache and any recorded load errors."""
+    with _cache_lock:
+        _cache.clear()
+        _load_errors.clear()
+
+
+def get_load_errors() -> dict[str, str]:
+    """Return per-engine load failure messages.
+
+    Empty dict means every previously-attempted engine loaded
+    cleanly. Each entry is ``"TypeName: message"`` so the operator
+    can tell a missing engine apart from a broken one. Mirrors the
+    `get_init_errors()` API on the dispatcher / orchestrator
+    classes added in earlier audit passes.
+    """
+    with _cache_lock:
+        return dict(_load_errors)
