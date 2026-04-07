@@ -6,15 +6,23 @@ Not placeholder — actual algorithms:
   - Competitor price response strategy
   - A/B price test analysis with statistical significance
   - Price sensitivity by customer segment
+  - LLM-backed pricing recommendations (NEW)
+
+The deterministic algorithms always run. The LLM layer is OPTIONAL
+and called via `recommend_with_llm()` — when no LLM is wired, the
+heuristic computations are returned with a "no LLM" note.
 """
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Optional
 
 
 class PricingIntelligence:
     """Real pricing algorithms for e-commerce."""
+
+    def __init__(self, *, llm: Any = None) -> None:
+        self._llm = llm
 
     def compute_demand_curve(self, sales_history: list[dict[str, Any]]) -> dict[str, Any]:
         """Estimate demand curve from historical price-quantity data.
@@ -240,3 +248,118 @@ class PricingIntelligence:
         if winner == "A":
             return f"Keep variant A (${a.get('price')}) — performs better with statistical significance."
         return "Results inconclusive. Consider testing different price points."
+
+    # ── LLM-backed pricing recommendation ─────────────────────
+
+    def recommend_with_llm(
+        self,
+        product: dict[str, Any],
+        *,
+        recent_sales: Optional[list[dict]] = None,
+        competitor_prices: Optional[list[float]] = None,
+    ) -> dict[str, Any]:
+        """Ask the LLM for a concrete pricing recommendation.
+
+        Combines:
+            - the deterministic competitor_response analysis
+            - the LLM's reasoning over the same numbers + product context
+
+        Returns:
+            {
+                "heuristic": <competitor_response output>,
+                "llm": {action, new_price, delta_pct, reasoning,
+                        confidence, risks} or {"error": ...},
+                "source": "llm" | "heuristic_only",
+            }
+
+        When no LLM is wired, returns the heuristic result with
+        source="heuristic_only" so callers always get an answer.
+        """
+        from utils.finance import margin_pct
+
+        price = float(product.get("price", 0) or 0)
+        cost = float(product.get("cost", 0) or 0)
+        margin = margin_pct(price, cost, require_cost=False)
+
+        # Always run the heuristic
+        comp_dicts = [
+            {"price": p} for p in (competitor_prices or [])
+        ]
+        heuristic = self.competitor_response(price, cost, comp_dicts)
+
+        result: dict[str, Any] = {
+            "heuristic": heuristic,
+            "llm": None,
+            "source": "heuristic_only",
+        }
+
+        llm = self._get_llm()
+        if llm is None:
+            return result
+        try:
+            if not llm.is_available():
+                return result
+        except Exception:  # noqa: BLE001
+            return result
+
+        try:
+            from core.system.prompt_library import get_prompt
+        except Exception:  # noqa: BLE001
+            return result
+
+        template = get_prompt("decision.pricing_recommendation")
+        if template is None:
+            return result
+
+        rendered = template.render(
+            product_name=product.get("name", product.get("title", "Unknown")),
+            price=price,
+            cost=cost,
+            margin_pct=round(margin, 1),
+            recent_sales=len(recent_sales or []),
+            competitor_prices=", ".join(
+                f"${p:.2f}" for p in (competitor_prices or [])
+            ) or "(none)",
+        )
+
+        try:
+            structured = llm.ask_structured(
+                role=template.role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["llm"] = {"error": str(exc)[:200]}
+            return result
+
+        if not getattr(structured, "ok", False):
+            result["llm"] = {"error": structured.error or "unparseable"}
+            return result
+
+        data = structured.data or {}
+        # Normalize the LLM response shape
+        try:
+            llm_response = {
+                "action": str(data.get("action", "hold")),
+                "new_price": float(data.get("new_price", price)),
+                "delta_pct": float(data.get("delta_pct", 0)),
+                "reasoning": str(data.get("reasoning", ""))[:500],
+                "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
+                "risks": list(data.get("risks", []))[:5],
+            }
+            result["llm"] = llm_response
+            result["source"] = "llm"
+        except (TypeError, ValueError) as exc:
+            result["llm"] = {"error": f"normalization failed: {exc}"}
+        return result
+
+    def _get_llm(self) -> Any:
+        """Lazily resolve the LLM adapter."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from core.system.llm_adapter import get_llm
+            return get_llm()
+        except Exception:  # noqa: BLE001
+            return None
