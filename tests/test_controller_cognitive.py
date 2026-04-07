@@ -197,3 +197,56 @@ class TestBackwardsCompat:
         # Manually call _run_cognitive_phase to verify the gate
         out = c._run_cognitive_phase({"cycle_id": "x"})
         assert out is None
+
+
+# ── Initialization failure surfaces (audit fix #3) ────────────
+
+
+class TestInitializationFailureSurfaces:
+    """Regression: bare `except Exception: pass` previously hid all
+    init failures behind a successful "initialized" log line. The
+    operator had no idea memory/LLM/dispatchers had failed to load."""
+
+    def test_init_failure_returns_degraded_status(self, monkeypatch):
+        from core.autonomous.controller import AutonomousController
+        import core.memory.unified_memory as um
+
+        def _boom():
+            raise RuntimeError("memory backend on fire")
+
+        monkeypatch.setattr(um, "get_unified_memory", _boom)
+
+        c = AutonomousController()
+        result = c.initialize()
+        assert result["status"] == "degraded"
+        assert "memory backend on fire" in result["error"]
+        assert "RuntimeError" in result["error"]
+
+    def test_init_failure_records_error_on_instance(self, monkeypatch):
+        from core.autonomous.controller import AutonomousController
+        import core.memory.unified_memory as um
+
+        monkeypatch.setattr(
+            um, "get_unified_memory",
+            lambda: (_ for _ in ()).throw(ValueError("nope")),
+        )
+        c = AutonomousController()
+        c.initialize()
+        assert c._init_error
+        assert "ValueError" in c._init_error
+        assert c._unified_memory is None
+        assert c._layer_dispatcher is None
+        assert c._agent_dispatcher is None
+
+    def test_init_success_clears_error(self):
+        from core.autonomous.controller import AutonomousController
+        c = AutonomousController()
+        result = c.initialize()
+        # Real init may succeed or fail depending on env, but the
+        # contract is: status is one of {"initialized", "degraded"}
+        # and _init_error matches.
+        assert result["status"] in ("initialized", "degraded")
+        if result["status"] == "initialized":
+            assert c._init_error == ""
+        else:
+            assert c._init_error

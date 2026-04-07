@@ -303,13 +303,33 @@ class MemoryIntelligence:
             sql += " AND level = ?"
             params.append(level)
 
+        # Push tag filtering into SQL when possible. The tags column
+        # is a JSON-encoded list (e.g. '["a","b","c"]'); a simple
+        # LIKE on the literal '"<tag>"' substring is enough to
+        # short-circuit the candidate set before the LIMIT clause.
+        # Without this, fetching `limit * 2` rows then filtering in
+        # Python could return fewer than `limit` matches whenever
+        # the top-scored rows happen not to match any wanted tag.
+        if tags:
+            tag_clauses = []
+            for t in tags:
+                if not isinstance(t, str) or not t:
+                    continue
+                tag_clauses.append("tags LIKE ?")
+                params.append(f'%"{t}"%')
+            if tag_clauses:
+                sql += " AND (" + " OR ".join(tag_clauses) + ")"
+
         sql += " ORDER BY score DESC, timestamp DESC LIMIT ?"
         params.append(limit * 2)  # Fetch extra for reranking
 
         rows = conn.execute(sql, params).fetchall()
         results = [self._row_to_dict(r) for r in rows]
 
-        # Tag filter
+        # Defensive: re-apply the exact tag filter in Python in case
+        # the LIKE substring matched a partial token (e.g. searching
+        # for "a" inside a tag like "abc"). This guarantees correctness
+        # without sacrificing the SQL pre-filter's selectivity.
         if tags:
             tag_set = set(tags)
             results = [r for r in results
@@ -485,10 +505,15 @@ class MemoryIntelligence:
 
             cur = conn.execute(
                 """INSERT INTO memories (level, memory_type, category, content, features,
-                   action, score, confidence, tags, evidence_count, source_ids, timestamp, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   action, result, score, confidence, tags, evidence_count, source_ids, timestamp, last_updated)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (1, "semantic", category, json.dumps(pattern_content),
                  json.dumps({"group_key": group_key}), f"pattern:{group_key}",
+                 json.dumps({
+                     "promoted_from": "events",
+                     "source_count": len(group_events),
+                     "avg_score": round(avg_score, 2),
+                 }),
                  avg_score, avg_score / 5.0, json.dumps([category, "pattern", group_key]),
                  len(group_events), json.dumps(event_ids), time.time(), time.time()),
             )
@@ -546,12 +571,18 @@ class MemoryIntelligence:
 
             cur = conn.execute(
                 """INSERT INTO memories (level, memory_type, category, content, features,
-                   action, score, confidence, tags, evidence_count, parent_id,
+                   action, result, score, confidence, tags, evidence_count, parent_id,
                    source_ids, timestamp, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (2, "procedural", category, json.dumps(rule_content),
                  json.dumps({"condition": group_key, "action": rule_action}),
-                 rule_action, avg_score, confidence,
+                 rule_action,
+                 json.dumps({
+                     "promoted_from": "pattern",
+                     "parent_id": p["id"],
+                     "evidence_count": p["evidence_count"],
+                 }),
+                 avg_score, confidence,
                  json.dumps([category, "rule", rule_action]),
                  p["evidence_count"], p["id"], json.dumps([p["id"]]),
                  time.time(), time.time()),
@@ -612,12 +643,18 @@ class MemoryIntelligence:
 
         cur = conn.execute(
             """INSERT INTO memories (level, memory_type, category, content, features,
-               action, score, confidence, tags, evidence_count, source_ids,
+               action, result, score, confidence, tags, evidence_count, source_ids,
                timestamp, last_updated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (3, "procedural", category, json.dumps(strategy_content),
              json.dumps({"rule_count": len(qualifying)}),
-             "strategy", avg_score, avg_score / 5.0,
+             "strategy",
+             json.dumps({
+                 "promoted_from": "rules",
+                 "rule_count": len(qualifying),
+                 "avg_score": round(avg_score, 2),
+             }),
+             avg_score, avg_score / 5.0,
              json.dumps([category, "strategy"]),
              len(qualifying), json.dumps(rule_ids), time.time(), time.time()),
         )

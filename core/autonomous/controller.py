@@ -113,14 +113,38 @@ class AutonomousController:
             self._layer_dispatcher.initialize()
             self._agent_dispatcher = AgentDispatcher()
             self._agent_dispatcher.initialize()
-        except Exception:
+            self._init_error: str = ""
+        except Exception as exc:  # noqa: BLE001
+            # Previously this block silently set every subsystem to
+            # None and emitted a successful "initialized" log line —
+            # operators had no idea memory/LLM/dispatchers had failed
+            # to load. Capture the failure with a full traceback,
+            # remember it on the controller, and emit a loud warning.
+            logger.exception(
+                "AutonomousController initialization failed: %s", exc,
+            )
             self._unified_memory = None
             self._memory = None
             self._llm = None
             self._skills = None
             self._layer_dispatcher = None
             self._agent_dispatcher = None
+            self._init_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "AutonomousController running in degraded mode "
+                "(no memory / LLM / dispatchers): %s", self._init_error,
+            )
 
+        if getattr(self, "_init_error", ""):
+            logger.info(
+                "AutonomousController initialized (DEGRADED: %s)",
+                self._init_error,
+            )
+            return {
+                "status": "degraded",
+                "error": self._init_error,
+                "auto_approve": self._auto_approve,
+            }
         logger.info("AutonomousController initialized")
         return {"status": "initialized", "auto_approve": self._auto_approve}
 
