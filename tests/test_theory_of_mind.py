@@ -343,6 +343,162 @@ class TestEndToEnd:
             assert second.confidence < first.confidence
 
 
+class _FakeStructured:
+    def __init__(self, ok=True, data=None, error=""):
+        self.ok = ok
+        self.data = data or {}
+        self.error = error
+        self.raw_text = ""
+
+
+class _FakeLLM:
+    def __init__(self, *, available=True, structured_data=None,
+                 raise_on_call=False):
+        self._available = available
+        self._structured = structured_data
+        self._raise = raise_on_call
+        self.calls = []
+
+    def is_available(self):
+        return self._available
+
+    def ask_structured(self, role="", prompt="", system_prompt="",
+                       schema_hint="", **kw):
+        self.calls.append({"role": role, "prompt": prompt})
+        if self._raise:
+            raise RuntimeError("LLM down")
+        if self._structured is None:
+            return _FakeStructured(ok=False, error="no data")
+        return _FakeStructured(ok=True, data=self._structured)
+
+
+class TestLLMPredictor:
+    def _tom_with_llm(self, llm, **kw):
+        from core.cognitive.theory_of_mind import TheoryOfMind
+        return TheoryOfMind(
+            db_path=tempfile.mktemp(suffix=".db"),
+            llm=llm,
+            **kw,
+        )
+
+    def _seed_agent(self, tom):
+        tom.register_agent(
+            "seg_x", "customer", "Segment X",
+            initial_beliefs={"loyal": 0.9, "price_sensitive": 0.5},
+        )
+
+    def test_llm_predict_used_when_available(self):
+        llm = _FakeLLM(structured_data={
+            "predicted_response": "delight_and_buy_more",
+            "confidence": 0.85,
+            "reasoning": "Loyal customers reward price drops",
+            "alternative_responses": [
+                {"response": "share_with_friends", "probability": 0.6},
+            ],
+        })
+        tom = self._tom_with_llm(llm)
+        self._seed_agent(tom)
+        pred = tom.predict_response("seg_x", "lower price 10%")
+        assert pred is not None
+        assert pred.predicted_response == "delight_and_buy_more"
+        assert pred.confidence == 0.85
+        assert "Loyal" in pred.notes
+        assert "share_with_friends" in pred.notes
+        # Supporting beliefs is ["llm"] for LLM-sourced predictions
+        assert pred.supporting_beliefs == ["llm"]
+
+    def test_no_llm_falls_back_to_rules(self):
+        tom = self._tom_with_llm(None)
+        self._seed_agent(tom)
+        pred = tom.predict_response("seg_x", "lower price 10%")
+        # Rule-based fallback should still work
+        assert pred is not None
+        assert pred.supporting_beliefs != ["llm"]
+
+    def test_use_llm_false_disables(self):
+        llm = _FakeLLM(structured_data={"predicted_response": "x"})
+        tom = self._tom_with_llm(llm, use_llm=False)
+        self._seed_agent(tom)
+        tom.predict_response("seg_x", "lower price 10%")
+        assert llm.calls == []
+
+    def test_prefer_llm_call_override(self):
+        llm = _FakeLLM(structured_data={
+            "predicted_response": "via_llm",
+            "confidence": 0.7,
+        })
+        tom = self._tom_with_llm(llm, use_llm=False)
+        self._seed_agent(tom)
+        # use_llm=False instance default but call-level override forces it
+        pred = tom.predict_response(
+            "seg_x", "lower price 10%", prefer_llm=True,
+        )
+        assert pred is not None
+        assert pred.predicted_response == "via_llm"
+
+    def test_unavailable_llm_falls_back(self):
+        llm = _FakeLLM(available=False)
+        tom = self._tom_with_llm(llm)
+        self._seed_agent(tom)
+        pred = tom.predict_response("seg_x", "lower price 10%")
+        # Falls back to rules
+        assert pred is not None
+        assert pred.supporting_beliefs != ["llm"]
+
+    def test_llm_exception_falls_back(self):
+        llm = _FakeLLM(raise_on_call=True)
+        tom = self._tom_with_llm(llm)
+        self._seed_agent(tom)
+        pred = tom.predict_response("seg_x", "lower price 10%")
+        assert pred is not None
+        assert pred.supporting_beliefs != ["llm"]
+
+    def test_llm_unparseable_falls_back(self):
+        llm = _FakeLLM(structured_data=None)  # ok=False
+        tom = self._tom_with_llm(llm)
+        self._seed_agent(tom)
+        pred = tom.predict_response("seg_x", "lower price 10%")
+        assert pred is not None
+        assert pred.supporting_beliefs != ["llm"]
+
+    def test_llm_empty_response_falls_back(self):
+        llm = _FakeLLM(structured_data={"predicted_response": ""})
+        tom = self._tom_with_llm(llm)
+        self._seed_agent(tom)
+        pred = tom.predict_response("seg_x", "lower price 10%")
+        assert pred is not None
+        assert pred.supporting_beliefs != ["llm"]
+
+    def test_llm_clamps_confidence(self):
+        llm = _FakeLLM(structured_data={
+            "predicted_response": "x",
+            "confidence": 1.7,
+        })
+        tom = self._tom_with_llm(llm)
+        self._seed_agent(tom)
+        pred = tom.predict_response("seg_x", "test")
+        assert pred.confidence == 1.0
+
+    def test_llm_non_numeric_confidence_default(self):
+        llm = _FakeLLM(structured_data={
+            "predicted_response": "x",
+            "confidence": "very high",
+        })
+        tom = self._tom_with_llm(llm)
+        self._seed_agent(tom)
+        pred = tom.predict_response("seg_x", "test")
+        assert pred.confidence == 0.5
+
+    def test_llm_unknown_agent_returns_none(self):
+        llm = _FakeLLM(structured_data={"predicted_response": "x"})
+        tom = self._tom_with_llm(llm)
+        # No agent registered
+        pred = tom.predict_response("ghost", "test")
+        assert pred is None
+        # LLM not even called
+        assert llm.calls == []
+
+
 class TestSingleton:
     def test_get_theory_of_mind_caches(self):
         from core.cognitive import theory_of_mind as mod

@@ -165,11 +165,19 @@ class Prediction:
 class TheoryOfMind:
     """The AI's beliefs about other agents."""
 
-    def __init__(self, db_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        llm: Any = None,
+        use_llm: bool = True,
+    ) -> None:
         self._db_path = str(db_path or _DB_PATH)
         self._local = threading.local()
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
+        self._llm = llm
+        self._use_llm = bool(use_llm)
 
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "c") or self._local.c is None:
@@ -367,16 +375,21 @@ class TheoryOfMind:
         action: str,
         *,
         belief_rules: Optional[dict[str, dict[str, str]]] = None,
+        prefer_llm: Optional[bool] = None,
     ) -> Optional[Prediction]:
         """Predict how an agent will respond to a hypothetical action.
+
+        When an LLM is available, the LLM predictor runs first and
+        produces a richer, reasoning-backed prediction. On any LLM
+        failure (or when no LLM is wired) the rule-based predictor
+        runs as a deterministic fallback.
 
         Args:
             agent_id: who we're predicting about
             action: a short verb + object string, e.g. "lower price 10%"
-            belief_rules: optional mapping
-                {action_substring: {belief_name: predicted_response}}
-                used to translate beliefs into a concrete prediction.
-                If None, a built-in default rule set is used.
+            belief_rules: optional mapping override for the rule layer
+            prefer_llm: override the instance-level use_llm toggle for
+                this call (None = use instance default)
 
         Returns the highest-confidence prediction, or None if no
         belief weights in to the action.
@@ -385,6 +398,14 @@ class TheoryOfMind:
         if agent is None:
             return None
 
+        # ── LLM path (preferred when available) ──
+        try_llm = prefer_llm if prefer_llm is not None else self._use_llm
+        if try_llm:
+            llm_pred = self._llm_predict(agent, action)
+            if llm_pred is not None:
+                return llm_pred
+
+        # ── Rule-based fallback ──
         rules = belief_rules or _DEFAULT_BELIEF_RULES
         action_lower = action.lower()
 
@@ -461,6 +482,115 @@ class TheoryOfMind:
             first_seen=float(row["first_seen"]),
             last_seen=float(row["last_seen"]),
         )
+
+
+# ── LLM predictor (instance methods patched on the class) ────
+
+
+def _tom_llm_predict(self, agent: Agent, action: str) -> Optional[Prediction]:
+    """Ask the LLM to predict an agent's response.
+
+    Renders the centralized `theory_of_mind.predict_response`
+    prompt with the agent's traits and beliefs and parses a
+    structured JSON response. Returns None on any failure so the
+    caller falls back to the rule-based predictor.
+    """
+    llm = self._get_llm()
+    if llm is None:
+        return None
+    try:
+        if not llm.is_available():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        from core.system.prompt_library import get_prompt
+    except Exception:  # noqa: BLE001
+        return None
+    template = get_prompt("theory_of_mind.predict_response")
+    if template is None:
+        return None
+
+    # Format traits/beliefs as compact JSON for the prompt
+    try:
+        traits_str = json.dumps(agent.traits, default=str)[:500]
+        beliefs_str = json.dumps({
+            k: round(v, 2) for k, v in agent.beliefs.items()
+        })[:500]
+    except Exception:  # noqa: BLE001
+        return None
+
+    rendered = template.render(
+        agent_name=agent.name,
+        agent_kind=agent.kind,
+        agent_traits=traits_str,
+        agent_beliefs=beliefs_str,
+        action=action,
+    )
+
+    try:
+        structured = llm.ask_structured(
+            role=template.role,
+            prompt=rendered.user,
+            system_prompt=rendered.system,
+            schema_hint=template.schema_hint,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("ToM LLM call failed: %s", exc)
+        return None
+
+    if not getattr(structured, "ok", False):
+        return None
+
+    data = structured.data or {}
+    response = str(data.get("predicted_response") or "").strip()
+    if not response:
+        return None
+
+    try:
+        conf = max(0.0, min(1.0, float(data.get("confidence", 0.5))))
+    except (TypeError, ValueError):
+        conf = 0.5
+
+    reasoning = str(data.get("reasoning") or "")[:300]
+    alternatives = data.get("alternative_responses") or []
+    alt_summary = ""
+    if isinstance(alternatives, list) and alternatives:
+        alt_parts = []
+        for alt in alternatives[:3]:
+            if isinstance(alt, dict):
+                r = alt.get("response", "")
+                p = alt.get("probability", "")
+                if r:
+                    alt_parts.append(f"{r}({p})")
+        if alt_parts:
+            alt_summary = " alts: " + ", ".join(alt_parts)
+
+    return Prediction(
+        agent_id=agent.id,
+        action_proposed=action,
+        predicted_response=response,
+        confidence=conf,
+        supporting_beliefs=["llm"],
+        notes=(reasoning + alt_summary).strip(),
+    )
+
+
+def _tom_get_llm(self) -> Any:
+    """Lazily resolve the LLM adapter."""
+    if self._llm is not None:
+        return self._llm
+    try:
+        from core.system.llm_adapter import get_llm
+        return get_llm()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Patch onto the class
+TheoryOfMind._llm_predict = _tom_llm_predict
+TheoryOfMind._get_llm = _tom_get_llm
 
 
 # ── Default belief → response rules ──────────────────────────
