@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("brain.memory")
@@ -86,8 +87,48 @@ def _v1_initial_schema(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _v2_unique_pattern_rule_indexes(conn: sqlite3.Connection) -> None:
+    """v2: Add UNIQUE indexes on patterns.pattern and rules.rule.
+
+    Without these, two threads racing on the same pattern_str /
+    rule text in `_detect_patterns` / `_generate_rule` could both
+    pass their existence check and both INSERT — leaving duplicate
+    rows that then double-count toward downstream rule activation
+    and pattern frequency.
+
+    The UNIQUE indexes also enable atomic UPSERT (INSERT ... ON
+    CONFLICT(pattern) DO UPDATE) so the check-then-write race is
+    eliminated entirely. Existing duplicates are deduplicated
+    by keeping the highest-frequency row per pattern.
+    """
+    # Dedupe patterns first — keep the row with the highest frequency
+    # per pattern (arbitrary tiebreak by lowest id).
+    conn.executescript("""
+        DELETE FROM patterns
+        WHERE id NOT IN (
+            SELECT MIN(id) FROM patterns
+            GROUP BY pattern
+            HAVING MAX(frequency) = frequency
+        );
+        DELETE FROM patterns
+        WHERE id NOT IN (
+            SELECT MIN(id) FROM patterns GROUP BY pattern
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_patterns_pattern_unique
+            ON patterns(pattern);
+
+        DELETE FROM rules
+        WHERE id NOT IN (
+            SELECT MIN(id) FROM rules GROUP BY rule
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_rules_rule_unique
+            ON rules(rule);
+    """)
+
+
 _MIGRATIONS: list[tuple[int, str, Any]] = [
     (1, "initial schema", _v1_initial_schema),
+    (2, "unique pattern + rule indexes", _v2_unique_pattern_rule_indexes),
 ]
 _SCHEMA_VERSION = max(m[0] for m in _MIGRATIONS)
 
@@ -225,27 +266,35 @@ class IntelligentMemory:
         pattern_str = f"{pattern_key}→{outcome}"
 
         conn = self._conn()
-        existing = conn.execute(
-            "SELECT id, frequency, avg_score FROM patterns WHERE pattern = ?",
+        now = time.time()
+        # Atomic UPSERT — prevents the check-then-write race that
+        # previously let two threads both INSERT the same pattern.
+        # The v2 migration added a UNIQUE index on patterns.pattern
+        # so this conflict target is valid.
+        conn.execute(
+            """
+            INSERT INTO patterns
+                (pattern, category, frequency, avg_score, created_at, updated_at)
+            VALUES (?, ?, 1, ?, ?, ?)
+            ON CONFLICT(pattern) DO UPDATE SET
+                frequency = frequency + 1,
+                avg_score = round(
+                    (avg_score * frequency + excluded.avg_score) / (frequency + 1),
+                    3
+                ),
+                updated_at = excluded.updated_at
+            """,
+            (pattern_str, category, score, now, now),
+        )
+        # Re-read so we know whether the post-update frequency hit
+        # the rule-generation threshold.
+        row = conn.execute(
+            "SELECT frequency, avg_score FROM patterns WHERE pattern = ?",
             (pattern_str,),
         ).fetchone()
-
-        if existing:
-            new_freq = existing["frequency"] + 1
-            new_avg = (existing["avg_score"] * existing["frequency"] + score) / new_freq
-            conn.execute(
-                "UPDATE patterns SET frequency = ?, avg_score = ?, updated_at = ? WHERE id = ?",
-                (new_freq, round(new_avg, 3), time.time(), existing["id"]),
-            )
-            # Pattern seen 3+ times → generate rule
-            if new_freq >= 3:
-                self._generate_rule(category, pattern_str, new_avg)
-        else:
-            conn.execute(
-                "INSERT INTO patterns (pattern, category, frequency, avg_score, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                (pattern_str, category, 1, score, time.time(), time.time()),
-            )
         conn.commit()
+        if row and row["frequency"] >= 3:
+            self._generate_rule(category, pattern_str, row["avg_score"])
 
     # ── L5: Rule Generation ──────────────────────────────────
 
@@ -270,13 +319,23 @@ class IntelligentMemory:
         rule_text = f"When {condition}: {action} (score: {avg_score:.1f})"
 
         conn = self._conn()
-        existing = conn.execute("SELECT id FROM rules WHERE rule = ?", (rule_text,)).fetchone()
-        if not existing:
-            conn.execute(
-                "INSERT INTO rules (rule, category, condition, action, confidence, source_pattern, created_at) VALUES (?,?,?,?,?,?,?)",
-                (rule_text, category, condition, action, confidence, pattern, time.time()),
-            )
-            conn.commit()
+        # Atomic INSERT OR IGNORE — relies on the v2 UNIQUE index
+        # on rules.rule to make duplicate inserts a no-op rather
+        # than a check-then-write race.
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO rules
+                (rule, category, condition, action, confidence,
+                 source_pattern, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (rule_text, category, condition, action, confidence, pattern, time.time()),
+        )
+        conn.commit()
+        if cur.rowcount > 0:
+            # Only bump cache generation when we actually inserted —
+            # this prevents needless cache invalidation churn from
+            # repeated calls on already-existing rules.
             self._rules_cache_gen += 1
             logger.info("New rule: %s", rule_text)
 
@@ -335,7 +394,13 @@ class IntelligentMemory:
         if cached:
             gen, expires, result = cached
             if gen == self._rules_cache_gen and now < expires:
-                return result
+                # Return a fresh copy so callers can mutate the
+                # returned dicts without poisoning the cache. The
+                # previous version handed out a shared list whose
+                # entries any caller could mutate, leaking changes
+                # into every subsequent reader of the same cache
+                # entry.
+                return [dict(r) for r in result]
 
         if category:
             rows = self._conn().execute(
@@ -344,8 +409,12 @@ class IntelligentMemory:
         else:
             rows = self._conn().execute("SELECT * FROM rules ORDER BY confidence DESC").fetchall()
         result = [dict(r) for r in rows]
-        self._rules_cache[category] = (self._rules_cache_gen, now + self._rules_cache_ttl, result)
-        return result
+        self._rules_cache[category] = (
+            self._rules_cache_gen, now + self._rules_cache_ttl, result,
+        )
+        # Same defensive copy on the cold path so the cached object
+        # and the returned object can never alias.
+        return [dict(r) for r in result]
 
     # ── Bad Data Storage ─────────────────────────────────────
 
@@ -379,8 +448,13 @@ class IntelligentMemory:
         if category in ("pricing", "product"):
             features["has_price"] = bool(data.get("price"))
             features["has_cost"] = bool(data.get("cost"))
-            price = float(data.get("price", 0) or 0)
-            cost = float(data.get("cost", 0) or 0)
+            # Use safe_float so a string like "$10.99" or "" doesn't
+            # crash the entire feature extractor mid-cycle.
+            # Previously `float(data.get("price", 0) or 0)` raised
+            # ValueError on any non-numeric string and propagated
+            # all the way out of `record_decision` / `ingest`.
+            price = safe_float(data.get("price"))
+            cost = safe_float(data.get("cost"))
             if price > 0 and cost > 0:
                 from utils.finance import margin as _margin
                 features["margin"] = _margin(price, cost, precision=2)
@@ -389,9 +463,11 @@ class IntelligentMemory:
             features["category"] = data.get("category", data.get("product_type", ""))
 
         elif category in ("customer", "segment"):
-            features["order_count"] = int(data.get("orders", data.get("orders_count", 0)) or 0)
+            features["order_count"] = safe_int(
+                data.get("orders", data.get("orders_count", 0))
+            )
             features["is_repeat"] = features["order_count"] > 1
-            features["total_spent"] = float(data.get("total_spent", 0) or 0)
+            features["total_spent"] = safe_float(data.get("total_spent"))
             features["is_high_value"] = features["total_spent"] > 100
 
         elif category == "decision":

@@ -75,9 +75,19 @@ class TestGetRulesCache:
 
         # Prime the cache
         first = mem.get_rules("pricing")
-        # Second call should return the SAME list object (cached)
+        # Second call should return EQUAL contents (cache hit) but
+        # a DISTINCT list object — we hand callers a defensive copy
+        # so they can mutate the result without poisoning the cache
+        # for every subsequent reader.
         second = mem.get_rules("pricing")
-        assert first is second
+        assert first == second
+        assert first is not second
+        # Mutating the returned list (or its dicts) must not bleed
+        # into the cached state.
+        first.append({"poison": True})
+        third = mem.get_rules("pricing")
+        assert third == second
+        assert not any("poison" in r for r in third)
 
     def test_brain_memory_cache_invalidates_on_new_rule(self):
         from core.brain.memory import IntelligentMemory
