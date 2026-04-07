@@ -15,12 +15,28 @@ Hysteresis: won't switch goals for 5 cycles minimum to prevent thrashing.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("goals.manager")
+
+
+def _section(situation: dict[str, Any], name: str) -> dict[str, Any]:
+    """Return a situation section as a real dict.
+
+    Replaces `situation.get(name, {})` which returned the literal
+    default ONLY when the key was missing. If the key was present
+    with a None value (initial state or post-partial-update),
+    `.get` returned None and the next chained `.get(...)` crashed
+    with AttributeError. Same defensive pattern from PriorityEngine
+    audit pass 21.
+    """
+    val = situation.get(name) if isinstance(situation, dict) else None
+    return val if isinstance(val, dict) else {}
 
 # Goal definitions with trigger conditions and priorities
 GOAL_DEFINITIONS = {
@@ -81,11 +97,21 @@ class GoalManager:
         # result = {"goal": "grow_customers", "reason": "...", "confidence": 0.85}
     """
 
+    # Bound on the in-memory switch history. The previous version
+    # let it grow forever — over a long-running daemon this is a
+    # slow memory leak. get_switch_history already only returned
+    # the last 20, so the cap can be just slightly larger.
+    _MAX_SWITCH_HISTORY = 200
+
     def __init__(self) -> None:
         self._current_goal = "maximize_profit"
         self._goal_since_cycle = 0
         self._cycle_count = 0
         self._switch_history: list[dict[str, Any]] = []
+        # Lock guarding the mutable state above. Multiple cycles
+        # plus dashboard reads previously raced on _current_goal
+        # and _switch_history mutations.
+        self._lock = threading.Lock()
 
     def select_goal(self, situation: dict[str, Any], cycle_number: int = 0) -> dict[str, Any]:
         """Select the best goal based on current store situation.
@@ -97,52 +123,64 @@ class GoalManager:
         Returns:
             {"goal": str, "reason": str, "switched": bool, "confidence": float}
         """
-        self._cycle_count = cycle_number
-        recommended = self._evaluate_goals(situation)
+        # Coerce situation defensively so the rest of the method
+        # can rely on dict semantics.
+        if not isinstance(situation, dict):
+            situation = {}
 
-        # Hysteresis: don't switch if we recently switched
-        cycles_on_current = cycle_number - self._goal_since_cycle
-        switched = False
+        with self._lock:
+            self._cycle_count = cycle_number
+            recommended = self._evaluate_goals(situation)
 
-        if recommended["goal"] != self._current_goal:
-            if cycles_on_current >= HYSTERESIS_CYCLES or recommended["priority"] <= 2:
-                # Switch: either enough cycles passed, or it's urgent (priority 1-2)
-                old_goal = self._current_goal
-                self._current_goal = recommended["goal"]
-                self._goal_since_cycle = cycle_number
-                switched = True
-                self._switch_history.append({
-                    "from": old_goal,
-                    "to": recommended["goal"],
-                    "reason": recommended["reason"],
-                    "cycle": cycle_number,
-                    "timestamp": time.time(),
-                })
-                logger.info(
-                    "Goal switched: %s → %s (reason: %s)",
-                    old_goal, recommended["goal"], recommended["reason"],
-                )
-            else:
-                # Hysteresis: keep current goal
-                recommended["note"] = (
-                    f"Would switch to {recommended['goal']} but hysteresis "
-                    f"({cycles_on_current}/{HYSTERESIS_CYCLES} cycles)"
-                )
-                recommended["goal"] = self._current_goal
-                recommended["reason"] = f"Staying with {self._current_goal} (hysteresis)"
+            # Hysteresis: don't switch if we recently switched
+            cycles_on_current = cycle_number - self._goal_since_cycle
+            switched = False
 
-        return {
-            "goal": recommended["goal"],
-            "reason": recommended["reason"],
-            "switched": switched,
-            "confidence": recommended.get("confidence", 0.8),
-            "priority": recommended.get("priority", 5),
-            "alternatives": recommended.get("alternatives", []),
-            "cycles_on_current_goal": cycles_on_current,
-        }
+            if recommended["goal"] != self._current_goal:
+                if cycles_on_current >= HYSTERESIS_CYCLES or recommended["priority"] <= 2:
+                    # Switch: either enough cycles passed, or it's urgent (priority 1-2)
+                    old_goal = self._current_goal
+                    self._current_goal = recommended["goal"]
+                    self._goal_since_cycle = cycle_number
+                    switched = True
+                    self._switch_history.append({
+                        "from": old_goal,
+                        "to": recommended["goal"],
+                        "reason": recommended["reason"],
+                        "cycle": cycle_number,
+                        "timestamp": time.time(),
+                    })
+                    # Trim to bound — prevents the slow memory leak
+                    # in long-running daemons.
+                    if len(self._switch_history) > self._MAX_SWITCH_HISTORY:
+                        self._switch_history = self._switch_history[-self._MAX_SWITCH_HISTORY:]
+                    logger.info(
+                        "Goal switched: %s → %s (reason: %s)",
+                        old_goal, recommended["goal"], recommended["reason"],
+                    )
+                else:
+                    # Hysteresis: keep current goal
+                    recommended["note"] = (
+                        f"Would switch to {recommended['goal']} but hysteresis "
+                        f"({cycles_on_current}/{HYSTERESIS_CYCLES} cycles)"
+                    )
+                    recommended["goal"] = self._current_goal
+                    recommended["reason"] = f"Staying with {self._current_goal} (hysteresis)"
+
+            return {
+                "goal": recommended["goal"],
+                "reason": recommended["reason"],
+                "switched": switched,
+                "confidence": recommended.get("confidence", 0.8),
+                "priority": recommended.get("priority", 5),
+                "alternatives": recommended.get("alternatives", []),
+                "cycles_on_current_goal": cycles_on_current,
+            }
 
     def should_switch(self, current_goal: str, situation: dict[str, Any]) -> dict[str, Any]:
         """Check if a goal switch is warranted without actually switching."""
+        if not isinstance(situation, dict):
+            situation = {}
         recommended = self._evaluate_goals(situation)
         return {
             "should_switch": recommended["goal"] != current_goal,
@@ -152,23 +190,35 @@ class GoalManager:
         }
 
     def get_current_goal(self) -> str:
-        return self._current_goal
+        with self._lock:
+            return self._current_goal
 
     def get_switch_history(self) -> list[dict[str, Any]]:
-        return self._switch_history[-20:]
+        with self._lock:
+            # Return defensive copies so caller mutation can't
+            # poison the in-memory history.
+            return [dict(e) for e in self._switch_history[-20:]]
 
     def _evaluate_goals(self, situation: dict[str, Any]) -> dict[str, Any]:
         """Evaluate all goals and pick the best one."""
-        financial = situation.get("financial", {})
-        inventory = situation.get("inventory", {})
-        customers = situation.get("customers", {})
-        health = situation.get("health", {})
+        financial = _section(situation, "financial")
+        # inventory currently unused but kept for future rules
+        _ = _section(situation, "inventory")
+        customers = _section(situation, "customers")
+        health = _section(situation, "health")
 
         candidates = []
 
-        # Check survive_crisis
-        health_grade = financial.get("health_grade", health.get("overall_grade", "B"))
-        critical_alerts = financial.get("critical_alerts", 0)
+        # Check survive_crisis. health_grade falls back through
+        # financial → health → "B"; the chain is hand-coded
+        # because dict.get(k, default) only fires the default when
+        # the key is MISSING (not when present-but-None).
+        health_grade = financial.get("health_grade")
+        if health_grade is None:
+            health_grade = health.get("overall_grade") or "B"
+        # safe_int so a None / string critical_alerts can't crash
+        # `> 0` with TypeError.
+        critical_alerts = safe_int(financial.get("critical_alerts"))
         if health_grade in ("D", "F") or critical_alerts > 0:
             candidates.append({
                 "goal": "survive_crisis",
@@ -177,8 +227,9 @@ class GoalManager:
                 "reason": f"Financial health grade {health_grade}, {critical_alerts} critical alerts",
             })
 
-        # Check grow_customers
-        churn_pct = customers.get("churn_risk_pct", 0)
+        # Check grow_customers. safe_float so None / string churn
+        # can't crash the comparison.
+        churn_pct = safe_float(customers.get("churn_risk_pct"))
         if churn_pct > 40:
             candidates.append({
                 "goal": "grow_customers",
@@ -197,7 +248,7 @@ class GoalManager:
             })
 
         # Check increase_aov
-        aov = financial.get("aov", 0)
+        aov = safe_float(financial.get("aov"))
         if aov > 0 and aov < 40:  # Low AOV threshold
             candidates.append({
                 "goal": "increase_aov",
@@ -225,16 +276,23 @@ class GoalManager:
         return best
 
     def _is_seasonal_opportunity(self) -> bool:
-        """Check if a seasonal peak is approaching."""
-        now = time.localtime()
+        """Check if a seasonal peak is approaching.
+
+        Uses UTC instead of `time.localtime()` so a distributed
+        ShopAI deployment fires the same seasonal logic at the
+        same wall-clock moment regardless of which timezone the
+        server is in. Previously the answer depended on TZ.
+        """
+        now = time.gmtime()
         month, day = now.tm_mon, now.tm_mday
 
         for peak_month, day_start, day_end, prep_days in SEASONAL_PEAKS:
             # Check if we're in prep window
             if month == peak_month and day_start - prep_days <= day <= day_end:
                 return True
-            # Handle cross-month prep (e.g., November prep for Black Friday)
-            if month == peak_month - 1 and day >= 28 - prep_days:
+            # Handle cross-month prep (e.g., November prep for Black Friday).
+            # Guard against peak_month=1 producing month=0.
+            if peak_month > 1 and month == peak_month - 1 and day >= 28 - prep_days:
                 return True
 
         return False
