@@ -97,7 +97,12 @@ class StoreSnapshot:
         total = len(products)
         low_stock = sum(1 for p in products if (p.get("inventory_quantity") or 0) < 10)
         out_of_stock = sum(1 for p in products if (p.get("inventory_quantity") or 0) <= 0)
-        total_inventory = sum(p.get("inventory_quantity", 0) for p in products)
+        # Use `or 0` instead of `.get("inventory_quantity", 0)` so a
+        # product with `inventory_quantity = None` (a common Shopify
+        # quirk for items without tracking) doesn't crash the sum
+        # with `int + None`. This was inconsistent with the two
+        # lines above which already used the `or 0` pattern.
+        total_inventory = sum((p.get("inventory_quantity") or 0) for p in products)
         self.inventory = {
             "total_products": total,
             "low_stock_count": low_stock,
@@ -114,10 +119,21 @@ class StoreSnapshot:
         total = len(customers)
         order_count = len(orders) if orders else 0
         # Simple churn estimate: customers with no recent orders
-        customer_ids_with_orders = set()
+        customer_ids_with_orders: set = set()
         for o in (orders or []):
-            cid = o.get("customer_id") or o.get("customer", {}).get("id")
-            if cid:
+            if not isinstance(o, dict):
+                continue
+            cid = o.get("customer_id")
+            if cid is None:
+                # `o.get("customer", {})` returns the literal default
+                # only when the key is MISSING; if the key exists
+                # with value None, .get returns None and the next
+                # `.get("id")` would crash with AttributeError. The
+                # `or {}` chain coerces None into an empty dict.
+                customer_block = o.get("customer") or {}
+                if isinstance(customer_block, dict):
+                    cid = customer_block.get("id")
+            if cid is not None:
                 customer_ids_with_orders.add(cid)
         active = len(customer_ids_with_orders)
         self.customers = {
@@ -221,6 +237,7 @@ class StoreSnapshot:
 
     def persist(self) -> None:
         """Save snapshot to disk."""
+        self._last_persist_error: str = ""
         try:
             os.makedirs(os.path.dirname(_SNAPSHOT_PATH), exist_ok=True)
             data = {
@@ -231,29 +248,64 @@ class StoreSnapshot:
             with open(tmp, "w") as f:
                 json.dump(data, f, indent=2, default=str)
             os.replace(tmp, _SNAPSHOT_PATH)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Record the error so the operator (and tests) can
+            # detect a silent persist failure instead of trusting
+            # the empty snapshot the next load() returns.
+            self._last_persist_error = f"{type(exc).__name__}: {exc}"
             logger.warning("Failed to persist snapshot: %s", exc)
+
+    def get_persist_error(self) -> str:
+        """Return the last persist error message, or '' if the
+        most recent persist call succeeded. Useful for dashboards
+        and tests that need to detect silent disk failures."""
+        return getattr(self, "_last_persist_error", "")
 
     @classmethod
     def load(cls) -> StoreSnapshot:
-        """Load snapshot from disk."""
+        """Load snapshot from disk.
+
+        On JSON parse errors / schema drift, the corrupted file is
+        moved aside as ``<path>.corrupted.<ts>`` BEFORE we fall
+        back to an empty snapshot. The previous version silently
+        returned an empty snapshot AND left the corrupted file in
+        place — the next persist() call would then overwrite it
+        with empty data and the original good history would be
+        lost forever.
+        """
         snap = cls()
+        if not os.path.exists(_SNAPSHOT_PATH):
+            return snap
         try:
-            if os.path.exists(_SNAPSHOT_PATH):
-                with open(_SNAPSHOT_PATH) as f:
-                    data = json.load(f)
-                snap.financial = data.get("financial", {})
-                snap.inventory = data.get("inventory", {})
-                snap.marketing = data.get("marketing", {})
-                snap.customers = data.get("customers", {})
-                snap.products = data.get("products", {})
-                snap.events = data.get("events", [])
-                snap.health = data.get("health", {})
-                snap.priorities = data.get("priorities", [])
-                snap.last_updated = data.get("last_updated", 0)
-                snap.cycle_id = data.get("cycle_id", "")
-                snap._history = data.get("_history", [])
-                logger.info("Snapshot loaded from disk (cycle: %s)", snap.cycle_id)
-        except Exception as exc:
-            logger.warning("Failed to load snapshot: %s", exc)
+            with open(_SNAPSHOT_PATH) as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"snapshot file is {type(data).__name__}, expected dict"
+                )
+            snap.financial = data.get("financial") or {}
+            snap.inventory = data.get("inventory") or {}
+            snap.marketing = data.get("marketing") or {}
+            snap.customers = data.get("customers") or {}
+            snap.products = data.get("products") or {}
+            snap.events = data.get("events") or []
+            snap.health = data.get("health") or {}
+            snap.priorities = data.get("priorities") or []
+            snap.last_updated = data.get("last_updated", 0)
+            snap.cycle_id = data.get("cycle_id", "")
+            snap._history = data.get("_history") or []
+            logger.info("Snapshot loaded from disk (cycle: %s)", snap.cycle_id)
+        except Exception as exc:  # noqa: BLE001
+            backup = f"{_SNAPSHOT_PATH}.corrupted.{int(time.time())}"
+            try:
+                os.replace(_SNAPSHOT_PATH, backup)
+                logger.warning(
+                    "Snapshot load failed (%s); corrupted file moved to %s",
+                    exc, backup,
+                )
+            except Exception as move_exc:  # noqa: BLE001
+                logger.warning(
+                    "Snapshot load failed (%s); could not back up "
+                    "corrupted file (%s)", exc, move_exc,
+                )
         return snap
