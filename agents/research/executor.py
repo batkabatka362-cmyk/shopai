@@ -78,7 +78,9 @@ def execute_plan(plan: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 
 def _run_engine_with_retry(engine_name: str, engine_input: dict[str, Any]) -> dict[str, Any]:
     """Run an engine with retry on failure."""
-    engine = _get_engine(engine_name)
+    from engines.registry import get_engine
+
+    engine = get_engine(engine_name)
     if engine is None:
         return {
             "status": "fail",
@@ -116,27 +118,6 @@ def _run_engine_with_retry(engine_name: str, engine_input: dict[str, Any]) -> di
         "meta": {"engine": engine_name, "attempts": MAX_RETRIES + 1},
         "error": {"reason": f"Failed after {MAX_RETRIES + 1} attempts: {last_error}"},
     }
-
-
-def _get_engine(engine_name: str) -> Any:
-    """Load engine by name. Returns engine instance or None."""
-    engine_map = {
-        "market_research": "engines.market_research.MarketResearchEngine",
-        "trend_discovery": "engines.trend_discovery.TrendDiscoveryEngine",
-    }
-
-    module_path = engine_map.get(engine_name)
-    if not module_path:
-        return None
-
-    try:
-        parts = module_path.rsplit(".", 1)
-        import importlib
-        mod = importlib.import_module(parts[0])
-        cls = getattr(mod, parts[1])
-        return cls()
-    except Exception:
-        return None
 
 
 def _enrich_from_dependencies(

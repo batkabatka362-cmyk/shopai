@@ -32,20 +32,17 @@ AGENT_MODULES = [
 
 
 def _patch_engine(monkeypatch, module_path: str, engine_factory):
-    """Inject a fake engine into whichever lookup path the
-    executor module uses.
+    """Inject a fake engine into the global registry.
 
-    3 of the 7 executors (product, marketing, finance) call
-    `engines.registry.get_engine`. The other 4 (content,
-    operations, customer, research) have a local `_get_engine`
-    helper with a hardcoded module map. Patch both so the
-    parametrized test driver works for every executor.
+    After audit pass 33, all 7 executors use
+    `engines.registry.get_engine` (the Lego principle was
+    enforced — no more local `_get_engine` helpers with
+    hardcoded engine maps). One patch point covers every
+    executor.
     """
     import engines.registry as reg
     monkeypatch.setattr(reg, "get_engine", lambda name: engine_factory())
-    mod = importlib.import_module(module_path)
-    if hasattr(mod, "_get_engine"):
-        monkeypatch.setattr(mod, "_get_engine", lambda name: engine_factory())
+    importlib.import_module(module_path)
 
 
 # ── Defensive step shape ────────────────────────────────────
