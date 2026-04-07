@@ -113,7 +113,15 @@ StepEvaluator = Callable[[Any], ImaginedOutcome]
 
 
 class Imagination:
-    """Counterfactual simulator. Stateless except for injected deps."""
+    """Counterfactual simulator. Stateless except for injected deps.
+
+    Two evaluation paths stack. The default heuristic evaluator
+    combines SelfModel + memory + step priors. When an LLM is
+    available, the public ``imagine_step`` calls the LLM evaluator
+    FIRST and falls back to the heuristic on any failure. This
+    way the AI gets richer predictions (with reasoning text) when
+    LLM is up and still works deterministically when not.
+    """
 
     def __init__(
         self,
@@ -121,10 +129,20 @@ class Imagination:
         self_model: Any = None,
         memory: Any = None,
         evaluator: Optional[StepEvaluator] = None,
+        llm: Any = None,
+        use_llm: bool = True,
     ) -> None:
         self._self_model = self_model
         self._memory = memory
+        # When no custom evaluator is supplied, the heuristic IS the
+        # evaluator. We track whether a CUSTOM evaluator overrode the
+        # default so the LLM-first path only fires for the default.
+        self._has_custom_evaluator = evaluator is not None
         self._evaluator = evaluator or self._default_evaluator
+        self._llm = llm
+        self._use_llm = bool(use_llm)
+        # Goal context the caller may set for richer LLM predictions
+        self._current_goal: str = ""
 
     # ── Public API ─────────────────────────────────────────────
 
@@ -132,8 +150,17 @@ class Imagination:
         """Predict the outcome of one step.
 
         Accepts either a PlanStep dataclass, a dict with 'description',
-        or a plain string.
+        or a plain string. When an LLM is available, prefers the
+        LLM evaluator over the heuristic; on LLM failure falls back
+        to heuristics so the cognitive loop never stalls.
         """
+        # Try LLM first if enabled and the caller didn't supply a
+        # custom evaluator that they explicitly want to use
+        if self._use_llm and not self._has_custom_evaluator:
+            llm_outcome = self._llm_evaluate(step)
+            if llm_outcome is not None:
+                return llm_outcome
+
         try:
             return self._evaluator(step)
         except Exception as exc:  # noqa: BLE001
@@ -149,7 +176,13 @@ class Imagination:
             )
 
     def imagine_plan(self, plan: Any) -> ImaginedPlan:
-        """Predict the cumulative outcome of a whole plan."""
+        """Predict the cumulative outcome of a whole plan.
+
+        Sets the current_goal context so the LLM evaluator (if
+        active) can frame each step's prediction against the parent
+        goal. The context is cleared at the end so it doesn't leak
+        between plans.
+        """
         plan_what = self._plan_what(plan)
         steps = self._plan_steps(plan)
         backend = getattr(plan, "backend", "") or ""
@@ -158,7 +191,12 @@ class Imagination:
         if not steps:
             return result
 
-        outcomes = [self.imagine_step(s) for s in steps]
+        previous_goal = self._current_goal
+        self._current_goal = plan_what
+        try:
+            outcomes = [self.imagine_step(s) for s in steps]
+        finally:
+            self._current_goal = previous_goal
         result.step_outcomes = outcomes
 
         # Confidence-weighted average score across steps
@@ -489,6 +527,118 @@ def _attr_or_key(obj: Any, name: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(name)
     return getattr(obj, name, None)
+
+
+# ── LLM evaluator (instance method patched on by class) ──────
+
+
+def _imagination_llm_evaluate(self, step: Any) -> Optional[ImaginedOutcome]:
+    """LLM-backed step evaluator.
+
+    Returns an ImaginedOutcome built from the LLM response, or
+    None on any failure (no LLM, unparseable JSON, exception). The
+    public imagine_step() falls back to the heuristic evaluator
+    on None.
+    """
+    desc = self._step_description(step)
+    if not desc:
+        return None
+
+    llm = self._get_llm()
+    if llm is None:
+        return None
+    try:
+        if not llm.is_available():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        from core.system.prompt_library import get_prompt
+    except Exception:  # noqa: BLE001
+        return None
+    template = get_prompt("imagination.evaluate_step")
+    if template is None:
+        return None
+
+    # Build a small context block from current SelfModel + memory
+    context_lines: list[str] = []
+    if self._self_model is not None:
+        try:
+            strengths = self._self_model.strengths(top_n=2)
+            if strengths:
+                context_lines.append(
+                    "Strengths: " + ", ".join(s["name"] for s in strengths)
+                )
+            weaknesses = self._self_model.weaknesses(top_n=2)
+            if weaknesses:
+                context_lines.append(
+                    "Weaknesses: " + ", ".join(w["name"] for w in weaknesses)
+                )
+        except Exception:  # noqa: BLE001
+            pass
+    context_block = ("Self-model:\n" + "\n".join(context_lines) + "\n\n") if context_lines else ""
+
+    rendered = template.render(
+        step_description=desc,
+        goal_what=self._current_goal or "(no parent goal)",
+        context_block=context_block,
+    )
+
+    try:
+        structured = llm.ask_structured(
+            role=template.role,
+            prompt=rendered.user,
+            system_prompt=rendered.system,
+            schema_hint=template.schema_hint,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Imagination LLM call failed: %s", exc)
+        return None
+
+    if not getattr(structured, "ok", False):
+        return None
+
+    data = structured.data or {}
+    try:
+        score = max(0.0, min(1.0, float(data.get("predicted_score", 0.5))))
+        cost = max(0.0, min(1.0, float(data.get("predicted_cost", 0.5))))
+        conf = max(0.0, min(1.0, float(data.get("confidence", 0.5))))
+    except (TypeError, ValueError):
+        return None
+
+    risks_field = data.get("risks") or []
+    risks = ", ".join(str(r) for r in risks_field[:3]) if isinstance(risks_field, list) else ""
+    notes_parts = []
+    if data.get("reasoning"):
+        notes_parts.append(str(data["reasoning"])[:300])
+    if risks:
+        notes_parts.append(f"risks: {risks}")
+
+    return ImaginedOutcome(
+        description=desc,
+        predicted_score=score,
+        predicted_cost=cost,
+        confidence=conf,
+        sources=["llm"],
+        notes="; ".join(notes_parts),
+    )
+
+
+def _imagination_get_llm(self) -> Any:
+    """Lazily resolve the LLM adapter."""
+    if self._llm is not None:
+        return self._llm
+    try:
+        from core.system.llm_adapter import get_llm
+        return get_llm()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Patch onto the class so subclasses can override cleanly
+Imagination._llm_evaluate = _imagination_llm_evaluate
+Imagination._get_llm = _imagination_get_llm
 
 
 # ── Singleton accessor ────────────────────────────────────────

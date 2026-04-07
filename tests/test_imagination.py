@@ -426,6 +426,166 @@ class TestEndToEnd:
         assert any("self_model:" in s or "memory:" in s for s in sources_seen)
 
 
+class _FakeStructured:
+    def __init__(self, ok=True, data=None, error=""):
+        self.ok = ok
+        self.data = data or {}
+        self.error = error
+        self.raw_text = ""
+
+
+class _FakeLLM:
+    """Minimal LLMAdapter-compatible fake for imagination tests."""
+
+    def __init__(self, *, available=True, structured_data=None,
+                 raise_on_call=False):
+        self._available = available
+        self._structured = structured_data
+        self._raise = raise_on_call
+        self.calls = []
+
+    def is_available(self):
+        return self._available
+
+    def ask_structured(self, role="", prompt="", system_prompt="",
+                       schema_hint="", **kw):
+        self.calls.append({
+            "role": role,
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+        })
+        if self._raise:
+            raise RuntimeError("LLM crashed")
+        if self._structured is None:
+            return _FakeStructured(ok=False, error="no data")
+        return _FakeStructured(ok=True, data=self._structured)
+
+
+class TestLLMEvaluator:
+    def test_llm_evaluator_used_when_available(self):
+        llm = _FakeLLM(structured_data={
+            "predicted_score": 0.85,
+            "predicted_cost": 0.2,
+            "confidence": 0.8,
+            "reasoning": "Strong margin opportunity",
+            "risks": ["price war"],
+        })
+        from core.cognitive.imagination import Imagination
+        i = Imagination(llm=llm)
+        outcome = i.imagine_step(_step("Lower price by 5%"))
+        assert outcome.predicted_score == 0.85
+        assert outcome.predicted_cost == 0.2
+        assert outcome.confidence == 0.8
+        assert "llm" in outcome.sources
+        assert "Strong margin" in outcome.notes
+        # LLM was actually called
+        assert len(llm.calls) == 1
+
+    def test_no_llm_falls_back_to_heuristic(self):
+        from core.cognitive.imagination import Imagination
+        i = Imagination()  # no llm
+        outcome = i.imagine_step(_step("anything"))
+        assert "llm" not in outcome.sources
+
+    def test_use_llm_false_disables(self):
+        llm = _FakeLLM(structured_data={"predicted_score": 0.99,
+                                        "predicted_cost": 0.0,
+                                        "confidence": 0.99})
+        from core.cognitive.imagination import Imagination
+        i = Imagination(llm=llm, use_llm=False)
+        i.imagine_step(_step("X"))
+        assert llm.calls == []
+
+    def test_unavailable_llm_falls_back(self):
+        llm = _FakeLLM(available=False)
+        from core.cognitive.imagination import Imagination
+        i = Imagination(llm=llm)
+        outcome = i.imagine_step(_step("X"))
+        assert "llm" not in outcome.sources
+
+    def test_llm_exception_falls_back_safely(self):
+        llm = _FakeLLM(raise_on_call=True)
+        from core.cognitive.imagination import Imagination
+        i = Imagination(llm=llm)
+        # Should not raise — falls back to heuristic
+        outcome = i.imagine_step(_step("X"))
+        assert "llm" not in outcome.sources
+
+    def test_llm_unparseable_falls_back(self):
+        llm = _FakeLLM(structured_data=None)  # ok=False
+        from core.cognitive.imagination import Imagination
+        i = Imagination(llm=llm)
+        outcome = i.imagine_step(_step("X"))
+        assert "llm" not in outcome.sources
+
+    def test_llm_clamps_out_of_range_scores(self):
+        llm = _FakeLLM(structured_data={
+            "predicted_score": 2.0,
+            "predicted_cost": -0.5,
+            "confidence": 1.5,
+        })
+        from core.cognitive.imagination import Imagination
+        i = Imagination(llm=llm)
+        outcome = i.imagine_step(_step("X"))
+        assert outcome.predicted_score == 1.0
+        assert outcome.predicted_cost == 0.0
+        assert outcome.confidence == 1.0
+
+    def test_llm_non_numeric_fields_fall_back(self):
+        llm = _FakeLLM(structured_data={
+            "predicted_score": "high",
+            "confidence": "sure",
+        })
+        from core.cognitive.imagination import Imagination
+        i = Imagination(llm=llm)
+        outcome = i.imagine_step(_step("X"))
+        # Falls back to heuristic
+        assert "llm" not in outcome.sources
+
+    def test_imagine_plan_passes_goal_context(self):
+        captured = {}
+        llm = _FakeLLM(structured_data={
+            "predicted_score": 0.5,
+            "predicted_cost": 0.5,
+            "confidence": 0.5,
+        })
+
+        def _spy_ask(role="", prompt="", system_prompt="", schema_hint="", **kw):
+            captured["prompt"] = prompt
+            return _FakeStructured(ok=True, data={
+                "predicted_score": 0.5,
+                "predicted_cost": 0.5,
+                "confidence": 0.5,
+            })
+
+        llm.ask_structured = _spy_ask
+        from core.cognitive.imagination import Imagination
+        from core.cognitive.planner import Plan, PlanStep
+        plan = Plan(
+            goal_id="g1",
+            goal_what="Improve checkout flow",
+            steps=[PlanStep(description="audit funnel")],
+        )
+        i = Imagination(llm=llm)
+        i.imagine_plan(plan)
+        assert "Improve checkout flow" in captured["prompt"]
+        assert "audit funnel" in captured["prompt"]
+
+    def test_llm_outcome_carries_risks_in_notes(self):
+        llm = _FakeLLM(structured_data={
+            "predicted_score": 0.7,
+            "predicted_cost": 0.3,
+            "confidence": 0.7,
+            "reasoning": "Likely positive",
+            "risks": ["competitor reaction", "stock too low", "extra"],
+        })
+        from core.cognitive.imagination import Imagination
+        i = Imagination(llm=llm)
+        outcome = i.imagine_step(_step("test"))
+        assert "competitor reaction" in outcome.notes
+        assert "stock too low" in outcome.notes
+
+
 class TestSingleton:
     def test_get_imagination_cached(self):
         from core.cognitive import imagination as mod
