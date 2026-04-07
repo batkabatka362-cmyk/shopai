@@ -680,6 +680,166 @@ class TestCalibrationIntegratesWithSelfModel:
         assert cap is None  # nothing to calibrate against
 
 
+# ── Goal lifecycle phase ─────────────────────────────────────
+
+
+def _build_lifecycle_report(
+    *,
+    selected_goal_id,
+    skill_results=None,
+    abstain=False,
+    pause=False,
+):
+    """Tiny CycleReport factory for direct _phase_goal_lifecycle calls."""
+    from core.cognitive.mind import CycleReport
+    rep = CycleReport(cycle_number=1, started_at=time.time())
+    rep.selected_goal_id = selected_goal_id
+    if skill_results:
+        for i, status in enumerate(skill_results):
+            rep.actions_taken.append({
+                "kind": "skill", "skill": f"s{i}",
+                "result": {"status": status},
+            })
+    if abstain:
+        rep.actions_taken.append({"kind": "abstain", "reason": "test"})
+    if pause:
+        rep.actions_taken.append({"kind": "pause", "reason": "test"})
+    return rep
+
+
+class TestGoalLifecycle:
+    def test_no_goal_manager_is_noop(self):
+        from core.cognitive.mind import Mind, CycleContext
+        m = Mind()
+        ctx = CycleContext(cycle_number=1, started_at=time.time())
+        rep = _build_lifecycle_report(selected_goal_id="g1")
+        m._phase_goal_lifecycle(ctx, rep)  # should not raise
+
+    def test_no_selected_goal_is_noop(self):
+        m = _wired_mind()
+        from core.cognitive.mind import CycleContext
+        ctx = CycleContext(cycle_number=1, started_at=time.time())
+        rep = _build_lifecycle_report(selected_goal_id=None)
+        m._phase_goal_lifecycle(ctx, rep)
+        assert m._goal_strikes == {}
+
+    def test_successful_skill_bumps_progress(self):
+        m = _wired_mind()
+        gid = m.goal_manager.propose("Do thing", urgency=0.5)
+        ctx = _ctx()
+        rep = _build_lifecycle_report(selected_goal_id=gid, skill_results=["ok"])
+        m._phase_goal_lifecycle(ctx, rep)
+        goal = m.goal_manager.get(gid)
+        assert goal["progress"] == pytest.approx(0.25, abs=1e-6)
+        assert goal["state"] != "completed"
+
+    def test_four_successes_complete_goal(self):
+        m = _wired_mind()
+        gid = m.goal_manager.propose("Do thing", urgency=0.5)
+        ctx = _ctx()
+        for _ in range(4):
+            rep = _build_lifecycle_report(
+                selected_goal_id=gid, skill_results=["ok"],
+            )
+            m._phase_goal_lifecycle(ctx, rep)
+        goal = m.goal_manager.get(gid)
+        assert goal["state"] == "completed"
+        assert goal["progress"] == pytest.approx(1.0)
+        # Strikes cleared after completion
+        assert gid not in m._goal_strikes
+
+    def test_three_abstains_abandon_goal(self):
+        m = _wired_mind()
+        gid = m.goal_manager.propose("Doomed", urgency=0.5)
+        ctx = _ctx()
+        for _ in range(3):
+            rep = _build_lifecycle_report(selected_goal_id=gid, abstain=True)
+            m._phase_goal_lifecycle(ctx, rep)
+        goal = m.goal_manager.get(gid)
+        assert goal["state"] == "abandoned"
+        assert gid not in m._goal_strikes
+
+    def test_three_skill_failures_fail_goal(self):
+        m = _wired_mind()
+        gid = m.goal_manager.propose("Broken", urgency=0.5)
+        ctx = _ctx()
+        for _ in range(3):
+            rep = _build_lifecycle_report(
+                selected_goal_id=gid, skill_results=["error"],
+            )
+            m._phase_goal_lifecycle(ctx, rep)
+        goal = m.goal_manager.get(gid)
+        assert goal["state"] == "failed"
+        assert gid not in m._goal_strikes
+
+    def test_success_resets_failure_strikes(self):
+        m = _wired_mind()
+        gid = m.goal_manager.propose("Flaky", urgency=0.5)
+        ctx = _ctx()
+        # 2 failures, then a success — failure counter should reset
+        for _ in range(2):
+            m._phase_goal_lifecycle(
+                ctx,
+                _build_lifecycle_report(selected_goal_id=gid, skill_results=["error"]),
+            )
+        m._phase_goal_lifecycle(
+            ctx,
+            _build_lifecycle_report(selected_goal_id=gid, skill_results=["ok"]),
+        )
+        assert m._goal_strikes[gid]["skill_fail"] == 0
+        # And one more failure should not yet retire it
+        m._phase_goal_lifecycle(
+            ctx,
+            _build_lifecycle_report(selected_goal_id=gid, skill_results=["error"]),
+        )
+        assert m.goal_manager.get(gid)["state"] != "failed"
+
+    def test_pause_and_recommendation_are_neutral(self):
+        m = _wired_mind()
+        gid = m.goal_manager.propose("Quiet", urgency=0.5)
+        ctx = _ctx()
+        for _ in range(5):
+            m._phase_goal_lifecycle(
+                ctx, _build_lifecycle_report(selected_goal_id=gid, pause=True),
+            )
+        goal = m.goal_manager.get(gid)
+        assert goal["state"] not in ("completed", "abandoned", "failed")
+        assert goal["progress"] == pytest.approx(0.0)
+
+    def test_strikes_tracked_per_goal(self):
+        m = _wired_mind()
+        gid_a = m.goal_manager.propose("A", urgency=0.5)
+        gid_b = m.goal_manager.propose("B", urgency=0.5)
+        ctx = _ctx()
+        # 2 abstains on A, 2 abstains on B — neither retired yet
+        for gid in (gid_a, gid_b, gid_a, gid_b):
+            m._phase_goal_lifecycle(
+                ctx, _build_lifecycle_report(selected_goal_id=gid, abstain=True),
+            )
+        assert m.goal_manager.get(gid_a)["state"] not in ("abandoned", "failed", "completed")
+        assert m.goal_manager.get(gid_b)["state"] not in ("abandoned", "failed", "completed")
+        assert m._goal_strikes[gid_a]["abstain"] == 2
+        assert m._goal_strikes[gid_b]["abstain"] == 2
+
+    def test_partial_skill_failure_counts_as_failure(self):
+        m = _wired_mind()
+        gid = m.goal_manager.propose("Partial", urgency=0.5)
+        ctx = _ctx()
+        # Mixed result counts as a strike (not all_ok)
+        m._phase_goal_lifecycle(
+            ctx, _build_lifecycle_report(
+                selected_goal_id=gid, skill_results=["ok", "error"],
+            ),
+        )
+        assert m._goal_strikes[gid]["skill_fail"] == 1
+        assert m.goal_manager.get(gid)["progress"] == pytest.approx(0.0)
+
+
+def _ctx():
+    from core.cognitive.mind import CycleContext
+    return CycleContext(cycle_number=1, started_at=time.time())
+
+
 class TestSingleton:
     def test_get_mind_caches(self):
         from core.cognitive import mind as mod

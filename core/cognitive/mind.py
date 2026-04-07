@@ -172,6 +172,10 @@ class Mind:
         # Latest calibration scores (None until first calibrated cycle)
         self._last_imagination_calibration: Optional[float] = None
         self._last_prediction_calibration: Optional[float] = None
+        # Per-goal "strike" counters used by the lifecycle phase to
+        # decide when to progress, complete, fail, or abandon a goal.
+        # Shape: {goal_id: {"abstain": n, "skill_fail": n, "successes": n}}
+        self._goal_strikes: dict[str, dict[str, int]] = {}
 
     # ── Public API ─────────────────────────────────────────────
 
@@ -206,6 +210,7 @@ class Mind:
             self._phase_predict(ctx, report)
             self._phase_act(ctx, report)
             self._phase_learn(ctx, report)
+            self._phase_goal_lifecycle(ctx, report)
             self._phase_consolidate(ctx, report)
         except Exception as exc:  # noqa: BLE001
             report.error = f"{type(exc).__name__}: {exc}"
@@ -720,6 +725,154 @@ class Mind:
             report.notes.append(f"learn (assess): {exc}")
 
         report.learning_updates = updates
+
+    # ── Phase 8.5: GOAL LIFECYCLE ─────────────────────────────
+
+    # How much progress one successful skill execution adds to the
+    # active goal. 0.25 → goal completes after 4 clean cycles.
+    _GOAL_PROGRESS_STEP = 0.25
+    # Strike thresholds before retiring a goal.
+    _GOAL_ABSTAIN_STRIKES = 3
+    _GOAL_FAIL_STRIKES = 3
+
+    def _phase_goal_lifecycle(
+        self, ctx: CycleContext, report: CycleReport,
+    ) -> None:
+        """Advance, complete, fail, or abandon the goal we just
+        worked on this cycle.
+
+        Without this phase, goals proposed by Reflection / Curiosity /
+        SelfModel never reach a terminal state — the goal pool grows
+        forever and `pick_next` keeps revisiting old work. The Mind
+        looks busy but never finishes anything.
+
+        The lifecycle rules are intentionally conservative:
+
+          - A successful skill execution bumps progress by
+            ``_GOAL_PROGRESS_STEP``. When progress hits 1.0, the goal
+            is **completed** and its strike counters cleared.
+          - Three consecutive cycles where the deliberation gate
+            **abstained** on this goal → ``abandon`` (the Mind doesn't
+            believe in this goal any more).
+          - Three consecutive cycles with **failed skill executions**
+            → ``fail`` (we tried and it didn't work).
+          - Pauses and recommendations are neutral — they neither
+            advance progress nor accumulate strikes.
+          - Any successful execution resets the failure strike count.
+        """
+        if self.goal_manager is None:
+            return
+        gid = report.selected_goal_id
+        if not gid:
+            return
+
+        strikes = self._goal_strikes.setdefault(
+            gid, {"abstain": 0, "skill_fail": 0, "successes": 0},
+        )
+
+        skill_actions = [
+            a for a in report.actions_taken if a.get("kind") == "skill"
+        ]
+        abstained = any(
+            a.get("kind") == "abstain" for a in report.actions_taken
+        )
+
+        # ── Successful execution: progress + maybe complete ──
+        if skill_actions:
+            all_ok = all(
+                str((a.get("result") or {}).get("status", "")).lower()
+                in self._SUCCESS_STATUSES
+                for a in skill_actions
+            )
+            if all_ok:
+                strikes["successes"] += 1
+                strikes["skill_fail"] = 0
+                strikes["abstain"] = 0
+                if self._advance_goal_progress(gid, report):
+                    return  # goal completed → state cleared inside helper
+                return
+            # At least one skill failed
+            strikes["skill_fail"] += 1
+        elif abstained:
+            strikes["abstain"] += 1
+
+        # ── Strike-out → retire the goal ──
+        if strikes["abstain"] >= self._GOAL_ABSTAIN_STRIKES:
+            self._retire_goal(
+                gid, "abandon",
+                f"{strikes['abstain']} consecutive abstains: imagination pessimistic",
+                report,
+            )
+            return
+        if strikes["skill_fail"] >= self._GOAL_FAIL_STRIKES:
+            self._retire_goal(
+                gid, "fail",
+                f"{strikes['skill_fail']} consecutive skill failures",
+                report,
+            )
+
+    def _advance_goal_progress(
+        self, gid: str, report: CycleReport,
+    ) -> bool:
+        """Bump goal progress; complete + clear strikes when done.
+
+        Returns True iff the goal was completed in this call."""
+        try:
+            current = self.goal_manager.get(gid) or {}
+        except Exception as exc:  # noqa: BLE001
+            report.notes.append(f"goal_lifecycle (get): {exc}")
+            return False
+        new_progress = min(
+            1.0,
+            float(current.get("progress", 0.0)) + self._GOAL_PROGRESS_STEP,
+        )
+        try:
+            self.goal_manager.update_progress(
+                gid, new_progress, notes="mind: skill success",
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.notes.append(f"goal_lifecycle (progress): {exc}")
+            return False
+
+        if new_progress >= 1.0:
+            try:
+                self.goal_manager.complete(
+                    gid,
+                    result_notes=(
+                        f"after {self._goal_strikes[gid]['successes']} "
+                        "successful execution(s)"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                report.notes.append(f"goal_lifecycle (complete): {exc}")
+                return False
+            report.notes.append(f"goal_lifecycle: completed {gid[:14]}")
+            self._goal_strikes.pop(gid, None)
+            return True
+
+        report.notes.append(
+            f"goal_lifecycle: progress {new_progress:.2f} on {gid[:14]}"
+        )
+        return False
+
+    def _retire_goal(
+        self, gid: str, mode: str, reason: str, report: CycleReport,
+    ) -> None:
+        """Move a goal to a terminal state via abandon/fail."""
+        try:
+            if mode == "abandon":
+                self.goal_manager.abandon(gid, reason=reason)
+            elif mode == "fail":
+                self.goal_manager.fail(gid, reason=reason)
+            else:
+                return
+        except Exception as exc:  # noqa: BLE001
+            report.notes.append(f"goal_lifecycle ({mode}): {exc}")
+            return
+        report.notes.append(
+            f"goal_lifecycle: {mode}ed {gid[:14]} ({reason})"
+        )
+        self._goal_strikes.pop(gid, None)
 
     # ── Phase 9: CONSOLIDATE (every Nth cycle) ────────────────
 
