@@ -37,7 +37,14 @@ class FullSystemLoop:
             try:
                 from core.memory.storage_config import vector_db_path
                 cls._shared_vdb = VectorDB(persist_path=vector_db_path())
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                # Persist path failed — fall back to in-memory but
+                # log so the operator knows similarity-search state
+                # won't survive a process restart.
+                logger.warning(
+                    "FullSystemLoop: VectorDB persist-path init failed "
+                    "(%s); falling back to in-memory VectorDB", exc,
+                )
                 cls._shared_vdb = VectorDB()
         return cls._shared_vdb
 
@@ -185,19 +192,38 @@ class FullSystemLoop:
                 normalized = DataNormalizer().normalize(cleaned)
                 result["clean_data"]["customers"] = normalized
                 result["customers_processed"] = len(normalized)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "FullSystemLoop: customer cleaning failed (%s); "
+                    "raw customers will flow through unchanged", exc,
+                )
 
         return result
 
     def _phase_intelligence(self, data: dict[str, Any], goal: str) -> dict[str, Any]:
-        """Phase 2: Run IntelligenceLoop on cleaned data."""
+        """Phase 2: Run IntelligenceLoop on cleaned data.
+
+        On exception we now return ``status="aborted"`` so the
+        gate in ``run()`` actually fires and skips agents +
+        execution. Previously the error response only carried
+        ``data_quality / decision / plan``, so the gate's
+        ``intel_result.get("status") == "aborted"`` check NEVER
+        triggered for crashes — the cycle would proceed to phase 3
+        with broken intel data and try to dispatch agents over an
+        empty plan.
+        """
         try:
             from core.intelligence_loop import IntelligenceLoop
             return IntelligenceLoop().run(data, goal=goal)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error("Intelligence loop error: %s", exc)
-            return {"data_quality": 0, "decision": {"action": "error", "confidence": "none"}, "plan": {"actions": 0}}
+            return {
+                "status": "aborted",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "data_quality": 0,
+                "decision": {"action": "error", "confidence": "none"},
+                "plan": {"actions": 0},
+            }
 
     def _phase_agents(self, intel_result: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
         """Phase 3: Route tasks to agents and collect their feedback."""
@@ -261,14 +287,31 @@ class FullSystemLoop:
             from core.bridge.execution_bridge import ExecutionBridge
             eb = ExecutionBridge()
 
-            # Wire executors
-            try:
-                from execution.shopify.product_creator import ProductCreator
-                from execution.shopify.product_updater import ProductUpdater
-                eb.register_executor("shopify", "product.create_listing", ProductCreator())
-                eb.register_executor("shopify", "pricing.update", ProductUpdater())
-            except Exception:
-                pass
+            # Wire executors individually so a single broken import
+            # doesn't disable the whole executor set. Previously this
+            # was the THIRD instance of the same batch-import +
+            # silent-swallow anti-pattern (after CoreOrchestrator and
+            # MainOrchestrator._wire_executors), so a missing
+            # ProductUpdater would silently leave Shopify product
+            # creation unwired too — and downstream actions would
+            # return "no executor found" with no operator hint.
+            executor_specs = [
+                ("shopify", "product.create_listing",
+                 "execution.shopify.product_creator", "ProductCreator"),
+                ("shopify", "pricing.update",
+                 "execution.shopify.product_updater", "ProductUpdater"),
+            ]
+            import importlib as _il
+            for provider, action, module_path, class_name in executor_specs:
+                try:
+                    mod = _il.import_module(module_path)
+                    cls = getattr(mod, class_name)
+                    eb.register_executor(provider, action, cls())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "FullSystemLoop: executor %r failed to wire (%s: %s)",
+                        class_name, type(exc).__name__, exc,
+                    )
 
             # Plan actions from intelligence output
             execution = intel_result.get("execution", {})
@@ -334,8 +377,12 @@ class FullSystemLoop:
                          "quality": r["metadata"].get("quality", 0), "success": r["metadata"].get("success")}
                         for r in results if r["score"] > 0.7
                     ]
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "FullSystemLoop: vector similarity search "
+                        "failed (%s); proceeding without past-cycle "
+                        "context", exc,
+                    )
 
             # Store current cycle
             exec_phase = phases.get("execution", {})
