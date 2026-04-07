@@ -47,7 +47,16 @@ class CycleJournal:
         os.makedirs(self._dir, exist_ok=True)
         self._lock = threading.Lock()
         self._entries: list[dict[str, Any]] = []
+        self._last_persist_error: str = ""
         self._load()
+
+    def get_persist_error(self) -> str:
+        """Return the last persist error message, or '' on success.
+
+        Useful for dashboards / tests that need to detect a silent
+        disk failure instead of trusting the empty journal that
+        a subsequent _load() would return."""
+        return self._last_persist_error
 
     def record_cycle(self, cycle_result: dict[str, Any]) -> str:
         """Record a completed cycle in the journal."""
@@ -95,24 +104,48 @@ class CycleJournal:
             self._persist()
             return entry_id
 
+    @staticmethod
+    def _entry_timestamp(e: dict[str, Any]) -> float:
+        """Coerce an entry's timestamp into a float for comparison.
+
+        Replaces direct `e.get("timestamp", 0) > cutoff` access:
+        if a malformed entry stored timestamp=None or a string,
+        the previous comparison crashed with TypeError on the
+        first such row. This helper returns 0.0 for any non-
+        numeric timestamp so the comparison stays well-defined.
+        """
+        ts = e.get("timestamp", 0)
+        if isinstance(ts, (int, float)):
+            return float(ts)
+        try:
+            return float(ts)
+        except (TypeError, ValueError):
+            return 0.0
+
     def get_recent(self, hours: float = 24, limit: int = 100) -> list[dict[str, Any]]:
         """Get entries from the last N hours."""
         cutoff = time.time() - (hours * 3600)
         with self._lock:
-            recent = [e for e in self._entries if e.get("timestamp", 0) > cutoff]
-            return recent[-limit:]
+            recent = [
+                e for e in self._entries
+                if self._entry_timestamp(e) > cutoff
+            ]
+            # Defensive copies so caller mutation can't poison the
+            # in-memory journal entries. Same pattern as the audit
+            # passes 12 / 17 / 18 / 19 fixes.
+            return [dict(e) for e in recent[-limit:]]
 
     def get_decisions(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get recent cycle decisions."""
         with self._lock:
             cycles = [e for e in self._entries if "cycle_id" in e]
-            return cycles[-limit:]
+            return [dict(e) for e in cycles[-limit:]]
 
     def get_by_goal(self, goal: str, limit: int = 20) -> list[dict[str, Any]]:
         """Get cycles that used a specific goal."""
         with self._lock:
             matching = [e for e in self._entries if e.get("goal") == goal]
-            return matching[-limit:]
+            return [dict(e) for e in matching[-limit:]]
 
     def get_stats(self) -> dict[str, Any]:
         """Get journal statistics."""
@@ -203,6 +236,7 @@ class CycleJournal:
 
     def _persist(self) -> None:
         """Save journal to disk."""
+        self._last_persist_error = ""
         try:
             # Keep max 10,000 entries
             if len(self._entries) > 10000:
@@ -213,17 +247,45 @@ class CycleJournal:
             with open(tmp, "w") as f:
                 json.dump(self._entries, f, default=str)
             os.replace(tmp, path)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            self._last_persist_error = f"{type(exc).__name__}: {exc}"
             logger.warning("Failed to persist journal: %s", exc)
 
     def _load(self) -> None:
-        """Load journal from disk."""
+        """Load journal from disk.
+
+        On JSON parse errors / wrong-shape data, the corrupted
+        file is moved aside as ``<path>.corrupted.<ts>`` BEFORE
+        we fall back to an empty journal. The previous version
+        silently set self._entries = [] AND left the corrupted
+        file in place — the next _persist() call then overwrote
+        it with empty data, destroying ALL audit history forever.
+        Same data-loss bug pattern fixed in StoreSnapshot.load()
+        in audit pass 20.
+        """
         path = os.path.join(self._dir, "journal.json")
+        if not os.path.exists(path):
+            return
         try:
-            if os.path.exists(path):
-                with open(path) as f:
-                    self._entries = json.load(f)
-                logger.info("Journal loaded: %d entries", len(self._entries))
-        except Exception as exc:
-            logger.warning("Failed to load journal: %s", exc)
+            with open(path) as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                raise ValueError(
+                    f"journal file is {type(data).__name__}, expected list"
+                )
+            self._entries = data
+            logger.info("Journal loaded: %d entries", len(self._entries))
+        except Exception as exc:  # noqa: BLE001
+            backup = f"{path}.corrupted.{int(time.time())}"
+            try:
+                os.replace(path, backup)
+                logger.warning(
+                    "Journal load failed (%s); corrupted file moved to %s",
+                    exc, backup,
+                )
+            except Exception as move_exc:  # noqa: BLE001
+                logger.warning(
+                    "Journal load failed (%s); could not back up "
+                    "corrupted file (%s)", exc, move_exc,
+                )
             self._entries = []
