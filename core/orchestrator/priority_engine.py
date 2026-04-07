@@ -20,30 +20,55 @@ from utils.logger import get_logger
 logger = get_logger("orchestrator.priority")
 
 
+def _section(situation: dict[str, Any], name: str) -> dict[str, Any]:
+    """Return the named situation section as a real dict.
+
+    Replaces the `situation.get(name, {})` pattern in the URGENCY
+    rule lambdas. The previous pattern returned the literal default
+    only when the key was MISSING; if the key was present with a
+    None value (which happens during initial state or after a
+    partial snapshot update failure), `.get` returned None and the
+    next chained `.get(...)` crashed with AttributeError, taking
+    out the entire priority computation mid-cycle.
+    """
+    val = situation.get(name)
+    return val if isinstance(val, dict) else {}
+
+
+def _events(situation: dict[str, Any]) -> list:
+    """Return situation['events'] as a real list.
+
+    Same defensive purpose as `_section` but for the events list.
+    `len(None)` would otherwise crash the marketing urgency rule.
+    """
+    val = situation.get("events")
+    return val if isinstance(val, list) else []
+
+
 # Domain urgency rules — each rule examines the snapshot and returns urgency + reason
 URGENCY_RULES = {
     "inventory": {
-        "critical": lambda s: s.get("inventory", {}).get("out_of_stock_count", 0) > 0,
-        "high": lambda s: s.get("inventory", {}).get("low_stock_pct", 0) > 30,
-        "medium": lambda s: s.get("inventory", {}).get("low_stock_pct", 0) > 15,
+        "critical": lambda s: _section(s, "inventory").get("out_of_stock_count", 0) > 0,
+        "high": lambda s: _section(s, "inventory").get("low_stock_pct", 0) > 30,
+        "medium": lambda s: _section(s, "inventory").get("low_stock_pct", 0) > 15,
     },
     "financial": {
-        "critical": lambda s: s.get("financial", {}).get("critical_alerts", 0) > 0,
-        "high": lambda s: s.get("financial", {}).get("health_grade") in ("D", "F"),
-        "medium": lambda s: s.get("financial", {}).get("health_grade") == "C",
+        "critical": lambda s: _section(s, "financial").get("critical_alerts", 0) > 0,
+        "high": lambda s: _section(s, "financial").get("health_grade") in ("D", "F"),
+        "medium": lambda s: _section(s, "financial").get("health_grade") == "C",
     },
     "customers": {
-        "critical": lambda s: s.get("customers", {}).get("churn_risk_pct", 0) > 70,
-        "high": lambda s: s.get("customers", {}).get("churn_risk_pct", 0) > 50,
-        "medium": lambda s: s.get("customers", {}).get("churn_risk_pct", 0) > 30,
+        "critical": lambda s: _section(s, "customers").get("churn_risk_pct", 0) > 70,
+        "high": lambda s: _section(s, "customers").get("churn_risk_pct", 0) > 50,
+        "medium": lambda s: _section(s, "customers").get("churn_risk_pct", 0) > 30,
     },
     "marketing": {
-        "high": lambda s: len(s.get("events", [])) > 3,
-        "medium": lambda s: s.get("marketing", {}).get("optimization_actions", 0) > 2,
+        "high": lambda s: len(_events(s)) > 3,
+        "medium": lambda s: _section(s, "marketing").get("optimization_actions", 0) > 2,
     },
     "system_health": {
-        "high": lambda s: s.get("health", {}).get("overall_grade") in ("D", "F"),
-        "medium": lambda s: s.get("health", {}).get("overall_grade") == "C",
+        "high": lambda s: _section(s, "health").get("overall_grade") in ("D", "F"),
+        "medium": lambda s: _section(s, "health").get("overall_grade") == "C",
     },
 }
 
@@ -94,6 +119,11 @@ class PriorityEngine:
             - reason: why this is prioritized
             - recommended_actions: what to do
         """
+        # Defensive: callers (and tests) sometimes pass None or
+        # the wrong shape. Coerce to an empty dict so the rules
+        # below can't crash on a top-level access.
+        if not isinstance(situation, dict):
+            situation = {}
         priorities = []
 
         for domain, rules in URGENCY_RULES.items():
@@ -103,9 +133,30 @@ class PriorityEngine:
             # Check rules from most to least severe
             for level in ("critical", "high", "medium"):
                 check_fn = rules.get(level)
-                if check_fn and check_fn(situation):
+                if not check_fn:
+                    continue
+                # Each rule call sits inside its own try/except
+                # so a single buggy lambda can't take down the
+                # entire priority computation. We treat any
+                # exception as "rule did not fire".
+                try:
+                    fired = bool(check_fn(situation))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "PriorityEngine: %s/%s rule raised (%s); treating as not-fired",
+                        domain, level, exc,
+                    )
+                    continue
+                if fired:
                     urgency = level
-                    reason = self._get_reason(domain, level, situation)
+                    try:
+                        reason = self._get_reason(domain, level, situation)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "PriorityEngine: _get_reason for %s failed (%s)",
+                            domain, exc,
+                        )
+                        reason = f"{domain}: {level}"
                     break
 
             # Compute score: base urgency + goal boost + strategy weight
@@ -126,12 +177,21 @@ class PriorityEngine:
 
             final_score = round(min(100, base_score * goal_boost * strategy_boost), 1)
 
+            try:
+                actions = self._get_actions(domain, urgency, situation)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "PriorityEngine: _get_actions for %s failed (%s)",
+                    domain, exc,
+                )
+                actions = ["monitor"]
+
             priorities.append({
                 "domain": domain,
                 "urgency": urgency,
                 "score": final_score,
                 "reason": reason,
-                "recommended_actions": self._get_actions(domain, urgency, situation),
+                "recommended_actions": actions,
             })
 
         # Sort by score descending
@@ -155,10 +215,21 @@ class PriorityEngine:
 
     def has_critical(self, situation: dict[str, Any]) -> bool:
         """Check if any domain has critical urgency (needs immediate action)."""
+        if not isinstance(situation, dict):
+            return False
         for domain, rules in URGENCY_RULES.items():
             check = rules.get("critical")
-            if check and check(situation):
-                return True
+            if not check:
+                continue
+            try:
+                if check(situation):
+                    return True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "PriorityEngine.has_critical: %s rule raised (%s)",
+                    domain, exc,
+                )
+                continue
         return False
 
     def _get_reason(self, domain: str, urgency: str, situation: dict[str, Any]) -> str:
