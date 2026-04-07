@@ -536,7 +536,53 @@ def _cmd_mind_status(args=None) -> None:
             print(f"  [{g['state']:11s}] priority={g['priority']:.2f}  {g['what']}")
     print()
     print(f"Total cycles run: {mind.cycle_count()}")
+    _print_mind_llm_summary()
     print()
+
+
+def _print_mind_llm_summary() -> None:
+    """Render a compact LLM stats block (provider + cache) for `mind status`."""
+    try:
+        from core.system.llm_adapter import get_llm
+        llm = get_llm()
+        stats = llm.get_stats()
+    except Exception as exc:
+        print()
+        print(f"LLM: unavailable ({exc})")
+        return
+
+    configured = stats.get("configured", []) or []
+    available = stats.get("available_local", []) or []
+    models = stats.get("models", {}) or {}
+    fallback = stats.get("fallback_chain", []) or []
+
+    total_calls = sum(int(s.get("calls", 0)) for s in models.values())
+    total_errors = sum(int(s.get("errors", 0)) for s in models.values())
+    total_tokens = sum(int(s.get("tokens", 0)) for s in models.values())
+    total_fallbacks = sum(int(s.get("fallbacks", 0)) for s in models.values())
+
+    print()
+    print("LLM:")
+    if not configured:
+        print("  no providers configured")
+    else:
+        print(f"  providers={len(configured)}  local={len(available)}"
+              f"  fallback_chain={' → '.join(fallback) if fallback else '(none)'}")
+        print(f"  calls={total_calls}  errors={total_errors}"
+              f"  tokens={total_tokens}  fallbacks_used={total_fallbacks}")
+
+    try:
+        from core.system.llm_cache import get_llm_cache
+        cache = get_llm_cache()
+        c = cache.stats().to_dict()
+        hit_pct = c.get("hit_rate", 0.0) * 100.0
+        print(
+            f"  cache: size={c.get('size', 0)}/{c.get('max_entries', 0)}"
+            f"  hits={c.get('hits', 0)}  misses={c.get('misses', 0)}"
+            f"  hit_rate={hit_pct:.1f}%"
+        )
+    except Exception:
+        pass
 
 
 def _cmd_mind_cycle(args=None) -> None:

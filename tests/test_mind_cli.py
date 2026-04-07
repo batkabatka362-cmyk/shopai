@@ -315,3 +315,96 @@ class TestLLMStatus:
         assert "LLM PROVIDER STATUS" in out
         assert "Role mapping" in out
         assert "Fallback chain" in out
+
+
+# ── LLM stats embedded in `mind status` ──────────────────────
+
+
+class TestMindStatusLLM:
+    def test_status_shows_no_providers(self, fresh_mind, monkeypatch, capsys):
+        from core.system import llm_adapter as la
+
+        class _NoLLM:
+            def get_stats(self):
+                return {
+                    "configured": [],
+                    "available_local": [],
+                    "models": {},
+                    "fallback_chain": [],
+                    "role_map": {},
+                }
+
+        monkeypatch.setattr(la, "get_llm", lambda: _NoLLM())
+        import cli
+        cli.main(["mind", "status"])
+        out = capsys.readouterr().out
+        assert "LLM:" in out
+        assert "no providers configured" in out
+
+    def test_status_shows_provider_and_cache(
+        self, fresh_mind, monkeypatch, capsys,
+    ):
+        from core.system import llm_adapter as la
+
+        class _FakeLLM:
+            def get_stats(self):
+                return {
+                    "configured": ["mistral", "openai_main"],
+                    "available_local": ["mistral"],
+                    "fallback_chain": ["mistral", "openai_main"],
+                    "role_map": {"reasoner": "mistral"},
+                    "models": {
+                        "mistral": {
+                            "calls": 7, "errors": 1,
+                            "tokens": 1234, "fallbacks": 2,
+                            "total_time": 1.0,
+                        },
+                        "openai_main": {
+                            "calls": 3, "errors": 0,
+                            "tokens": 500, "fallbacks": 0,
+                            "total_time": 0.5,
+                        },
+                    },
+                }
+
+        monkeypatch.setattr(la, "get_llm", lambda: _FakeLLM())
+
+        # Warm cache so we get non-zero stats
+        from core.system.llm_cache import get_llm_cache
+
+        class _Resp:
+            success = True
+
+        cache = get_llm_cache()
+        cache.put("reasoner", "p", "", _Resp(), model="mistral")
+        cache.get("reasoner", "p", "", model="mistral")  # 1 hit
+        cache.get("reasoner", "missing", "", model="mistral")  # 1 miss
+
+        import cli
+        cli.main(["mind", "status"])
+        out = capsys.readouterr().out
+        assert "LLM:" in out
+        assert "providers=2" in out
+        assert "local=1" in out
+        assert "calls=10" in out
+        assert "errors=1" in out
+        assert "tokens=1734" in out
+        assert "fallbacks_used=2" in out
+        assert "cache:" in out
+        assert "hits=" in out
+        assert "hit_rate=" in out
+
+    def test_status_handles_llm_exception(
+        self, fresh_mind, monkeypatch, capsys,
+    ):
+        from core.system import llm_adapter as la
+
+        def _boom():
+            raise RuntimeError("adapter exploded")
+
+        monkeypatch.setattr(la, "get_llm", _boom)
+        import cli
+        cli.main(["mind", "status"])
+        out = capsys.readouterr().out
+        assert "LLM: unavailable" in out
+        assert "adapter exploded" in out
