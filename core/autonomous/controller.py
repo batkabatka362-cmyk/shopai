@@ -26,7 +26,35 @@ logger = get_logger("autonomous")
 class AutonomousController:
     """Self-improving autonomous e-commerce controller."""
 
-    def __init__(self, store_manager: Any = None, auto_approve: bool = False) -> None:
+    def __init__(
+        self,
+        store_manager: Any = None,
+        auto_approve: bool = False,
+        *,
+        cognitive_mind: Any = None,
+        cognitive_mode: str = "off",
+    ) -> None:
+        """Build an autonomous controller.
+
+        Args:
+            store_manager: existing StoreManager (lazy created if None)
+            auto_approve: skip human approval prompts when applying
+                changes (production mode)
+            cognitive_mind: optional core.cognitive.mind.Mind instance.
+                When wired the controller can run a cognitive cycle
+                alongside or instead of the legacy 5-phase loop.
+            cognitive_mode: how the controller blends the cognitive
+                Mind with the legacy loop. One of:
+                  "off"      ignore cognitive Mind entirely (legacy
+                             behavior — default for backwards compat)
+                  "shadow"   run cognitive cycle AFTER the legacy
+                             cycle, attach its report to the result,
+                             but don't act on it
+                  "primary"  run the cognitive cycle as the FIRST
+                             phase; the legacy loop still runs but
+                             the cognitive report carries the
+                             recommendation
+        """
         self._store_manager = store_manager
         self._auto_approve = auto_approve
         self._running = False
@@ -42,6 +70,12 @@ class AutonomousController:
         self._decision_executor = None
         self._learning_pipeline = None
         self._performance_tracker = None
+
+        # Cognitive Mind integration
+        self._cognitive_mind = cognitive_mind
+        self._cognitive_mode = cognitive_mode if cognitive_mode in (
+            "off", "shadow", "primary",
+        ) else "off"
 
     def initialize(self, store_manager: Any = None) -> dict[str, Any]:
         """Initialize all components."""
@@ -1045,6 +1079,12 @@ class AutonomousController:
         if self._performance_tracker:
             self._performance_tracker.record_cycle(cycle_result)
 
+        # Cognitive Mind shadow / primary cycle
+        if self._cognitive_mode != "off" and self._cognitive_mind is not None:
+            cognitive_report = self._run_cognitive_phase(cycle_result)
+            if cognitive_report is not None:
+                cycle_result["cognitive"] = cognitive_report
+
         # Save to history
         self._cycle_history.append(cycle_result)
         if len(self._cycle_history) > self._max_history:
@@ -1056,6 +1096,71 @@ class AutonomousController:
                      cycle_result["phases"]["decisions"]["proposed"])
 
         return cycle_result
+
+    def _run_cognitive_phase(
+        self, legacy_cycle_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Run one Mind cycle and return its report dict.
+
+        Called from run_cycle() when cognitive_mode is "shadow" or
+        "primary". The cognitive cycle is independent — failures
+        here are caught and logged but don't propagate.
+        """
+        if self._cognitive_mind is None:
+            return None
+        try:
+            # Pass legacy data so the Mind's perceive phase has
+            # something to read
+            report = self._cognitive_mind.run_cycle(inputs={
+                "legacy_cycle_id": legacy_cycle_result.get("cycle_id"),
+                "store_id": legacy_cycle_result.get("store_id"),
+                "phases_summary": list(
+                    (legacy_cycle_result.get("phases") or {}).keys()
+                ),
+            })
+            return report.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cognitive Mind cycle failed: %s", exc)
+            return {"error": str(exc)}
+
+    def run_cognitive_cycle(self) -> dict[str, Any]:
+        """Run a standalone cognitive cycle (no legacy phases).
+
+        Used by `shopai mind cycle` and by daemons that want the
+        cognitive loop without the legacy 39-phase machinery.
+        Returns the CycleReport as a dict, or an error dict if no
+        Mind is wired.
+        """
+        if self._cognitive_mind is None:
+            return {
+                "error": "no cognitive Mind wired into the controller",
+            }
+        try:
+            report = self._cognitive_mind.run_cycle()
+            return report.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Standalone cognitive cycle failed")
+            return {"error": str(exc)}
+
+    def attach_cognitive_mind(
+        self,
+        mind: Any,
+        *,
+        mode: str = "shadow",
+    ) -> None:
+        """Attach a cognitive Mind to an already-built controller.
+
+        Args:
+            mind: a core.cognitive.mind.Mind instance
+            mode: "off" | "shadow" | "primary" (see __init__)
+        """
+        self._cognitive_mind = mind
+        if mode in ("off", "shadow", "primary"):
+            self._cognitive_mode = mode
+
+    @property
+    def cognitive_mode(self) -> str:
+        return self._cognitive_mode
 
     # ── Phase Implementations ────────────────────────────────
 
