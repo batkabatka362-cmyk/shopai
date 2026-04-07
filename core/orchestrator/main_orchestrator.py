@@ -159,9 +159,16 @@ class MainOrchestrator:
             self._metrics.increment("task.cache_hit")
             self._tracer.finish_span(trace_span, "cache_hit")
             elapsed = time.monotonic() - start_time
-            cached["_cached"] = True
-            cached["elapsed_seconds"] = round(elapsed, 3)
-            return cached
+            # Copy first — previously we mutated the cached dict in
+            # place, so the next cache hit would inherit the previous
+            # caller's `_cached` flag and elapsed_seconds. With shared
+            # cache backends this also leaked one caller's timing into
+            # every subsequent reader of the same entry.
+            response = dict(cached) if isinstance(cached, dict) else cached
+            if isinstance(response, dict):
+                response["_cached"] = True
+                response["elapsed_seconds"] = round(elapsed, 3)
+            return response
 
         # Register in runtime state
         self._state.runtime.register_task(task_id, task_type)
@@ -189,8 +196,11 @@ class MainOrchestrator:
                     dedup = engine_mem.remember_input(params)
                     if dedup.get("is_duplicate"):
                         self._metrics.increment("task.duplicate_input")
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "MainOrchestrator: engine_mem.remember_input "
+                        "failed for %s: %s", task_type, exc,
+                    )
 
             # Execute (with fallback support)
             exec_span = self._tracer.start_span(trace_span.trace_id, f"execute:{engine}", trace_span.span_id)
@@ -201,14 +211,25 @@ class MainOrchestrator:
             if engine_mem and result.get("status") == "completed":
                 try:
                     engine_mem.remember_success(params or {}, result.get("result", {}))
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "MainOrchestrator: engine_mem.remember_success "
+                        "failed for %s: %s", task_type, exc,
+                    )
 
             # Store result in memory
             self._memory_router.route_store(f"result:{task_id}", result, data_type="task_result")
 
-            # Update runtime state
-            self._state.runtime.update_task(task_id, result["status"], result=result.get("result"), error=result.get("error"))
+            # Update runtime state. Use .get() so a malformed
+            # executor response (missing "status") doesn't crash
+            # the orchestrator mid-cycle — match the defensive
+            # access pattern already used three lines below.
+            self._state.runtime.update_task(
+                task_id,
+                result.get("status", "unknown"),
+                result=result.get("result"),
+                error=result.get("error"),
+            )
 
             elapsed = time.monotonic() - start_time
             result["elapsed_seconds"] = round(elapsed, 3)
@@ -241,8 +262,11 @@ class MainOrchestrator:
                         execution_results={"dispatched": 1, "success_count": 1 if status == "completed" else 0,
                                            "fail_count": 0 if status == "completed" else 1},
                     )
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "MainOrchestrator: kpi_tracker.record_decision_outcome "
+                        "failed for %s: %s", task_id, exc,
+                    )
 
             return result
 
@@ -588,22 +612,50 @@ class MainOrchestrator:
         self._wire_executors()
 
     def _wire_executors(self) -> None:
-        """Connect ExecutionBridge to real execution modules."""
-        try:
-            from execution.shopify.product_creator import ProductCreator
-            from execution.shopify.product_updater import ProductUpdater
-            from execution.marketing.ad_launcher import AdLauncher
-            from execution.marketing.campaign_manager import CampaignManager
-            from execution.content.publisher import ContentPublisher
+        """Connect ExecutionBridge to real execution modules.
 
-            self._execution_bridge.register_executor("shopify", "product.create_listing", ProductCreator())
-            self._execution_bridge.register_executor("shopify", "pricing.update", ProductUpdater())
-            self._execution_bridge.register_executor("multi_channel", "marketing.launch_campaign", AdLauncher())
-            self._execution_bridge.register_executor("multi_channel", "marketing.manage_campaign", CampaignManager())
-            self._execution_bridge.register_executor("cms", "content.publish", ContentPublisher())
-            logger.info("Execution bridge wired to real executors")
-        except Exception as exc:
-            logger.warning("Executor wiring partial: %s", exc)
+        Each executor is registered individually so a single broken
+        import doesn't take down the entire executor set. Previously
+        this method wrapped all 5 imports in a single try/except —
+        if AdLauncher (or any of the other four) failed to import,
+        the orchestrator silently ran with **zero** executors
+        registered and downstream Shopify/marketing/CMS actions all
+        returned "no executor found" with no operator signal.
+        """
+        # (provider, action, "module.path", "ClassName")
+        executor_specs: list[tuple[str, str, str, str]] = [
+            ("shopify",       "product.create_listing",   "execution.shopify.product_creator",   "ProductCreator"),
+            ("shopify",       "pricing.update",           "execution.shopify.product_updater",   "ProductUpdater"),
+            ("multi_channel", "marketing.launch_campaign","execution.marketing.ad_launcher",     "AdLauncher"),
+            ("multi_channel", "marketing.manage_campaign","execution.marketing.campaign_manager","CampaignManager"),
+            ("cms",           "content.publish",          "execution.content.publisher",         "ContentPublisher"),
+        ]
+
+        import importlib
+        registered = 0
+        failures: list[str] = []
+        for provider, action, module_path, class_name in executor_specs:
+            try:
+                mod = importlib.import_module(module_path)
+                cls = getattr(mod, class_name)
+                self._execution_bridge.register_executor(provider, action, cls())
+                registered += 1
+            except Exception as exc:  # noqa: BLE001
+                err = f"{class_name}: {type(exc).__name__}: {exc}"
+                failures.append(err)
+                logger.warning(
+                    "MainOrchestrator: executor %r failed to wire (%s)",
+                    class_name, err,
+                )
+        if failures:
+            logger.warning(
+                "MainOrchestrator: %d/%d executors wired (%d failed)",
+                registered, len(executor_specs), len(failures),
+            )
+        else:
+            logger.info(
+                "Execution bridge wired to %d real executors", registered,
+            )
 
     def _register_engines(self) -> None:
         """Auto-register all engines from the registry as execution handlers."""
@@ -633,7 +685,11 @@ class MainOrchestrator:
     def _execute_with_fallback(self, engine: str, task_id: str, params: dict[str, Any] | None) -> dict[str, Any]:
         max_attempts = self._config.get("orchestrator", {}).get("retry_max_attempts", 3)
         result = self._execution_router.execute(engine, task_id, params)
-        if result["status"] == "completed":
+        # Defensive .get(): a malformed executor returning a dict
+        # without a "status" key would previously crash with KeyError
+        # before the fallback chain ever ran. Treat missing status
+        # as not-completed so the fallback path still gets a chance.
+        if (result or {}).get("status") == "completed":
             return result
 
         for attempt in range(max_attempts):
@@ -642,10 +698,13 @@ class MainOrchestrator:
                 break
             logger.info("Attempting fallback %s for task %s (attempt %d)", fallback_engine, task_id, attempt)
             result = self._execution_router.execute(fallback_engine, task_id, params)
-            if result["status"] == "completed":
+            if (result or {}).get("status") == "completed":
                 return result
 
-        return result
+        return result or {
+            "status": "failed",
+            "error": "executor returned no result",
+        }
 
     @staticmethod
     def _load_configs() -> dict[str, Any]:
