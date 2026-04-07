@@ -57,9 +57,20 @@ class AgentDispatcher:
         self._agents: dict[str, Any] = {}
         self._initialized = False
         self._dispatch_log: list[dict] = []
+        # Per-agent init failure messages — symmetric with
+        # LayerDispatcher / UnifiedMemory observability hooks.
+        self._init_errors: dict[str, str] = {}
 
     def initialize(self) -> int:
-        """Load all available agents. Returns count loaded."""
+        """Load all available agents. Returns count loaded.
+
+        Each agent is imported individually; failures are captured
+        per-agent in ``self._init_errors`` and logged at WARNING
+        level. Previously failures were logged at DEBUG and were
+        invisible at the default INFO level — operators saw
+        ``"AgentDispatcher: 0 agents loaded"`` with no clue why.
+        """
+        self._init_errors.clear()
         agent_modules = [
             ("product", "agents.product.agent", "ProductAgent"),
             ("marketing", "agents.marketing.agent", "MarketingAgent"),
@@ -70,18 +81,40 @@ class AgentDispatcher:
             ("research", "agents.research.agent", "ResearchAgent"),
         ]
 
+        import importlib
         for name, module_path, class_name in agent_modules:
             try:
-                import importlib
                 mod = importlib.import_module(module_path)
                 agent_cls = getattr(mod, class_name)
                 self._agents[name] = agent_cls()
-            except Exception as exc:
-                logger.debug("Agent %s load: %s", name, exc)
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+                self._init_errors[name] = err
+                logger.warning(
+                    "AgentDispatcher: agent %r failed to load (%s)",
+                    name, err,
+                )
 
         self._initialized = True
-        logger.info("AgentDispatcher: %d agents loaded", len(self._agents))
+        if self._init_errors:
+            logger.warning(
+                "AgentDispatcher: %d/%d agents loaded (%d failed: %s)",
+                len(self._agents), len(agent_modules),
+                len(self._init_errors), ", ".join(self._init_errors.keys()),
+            )
+        else:
+            logger.info(
+                "AgentDispatcher: %d agents loaded", len(self._agents),
+            )
         return len(self._agents)
+
+    def get_init_errors(self) -> dict[str, str]:
+        """Return per-agent initialization error messages.
+
+        Empty dict means every agent loaded successfully. Mirrors
+        ``LayerDispatcher.get_init_errors()`` for symmetry.
+        """
+        return dict(self._init_errors)
 
     def dispatch(self, brain_decisions: list[dict[str, Any]],
                  context: dict[str, Any]) -> dict[str, Any]:

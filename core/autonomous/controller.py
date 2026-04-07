@@ -458,8 +458,14 @@ class AutonomousController:
                     "duration_s": layer_result.get("duration_s", 0),
                 }
                 total_insights += layer_result.get("total_insights", 0)
-            except Exception as exc:
-                logger.debug("Layer dispatch: %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                # Promoted from debug → warning so operators see
+                # broken layer phases at default log level. The
+                # cycle_result phase entry already carries the
+                # error string for downstream callers.
+                logger.warning(
+                    "AutonomousController: layer dispatch raised: %s", exc,
+                )
                 cycle_result["phases"]["layers"] = {"error": str(exc)[:80]}
 
         # Phase 3: DECIDE — Convert brain decisions + analysis to actions

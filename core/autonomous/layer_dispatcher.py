@@ -40,32 +40,75 @@ class LayerDispatcher:
     def __init__(self) -> None:
         self._layers: dict[str, Any] = {}
         self._initialized = False
+        # Per-layer init failure messages, populated by initialize().
+        # Empty dict means every layer loaded clean. Inspectable via
+        # get_init_errors() so dashboards can tell a missing layer
+        # apart from a successfully-loaded one.
+        self._init_errors: dict[str, str] = {}
 
     def initialize(self) -> int:
-        """Load all layer flows. Returns count loaded."""
-        try:
-            from layers import (
-                DataLayerFlow, AnalysisLayerFlow, ProductLayerFlow,
-                PricingLayerFlow, CustomerLayerFlow, MarketingLayerFlow,
-                SalesLayerFlow, OperationsLayerFlow, FinancialLayerFlow,
-                IntelligenceLayerFlow, ExecutionLayerFlow, ScalingLayerFlow,
-            )
-            layer_classes = {
-                "data": DataLayerFlow, "analysis": AnalysisLayerFlow,
-                "product": ProductLayerFlow, "pricing": PricingLayerFlow,
-                "customer": CustomerLayerFlow, "marketing": MarketingLayerFlow,
-                "sales": SalesLayerFlow, "operations": OperationsLayerFlow,
-                "financial": FinancialLayerFlow, "intelligence": IntelligenceLayerFlow,
-                "execution": ExecutionLayerFlow, "scaling": ScalingLayerFlow,
-            }
-            for name, cls in layer_classes.items():
+        """Load all layer flows. Returns count loaded.
+
+        Each layer class is imported individually so a single broken
+        layer doesn't disable the other 11. The previous tuple-import
+        pattern was all-or-nothing: one missing class meant zero
+        layers loaded, and the operator only saw a single short
+        warning with no per-layer detail.
+        """
+        self._init_errors.clear()
+        # Map layer name → (module path, class name). Importing each
+        # individually lets a broken layer get logged loudly without
+        # taking the rest of the dispatcher offline.
+        layer_specs: list[tuple[str, str, str]] = [
+            ("data",         "layers", "DataLayerFlow"),
+            ("analysis",     "layers", "AnalysisLayerFlow"),
+            ("product",      "layers", "ProductLayerFlow"),
+            ("pricing",      "layers", "PricingLayerFlow"),
+            ("customer",     "layers", "CustomerLayerFlow"),
+            ("marketing",    "layers", "MarketingLayerFlow"),
+            ("sales",        "layers", "SalesLayerFlow"),
+            ("operations",   "layers", "OperationsLayerFlow"),
+            ("financial",    "layers", "FinancialLayerFlow"),
+            ("intelligence", "layers", "IntelligenceLayerFlow"),
+            ("execution",    "layers", "ExecutionLayerFlow"),
+            ("scaling",      "layers", "ScalingLayerFlow"),
+        ]
+
+        import importlib
+        for name, module_path, class_name in layer_specs:
+            try:
+                mod = importlib.import_module(module_path)
+                cls = getattr(mod, class_name)
                 self._layers[name] = cls()
-        except Exception as exc:
-            logger.warning("Layer initialization partial: %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+                self._init_errors[name] = err
+                logger.warning(
+                    "LayerDispatcher: layer %r failed to load (%s)",
+                    name, err,
+                )
 
         self._initialized = True
-        logger.info("LayerDispatcher: %d layers loaded", len(self._layers))
+        if self._init_errors:
+            logger.warning(
+                "LayerDispatcher: %d/%d layers loaded (%d failed: %s)",
+                len(self._layers), len(layer_specs),
+                len(self._init_errors), ", ".join(self._init_errors.keys()),
+            )
+        else:
+            logger.info(
+                "LayerDispatcher: %d layers loaded", len(self._layers),
+            )
         return len(self._layers)
+
+    def get_init_errors(self) -> dict[str, str]:
+        """Return per-layer initialization error messages.
+
+        Empty dict means every layer loaded successfully. Mirrors the
+        UnifiedMemory.get_init_errors() / AutonomousController._init_error
+        observability hooks.
+        """
+        return dict(self._init_errors)
 
     def run_all(self, store_data: dict[str, Any]) -> dict[str, Any]:
         """Run all 12 layers in order. Returns merged results."""
@@ -112,9 +155,16 @@ class LayerDispatcher:
                 else:
                     results[layer_name] = {"status": "non_dict"}
 
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 results[layer_name] = {"status": "error", "error": str(exc)[:100]}
-                logger.debug("Layer %s error: %s", layer_name, exc)
+                # Promoted from debug → warning so operators see
+                # broken layers at default log level. Previously
+                # these failures were completely invisible unless
+                # someone enabled DEBUG logging.
+                logger.warning(
+                    "LayerDispatcher: layer %r raised during run_all: %s",
+                    layer_name, exc,
+                )
 
         elapsed = time.monotonic() - start
         return {
