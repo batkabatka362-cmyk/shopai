@@ -145,6 +145,12 @@ class FailureContextPrevention:
 
             if c_val is None or f_val is None:
                 continue
+            # Don't blend bool with numeric — bool is a subclass of
+            # int in Python, so without this guard `isinstance(True,
+            # (int, float))` is True and the numeric branch below
+            # would silently mishandle a True/0 comparison.
+            if isinstance(c_val, bool) != isinstance(f_val, bool):
+                continue
 
             total_weight += weight
 
@@ -155,9 +161,20 @@ class FailureContextPrevention:
                 if c_val == f_val:
                     score += weight
             elif isinstance(c_val, (int, float)) and isinstance(f_val, (int, float)):
-                max_val = max(abs(c_val), abs(f_val), 1)
-                diff = abs(c_val - f_val) / max_val
-                similarity = max(0, 1 - diff)
+                # Compute UNIT-FREE relative similarity. The previous
+                # `max(abs(c_val), abs(f_val), 1)` form hard-coded a
+                # floor of 1, which silently inflated the similarity
+                # of small fractional values: churn_pct=0.05 vs 0.10
+                # came out at 95% similar even though they differ by
+                # 2x. Now we drop the floor and handle the both-zero
+                # case explicitly so any sub-1 values still produce
+                # the right relative ratio.
+                both = max(abs(c_val), abs(f_val))
+                if both == 0:
+                    similarity = 1.0
+                else:
+                    diff = abs(c_val - f_val) / both
+                    similarity = max(0.0, 1.0 - diff)
                 score += weight * similarity
 
         return score / max(total_weight, 0.01)

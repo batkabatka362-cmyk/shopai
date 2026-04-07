@@ -51,6 +51,59 @@ class JudgmentAdvisor:
         self._failure_prevention = failure_prevention
         self._action_coordinator = action_coordinator
 
+    # Default check weights — kept in sync with what each
+    # `_check_*` method returns. Used as the fail-safe weight when
+    # a check method raises and we synthesize a stub result.
+    _CHECK_DEFAULTS: dict[str, float] = {
+        "magnitude":            0.20,
+        "competitor_activity":  0.15,
+        "past_failures":        0.25,
+        "system_stability":     0.15,
+        "financial_constraint": 0.15,
+        "cooldown":             0.10,
+    }
+
+    def _safe_check(
+        self,
+        name: str,
+        fn,
+        *args,
+    ) -> dict[str, Any]:
+        """Run a single check method behind a try/except so a buggy
+        downstream module (FailurePrevention, ActionCoordinator,
+        etc.) can't take down the entire judgment vote.
+
+        On failure we return a stub check with risk=0 and the same
+        weight the real method would have used, so the missing
+        signal is treated as neutral rather than vetoing or
+        skewing the weighted average.
+        """
+        try:
+            result = fn(*args)
+            if not isinstance(result, dict):
+                raise TypeError(
+                    f"check {name!r} returned {type(result).__name__}, expected dict"
+                )
+            # Defensive defaults so the consensus loop never crashes
+            # on a check that forgot a key.
+            result.setdefault("check", name)
+            result.setdefault("risk", 0.0)
+            result.setdefault("weight", self._CHECK_DEFAULTS.get(name, 0.10))
+            result.setdefault("reason", f"{name}: no detail")
+            return result
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "JudgmentAdvisor: check %r raised (%s); treating as neutral",
+                name, exc,
+            )
+            return {
+                "check": name,
+                "risk": 0.0,
+                "weight": self._CHECK_DEFAULTS.get(name, 0.10),
+                "reason": f"{name}: check failed ({type(exc).__name__})",
+                "error": str(exc)[:120],
+            }
+
     def evaluate(
         self,
         decision: dict[str, Any],
@@ -71,25 +124,14 @@ class JudgmentAdvisor:
                 "recommendations": [...],
             }
         """
-        checks = []
-
-        # 1. Magnitude check
-        checks.append(self._check_magnitude(decision))
-
-        # 2. Competitor activity
-        checks.append(self._check_competitor_activity(decision, situation))
-
-        # 3. Past failure match
-        checks.append(self._check_past_failures(decision, situation))
-
-        # 4. System stability
-        checks.append(self._check_system_stability(situation))
-
-        # 5. Financial constraint
-        checks.append(self._check_financial_constraint(decision, situation))
-
-        # 6. Cooldown
-        checks.append(self._check_cooldown(decision))
+        checks = [
+            self._safe_check("magnitude", self._check_magnitude, decision),
+            self._safe_check("competitor_activity", self._check_competitor_activity, decision, situation),
+            self._safe_check("past_failures", self._check_past_failures, decision, situation),
+            self._safe_check("system_stability", self._check_system_stability, situation),
+            self._safe_check("financial_constraint", self._check_financial_constraint, decision, situation),
+            self._safe_check("cooldown", self._check_cooldown, decision),
+        ]
 
         # Compute weighted risk score
         total_weight = sum(c["weight"] for c in checks)
@@ -98,15 +140,20 @@ class JudgmentAdvisor:
         # Determine verdict
         if any(c.get("veto") for c in checks):
             verdict = "escalate_to_human"
-            reason = next(c["reason"] for c in checks if c.get("veto"))
+            # Use .get so a vetoing check that forgot to set "reason"
+            # can't take down the whole evaluation with a KeyError.
+            reason = next(
+                (c.get("reason", "veto: no reason given") for c in checks if c.get("veto")),
+                "veto: no reason given",
+            )
         elif risk_score >= DELAY_THRESHOLD:
             verdict = "escalate_to_human"
             top_risks = sorted(checks, key=lambda c: c["risk"], reverse=True)[:2]
-            reason = "; ".join(c["reason"] for c in top_risks if c["risk"] > 0.5)
+            reason = "; ".join(c.get("reason", "") for c in top_risks if c["risk"] > 0.5)
         elif risk_score >= PROCEED_THRESHOLD:
             verdict = "delay"
             top_risks = sorted(checks, key=lambda c: c["risk"], reverse=True)[:2]
-            reason = "; ".join(c["reason"] for c in top_risks if c["risk"] > 0.3)
+            reason = "; ".join(c.get("reason", "") for c in top_risks if c["risk"] > 0.3)
         else:
             verdict = "proceed"
             reason = "All checks passed"
@@ -157,7 +204,13 @@ class JudgmentAdvisor:
         """Recent competitor activity → delay pricing decisions."""
         competitive = situation.get("competitive", {})
         alerts = competitive.get("alerts", []) if isinstance(competitive, dict) else []
-        events = situation.get("events", [])
+        # Be defensive: callers occasionally pass `events: None` or
+        # a malformed value here. Coerce to a list so the
+        # comprehension below can't crash with TypeError.
+        events_raw = situation.get("events", [])
+        events = events_raw if isinstance(events_raw, list) else []
+        if not isinstance(alerts, list):
+            alerts = []
 
         risk = 0
         reason = "No competitor activity"
