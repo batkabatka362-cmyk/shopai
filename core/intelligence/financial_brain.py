@@ -73,10 +73,24 @@ class FinancialBrain:
                       cost_config: dict | None = None) -> dict[str, Any]:
         """Calculate Profit & Loss with real-world costs: refunds, taxes, fees, shipping."""
         cfg = {**self.DEFAULT_COSTS, **(cost_config or {})}
+        # Deep-merge shipping_rates so a partial cost_config override
+        # of the shipping tiers doesn't drop the other tier rows.
+        if cost_config and isinstance(cost_config.get("shipping_rates"), dict):
+            cfg["shipping_rates"] = {
+                **self.DEFAULT_COSTS["shipping_rates"],
+                **cost_config["shipping_rates"],
+            }
 
-        # Revenue
-        gross_revenue = sum(safe_float(o.get("total", o.get("amount", 0))) for o in orders if isinstance(o, dict))
-        order_count = len([o for o in orders if isinstance(o, dict)])
+        # Revenue. Uses _order_amount so an order with `total=None`
+        # but `amount=$10` falls through correctly to the amount
+        # field instead of being silently coerced to 0.
+        amounts = []
+        for o in orders:
+            amt = self._order_amount(o)
+            if amt is not None:
+                amounts.append(amt)
+        gross_revenue = sum(amounts)
+        order_count = len(amounts)
 
         # COGS (Cost of Goods Sold)
         total_cogs = 0
@@ -120,10 +134,20 @@ class FinancialBrain:
             weights = [safe_float(p.get("weight")) for p in products if isinstance(p, dict)]
             avg_weight = sum(weights) / max(len(weights), 1) if weights else 1.0
         shipping_rate = 7.0  # default
-        for tier in cfg["shipping_rates"].values():
-            if avg_weight <= tier["max_kg"]:
-                shipping_rate = tier["cost"]
-                break
+        # Defensive .get on tier fields so a malformed shipping
+        # tier (e.g. partial cost_config override missing one of
+        # the keys) doesn't crash the whole P&L with KeyError.
+        shipping_rates = cfg.get("shipping_rates")
+        if isinstance(shipping_rates, dict):
+            for tier in shipping_rates.values():
+                if not isinstance(tier, dict):
+                    continue
+                max_kg = safe_float(tier.get("max_kg"))
+                if max_kg <= 0:
+                    continue
+                if avg_weight <= max_kg:
+                    shipping_rate = safe_float(tier.get("cost")) or 7.0
+                    break
         shipping_cost = round(order_count * shipping_rate, 2)
 
         # Packaging
@@ -183,30 +207,73 @@ class FinancialBrain:
         }
 
     def forecast_cash_flow(self, orders: list[dict], ad_spend: float = 0,
-                           operating_costs: float = 0, days_ahead: int = 30) -> dict[str, Any]:
-        """Forecast cash flow based on order trends."""
-        order_totals = [safe_float(o.get("total", o.get("amount", 0))) for o in orders if isinstance(o, dict)]
+                           operating_costs: float = 0, days_ahead: int = 30,
+                           period_days: int = 30) -> dict[str, Any]:
+        """Forecast cash flow based on order trends.
+
+        Args:
+            orders: list of order dicts
+            ad_spend: monthly ad spend
+            operating_costs: monthly operating costs
+            days_ahead: how many days to forecast
+            period_days: time window the orders span (defaults to 30
+                so monthly costs and order revenue use the same base).
+                If order timestamps are present we'll prefer the
+                actual span, otherwise this fallback is used.
+        """
+        order_totals: list[float] = []
+        order_timestamps: list[float] = []
+        for o in orders:
+            if not isinstance(o, dict):
+                continue
+            total = self._order_amount(o)
+            if total is None:
+                continue
+            order_totals.append(total)
+            ts = self._order_timestamp(o)
+            if ts is not None:
+                order_timestamps.append(ts)
 
         if len(order_totals) < 3:
             return {"status": "insufficient_data", "note": "Need at least 3 orders for forecast"}
 
-        # Calculate daily averages
-        daily_revenue = sum(order_totals) / max(len(order_totals), 1)
-        daily_costs = (ad_spend + operating_costs) / 30  # Assume monthly costs
+        # CRITICAL: previous version computed
+        #     daily_revenue = sum(order_totals) / len(order_totals)
+        # which is actually AVERAGE ORDER VALUE, not daily revenue.
+        # The forecast then projected AOV forward as if it were
+        # daily revenue, systematically under-forecasting by a
+        # factor of (orders_per_day). For a store with 100 orders
+        # averaging $50, the old code projected $50/day instead
+        # of the real ~$5000/day — orders-of-magnitude wrong.
+        #
+        # Now we use the actual span of order timestamps when
+        # available, falling back to the period_days argument
+        # otherwise. Both branches give a true revenue-per-day
+        # rate.
+        total_revenue = sum(order_totals)
+        if len(order_timestamps) >= 2:
+            span_seconds = max(order_timestamps) - min(order_timestamps)
+            span_days = max(span_seconds / 86400.0, 1.0)
+        else:
+            span_days = max(float(period_days), 1.0)
+        daily_revenue = total_revenue / span_days
+        daily_costs = (ad_spend + operating_costs) / 30  # Monthly costs
 
-        # Simple growth trend
+        # Simple growth trend (uses order halves — same intent as
+        # before but immune to the daily_revenue bug above).
         if len(order_totals) >= 4:
-            first_half = sum(order_totals[:len(order_totals)//2]) / max(len(order_totals)//2, 1)
-            second_half = sum(order_totals[len(order_totals)//2:]) / max(len(order_totals) - len(order_totals)//2, 1)
+            half = len(order_totals) // 2
+            first_half = sum(order_totals[:half]) / max(half, 1)
+            second_half = sum(order_totals[half:]) / max(len(order_totals) - half, 1)
             growth_rate = (second_half - first_half) / max(first_half, 0.01)
         else:
             growth_rate = 0
 
         # Project forward
         projections = []
-        cumulative_cash = 0
+        cumulative_cash = 0.0
         for day in range(1, days_ahead + 1):
-            day_revenue = daily_revenue * (1 + growth_rate * day / len(order_totals))
+            day_revenue = daily_revenue * (1 + growth_rate * day / max(len(order_totals), 1))
             day_cost = daily_costs
             day_net = day_revenue - day_cost
             cumulative_cash += day_net
@@ -222,11 +289,50 @@ class FinancialBrain:
             "daily_revenue_avg": round(daily_revenue, 2),
             "daily_costs_avg": round(daily_costs, 2),
             "growth_rate": round(growth_rate * 100, 1),
+            "span_days_observed": round(span_days, 1),
             "projections": projections,
             "forecast_total_revenue": round(daily_revenue * days_ahead * (1 + growth_rate * 0.5), 2),
             "forecast_net_cash": round(cumulative_cash, 2),
             "runway_days": round(abs(cumulative_cash) / max(daily_costs, 0.01), 0) if cumulative_cash < 0 else None,
         }
+
+    @staticmethod
+    def _order_amount(order: dict) -> float | None:
+        """Extract an order's revenue amount with proper None
+        fallback. The previous `o.get("total", o.get("amount", 0))`
+        chain didn't fall back to `amount` when `total` was
+        present-but-None — it returned None and downstream
+        safe_float coerced it to 0, silently dropping orders that
+        only had the `amount` field set."""
+        if not isinstance(order, dict):
+            return None
+        for key in ("total", "amount", "total_price", "subtotal"):
+            val = order.get(key)
+            if val is not None:
+                amt = safe_float(val)
+                if amt > 0:
+                    return amt
+        return None
+
+    @staticmethod
+    def _order_timestamp(order: dict) -> float | None:
+        """Best-effort numeric timestamp extraction for an order.
+        Returns None if no usable timestamp is present."""
+        if not isinstance(order, dict):
+            return None
+        for key in ("created_at", "timestamp", "order_date"):
+            val = order.get(key)
+            if val is None:
+                continue
+            if isinstance(val, (int, float)):
+                return float(val)
+            # ISO-8601 string fallback
+            try:
+                from datetime import datetime
+                return datetime.fromisoformat(str(val).replace("Z", "+00:00")).timestamp()
+            except (ValueError, TypeError):
+                continue
+        return None
 
     def product_profitability(self, products: list[dict], orders: list[dict]) -> list[dict[str, Any]]:
         """Rank products by profitability."""
