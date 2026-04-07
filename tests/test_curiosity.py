@@ -315,6 +315,171 @@ class TestEndToEnd:
         assert "engine.mystery" in g["what"]
 
 
+class _FakeStructured:
+    def __init__(self, ok=True, data=None, error=""):
+        self.ok = ok
+        self.data = data or {}
+        self.error = error
+        self.raw_text = ""
+
+
+class _FakeLLM:
+    def __init__(self, *, available=True, structured_data=None,
+                 raise_on_call=False):
+        self._available = available
+        self._structured = structured_data
+        self._raise = raise_on_call
+        self.calls = []
+
+    def is_available(self):
+        return self._available
+
+    def ask_structured(self, role="", prompt="", system_prompt="",
+                       schema_hint="", **kw):
+        self.calls.append({"role": role, "prompt": prompt})
+        if self._raise:
+            raise RuntimeError("LLM down")
+        if self._structured is None:
+            return _FakeStructured(ok=False, error="no data")
+        return _FakeStructured(ok=True, data=self._structured)
+
+
+class TestLLMTargetPicker:
+    def _seed(self, sm):
+        sm.assess("engine.alpha", 0.5, evidence_count=1)
+        sm.assess("engine.beta", 0.5, evidence_count=2)
+        sm.assess("engine.gamma", 0.5, evidence_count=3)
+
+    def test_llm_picks_target_when_available(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        llm = _FakeLLM(structured_data={
+            "target": "engine.beta",
+            "reason": "Beta has highest synergy with our existing pricing strength",
+            "expected_payoff": 0.85,
+            "first_step": "run engine.beta with default inputs",
+        })
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm, llm=llm,
+            epsilon=0.99, max_epsilon=1.0, rng_seed=1,
+        )
+        rec = c.recommend()
+        assert rec.action_kind == "explore"
+        # LLM picked beta, not alpha (which is the statistical top)
+        assert rec.target == "engine.beta"
+        assert "LLM-picked" in rec.reason
+        # LLM was actually called
+        assert len(llm.calls) == 1
+
+    def test_no_llm_uses_statistical_top(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm,
+            epsilon=0.99, max_epsilon=1.0, rng_seed=1,
+        )
+        rec = c.recommend()
+        assert rec.action_kind == "explore"
+        # Statistical pick is the most novel = engine.alpha (1 obs)
+        assert rec.target == "engine.alpha"
+
+    def test_use_llm_false_disables(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        llm = _FakeLLM(structured_data={"target": "engine.beta"})
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm, llm=llm, use_llm=False,
+            epsilon=0.99, max_epsilon=1.0, rng_seed=1,
+        )
+        c.recommend()
+        assert llm.calls == []
+
+    def test_unavailable_llm_falls_back(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        llm = _FakeLLM(available=False)
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm, llm=llm,
+            epsilon=0.99, max_epsilon=1.0, rng_seed=1,
+        )
+        rec = c.recommend()
+        # Falls back to statistical top
+        assert rec.target == "engine.alpha"
+
+    def test_llm_exception_falls_back(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        llm = _FakeLLM(raise_on_call=True)
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm, llm=llm,
+            epsilon=0.99, max_epsilon=1.0, rng_seed=1,
+        )
+        rec = c.recommend()
+        assert rec.action_kind == "explore"
+        assert rec.target == "engine.alpha"  # statistical fallback
+
+    def test_llm_unparseable_falls_back(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        llm = _FakeLLM(structured_data=None)
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm, llm=llm,
+            epsilon=0.99, max_epsilon=1.0, rng_seed=1,
+        )
+        rec = c.recommend()
+        assert rec.target == "engine.alpha"
+
+    def test_llm_target_unknown_falls_back(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        llm = _FakeLLM(structured_data={
+            "target": "engine.does_not_exist",
+            "reason": "made up name",
+            "expected_payoff": 1.0,
+        })
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm, llm=llm,
+            epsilon=0.99, max_epsilon=1.0, rng_seed=1,
+        )
+        rec = c.recommend()
+        # When LLM picks an unknown name, fall back to statistical top
+        assert rec.target == "engine.alpha"
+
+    def test_llm_empty_target_falls_back(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        llm = _FakeLLM(structured_data={"target": ""})
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm, llm=llm,
+            epsilon=0.99, max_epsilon=1.0, rng_seed=1,
+        )
+        rec = c.recommend()
+        assert rec.target == "engine.alpha"
+
+    def test_exploit_path_skips_llm(self):
+        sm = _real_self_model()
+        self._seed(sm)
+        llm = _FakeLLM(structured_data={"target": "engine.beta"})
+        from core.cognitive.curiosity import Curiosity
+        c = Curiosity(
+            self_model=sm, llm=llm,
+            epsilon=0.0,  # always exploit
+            rng_seed=1,
+        )
+        rec = c.recommend()
+        assert rec.action_kind == "exploit"
+        # LLM not called because we're not exploring
+        assert llm.calls == []
+
+
 class TestSingleton:
     def test_get_curiosity_cached(self):
         from core.cognitive import curiosity as mod

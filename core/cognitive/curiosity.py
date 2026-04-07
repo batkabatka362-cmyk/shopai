@@ -121,6 +121,8 @@ class Curiosity:
         epsilon: float = _BASE_EPSILON,
         max_epsilon: float = _EPSILON_CEILING,
         rng_seed: Optional[int] = None,
+        llm: Any = None,
+        use_llm: bool = True,
     ) -> None:
         self._self_model = self_model
         self._goal_manager = goal_manager
@@ -131,6 +133,8 @@ class Curiosity:
         self._base_epsilon = max(_EPSILON_FLOOR, min(self._max_epsilon, epsilon))
         self._rng = random.Random(rng_seed)
         self._exploration_outcomes: list[bool] = []  # last few results
+        self._llm = llm
+        self._use_llm = bool(use_llm)
 
     # ── Public API ─────────────────────────────────────────────
 
@@ -220,9 +224,14 @@ class Curiosity:
 
         Strategy:
           1. Compute the adaptive epsilon
-          2. Roll: if random < epsilon → explore (return top candidate)
-                   else → exploit (return None target with action=exploit)
-          3. If no candidates exist, fall back to exploit
+          2. Roll: if random < epsilon → explore
+                   else → exploit
+          3. When exploring AND an LLM is available, ask the LLM to
+             pick the best target out of the top candidates instead
+             of just taking the statistical #1. The LLM gets the
+             whole candidate list + current strengths so it can
+             reason about expected payoff.
+          4. If no candidates exist, fall back to exploit.
         """
         candidates = self.candidates(top_n=10)
         epsilon = self._adaptive_epsilon()
@@ -230,14 +239,30 @@ class Curiosity:
 
         if candidates and roll < epsilon:
             target = candidates[0]
+            reason = (
+                f"explore (roll={roll:.2f} < ε={epsilon:.2f}); "
+                f"top candidate score={target.score:.2f}, "
+                f"only {target.evidence_count} observation(s)"
+            )
+
+            # LLM picks among candidates if available
+            llm_pick = self._llm_pick_target(candidates) if self._use_llm else None
+            if llm_pick is not None:
+                target_name = llm_pick.get("target") or target.name
+                # If LLM picked a name we don't recognize, fall back
+                target_obj = next(
+                    (c for c in candidates if c.name == target_name), target,
+                )
+                reason = (
+                    f"LLM-picked: {llm_pick.get('reason', '')} "
+                    f"(payoff={llm_pick.get('expected_payoff', 'n/a')})"
+                )[:200]
+                target = target_obj
+
             return CuriosityRecommendation(
                 action_kind="explore",
                 target=target.name,
-                reason=(
-                    f"explore (roll={roll:.2f} < ε={epsilon:.2f}); "
-                    f"top candidate score={target.score:.2f}, "
-                    f"only {target.evidence_count} observation(s)"
-                ),
+                reason=reason,
                 epsilon_used=epsilon,
                 candidates=candidates,
             )
@@ -350,6 +375,91 @@ class Curiosity:
     def base_epsilon(self) -> float:
         """Expose the configured base epsilon (for tests + dashboards)."""
         return self._base_epsilon
+
+    # ── LLM target picker ─────────────────────────────────────
+
+    def _llm_pick_target(
+        self, candidates: list[CuriosityCandidate],
+    ) -> Optional[dict[str, Any]]:
+        """Ask the LLM which candidate is most worth exploring next.
+
+        Returns the parsed LLM dict (with "target", "reason",
+        "expected_payoff", "first_step" keys) or None on any
+        failure / when the LLM is unavailable.
+        """
+        if not candidates:
+            return None
+        llm = self._get_llm()
+        if llm is None:
+            return None
+        try:
+            if not llm.is_available():
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            from core.system.prompt_library import get_prompt
+        except Exception:  # noqa: BLE001
+            return None
+        template = get_prompt("curiosity.pick_target")
+        if template is None:
+            return None
+
+        # Build compact JSON for the prompt
+        try:
+            import json
+            cands_json = json.dumps([
+                {"name": c.name, "novelty": round(c.novelty, 2),
+                 "uncertainty": round(c.uncertainty, 2),
+                 "evidence_count": c.evidence_count}
+                for c in candidates[:10]
+            ])
+            strengths_json = "[]"
+            if self._self_model is not None:
+                try:
+                    strengths = self._self_model.strengths(top_n=3)
+                    strengths_json = json.dumps([
+                        s.get("name") for s in strengths
+                    ])
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            return None
+
+        rendered = template.render(
+            count=len(candidates),
+            candidates_json=cands_json,
+            strengths_json=strengths_json,
+        )
+
+        try:
+            structured = llm.ask_structured(
+                role=template.role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Curiosity LLM call failed: %s", exc)
+            return None
+
+        if not getattr(structured, "ok", False):
+            return None
+        data = structured.data or {}
+        if not data.get("target"):
+            return None
+        return data
+
+    def _get_llm(self) -> Any:
+        """Lazily resolve the LLM adapter."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from core.system.llm_adapter import get_llm
+            return get_llm()
+        except Exception:  # noqa: BLE001
+            return None
 
 
 # ── Singleton accessor ────────────────────────────────────────
