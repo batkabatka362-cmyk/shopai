@@ -479,6 +479,183 @@ class TestEndToEnd:
         assert sm.get_capability("reflection.engine.pricing") is not None
 
 
+class _FakeLLMResponse:
+    def __init__(self, text="", success=True, error=""):
+        self.text = text
+        self.success = success
+        self.error = error
+
+
+class _FakeStructured:
+    def __init__(self, ok=True, data=None, error=""):
+        self.ok = ok
+        self.data = data or {}
+        self.error = error
+        self.raw_text = ""
+
+
+class _FakeLLM:
+    """Minimal LLMAdapter-compatible fake for reflection tests."""
+
+    def __init__(self, *, available=True, structured_data=None,
+                 raise_on_call=False):
+        self._available = available
+        self._structured = structured_data
+        self._raise = raise_on_call
+        self.calls = []
+
+    def is_available(self):
+        return self._available
+
+    def ask_structured(self, role="", prompt="", system_prompt="",
+                       schema_hint="", **kw):
+        self.calls.append({
+            "role": role,
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "schema_hint": schema_hint,
+        })
+        if self._raise:
+            raise RuntimeError("LLM exploded")
+        if self._structured is None:
+            return _FakeStructured(ok=False, error="no data set")
+        return _FakeStructured(ok=True, data=self._structured)
+
+
+class TestLLMLessons:
+    def _setup_memory(self, n=10):
+        mem = FakeMemory()
+        for i in range(n):
+            mem.add("action", action="pricing", score=4.0 if i % 2 else 1.5)
+        return mem
+
+    def test_no_llm_no_llm_lessons(self):
+        mem = self._setup_memory()
+        r = _reflection(memory=mem)  # no llm passed
+        report = r.reflect(apply=False)
+        # All lessons should come from statistical detectors only
+        assert all(not l.type.startswith("llm:") for l in report.lessons)
+
+    def test_unavailable_llm_skipped(self):
+        mem = self._setup_memory()
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=_FakeLLM(available=False))
+        report = r.reflect(apply=False)
+        assert all(not l.type.startswith("llm:") for l in report.lessons)
+
+    def test_llm_returns_lessons(self):
+        mem = self._setup_memory(n=10)
+        llm = _FakeLLM(structured_data={
+            "lessons": [
+                {
+                    "type": "weekend_pattern",
+                    "subject": "pricing",
+                    "evidence": "Failures cluster on weekends",
+                    "recommended_action": "skip pricing on Sat/Sun",
+                    "confidence": 0.8,
+                },
+                {
+                    "type": "improvement",
+                    "subject": "pricing",
+                    "evidence": "Recent runs trending up",
+                    "recommended_action": "keep going",
+                    "confidence": 0.7,
+                },
+            ],
+        })
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=llm)
+        report = r.reflect(apply=False)
+        llm_lessons = [l for l in report.lessons if l.type.startswith("llm:")]
+        assert len(llm_lessons) == 2
+        assert "weekend_pattern" in llm_lessons[0].type
+        assert llm_lessons[0].subject == "pricing"
+        assert llm_lessons[0].confidence == 0.8
+        assert "skip pricing" in llm_lessons[0].recommended_action
+        # Note appended to report
+        assert any("LLM lessons" in n for n in report.notes)
+
+    def test_llm_exception_does_not_crash(self):
+        mem = self._setup_memory()
+        llm = _FakeLLM(raise_on_call=True)
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=llm)
+        # Should not raise, just no LLM lessons
+        report = r.reflect(apply=False)
+        assert all(not l.type.startswith("llm:") for l in report.lessons)
+
+    def test_llm_unparseable_skipped(self):
+        mem = self._setup_memory()
+        llm = _FakeLLM(structured_data=None)  # will return ok=False
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=llm)
+        report = r.reflect(apply=False)
+        assert all(not l.type.startswith("llm:") for l in report.lessons)
+
+    def test_skips_when_too_few_episodes(self):
+        mem = FakeMemory()
+        mem.add("action", action="x", score=4.0)
+        mem.add("action", action="x", score=4.0)  # only 2 episodes
+        llm = _FakeLLM(structured_data={"lessons": [{"type": "x", "subject": "x", "evidence": "y"}]})
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=llm)
+        r.reflect(apply=False)
+        # LLM should not have been called for so few episodes
+        assert llm.calls == []
+
+    def test_use_llm_false_disables(self):
+        mem = self._setup_memory()
+        llm = _FakeLLM(structured_data={"lessons": [{"type": "x", "subject": "x", "evidence": "y"}]})
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=llm, use_llm=False)
+        r.reflect(apply=False)
+        assert llm.calls == []
+
+    def test_invalid_lesson_shapes_filtered(self):
+        mem = self._setup_memory()
+        llm = _FakeLLM(structured_data={
+            "lessons": [
+                {"type": "ok", "subject": "x", "evidence": "good"},
+                "not a dict",  # filtered
+                {},  # no subject or evidence → filtered
+                {"type": "ok2", "subject": "y", "evidence": "also good", "confidence": "abc"},
+            ],
+        })
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=llm)
+        report = r.reflect(apply=False)
+        llm_lessons = [l for l in report.lessons if l.type.startswith("llm:")]
+        # 2 valid lessons, 2 filtered
+        assert len(llm_lessons) == 2
+        # Bad confidence falls back to default 0.6
+        assert llm_lessons[1].confidence == 0.6
+
+    def test_capped_at_8_lessons(self):
+        mem = self._setup_memory()
+        llm = _FakeLLM(structured_data={
+            "lessons": [
+                {"type": "x", "subject": f"s{i}", "evidence": "e"}
+                for i in range(20)
+            ],
+        })
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=llm)
+        report = r.reflect(apply=False)
+        llm_lessons = [l for l in report.lessons if l.type.startswith("llm:")]
+        assert len(llm_lessons) == 8
+
+    def test_llm_lessons_have_extra_source_marker(self):
+        mem = self._setup_memory()
+        llm = _FakeLLM(structured_data={
+            "lessons": [{"type": "x", "subject": "y", "evidence": "z"}],
+        })
+        from core.cognitive.reflection import Reflection
+        r = Reflection(memory=mem, llm=llm)
+        report = r.reflect(apply=False)
+        llm_lesson = next(l for l in report.lessons if l.type.startswith("llm:"))
+        assert llm_lesson.extra.get("source") == "llm"
+
+
 class TestSingleton:
     def test_get_reflection_cached(self):
         from core.cognitive import reflection as mod

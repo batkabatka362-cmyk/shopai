@@ -98,6 +98,7 @@ class ReflectionReport:
     goal_revisions: int = 0
     timestamp: float = field(default_factory=time.time)
     narrative: str = ""
+    notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,12 +108,23 @@ class ReflectionReport:
             "goal_revisions": self.goal_revisions,
             "timestamp": self.timestamp,
             "narrative": self.narrative,
+            "notes": list(self.notes),
         }
 
 
 class Reflection:
-    """Meta-cognitive reviewer. Stateless — all state lives in the
-    SelfModel / GoalManager / MemoryIntelligence instances it acts on."""
+    """Meta-cognitive reviewer.
+
+    Two analysis layers stack on top of each other:
+
+      1. Statistical detectors (trends, extremes, patterns,
+         blind spots) — fast, deterministic, no LLM required.
+      2. LLM-backed lesson generator — narrative insights from
+         the LLM that catch nuance the statistical layer misses.
+         Optional and gracefully skipped when no LLM is wired.
+
+    Both layers contribute lessons to the same ReflectionReport.
+    """
 
     def __init__(
         self,
@@ -120,10 +132,14 @@ class Reflection:
         memory: Any = None,
         self_model: Any = None,
         goal_manager: Any = None,
+        llm: Any = None,
+        use_llm: bool = True,
     ) -> None:
         self._memory = memory
         self._self_model = self_model
         self._goal_manager = goal_manager
+        self._llm = llm
+        self._use_llm = bool(use_llm)
         self._last_reflection_ts: float = 0.0
 
     # ── Public API ─────────────────────────────────────────────
@@ -159,6 +175,13 @@ class Reflection:
         lessons.extend(self._detect_consistent_extremes(per_subject))
         lessons.extend(self._detect_patterns(episodes))
         lessons.extend(self._detect_blind_spots())
+
+        # ─── LLM-backed lesson generator (optional) ───
+        if self._use_llm:
+            llm_lessons = self._generate_llm_lessons(episodes)
+            if llm_lessons:
+                lessons.extend(llm_lessons)
+                report.notes.append(f"+{len(llm_lessons)} LLM lessons")
 
         report.lessons = lessons
 
@@ -498,6 +521,128 @@ class Reflection:
                 recommended_action="gather more data",
             ))
         return lessons
+
+    # ── LLM-backed lesson generator ───────────────────────────
+
+    def _generate_llm_lessons(
+        self, episodes: list[dict[str, Any]],
+    ) -> list[Lesson]:
+        """Ask the LLM to read recent episodes and write narrative lessons.
+
+        This is a layer ON TOP of the statistical detectors — it
+        catches nuance the statistical layer misses (e.g. "the
+        last 3 failures all happened on weekends" or "the
+        successful runs all had high inventory"). The LLM gets
+        the same episode list the statistical detectors saw.
+
+        The output is a list of Lesson dataclasses with type
+        prefixed by "llm:" so callers can tell them apart.
+
+        Returns an empty list when:
+            - No LLM is wired or available
+            - The LLM returned a non-parseable response
+            - The episodes list is too small to be worth asking
+        """
+        if len(episodes) < 3:
+            return []
+
+        llm = self._get_llm()
+        if llm is None or not llm.is_available():
+            return []
+
+        try:
+            from core.system.prompt_library import render_prompt
+        except Exception:  # noqa: BLE001
+            return []
+
+        # Build a compact JSON view of episodes the LLM can read
+        compact = []
+        for ep in episodes[:30]:  # cap to keep token use sane
+            compact.append({
+                "action": ep.get("action") or ep.get("subject") or "?",
+                "category": ep.get("category", ""),
+                "score": ep.get("score"),
+                "timestamp": ep.get("timestamp"),
+            })
+        try:
+            import json
+            episodes_json = json.dumps(compact, default=str)[:4000]
+        except Exception:  # noqa: BLE001
+            return []
+
+        rendered = render_prompt(
+            "reflection.summarize_episodes",
+            episode_count=len(episodes),
+            episodes_json=episodes_json,
+        )
+        if rendered is None:
+            return []
+
+        try:
+            template = self._get_prompt_template("reflection.summarize_episodes")
+            role = template.role if template else "analyzer"
+            structured = llm.ask_structured(
+                role=role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint if template else "",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Reflection LLM call failed: %s", exc)
+            return []
+
+        if not structured.ok:
+            logger.debug(
+                "Reflection LLM returned unparseable: %s",
+                structured.error,
+            )
+            return []
+
+        raw_lessons = structured.data.get("lessons") or []
+        if not isinstance(raw_lessons, list):
+            return []
+
+        out: list[Lesson] = []
+        for raw in raw_lessons[:8]:
+            if not isinstance(raw, dict):
+                continue
+            ltype = str(raw.get("type") or "pattern").strip()
+            subject = str(raw.get("subject") or "").strip()
+            evidence = str(raw.get("evidence") or "").strip()
+            recommendation = str(raw.get("recommended_action") or "").strip()
+            try:
+                conf = float(raw.get("confidence", 0.6))
+            except (TypeError, ValueError):
+                conf = 0.6
+            if not subject and not evidence:
+                continue
+            out.append(Lesson(
+                type=f"llm:{ltype}",
+                subject=subject or "general",
+                evidence=evidence or "(no evidence text)",
+                confidence=max(0.0, min(1.0, conf)),
+                recommended_action=recommendation,
+                extra={"source": "llm"},
+            ))
+        return out
+
+    def _get_llm(self) -> Any:
+        """Lazily resolve the LLM adapter, preferring the injected one."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from core.system.llm_adapter import get_llm
+            return get_llm()
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _get_prompt_template(name: str) -> Any:
+        try:
+            from core.system.prompt_library import get_prompt
+            return get_prompt(name)
+        except Exception:  # noqa: BLE001
+            return None
 
     # ── Goal revision from lessons ─────────────────────────────
 
