@@ -188,3 +188,130 @@ class TestDispatch:
         out = capsys.readouterr().out
         assert "Usage" in out
         assert "status" in out
+
+
+# ── think + llm-status ──────────────────────────────────────
+
+
+class TestMindThink:
+    def test_empty_question(self, fresh_mind, capsys):
+        import cli
+        cli.main(["mind", "think", " "])
+        out = capsys.readouterr().out
+        assert "Empty" in out or "nothing" in out
+
+    def test_no_llm_configured(self, fresh_mind, monkeypatch, capsys):
+        # Force LLM adapter to report no providers
+        import cli
+        from core.system import llm_adapter as la
+
+        class _NoLLM:
+            def is_available(self):
+                return False
+
+        monkeypatch.setattr(la, "get_llm", lambda: _NoLLM())
+        cli.main(["mind", "think", "should I", "lower prices"])
+        out = capsys.readouterr().out
+        assert "No LLM providers" in out
+
+    def test_successful_response(self, fresh_mind, monkeypatch, capsys):
+        import cli
+        from core.system import llm_adapter as la
+
+        class _FakeResp:
+            success = True
+            error = ""
+            text = "Yes, lower them by 10% on slow movers."
+            provider = "ollama"
+            model = "mistral"
+            tokens_used = 42
+            duration_s = 0.5
+            fallback_used = False
+
+        class _FakeLLM:
+            def is_available(self):
+                return True
+
+            def ask(self, role="", prompt="", system_prompt="", **kw):
+                return _FakeResp()
+
+        monkeypatch.setattr(la, "get_llm", lambda: _FakeLLM())
+        cli.main(["mind", "think", "should I lower prices?"])
+        out = capsys.readouterr().out
+        assert "Yes, lower them" in out
+        assert "ollama/mistral" in out
+        assert "42 tokens" in out
+
+    def test_question_with_self_context(self, fresh_mind, monkeypatch, capsys):
+        # Plant some self-knowledge so the context block fires
+        for _ in range(15):
+            fresh_mind.self_model.assess("engine.x", 0.2)
+        fresh_mind.goal_manager.propose("Improve engine.x")
+
+        captured = {}
+        from core.system import llm_adapter as la
+
+        class _FakeResp:
+            success = True
+            error = ""
+            text = "ok"
+            provider = "ollama"
+            model = "mistral"
+            tokens_used = 1
+            duration_s = 0.1
+            fallback_used = False
+
+        class _FakeLLM:
+            def is_available(self):
+                return True
+
+            def ask(self, role="", prompt="", system_prompt="", **kw):
+                captured["prompt"] = prompt
+                return _FakeResp()
+
+        monkeypatch.setattr(la, "get_llm", lambda: _FakeLLM())
+        import cli
+        cli.main(["mind", "think", "what next?"])
+        # Self-context block should be in the prompt
+        assert "engine.x" in captured["prompt"]
+        assert "Improve" in captured["prompt"]
+
+    def test_no_context_flag_skips_self_block(self, fresh_mind, monkeypatch, capsys):
+        for _ in range(15):
+            fresh_mind.self_model.assess("engine.something", 0.2)
+
+        captured = {}
+        from core.system import llm_adapter as la
+
+        class _FakeResp:
+            success = True
+            error = ""
+            text = "ok"
+            provider = "ollama"
+            model = "mistral"
+            tokens_used = 1
+            duration_s = 0.1
+            fallback_used = False
+
+        class _FakeLLM:
+            def is_available(self):
+                return True
+
+            def ask(self, role="", prompt="", system_prompt="", **kw):
+                captured["prompt"] = prompt
+                return _FakeResp()
+
+        monkeypatch.setattr(la, "get_llm", lambda: _FakeLLM())
+        import cli
+        cli.main(["mind", "think", "--no-context", "abstract", "question"])
+        assert "engine.something" not in captured["prompt"]
+
+
+class TestLLMStatus:
+    def test_prints_status_block(self, fresh_mind, capsys):
+        import cli
+        cli.main(["mind", "llm-status"])
+        out = capsys.readouterr().out
+        assert "LLM PROVIDER STATUS" in out
+        assert "Role mapping" in out
+        assert "Fallback chain" in out

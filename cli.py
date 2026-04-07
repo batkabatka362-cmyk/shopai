@@ -125,6 +125,25 @@ def build_parser() -> argparse.ArgumentParser:
     mind_explain = mind_sub.add_parser("explain", help="Explain a goal: plan + imagination")
     mind_explain.add_argument("goal_id", help="Goal ID to explain")
 
+    mind_think = mind_sub.add_parser(
+        "think",
+        help="Ask the AI a free-form question with cognitive context",
+    )
+    mind_think.add_argument(
+        "question", nargs="+",
+        help="The question to think about (can be multiple words)",
+    )
+    mind_think.add_argument(
+        "--no-context", action="store_true",
+        help="Skip the self-narrative + goals context block",
+    )
+    mind_think.add_argument(
+        "--role", default="reasoner",
+        help="LLM role to use (analyzer, reasoner, creative, worker)",
+    )
+
+    mind_sub.add_parser("llm-status", help="Show LLM provider availability and stats")
+
     # ── Engine commands ──────────────────────────────────────
     sub.add_parser("engines", help="List all registered engines")
 
@@ -735,6 +754,147 @@ def _cmd_mind_explain(args) -> None:
     print()
 
 
+def _cmd_mind_think(args) -> None:
+    """Ad-hoc free-form question through the cognitive context.
+
+    Builds a `self_context` block from the SelfModel narrative +
+    top goals, renders the `mind.think` prompt template, and asks
+    the LLM via the requested role.
+    """
+    question = " ".join(args.question).strip()
+    if not question:
+        print("Empty question; nothing to think about.")
+        return
+
+    mind = _get_mind()
+
+    # Build the context block
+    context_parts: list[str] = []
+    if not args.no_context:
+        if mind.self_model is not None:
+            try:
+                narrative = mind.self_model.narrative()
+                if narrative and "no data" not in narrative.lower():
+                    context_parts.append(f"Who I am: {narrative}")
+            except Exception:  # noqa: BLE001
+                pass
+        if mind.goal_manager is not None:
+            try:
+                active = mind.goal_manager.active(limit=5)
+                if active:
+                    goal_lines = "\n".join(
+                        f"  - {g['what']} (priority {g['priority']:.2f})"
+                        for g in active[:5]
+                    )
+                    context_parts.append(f"Current goals:\n{goal_lines}")
+            except Exception:  # noqa: BLE001
+                pass
+
+    self_context = "\n\n".join(context_parts)
+    if self_context:
+        self_context = self_context + "\n\n"
+
+    # Render via the prompt library
+    try:
+        from core.system.prompt_library import render_prompt
+    except Exception:
+        print("PromptLibrary not available.")
+        return
+
+    rendered = render_prompt(
+        "mind.think",
+        self_context=self_context,
+        question=question,
+    )
+    if rendered is None:
+        print("mind.think prompt template missing.")
+        return
+
+    # Resolve the LLM
+    try:
+        from core.system.llm_adapter import get_llm
+        llm = get_llm()
+    except Exception:
+        print("LLM adapter not available.")
+        return
+
+    if not llm.is_available():
+        print(
+            "No LLM providers configured. Set SHOPAI_OLLAMA_URL or "
+            "OPENAI_API_KEY or ANTHROPIC_API_KEY to enable thinking."
+        )
+        return
+
+    print()
+    print(f"Q: {question}")
+    print()
+    print("...thinking...")
+
+    response = llm.ask(
+        role=args.role,
+        prompt=rendered.user,
+        system_prompt=rendered.system,
+    )
+
+    print()
+    if not response.success:
+        print(f"LLM error: {response.error}")
+        return
+    print(response.text.strip())
+    print()
+    print(
+        f"  ({response.provider}/{response.model}, "
+        f"{response.tokens_used} tokens, {response.duration_s:.2f}s"
+        f"{', via fallback' if response.fallback_used else ''})"
+    )
+
+
+def _cmd_mind_llm_status(args=None) -> None:
+    """Show LLM provider availability and stats."""
+    try:
+        from core.system.llm_adapter import get_llm
+        llm = get_llm()
+    except Exception as exc:
+        print(f"LLM adapter unavailable: {exc}")
+        return
+
+    info = llm.auto_configure() if not llm._checked else None
+    stats = llm.get_stats()
+
+    print()
+    print("─" * 70)
+    print("  LLM PROVIDER STATUS")
+    print("─" * 70)
+    print()
+    print(f"Configured providers ({len(stats['configured'])}):")
+    for name in stats["configured"]:
+        cfg = llm._configs.get(name)
+        if cfg:
+            print(f"  - {name:25s} {cfg.provider}/{cfg.model}")
+    print()
+    print(f"Local Ollama models: {', '.join(stats['available_local']) or '(none)'}")
+    print()
+    print("Role mapping:")
+    for role, model in sorted(stats["role_map"].items()):
+        print(f"  {role:12s} → {model}")
+    print()
+    print(f"Fallback chain: {' → '.join(stats['fallback_chain'])}")
+    print()
+    if stats["models"]:
+        print("Per-model stats:")
+        for model, s in sorted(stats["models"].items()):
+            avg_lat = s["total_time"] / s["calls"] if s["calls"] else 0
+            print(
+                f"  {model:25s} calls={s['calls']:4d} "
+                f"errors={s['errors']:3d} "
+                f"tokens={s['tokens']:6d} "
+                f"avg={avg_lat:.2f}s"
+            )
+    else:
+        print("Per-model stats: (no calls yet)")
+    print()
+
+
 # ── Sync Commands ────────────────────────────────────────────
 
 def _cmd_sync(args) -> None:
@@ -1211,6 +1371,8 @@ def main(argv: list[str] | None = None) -> None:
             "goals": _cmd_mind_goals,
             "skills": _cmd_mind_skills,
             "explain": _cmd_mind_explain,
+            "think": _cmd_mind_think,
+            "llm-status": _cmd_mind_llm_status,
         }
         handler = dispatch.get(args.mind_action)
         if handler:
