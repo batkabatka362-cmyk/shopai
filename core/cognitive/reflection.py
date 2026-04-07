@@ -96,6 +96,7 @@ class ReflectionReport:
     episodes_reviewed: int = 0
     self_model_updates: int = 0
     goal_revisions: int = 0
+    goals_created: list[str] = field(default_factory=list)
     timestamp: float = field(default_factory=time.time)
     narrative: str = ""
     notes: list[str] = field(default_factory=list)
@@ -106,6 +107,7 @@ class ReflectionReport:
             "episodes_reviewed": self.episodes_reviewed,
             "self_model_updates": self.self_model_updates,
             "goal_revisions": self.goal_revisions,
+            "goals_created": list(self.goals_created),
             "timestamp": self.timestamp,
             "narrative": self.narrative,
             "notes": list(self.notes),
@@ -200,6 +202,7 @@ class Reflection:
 
         if apply and self._goal_manager is not None:
             report.goal_revisions = self._revise_goals_from_lessons(lessons)
+            report.goals_created = self._propose_goals_from_lessons(lessons)
 
         report.narrative = self._make_narrative(lessons, report.episodes_reviewed)
         self._last_reflection_ts = report.timestamp
@@ -691,6 +694,101 @@ class Reflection:
                     )
                 revisions += 1
         return revisions
+
+    # ── Lessons → new goals ───────────────────────────────────
+
+    # Lesson types that should spawn fresh goals (vs only revising
+    # existing ones). Each maps to (goal_template, urgency, impact).
+    _LESSON_TO_GOAL: dict[str, tuple[str, float, float]] = {
+        "weakness":   ("Improve {subject}",       0.70, 0.60),
+        "regression": ("Recover {subject}",       0.85, 0.70),
+        "pattern":    ("Investigate {subject}",   0.55, 0.55),
+        "blind_spot": ("Explore {subject}",       0.45, 0.50),
+    }
+    _GOAL_PROPOSAL_MIN_CONFIDENCE = 0.55
+    _GOAL_PROPOSAL_MAX_PER_PASS = 3
+
+    def _propose_goals_from_lessons(self, lessons: list[Lesson]) -> list[str]:
+        """Spawn brand-new goals from high-confidence lessons.
+
+        Reflection's revise() path only nudges *existing* goals. This
+        complementary path is what lets reflection actually grow the
+        goal set:
+
+          - weakness/regression  → "improve/recover X"  (urgent)
+          - pattern              → "investigate X"      (medium)
+          - blind_spot           → "explore X"          (low)
+
+        Caps to ``_GOAL_PROPOSAL_MAX_PER_PASS`` per call so a single
+        noisy reflection can't flood the goal queue, and skips any
+        subject already covered by an active goal (matched via the
+        goal's ``source`` field, same convention as
+        ``GoalManager.propose_from_self_model``).
+        """
+        if self._goal_manager is None:
+            return []
+
+        try:
+            active = self._goal_manager.active() or []
+        except Exception:  # noqa: BLE001
+            active = []
+
+        # Build a fast lookup of subjects already covered by an
+        # active goal. We match on the substring after the colon in
+        # the source tag (e.g. "self_model.weakness:engine.broken"
+        # → "engine.broken") to mirror existing conventions.
+        covered: set[str] = set()
+        for g in active:
+            if not isinstance(g, dict):
+                continue
+            src = str(g.get("source", "") or "")
+            if ":" in src:
+                covered.add(src.split(":", 1)[1].strip())
+            elif src:
+                covered.add(src.strip())
+
+        # Sort lessons by confidence so the highest-signal ones win
+        # the per-pass budget.
+        candidates = sorted(
+            (l for l in lessons
+             if l.type in self._LESSON_TO_GOAL
+             and l.confidence >= self._GOAL_PROPOSAL_MIN_CONFIDENCE
+             and l.subject),
+            key=lambda l: l.confidence,
+            reverse=True,
+        )
+
+        created: list[str] = []
+        for lesson in candidates:
+            if len(created) >= self._GOAL_PROPOSAL_MAX_PER_PASS:
+                break
+            if lesson.subject in covered:
+                continue
+            template, urgency, impact = self._LESSON_TO_GOAL[lesson.type]
+            try:
+                gid = self._goal_manager.propose(
+                    template.format(subject=lesson.subject),
+                    why=lesson.evidence[:200] or f"reflection: {lesson.type}",
+                    source=f"reflection.{lesson.type}:{lesson.subject}",
+                    urgency=urgency,
+                    impact=impact,
+                    confidence=float(lesson.confidence),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Reflection goal proposal failed for %s: %s",
+                    lesson.subject, exc,
+                )
+                continue
+            created.append(gid)
+            covered.add(lesson.subject)
+
+        if created:
+            logger.info(
+                "Reflection proposed %d new goals from lessons",
+                len(created),
+            )
+        return created
 
     # ── Narrative ──────────────────────────────────────────────
 

@@ -377,6 +377,116 @@ class TestMultipleCycles:
         assert len(explore_goals) <= 1
 
 
+# ── Deliberation gate (act phase) ────────────────────────────
+
+
+def _act_with(
+    *,
+    imagined_score=1.0,
+    imagined_confidence=1.0,
+    predictions=None,
+    plan_steps=("ship the thing",),
+):
+    """Run just the act phase against a hand-built context+report."""
+    from core.cognitive.imagination import ImaginedPlan
+    from core.cognitive.mind import CycleContext, CycleReport, Mind
+
+    # Simple plan duck-type — _phase_act only needs .steps and each
+    # step's .description.
+    class _Step:
+        def __init__(self, d): self.description = d
+
+    class _Plan:
+        steps = [_Step(d) for d in plan_steps]
+
+    mind = Mind()  # no modules — act phase doesn't need them for this
+    ctx = CycleContext(cycle_number=1, started_at=time.time())
+    ctx.perception["plan"] = _Plan()
+    report = CycleReport(cycle_number=1, started_at=time.time())
+    report.imagined_plan = ImaginedPlan(
+        plan_what="x",
+        backend="heuristic",
+        expected_score=imagined_score,
+        overall_confidence=imagined_confidence,
+    )
+    if predictions is not None:
+        report.predictions = list(predictions)
+    mind._phase_act(ctx, report)
+    return report
+
+
+def _fake_prediction(agent_id, response, confidence):
+    from core.cognitive.theory_of_mind import Prediction
+    return Prediction(
+        agent_id=agent_id,
+        action_proposed="x",
+        predicted_response=response,
+        confidence=confidence,
+    )
+
+
+class TestActDeliberationGate:
+    def test_proceeds_when_signals_are_positive(self):
+        report = _act_with(imagined_score=0.8, imagined_confidence=0.8)
+        assert report.actions_taken
+        # Default no-skill path → "recommendation"
+        assert report.actions_taken[0]["kind"] == "recommendation"
+
+    def test_abstains_on_low_imagined_score(self):
+        report = _act_with(imagined_score=0.1, imagined_confidence=0.9)
+        assert len(report.actions_taken) == 1
+        a = report.actions_taken[0]
+        assert a["kind"] == "abstain"
+        assert "imagination pessimistic" in a["reason"]
+        assert a["expected_score"] == 0.1
+
+    def test_abstains_on_low_imagined_confidence(self):
+        report = _act_with(imagined_score=0.9, imagined_confidence=0.1)
+        assert report.actions_taken[0]["kind"] == "abstain"
+
+    def test_pauses_on_negative_high_confidence_prediction(self):
+        report = _act_with(
+            imagined_score=0.8, imagined_confidence=0.8,
+            predictions=[
+                _fake_prediction("vip_customer", "will refuse the offer", 0.9),
+            ],
+        )
+        a = report.actions_taken[0]
+        assert a["kind"] == "pause"
+        assert a["agent_id"] == "vip_customer"
+        assert a["prediction_confidence"] == 0.9
+
+    def test_ignores_low_confidence_negative_prediction(self):
+        report = _act_with(
+            imagined_score=0.8, imagined_confidence=0.8,
+            predictions=[
+                _fake_prediction("x", "may refuse", 0.3),
+            ],
+        )
+        # Below pause threshold → falls through to recommendation
+        assert report.actions_taken[0]["kind"] == "recommendation"
+
+    def test_ignores_positive_high_confidence_prediction(self):
+        report = _act_with(
+            imagined_score=0.8, imagined_confidence=0.8,
+            predictions=[
+                _fake_prediction("x", "delighted, will buy more", 0.95),
+            ],
+        )
+        assert report.actions_taken[0]["kind"] == "recommendation"
+
+    def test_imagination_blocks_before_predictions_checked(self):
+        # If imagination fails the gate, we should abstain even when
+        # there's also a negative prediction (single failure path).
+        report = _act_with(
+            imagined_score=0.05, imagined_confidence=0.9,
+            predictions=[
+                _fake_prediction("x", "will reject", 0.95),
+            ],
+        )
+        assert report.actions_taken[0]["kind"] == "abstain"
+
+
 class TestSingleton:
     def test_get_mind_caches(self):
         from core.cognitive import mind as mod

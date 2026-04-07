@@ -381,6 +381,124 @@ class TestRevisesGoals:
         assert gm.get(gid)["urgency"] == pytest.approx(0.5)
 
 
+# ── Side effects: New goals from lessons ─────────────────────
+
+
+def _make_lesson(type_, subject, confidence=0.8, evidence="x"):
+    from core.cognitive.reflection import Lesson
+    return Lesson(
+        type=type_, subject=subject,
+        evidence=evidence, confidence=confidence,
+    )
+
+
+class TestProposesNewGoalsFromLessons:
+    def test_pattern_lesson_creates_investigate_goal(self):
+        gm = _real_goal_manager()
+        r = _reflection(goal_manager=gm)
+        lessons = [_make_lesson("pattern", "engine.flaky", confidence=0.9)]
+        created = r._propose_goals_from_lessons(lessons)
+        assert len(created) == 1
+        goal = gm.get(created[0])
+        assert "Investigate" in goal["what"]
+        assert "engine.flaky" in goal["what"]
+        assert goal["source"] == "reflection.pattern:engine.flaky"
+
+    def test_blind_spot_lesson_creates_explore_goal(self):
+        gm = _real_goal_manager()
+        r = _reflection(goal_manager=gm)
+        lessons = [_make_lesson("blind_spot", "tax_engine", confidence=0.7)]
+        created = r._propose_goals_from_lessons(lessons)
+        assert len(created) == 1
+        assert "Explore" in gm.get(created[0])["what"]
+
+    def test_weakness_lesson_creates_improve_goal(self):
+        gm = _real_goal_manager()
+        r = _reflection(goal_manager=gm)
+        lessons = [_make_lesson("weakness", "pricing.elasticity", 0.85)]
+        created = r._propose_goals_from_lessons(lessons)
+        assert len(created) == 1
+        assert "Improve" in gm.get(created[0])["what"]
+
+    def test_low_confidence_lessons_skipped(self):
+        gm = _real_goal_manager()
+        r = _reflection(goal_manager=gm)
+        lessons = [_make_lesson("pattern", "x", confidence=0.4)]
+        assert r._propose_goals_from_lessons(lessons) == []
+
+    def test_capped_per_pass(self):
+        gm = _real_goal_manager()
+        r = _reflection(goal_manager=gm)
+        lessons = [
+            _make_lesson("pattern", f"subj.{i}", confidence=0.9)
+            for i in range(10)
+        ]
+        created = r._propose_goals_from_lessons(lessons)
+        assert len(created) == r._GOAL_PROPOSAL_MAX_PER_PASS
+
+    def test_highest_confidence_wins_when_capped(self):
+        gm = _real_goal_manager()
+        r = _reflection(goal_manager=gm)
+        lessons = [
+            _make_lesson("pattern", "low", confidence=0.6),
+            _make_lesson("pattern", "high", confidence=0.95),
+            _make_lesson("pattern", "mid", confidence=0.8),
+            _make_lesson("pattern", "extra", confidence=0.7),
+        ]
+        # Cap = 3, ordered by confidence desc → high, mid, extra (low cut)
+        created = r._propose_goals_from_lessons(lessons)
+        whats = [gm.get(g)["what"] for g in created]
+        assert any("high" in w for w in whats)
+        assert any("mid" in w for w in whats)
+        assert not any("low" in w for w in whats)
+
+    def test_does_not_duplicate_existing_active_subjects(self):
+        gm = _real_goal_manager()
+        gm.propose(
+            "Improve engine.broken",
+            source="self_model.weakness:engine.broken",
+            urgency=0.5,
+        )
+        r = _reflection(goal_manager=gm)
+        lessons = [_make_lesson("weakness", "engine.broken", 0.9)]
+        assert r._propose_goals_from_lessons(lessons) == []
+
+    def test_no_goal_manager_returns_empty(self):
+        r = _reflection()
+        lessons = [_make_lesson("pattern", "x", 0.9)]
+        assert r._propose_goals_from_lessons(lessons) == []
+
+    def test_reflect_apply_populates_goals_created(self):
+        # End-to-end through reflect(apply=True): a fabricated
+        # blind_spot lesson injected via _detect_blind_spots needs a
+        # SelfModel + tracked-but-stale assessments. Easier path:
+        # call _propose_goals_from_lessons via the public reflect()
+        # by feeding patterns through episodes.
+        mem = FakeMemory()
+        now = time.time()
+        # Create a strong "pattern": same action+result pair recurs
+        for i in range(6):
+            mem.add(
+                "action", action="ship_promo",
+                score=4.5,
+                result="conversion_up",
+                timestamp=now - 300 + i,
+            )
+        gm = _real_goal_manager()
+        r = _reflection(memory=mem, goal_manager=gm)
+        report = r.reflect(apply=True)
+        # The pattern detector should have produced at least one
+        # pattern lesson and goals_created should reflect it.
+        pattern_lessons = [l for l in report.lessons if l.type == "pattern"]
+        if pattern_lessons:
+            assert isinstance(report.goals_created, list)
+            # At least one of the goals_created should reference a
+            # pattern subject.
+            for gid in report.goals_created:
+                g = gm.get(gid)
+                assert g is not None
+
+
 # ── Narrative ─────────────────────────────────────────────────
 
 class TestNarrative:

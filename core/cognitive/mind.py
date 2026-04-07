@@ -332,6 +332,19 @@ class Mind:
 
     # ── Phase 7: ACT ──────────────────────────────────────────
 
+    # Deliberation thresholds — the Mind refuses to act when its own
+    # imagination/prediction modules are pessimistic. Tunable, but
+    # the defaults match "act only when at least one signal is
+    # weakly positive and nothing is loudly negative".
+    _ABSTAIN_SCORE_THRESHOLD = 0.30
+    _ABSTAIN_CONFIDENCE_THRESHOLD = 0.30
+    _PREDICTION_PAUSE_CONFIDENCE = 0.60
+    _NEGATIVE_REACTION_KEYWORDS = (
+        "reject", "refuse", "decline", "complain", "angry",
+        "negative", "dissatisfied", "oppose", "escalate",
+        "churn", "abandon", "block", "hostile",
+    )
+
     def _phase_act(self, ctx: CycleContext, report: CycleReport) -> None:
         """Either invoke a matching Skill or record a recommendation.
 
@@ -339,6 +352,16 @@ class Mind:
         first plan step. If found, invoke it. Otherwise emit a
         "recommended action" entry — the human (or autonomous
         controller) can use it.
+
+        Before any of that, a *deliberation gate* checks the
+        outputs of the imagination + prediction phases:
+
+          1. If the Imagination scored the plan badly (low expected
+             score *or* low confidence), we abstain — acting on a
+             plan we don't believe in is worse than waiting.
+          2. If TheoryOfMind predicted a high-confidence negative
+             reaction, we pause and surface a "review predictions"
+             recommendation rather than executing.
         """
         plan: Optional[Plan] = ctx.perception.get("plan")
         if plan is None or not plan.steps:
@@ -346,6 +369,10 @@ class Mind:
 
         first_step = plan.steps[0]
         description = getattr(first_step, "description", str(first_step))
+
+        # ── Deliberation gate ─────────────────────────────────
+        if self._deliberation_blocks_action(ctx, report, description):
+            return
 
         # Try to find a matching skill
         skill_invoked = False
@@ -377,6 +404,69 @@ class Mind:
                 "description": description,
                 "reason": "no matching validated skill",
             })
+
+    def _deliberation_blocks_action(
+        self,
+        ctx: CycleContext,
+        report: CycleReport,
+        description: str,
+    ) -> bool:
+        """Return True (and record an abstain/pause action) when the
+        Mind's imagination or prediction modules say "don't act"."""
+        # 1. Imagination pessimism → abstain.
+        imagined = report.imagined_plan
+        if imagined is not None:
+            score = float(getattr(imagined, "expected_score", 0.0) or 0.0)
+            conf = float(getattr(imagined, "overall_confidence", 0.0) or 0.0)
+            if (score < self._ABSTAIN_SCORE_THRESHOLD
+                    or conf < self._ABSTAIN_CONFIDENCE_THRESHOLD):
+                report.actions_taken.append({
+                    "kind": "abstain",
+                    "description": description,
+                    "reason": (
+                        f"imagination pessimistic "
+                        f"(score={score:.2f}, confidence={conf:.2f})"
+                    ),
+                    "expected_score": round(score, 3),
+                    "overall_confidence": round(conf, 3),
+                })
+                report.notes.append(
+                    f"act: abstained (imagined score={score:.2f},"
+                    f" conf={conf:.2f})"
+                )
+                return True
+
+        # 2. Confidently-predicted negative reaction → pause.
+        for pred in report.predictions:
+            try:
+                conf = float(getattr(pred, "confidence", 0.0) or 0.0)
+                response = (
+                    getattr(pred, "predicted_response", "") or ""
+                ).lower()
+                agent_id = getattr(pred, "agent_id", "")
+            except Exception:  # noqa: BLE001
+                continue
+            if conf < self._PREDICTION_PAUSE_CONFIDENCE:
+                continue
+            if not any(kw in response for kw in self._NEGATIVE_REACTION_KEYWORDS):
+                continue
+            report.actions_taken.append({
+                "kind": "pause",
+                "description": description,
+                "reason": (
+                    f"agent {agent_id} predicted to react negatively "
+                    f"({response[:60]!r}, conf={conf:.2f})"
+                ),
+                "agent_id": agent_id,
+                "predicted_response": response[:120],
+                "prediction_confidence": round(conf, 3),
+            })
+            report.notes.append(
+                f"act: paused on predicted reaction from {agent_id}"
+            )
+            return True
+
+        return False
 
     # ── Phase 8: LEARN ────────────────────────────────────────
 
