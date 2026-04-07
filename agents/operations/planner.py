@@ -68,7 +68,11 @@ def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any])
 
     Returns list of engines to call, in order, with their inputs.
     """
-    # Determine which engines to use
+    # Defensive: coerce caller args. Audit pass 35.
+    goal = goal if isinstance(goal, str) else ""
+    context = context if isinstance(context, dict) else {}
+    constraints = constraints if isinstance(constraints, dict) else {}
+
     goal_lower = goal.lower().replace(" ", "_")
     engines_needed = _select_engines(goal_lower, context)
 
@@ -78,7 +82,7 @@ def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any])
         engine_input = _build_engine_input(engine_name, context, constraints)
         steps.append({
             "name": engine_name,
-            "purpose": ENGINE_CAPABILITIES[engine_name]["provides"][0],
+            "purpose": _engine_purpose(engine_name),
             "input": engine_input,
             "depends_on": _get_dependencies(engine_name, steps),
         })
@@ -183,7 +187,16 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
             "error": None,
         }
 
-    return {"status": "success", "data": context, "meta": {}, "error": None}
+    # Defensive: never leak the entire caller context dict.
+    # Audit pass 35.
+    return {"status": "success", "data": {}, "meta": {}, "error": None}
+
+
+def _engine_purpose(engine_name: str) -> str:
+    """Safe lookup for an engine's primary purpose string."""
+    cap = ENGINE_CAPABILITIES.get(engine_name) or {}
+    provides = cap.get("provides") or []
+    return provides[0] if provides else "unknown"
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:

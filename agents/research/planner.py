@@ -45,7 +45,15 @@ def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any])
 
     Returns list of engines to call, in order, with their inputs.
     """
-    # Determine which engines to use
+    # Defensive: the agent contract says ``goal: str`` /
+    # ``context: dict`` / ``constraints: dict`` but a misbehaving
+    # caller (e.g. a planner upstream that returned None on
+    # error) used to crash this function with AttributeError on
+    # ``goal.lower()`` or with TypeError on ``context.get``.
+    goal = goal if isinstance(goal, str) else ""
+    context = context if isinstance(context, dict) else {}
+    constraints = constraints if isinstance(constraints, dict) else {}
+
     goal_lower = goal.lower().replace(" ", "_")
     engines_needed = _select_engines(goal_lower, context)
 
@@ -55,7 +63,12 @@ def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any])
         engine_input = _build_engine_input(engine_name, context, constraints)
         steps.append({
             "name": engine_name,
-            "purpose": ENGINE_CAPABILITIES[engine_name]["provides"][0],
+            # ``ENGINE_CAPABILITIES[engine_name]`` used to do a
+            # direct dict lookup; if a goal mapping ever pointed
+            # at an engine missing from CAPABILITIES (or with an
+            # empty ``provides`` list) this crashed with
+            # KeyError / IndexError.
+            "purpose": _engine_purpose(engine_name),
             "input": engine_input,
             "depends_on": _get_dependencies(engine_name, steps),
         })
@@ -118,7 +131,23 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
             "error": None,
         }
 
-    return {"status": "success", "data": context, "meta": {}, "error": None}
+    # Defensive fallback: an unknown engine name MUST NOT leak
+    # the entire context dict downstream. The original code
+    # returned ``{"data": context}`` which exposed every
+    # auth token / customer record / api key the caller put in
+    # the context bag.
+    return {"status": "success", "data": {}, "meta": {}, "error": None}
+
+
+def _engine_purpose(engine_name: str) -> str:
+    """Safe lookup for an engine's primary purpose string.
+
+    Returns ``"unknown"`` when the engine is missing from
+    ENGINE_CAPABILITIES or its ``provides`` list is empty.
+    """
+    cap = ENGINE_CAPABILITIES.get(engine_name) or {}
+    provides = cap.get("provides") or []
+    return provides[0] if provides else "unknown"
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:

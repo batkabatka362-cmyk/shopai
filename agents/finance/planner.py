@@ -82,7 +82,11 @@ def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any])
 
     Returns list of engines to call, in order, with their inputs.
     """
-    # Determine which engines to use
+    # Defensive: coerce caller args. Audit pass 35.
+    goal = goal if isinstance(goal, str) else ""
+    context = context if isinstance(context, dict) else {}
+    constraints = constraints if isinstance(constraints, dict) else {}
+
     goal_lower = goal.lower().replace(" ", "_")
     engines_needed = _select_engines(goal_lower, context)
 
@@ -92,7 +96,14 @@ def create_plan(goal: str, context: dict[str, Any], constraints: dict[str, Any])
         engine_input = _build_engine_input(engine_name, context, constraints)
         steps.append({
             "name": engine_name,
-            "purpose": ENGINE_CAPABILITIES.get(engine_name, {}).get("provides", ["unknown"])[0],
+            # Use ``or []`` to also survive a CAPABILITIES entry
+            # whose ``provides`` list is empty (the original
+            # ``["unknown"][0]`` only handled the missing-key
+            # case).
+            "purpose": (
+                (ENGINE_CAPABILITIES.get(engine_name) or {}).get("provides")
+                or ["unknown"]
+            )[0],
             "input": engine_input,
             "depends_on": _get_dependencies(engine_name, steps),
         })
@@ -241,7 +252,9 @@ def _build_engine_input(engine_name: str, context: dict[str, Any], constraints: 
         }
 
     # Fallback for engines like payment_optimization
-    return {"status": "success", "data": context, "meta": {}, "error": None}
+    # Defensive fallback: never leak the entire caller context.
+    # Audit pass 35.
+    return {"status": "success", "data": {}, "meta": {}, "error": None}
 
 
 def _get_dependencies(engine_name: str, existing_steps: list[dict]) -> list[str]:
