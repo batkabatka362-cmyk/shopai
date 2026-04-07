@@ -16,9 +16,22 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
 
     Returns score 0-100 with detailed breakdown.
     """
-    engine_results = results.get("engine_results", {})
-    completed = results.get("completed_steps", 0)
-    total = results.get("total_steps", 1)
+    # Defensive: caller contract says ``results: dict``
+    # but a misbehaving upstream can pass None. Audit
+    # pass 36.
+    results = results if isinstance(results, dict) else {}
+    goal = goal if isinstance(goal, str) else ""
+    engine_results = results.get("engine_results") or {}
+    if not isinstance(engine_results, dict):
+        engine_results = {}
+    # ``.get(k, default)`` only returns default when k is
+    # MISSING; present-but-None would crash the int math.
+    completed = results.get("completed_steps") or 0
+    total = results.get("total_steps") or 1
+    if not isinstance(completed, (int, float)):
+        completed = 0
+    if not isinstance(total, (int, float)) or total <= 0:
+        total = 1
 
     scores: dict[str, float] = {}
     issues: list[str] = []
@@ -78,7 +91,7 @@ def _score_financial_clarity(results: dict[str, Any]) -> float:
     # Financial engine results
     fin = results.get("financial", {})
     if fin.get("status") == "success":
-        fin_data = fin.get("data", {})
+        fin_data = fin.get("data") or {}
         if fin_data.get("pnl"):
             score += 7
         if fin_data.get("margins"):
@@ -89,7 +102,7 @@ def _score_financial_clarity(results: dict[str, Any]) -> float:
     # Profitability calculator results
     pc = results.get("profitability_calculator", {})
     if pc.get("status") == "success":
-        pc_data = pc.get("data", {})
+        pc_data = pc.get("data") or {}
         if pc_data.get("true_costs"):
             score += 4
         if pc_data.get("cost_breakdown"):
@@ -105,7 +118,7 @@ def _score_forecast_confidence(results: dict[str, Any]) -> float:
     # Forecasting engine results
     fc = results.get("forecasting", {})
     if fc.get("status") == "success":
-        fc_data = fc.get("data", {})
+        fc_data = fc.get("data") or {}
         if fc_data.get("revenue_forecast"):
             score += 8
         if fc_data.get("confidence_interval"):
@@ -116,7 +129,7 @@ def _score_forecast_confidence(results: dict[str, Any]) -> float:
     # KPI tracking results
     kpi = results.get("kpi_tracking", {})
     if kpi.get("status") == "success":
-        kpi_data = kpi.get("data", {})
+        kpi_data = kpi.get("data") or {}
         if kpi_data.get("kpi_trends"):
             score += 5
         if kpi_data.get("trend_direction"):
@@ -132,7 +145,7 @@ def _score_pricing_quality(results: dict[str, Any]) -> float:
     # Pricing engine results
     pr = results.get("pricing", {})
     if pr.get("status") == "success":
-        pr_data = pr.get("data", {})
+        pr_data = pr.get("data") or {}
         if pr_data.get("price_recommendations"):
             score += 6
         if pr_data.get("competitor_analysis"):
@@ -141,21 +154,21 @@ def _score_pricing_quality(results: dict[str, Any]) -> float:
     # Dynamic pricing results
     dp = results.get("dynamic_pricing", {})
     if dp.get("status") == "success":
-        dp_data = dp.get("data", {})
+        dp_data = dp.get("data") or {}
         if dp_data.get("price_adjustments"):
             score += 5
 
     # Price elasticity results
     pe = results.get("price_elasticity", {})
     if pe.get("status") == "success":
-        pe_data = pe.get("data", {})
+        pe_data = pe.get("data") or {}
         if pe_data.get("elasticity_curves"):
             score += 5
 
     # Discount strategy results
     ds = results.get("discount_strategy", {})
     if ds.get("status") == "success":
-        ds_data = ds.get("data", {})
+        ds_data = ds.get("data") or {}
         if ds_data.get("discount_plan"):
             score += 5
 
@@ -172,7 +185,7 @@ def _score_actionability(results: dict[str, Any], completed: int, total: int) ->
     # Financial engine provides clear health grade?
     fin = results.get("financial", {})
     if fin.get("status") == "success":
-        fin_data = fin.get("data", {})
+        fin_data = fin.get("data") or {}
         if fin_data.get("health_grade"):
             score += 5
         if fin_data.get("recommendations"):
@@ -181,7 +194,7 @@ def _score_actionability(results: dict[str, Any], completed: int, total: int) ->
     # Profit optimization provides clear plan?
     po = results.get("profit_optimization", {})
     if po.get("status") == "success":
-        po_data = po.get("data", {})
+        po_data = po.get("data") or {}
         if po_data.get("profit_plan"):
             score += 5
         if po_data.get("estimated_impact"):
@@ -195,7 +208,7 @@ def _overall_recommendation(score: int, results: dict[str, Any]) -> str:
     fin = results.get("financial", {})
     health_grade = ""
     if fin.get("status") == "success":
-        health_grade = fin.get("data", {}).get("health_grade", "")
+        health_grade = (fin.get("data") or {}).get("health_grade", "")
 
     if score >= 70:
         if health_grade in ("A", "B"):

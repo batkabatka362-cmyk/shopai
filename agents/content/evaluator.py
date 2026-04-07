@@ -16,9 +16,22 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
 
     Returns score 0-100 with detailed breakdown.
     """
-    engine_results = results.get("engine_results", {})
-    completed = results.get("completed_steps", 0)
-    total = results.get("total_steps", 1)
+    # Defensive: caller contract says ``results: dict``
+    # but a misbehaving upstream can pass None. Audit
+    # pass 36.
+    results = results if isinstance(results, dict) else {}
+    goal = goal if isinstance(goal, str) else ""
+    engine_results = results.get("engine_results") or {}
+    if not isinstance(engine_results, dict):
+        engine_results = {}
+    # ``.get(k, default)`` only returns default when k is
+    # MISSING; present-but-None would crash the int math.
+    completed = results.get("completed_steps") or 0
+    total = results.get("total_steps") or 1
+    if not isinstance(completed, (int, float)):
+        completed = 0
+    if not isinstance(total, (int, float)) or total <= 0:
+        total = 1
 
     scores: dict[str, float] = {}
     issues: list[str] = []
@@ -78,7 +91,7 @@ def _score_copy_quality(results: dict[str, Any]) -> float:
     # Product descriptions
     pd = results.get("product_description", {})
     if pd.get("status") == "success":
-        pd_data = pd.get("data", {})
+        pd_data = pd.get("data") or {}
         if pd_data.get("descriptions"):
             descs = pd_data["descriptions"]
             score += 8
@@ -90,7 +103,7 @@ def _score_copy_quality(results: dict[str, Any]) -> float:
     # Blog / ad copy
     cg = results.get("content_generation", {})
     if cg.get("status") == "success":
-        cg_data = cg.get("data", {})
+        cg_data = cg.get("data") or {}
         if cg_data.get("blog_posts"):
             score += 5
         if cg_data.get("ad_copy"):
@@ -105,7 +118,7 @@ def _score_seo_readiness(results: dict[str, Any]) -> float:
 
     seo = results.get("search_optimization", {})
     if seo.get("status") == "success":
-        seo_data = seo.get("data", {})
+        seo_data = seo.get("data") or {}
         if seo_data.get("seo_analysis"):
             score += 10
             analysis = seo_data["seo_analysis"]
@@ -132,7 +145,7 @@ def _score_visual_guidance(results: dict[str, Any]) -> float:
     # Image optimization
     img = results.get("image_optimization", {})
     if img.get("status") == "success":
-        img_data = img.get("data", {})
+        img_data = img.get("data") or {}
         if img_data.get("image_specs"):
             score += 8
         if img_data.get("alt_text"):
@@ -141,7 +154,7 @@ def _score_visual_guidance(results: dict[str, Any]) -> float:
     # Video marketing
     vid = results.get("video_marketing", {})
     if vid.get("status") == "success":
-        vid_data = vid.get("data", {})
+        vid_data = vid.get("data") or {}
         if vid_data.get("video_scripts"):
             score += 7
         if vid_data.get("storyboards"):
@@ -161,8 +174,13 @@ def _score_completeness(results: dict[str, Any], completed: int, total: int) -> 
     # Bonus for data richness in completed engines
     bonus = 0
     for engine_name, result in results.items():
+        # Defensive: skip non-dict engine results. Audit pass 36.
+        if not isinstance(result, dict):
+            continue
         if result.get("status") == "success":
-            data = result.get("data", {})
+            data = result.get("data") or {}
+            if not isinstance(data, dict):
+                continue
             non_empty = sum(1 for v in data.values() if v)
             if non_empty >= 2:
                 bonus += 2

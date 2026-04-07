@@ -16,9 +16,22 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
 
     Returns score 0-100 with detailed breakdown.
     """
-    engine_results = results.get("engine_results", {})
-    completed = results.get("completed_steps", 0)
-    total = results.get("total_steps", 1)
+    # Defensive: caller contract says ``results: dict``
+    # but a misbehaving upstream can pass None. Audit
+    # pass 36.
+    results = results if isinstance(results, dict) else {}
+    goal = goal if isinstance(goal, str) else ""
+    engine_results = results.get("engine_results") or {}
+    if not isinstance(engine_results, dict):
+        engine_results = {}
+    # ``.get(k, default)`` only returns default when k is
+    # MISSING; present-but-None would crash the int math.
+    completed = results.get("completed_steps") or 0
+    total = results.get("total_steps") or 1
+    if not isinstance(completed, (int, float)):
+        completed = 0
+    if not isinstance(total, (int, float)) or total <= 0:
+        total = 1
 
     scores: dict[str, float] = {}
     issues: list[str] = []
@@ -77,7 +90,7 @@ def _score_segmentation_quality(results: dict[str, Any]) -> float:
 
     seg = results.get("customer_segmentation", {})
     if seg.get("status") == "success":
-        seg_data = seg.get("data", {})
+        seg_data = seg.get("data") or {}
         if seg_data.get("segments"):
             segments = seg_data["segments"]
             score += 8
@@ -97,7 +110,7 @@ def _score_churn_accuracy(results: dict[str, Any]) -> float:
 
     churn = results.get("churn_prediction", {})
     if churn.get("status") == "success":
-        churn_data = churn.get("data", {})
+        churn_data = churn.get("data") or {}
         if churn_data.get("churn_risks"):
             score += 10
             risks = churn_data["churn_risks"]
@@ -120,7 +133,7 @@ def _score_sentiment_clarity(results: dict[str, Any]) -> float:
 
     sent = results.get("sentiment_analysis", {})
     if sent.get("status") == "success":
-        sent_data = sent.get("data", {})
+        sent_data = sent.get("data") or {}
         if sent_data.get("sentiment_scores"):
             score += 12
             sentiment = sent_data["sentiment_scores"]
@@ -142,21 +155,21 @@ def _score_action_specificity(results: dict[str, Any]) -> float:
     # Review management actions
     rm = results.get("review_management", {})
     if rm.get("status") == "success":
-        rm_data = rm.get("data", {})
+        rm_data = rm.get("data") or {}
         if rm_data.get("review_actions"):
             score += 10
 
     # Customer support intelligence
     cs = results.get("customer_support", {})
     if cs.get("status") == "success":
-        cs_data = cs.get("data", {})
+        cs_data = cs.get("data") or {}
         if cs_data.get("support_intelligence"):
             score += 8
 
     # Audience targeting
     at = results.get("audience_targeting", {})
     if at.get("status") == "success":
-        at_data = at.get("data", {})
+        at_data = at.get("data") or {}
         if at_data.get("audiences"):
             score += 7
 
@@ -168,7 +181,7 @@ def _overall_recommendation(score: int, results: dict[str, Any]) -> str:
     churn = results.get("churn_prediction", {})
     has_high_churn = False
     if churn.get("status") == "success":
-        risks = churn.get("data", {}).get("churn_risks", [])
+        risks = (churn.get("data") or {}).get("churn_risks", [])
         if isinstance(risks, list):
             has_high_churn = any(
                 isinstance(r, dict) and r.get("risk_level") == "high"

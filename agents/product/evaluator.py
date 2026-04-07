@@ -16,9 +16,22 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
 
     Returns score 0-100 with detailed breakdown.
     """
-    engine_results = results.get("engine_results", {})
-    completed = results.get("completed_steps", 0)
-    total = results.get("total_steps", 1)
+    # Defensive: caller contract says ``results: dict``
+    # but a misbehaving upstream can pass None. Audit
+    # pass 36.
+    results = results if isinstance(results, dict) else {}
+    goal = goal if isinstance(goal, str) else ""
+    engine_results = results.get("engine_results") or {}
+    if not isinstance(engine_results, dict):
+        engine_results = {}
+    # ``.get(k, default)`` only returns default when k is
+    # MISSING; present-but-None would crash the int math.
+    completed = results.get("completed_steps") or 0
+    total = results.get("total_steps") or 1
+    if not isinstance(completed, (int, float)):
+        completed = 0
+    if not isinstance(total, (int, float)) or total <= 0:
+        total = 1
 
     scores: dict[str, float] = {}
     issues: list[str] = []
@@ -78,7 +91,7 @@ def _score_product_quality(results: dict[str, Any]) -> float:
     # Product filter results
     pf = results.get("product_filter", {})
     if pf.get("status") == "success":
-        pf_data = pf.get("data", {})
+        pf_data = pf.get("data") or {}
         if pf_data.get("filtered_products"):
             score += 5
         if pf_data.get("filter_stats"):
@@ -87,7 +100,7 @@ def _score_product_quality(results: dict[str, Any]) -> float:
     # Product scoring results
     ps = results.get("product_scoring", {})
     if ps.get("status") == "success":
-        ps_data = ps.get("data", {})
+        ps_data = ps.get("data") or {}
         if ps_data.get("scored_products"):
             score += 5
         if ps_data.get("score_distribution"):
@@ -96,7 +109,7 @@ def _score_product_quality(results: dict[str, Any]) -> float:
     # Product validation results
     pv = results.get("product_validation", {})
     if pv.get("status") == "success":
-        pv_data = pv.get("data", {})
+        pv_data = pv.get("data") or {}
         if pv_data.get("validated_products"):
             score += 5
         if pv_data.get("validation_summary"):
@@ -112,7 +125,7 @@ def _score_pricing_confidence(results: dict[str, Any]) -> float:
     # Pricing engine results
     pr = results.get("pricing", {})
     if pr.get("status") == "success":
-        pr_data = pr.get("data", {})
+        pr_data = pr.get("data") or {}
         if pr_data.get("price_recommendations"):
             score += 8
         if pr_data.get("competitor_analysis"):
@@ -123,7 +136,7 @@ def _score_pricing_confidence(results: dict[str, Any]) -> float:
     # Profitability calculator results
     pc = results.get("profitability_calculator", {})
     if pc.get("status") == "success":
-        pc_data = pc.get("data", {})
+        pc_data = pc.get("data") or {}
         if pc_data.get("profitability"):
             score += 5
         if pc_data.get("break_even_analysis"):
@@ -139,7 +152,7 @@ def _score_risk_assessment(results: dict[str, Any]) -> float:
     # Product validation risks
     pv = results.get("product_validation", {})
     if pv.get("status") == "success":
-        pv_data = pv.get("data", {})
+        pv_data = pv.get("data") or {}
         if pv_data.get("validated_products"):
             score += 7
         if pv_data.get("risk_flags"):
@@ -150,7 +163,7 @@ def _score_risk_assessment(results: dict[str, Any]) -> float:
     # Product risk engine
     pr = results.get("product_risk", {})
     if pr.get("status") == "success":
-        pr_data = pr.get("data", {})
+        pr_data = pr.get("data") or {}
         if pr_data.get("risk_scores"):
             score += 4
         if pr_data.get("risk_categories"):

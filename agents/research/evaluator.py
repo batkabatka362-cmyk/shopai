@@ -16,9 +16,22 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
 
     Returns score 0-100 with detailed breakdown.
     """
-    engine_results = results.get("engine_results", {})
-    completed = results.get("completed_steps", 0)
-    total = results.get("total_steps", 1)
+    # Defensive: caller contract says ``results: dict``
+    # but a misbehaving upstream can pass None. Audit
+    # pass 36.
+    results = results if isinstance(results, dict) else {}
+    goal = goal if isinstance(goal, str) else ""
+    engine_results = results.get("engine_results") or {}
+    if not isinstance(engine_results, dict):
+        engine_results = {}
+    # ``.get(k, default)`` only returns default when k is
+    # MISSING; present-but-None would crash the int math.
+    completed = results.get("completed_steps") or 0
+    total = results.get("total_steps") or 1
+    if not isinstance(completed, (int, float)):
+        completed = 0
+    if not isinstance(total, (int, float)) or total <= 0:
+        total = 1
 
     scores: dict[str, float] = {}
     issues: list[str] = []
@@ -78,22 +91,24 @@ def _score_data_richness(results: dict[str, Any]) -> float:
     # Market Research richness
     mr = results.get("market_research", {})
     if mr.get("status") == "success":
-        mr_data = mr.get("data", {})
+        mr_data = mr.get("data") or {}
         if mr_data.get("market_size"):
             score += 5
         if mr_data.get("trends"):
             score += 3
         if mr_data.get("seasonality"):
             score += 3
-        if mr_data.get("gaps") and mr_data["gaps"].get("data", {}).get("total_gaps_found", 0) > 0:
+        gaps = mr_data.get("gaps")
+        if isinstance(gaps, dict) and (gaps.get("data") or {}).get("total_gaps_found", 0) > 0:
             score += 5
-        if mr_data.get("saturation") and mr_data["saturation"].get("data"):
+        saturation = mr_data.get("saturation")
+        if isinstance(saturation, dict) and saturation.get("data"):
             score += 4
 
     # Trend Discovery richness
     td = results.get("trend_discovery", {})
     if td.get("status") == "success":
-        td_data = td.get("data", {})
+        td_data = td.get("data") or {}
         if td_data.get("search_trends"):
             score += 3
         if td_data.get("social_trends"):
@@ -115,7 +130,7 @@ def _score_signal_agreement(results: dict[str, Any]) -> float:
     # Market Research verdict
     mr = results.get("market_research", {})
     if mr.get("status") == "success":
-        verdict = mr.get("data", {}).get("verdict", {})
+        verdict = (mr.get("data") or {}).get("verdict", {})
         if isinstance(verdict, dict):
             mr_score = verdict.get("score", 50)
             signals.append(mr_score)
@@ -123,11 +138,11 @@ def _score_signal_agreement(results: dict[str, Any]) -> float:
     # Trend Discovery verdict
     td = results.get("trend_discovery", {})
     if td.get("status") == "success":
-        td_data = td.get("data", {})
+        td_data = td.get("data") or {}
         if td_data.get("trend_scores"):
             score_data = td_data["trend_scores"]
             if isinstance(score_data, dict):
-                signals.append(score_data.get("data", {}).get("composite_score", 50))
+                signals.append((score_data.get("data") or {}).get("composite_score", 50))
 
     if len(signals) < 2:
         return 10  # Can't assess agreement with 1 signal
@@ -148,19 +163,21 @@ def _score_actionability(results: dict[str, Any]) -> float:
     # Market Research provides clear verdict?
     mr = results.get("market_research", {})
     if mr.get("status") == "success":
-        verdict = mr.get("data", {}).get("verdict", {})
+        verdict = (mr.get("data") or {}).get("verdict", {})
         if isinstance(verdict, dict) and verdict.get("verdict"):
             score += 10
-        if mr.get("data", {}).get("summary"):
+        if (mr.get("data") or {}).get("summary"):
             score += 5
 
     # Trend Discovery provides clear opportunities?
     td = results.get("trend_discovery", {})
     if td.get("status") == "success":
-        td_data = td.get("data", {})
-        if td_data.get("search_trends", {}).get("data", {}).get("top_opportunities"):
+        td_data = td.get("data") or {}
+        search_trends = td_data.get("search_trends")
+        if isinstance(search_trends, dict) and (search_trends.get("data") or {}).get("top_opportunities"):
             score += 7
-        if td_data.get("trend_scores", {}).get("data", {}).get("action"):
+        trend_scores = td_data.get("trend_scores")
+        if isinstance(trend_scores, dict) and (trend_scores.get("data") or {}).get("action"):
             score += 3
 
     return min(25, score)
@@ -171,7 +188,7 @@ def _overall_recommendation(score: int, results: dict[str, Any]) -> str:
     mr = results.get("market_research", {})
     mr_verdict = ""
     if mr.get("status") == "success":
-        verdict = mr.get("data", {}).get("verdict", {})
+        verdict = (mr.get("data") or {}).get("verdict", {})
         if isinstance(verdict, dict):
             mr_verdict = verdict.get("verdict", "")
 

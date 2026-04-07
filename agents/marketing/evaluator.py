@@ -16,9 +16,22 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
 
     Returns score 0-100 with detailed breakdown.
     """
-    engine_results = results.get("engine_results", {})
-    completed = results.get("completed_steps", 0)
-    total = results.get("total_steps", 1)
+    # Defensive: caller contract says ``results: dict``
+    # but a misbehaving upstream can pass None. Audit
+    # pass 36.
+    results = results if isinstance(results, dict) else {}
+    goal = goal if isinstance(goal, str) else ""
+    engine_results = results.get("engine_results") or {}
+    if not isinstance(engine_results, dict):
+        engine_results = {}
+    # ``.get(k, default)`` only returns default when k is
+    # MISSING; present-but-None would crash the int math.
+    completed = results.get("completed_steps") or 0
+    total = results.get("total_steps") or 1
+    if not isinstance(completed, (int, float)):
+        completed = 0
+    if not isinstance(total, (int, float)) or total <= 0:
+        total = 1
 
     scores: dict[str, float] = {}
     issues: list[str] = []
@@ -78,7 +91,7 @@ def _score_content_quality(results: dict[str, Any]) -> float:
     # Content generation results
     cg = results.get("content_generation", {})
     if cg.get("status") == "success":
-        cg_data = cg.get("data", {})
+        cg_data = cg.get("data") or {}
         if cg_data.get("marketing_copy"):
             score += 7
         if cg_data.get("ad_copy"):
@@ -89,14 +102,14 @@ def _score_content_quality(results: dict[str, Any]) -> float:
     # Video marketing content
     vm = results.get("video_marketing", {})
     if vm.get("status") == "success":
-        vm_data = vm.get("data", {})
+        vm_data = vm.get("data") or {}
         if vm_data.get("video_scripts"):
             score += 5
 
     # Landing page content
     lp = results.get("landing_page", {})
     if lp.get("status") == "success":
-        lp_data = lp.get("data", {})
+        lp_data = lp.get("data") or {}
         if lp_data.get("landing_pages"):
             score += 4
 
@@ -113,14 +126,14 @@ def _score_channel_coverage(results: dict[str, Any], completed: int, total: int)
     # Email marketing
     em = results.get("email_marketing", {})
     if em.get("status") == "success":
-        em_data = em.get("data", {})
+        em_data = em.get("data") or {}
         if em_data.get("email_campaigns"):
             score += 5
 
     # Social media
     sm = results.get("social_media", {})
     if sm.get("status") == "success":
-        sm_data = sm.get("data", {})
+        sm_data = sm.get("data") or {}
         if sm_data.get("social_posts"):
             score += 5
 
@@ -144,7 +157,7 @@ def _score_audience_alignment(results: dict[str, Any]) -> float:
     # Email marketing audience segmentation
     em = results.get("email_marketing", {})
     if em.get("status") == "success":
-        em_data = em.get("data", {})
+        em_data = em.get("data") or {}
         if em_data.get("email_campaigns"):
             score += 5
         if em_data.get("audience_segments"):
@@ -153,7 +166,7 @@ def _score_audience_alignment(results: dict[str, Any]) -> float:
     # Influencer audience match
     inf = results.get("influencer", {})
     if inf.get("status") == "success":
-        inf_data = inf.get("data", {})
+        inf_data = inf.get("data") or {}
         if inf_data.get("influencer_plan"):
             score += 5
         if inf_data.get("audience_match_score"):
@@ -162,7 +175,7 @@ def _score_audience_alignment(results: dict[str, Any]) -> float:
     # Content generation with audience context
     cg = results.get("content_generation", {})
     if cg.get("status") == "success":
-        cg_data = cg.get("data", {})
+        cg_data = cg.get("data") or {}
         if cg_data.get("marketing_copy"):
             score += 3
         if cg_data.get("audience_personas"):
@@ -178,7 +191,7 @@ def _score_test_readiness(results: dict[str, Any]) -> float:
     # A/B testing plan
     ab = results.get("ab_testing", {})
     if ab.get("status") == "success":
-        ab_data = ab.get("data", {})
+        ab_data = ab.get("data") or {}
         if ab_data.get("test_plans"):
             score += 10
         if ab_data.get("success_metrics"):
@@ -189,14 +202,18 @@ def _score_test_readiness(results: dict[str, Any]) -> float:
     # Landing page variants for testing
     lp = results.get("landing_page", {})
     if lp.get("status") == "success":
-        lp_data = lp.get("data", {})
+        lp_data = lp.get("data") or {}
         if lp_data.get("landing_pages"):
             score += 4
 
     # Any engine with metrics defined
     for engine_name, engine_result in results.items():
+        # Defensive: skip non-dict engine results instead of
+        # crashing on ``.get("status")``. Audit pass 36.
+        if not isinstance(engine_result, dict):
+            continue
         if engine_result.get("status") == "success":
-            if engine_result.get("data", {}).get("kpis"):
+            if (engine_result.get("data") or {}).get("kpis"):
                 score += 3
                 break
 

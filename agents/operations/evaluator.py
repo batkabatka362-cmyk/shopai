@@ -16,9 +16,22 @@ def evaluate_results(results: dict[str, Any], goal: str) -> dict[str, Any]:
 
     Returns score 0-100 with detailed breakdown.
     """
-    engine_results = results.get("engine_results", {})
-    completed = results.get("completed_steps", 0)
-    total = results.get("total_steps", 1)
+    # Defensive: caller contract says ``results: dict``
+    # but a misbehaving upstream can pass None. Audit
+    # pass 36.
+    results = results if isinstance(results, dict) else {}
+    goal = goal if isinstance(goal, str) else ""
+    engine_results = results.get("engine_results") or {}
+    if not isinstance(engine_results, dict):
+        engine_results = {}
+    # ``.get(k, default)`` only returns default when k is
+    # MISSING; present-but-None would crash the int math.
+    completed = results.get("completed_steps") or 0
+    total = results.get("total_steps") or 1
+    if not isinstance(completed, (int, float)):
+        completed = 0
+    if not isinstance(total, (int, float)) or total <= 0:
+        total = 1
 
     scores: dict[str, float] = {}
     issues: list[str] = []
@@ -77,7 +90,7 @@ def _score_stock_health(results: dict[str, Any]) -> float:
 
     inv = results.get("inventory", {})
     if inv.get("status") == "success":
-        inv_data = inv.get("data", {})
+        inv_data = inv.get("data") or {}
         if inv_data.get("inventory_health"):
             score += 8
         if inv_data.get("reorder_plan"):
@@ -100,7 +113,7 @@ def _score_supplier_reliability(results: dict[str, Any]) -> float:
 
     sup = results.get("supplier", {})
     if sup.get("status") == "success":
-        sup_data = sup.get("data", {})
+        sup_data = sup.get("data") or {}
         if sup_data.get("supplier_scores"):
             score += 12
             supplier_scores = sup_data["supplier_scores"]
@@ -109,7 +122,7 @@ def _score_supplier_reliability(results: dict[str, Any]) -> float:
 
     sd = results.get("supplier_discovery", {})
     if sd.get("status") == "success":
-        sd_data = sd.get("data", {})
+        sd_data = sd.get("data") or {}
         if sd_data.get("new_suppliers"):
             score += 8
 
@@ -122,7 +135,7 @@ def _score_shipping_efficiency(results: dict[str, Any]) -> float:
 
     ship = results.get("shipping_optimization", {})
     if ship.get("status") == "success":
-        ship_data = ship.get("data", {})
+        ship_data = ship.get("data") or {}
         if ship_data.get("shipping_plan"):
             score += 15
             plan = ship_data["shipping_plan"]
@@ -140,7 +153,7 @@ def _score_forecast_accuracy(results: dict[str, Any]) -> float:
 
     sp = results.get("stock_prediction", {})
     if sp.get("status") == "success":
-        sp_data = sp.get("data", {})
+        sp_data = sp.get("data") or {}
         if sp_data.get("stock_forecast"):
             score += 12
             forecast = sp_data["stock_forecast"]
@@ -160,7 +173,7 @@ def _overall_recommendation(score: int, results: dict[str, Any]) -> str:
     inv = results.get("inventory", {})
     has_stockout_risks = False
     if inv.get("status") == "success":
-        risks = inv.get("data", {}).get("stockout_risks", [])
+        risks = (inv.get("data") or {}).get("stockout_risks", [])
         has_stockout_risks = isinstance(risks, list) and len(risks) > 0
 
     if score >= 70:
