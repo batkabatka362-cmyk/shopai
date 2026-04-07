@@ -388,6 +388,47 @@ BUILT_IN_PROMPTS: list[PromptTemplate] = [
     ),
 
     PromptTemplate(
+        name="strategy.refine",
+        version=1,
+        purpose="Refine an auto_pilot strategy choice with LLM judgement",
+        role="reasoner",
+        system=(
+            "You are a senior e-commerce strategist reviewing an "
+            "automated decision. The auto_pilot system has chosen a "
+            "goal and recommended weights. Your job is to either "
+            "endorse it (small confidence boost), suggest a better "
+            "goal, or propose specific weight tweaks. You can weigh "
+            "trade-offs the heuristic can't (e.g. revenue declining "
+            "BUT margin healthy means tighten ad spend, don't switch "
+            "goals).\n\n"
+            "Output ONLY a JSON object:\n"
+            '{"recommended_goal": "maximize_profit|grow_customers|...", '
+            '"weight_changes": {"factor": delta_in_-1_to_1}, '
+            '"rationale": "...", '
+            '"confidence": 0.0-1.0, '
+            '"risks": ["..."]}\n'
+            "Be honest if you're uncertain. Tiny weight changes "
+            "(<0.1) are usually fine; large swings need strong "
+            "rationale."
+        ),
+        template=(
+            "Current goal: {current_goal}\n"
+            "\n"
+            "Heuristic auto_pilot result:\n"
+            "{heuristic_summary}\n"
+            "\n"
+            "Performance data:\n"
+            "{performance_summary}\n"
+            "\n"
+            "Refine or endorse. Return JSON only."
+        ),
+        placeholders=[
+            "current_goal", "heuristic_summary", "performance_summary",
+        ],
+        schema_hint='{"recommended_goal": str, "weight_changes": {str: float}, "rationale": str, "confidence": float, "risks": [str]}',
+    ),
+
+    PromptTemplate(
         name="customer.personalization_plan",
         version=1,
         purpose="Convert lifecycle analysis into a per-segment plan",

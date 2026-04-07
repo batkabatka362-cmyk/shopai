@@ -53,8 +53,9 @@ _DEFAULT_WEIGHTS = {
 class StrategyOptimizer:
     """Auto-adjusts decision strategy weights from outcome data."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, llm: Any = None) -> None:
         self._adjustments: dict[str, dict[str, float]] = {}
+        self._llm = llm
         self._load()
 
     def get_adjusted_weights(self, goal: str) -> dict[str, float]:
@@ -204,3 +205,116 @@ class StrategyOptimizer:
             os.replace(tmp, _STRATEGY_PATH)
         except Exception as exc:
             logger.warning("Strategy save failed: %s", exc)
+
+    # ── LLM-backed strategy refinement ───────────────────────
+
+    def refine_with_llm(
+        self,
+        current_goal: str,
+        performance_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Ask the LLM to interpret the heuristic auto_pilot output
+        and recommend refinements.
+
+        Returns:
+            {
+                "heuristic": <auto_pilot output>,
+                "llm": {recommended_goal, weight_changes,
+                        rationale, confidence, risks} or {"error": "..."},
+                "source": "llm" | "heuristic_only",
+            }
+
+        The heuristic auto_pilot already detects coarse signals
+        (declining revenue → switch to grow_customers). The LLM
+        layer adds judgement: it can weigh trade-offs the
+        heuristic can't, like "revenue is declining BUT margin is
+        still healthy, so don't panic-switch goals — tighten ad
+        spend instead".
+        """
+        heuristic = self.auto_pilot(current_goal, performance_data=performance_data)
+        result: dict[str, Any] = {
+            "heuristic": heuristic,
+            "llm": None,
+            "source": "heuristic_only",
+        }
+
+        llm = self._get_llm()
+        if llm is None:
+            return result
+        try:
+            if not llm.is_available():
+                return result
+        except Exception:  # noqa: BLE001
+            return result
+
+        try:
+            from core.system.prompt_library import get_prompt
+        except Exception:  # noqa: BLE001
+            return result
+        template = get_prompt("strategy.refine")
+        if template is None:
+            return result
+
+        try:
+            import json as _json
+            heuristic_json = _json.dumps(heuristic, default=str)[:2000]
+            performance_json = _json.dumps(performance_data or {}, default=str)[:1000]
+        except Exception:  # noqa: BLE001
+            return result
+
+        rendered = template.render(
+            current_goal=current_goal,
+            heuristic_summary=heuristic_json,
+            performance_summary=performance_json,
+        )
+
+        try:
+            structured = llm.ask_structured(
+                role=template.role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["llm"] = {"error": str(exc)[:200]}
+            return result
+
+        if not getattr(structured, "ok", False):
+            result["llm"] = {"error": structured.error or "unparseable"}
+            return result
+
+        data = structured.data or {}
+        try:
+            weight_changes = data.get("weight_changes") or {}
+            if not isinstance(weight_changes, dict):
+                weight_changes = {}
+            normalized_changes: dict[str, float] = {}
+            for k, v in list(weight_changes.items())[:8]:
+                try:
+                    normalized_changes[str(k)] = max(-1.0, min(1.0, float(v)))
+                except (TypeError, ValueError):
+                    continue
+            risks = data.get("risks") or []
+            if not isinstance(risks, list):
+                risks = []
+            result["llm"] = {
+                "recommended_goal": str(data.get("recommended_goal", current_goal)),
+                "weight_changes": normalized_changes,
+                "rationale": str(data.get("rationale", ""))[:500],
+                "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
+                "risks": [str(r) for r in risks[:5]],
+            }
+            result["source"] = "llm"
+        except (TypeError, ValueError) as exc:
+            result["llm"] = {"error": f"normalization failed: {exc}"}
+        return result
+
+    def _get_llm(self) -> Any:
+        """Lazily resolve the LLM adapter."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from core.system.llm_adapter import get_llm
+            return get_llm()
+        except Exception:  # noqa: BLE001
+            return None
