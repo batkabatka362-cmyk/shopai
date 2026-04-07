@@ -92,7 +92,17 @@ class RootCauseAnalyzer:
         if self._memory is None:
             return {"status": "no_memory"}
 
-        failures = self._memory.get_failures(decision_type=decision_type)
+        try:
+            failures = self._memory.get_failures(decision_type=decision_type) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "RootCauseAnalyzer: memory.get_failures failed (%s)", exc,
+            )
+            return {
+                "status": "memory_error",
+                "decision_type": decision_type,
+                "error": str(exc)[:120],
+            }
         if not failures:
             return {"status": "no_failures", "decision_type": decision_type}
 
@@ -134,10 +144,23 @@ class RootCauseAnalyzer:
         """Get successful episodes of the same type for comparison."""
         if self._memory is None:
             return []
-        all_episodes = self._memory.recall_similar({}, limit=50)
+        try:
+            all_episodes = self._memory.recall_similar({}, limit=50) or []
+        except Exception as exc:  # noqa: BLE001
+            # Memory backends can raise (DB locked, schema drift,
+            # missing method on a stub). Don't let that crash the
+            # whole root-cause analysis — return an empty success
+            # set so the rest of the analyzer falls back gracefully.
+            logger.warning(
+                "RootCauseAnalyzer: memory.recall_similar failed (%s); "
+                "no comparison successes available", exc,
+            )
+            return []
         return [
             ep for ep in all_episodes
-            if ep.get("success") and ep.get("decision_type") == decision_type
+            if isinstance(ep, dict)
+            and ep.get("success")
+            and ep.get("decision_type") == decision_type
         ]
 
     def _factor_attribution(
@@ -186,16 +209,30 @@ class RootCauseAnalyzer:
             if success_avg is None:
                 continue
 
+            # Compute BOTH absolute and relative diff. The previous
+            # `if abs(diff) > 0.5` threshold was unit-blind: a half-
+            # grade health swing (1-5 scale) would correctly fire,
+            # but a 6x churn_pct difference (0.05 vs 0.30) wouldn't
+            # because abs(0.25) < 0.5. Now we accept either an
+            # absolute diff > 0.5 (good for grade-style 1-5 scales)
+            # OR a relative diff > 50% of the larger value (good
+            # for fractional 0-1 scales like churn_pct/net_margin).
             diff = failed_num - success_avg
-            if abs(diff) > 0.5:  # Meaningful difference
+            both = max(abs(failed_num), abs(success_avg))
+            relative = abs(diff) / both if both > 0 else 0.0
+            if abs(diff) > 0.5 or relative > 0.5:
                 direction = "higher" if diff > 0 else "lower"
                 factors.append({
                     "factor": factor,
                     "failed_value": failed_val,
                     "success_avg": round(success_avg, 2),
                     "difference": round(diff, 2),
+                    "relative_difference": round(relative, 3),
                     "direction": direction,
-                    "impact": "high" if abs(diff) > 2 else "medium",
+                    "impact": (
+                        "high" if abs(diff) > 2 or relative > 0.8
+                        else "medium"
+                    ),
                 })
 
         factors.sort(key=lambda f: abs(f["difference"]), reverse=True)
@@ -210,8 +247,15 @@ class RootCauseAnalyzer:
         causes = []
 
         for factor in contributing_factors[:3]:  # Top 3 factors
-            name = factor["factor"]
-            val = factor["failed_value"]
+            # Use .get() so the special-case "no_comparison_data"
+            # entry returned by _factor_attribution when there are
+            # no successful episodes to compare against doesn't
+            # crash _identify_root_causes with KeyError. Skip any
+            # factor that lacks both fields — it has no information.
+            name = factor.get("factor")
+            val = factor.get("failed_value")
+            if name is None or val is None:
+                continue
 
             if name == "health_grade" and val in ("D", "F"):
                 causes.append({"cause": "Poor financial health", "factor": name, "value": val,
@@ -240,10 +284,19 @@ class RootCauseAnalyzer:
             return {"available": False}
 
         # Look for successful episodes in similar context but different action
-        similar = self._memory.recall_similar(failed_ctx, limit=10)
+        try:
+            similar = self._memory.recall_similar(failed_ctx, limit=10) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "RootCauseAnalyzer: counterfactual recall_similar failed (%s)",
+                exc,
+            )
+            return {"available": False, "error": str(exc)[:120]}
         alternatives = [
             ep for ep in similar
-            if ep.get("success") and ep.get("decision_type") != decision_type
+            if isinstance(ep, dict)
+            and ep.get("success")
+            and ep.get("decision_type") != decision_type
         ]
 
         if alternatives:
