@@ -9,8 +9,10 @@ Features:
 """
 from __future__ import annotations
 
+import copy
 import time
 import threading
+from calendar import monthrange
 from typing import Any, Callable
 
 from utils.logger import get_logger
@@ -73,34 +75,49 @@ class SmartScheduler:
 
         Returns scheduling decision with timing recommendation.
         """
+        # Defensive coercion. Caller contract says these are
+        # typed but an upstream agent may pass None on a
+        # partial failure path. Audit pass 38.
+        action_type = action_type if isinstance(action_type, str) and action_type else "unknown"
+        data = data if isinstance(data, dict) else {}
+        target_id = target_id if isinstance(target_id, str) else ""
+        if not isinstance(priority, int):
+            priority = 5
+
         action_id = generate_id("sched")
         now = time.time()
         current_hour = time.localtime(now).tm_hour
 
-        # Check cooldown
         cooldown_key = f"{action_type}:{target_id}" if target_id else action_type
-        if self._is_cooled_down(cooldown_key, action_type):
-            remaining = self._cooldown_remaining(cooldown_key, action_type)
-            return {
-                "action_id": action_id,
-                "status": "cooled_down",
-                "action_type": action_type,
-                "cooldown_remaining_seconds": round(remaining),
-                "reason": f"Cooldown active — retry in {remaining/60:.0f} min",
-            }
 
-        # Check dedup
-        if self._is_duplicate(action_type, target_id, data):
-            return {
-                "action_id": action_id,
-                "status": "duplicate",
-                "action_type": action_type,
-                "reason": "Same action already scheduled",
-            }
+        # Check cooldown + dedup atomically under the lock so
+        # two concurrent schedule() calls can't both clear the
+        # cooldown check and queue duplicate work.
+        with self._lock:
+            if self._is_cooled_down_locked(cooldown_key, action_type):
+                remaining = self._cooldown_remaining_locked(cooldown_key, action_type)
+                return {
+                    "action_id": action_id,
+                    "status": "cooled_down",
+                    "action_type": action_type,
+                    "cooldown_remaining_seconds": round(remaining),
+                    "reason": f"Cooldown active — retry in {remaining/60:.0f} min",
+                }
+
+            if self._is_duplicate_locked(action_type, target_id):
+                return {
+                    "action_id": action_id,
+                    "status": "duplicate",
+                    "action_type": action_type,
+                    "reason": "Same action already scheduled",
+                }
 
         # Determine optimal timing
-        timing = ACTION_TIMING.get(action_type, {})
-        best_start, best_end = timing.get("best_hours", (0, 24))
+        timing = ACTION_TIMING.get(action_type) or {}
+        best_hours = timing.get("best_hours", (0, 24))
+        if (not isinstance(best_hours, tuple)) or len(best_hours) != 2:
+            best_hours = (0, 24)
+        best_start, best_end = best_hours
         timing_reason = timing.get("reason", "No timing preference")
 
         if best_start <= current_hour <= best_end:
@@ -120,7 +137,9 @@ class SmartScheduler:
             "action_id": action_id,
             "action_type": action_type,
             "target_id": target_id,
-            "data": data,
+            # Deep-copy caller data so later mutations by the
+            # caller don't silently change our queued entry.
+            "data": copy.deepcopy(data),
             "priority": priority,
             "status": "ready" if execute_now else "scheduled",
             "timing": timing_note,
@@ -131,51 +150,64 @@ class SmartScheduler:
         with self._lock:
             self._scheduled.append(entry)
             if len(self._scheduled) > 5000:
-                self._scheduled = self._scheduled[-5000:]
+                # Trim in place so any external reference to
+                # ``self._scheduled`` stays valid.
+                del self._scheduled[:len(self._scheduled) - 5000]
 
-        return entry
+        # Return a copy so callers can't mutate the queued
+        # entry via the returned dict.
+        return copy.deepcopy(entry)
 
     def execute_ready(self, executor: Callable | None = None) -> list[dict[str, Any]]:
-        """Execute all ready actions. Returns results."""
-        results = []
+        """Execute all ready actions. Returns results.
+
+        Claims ready actions atomically under the lock by
+        flipping ``status`` from ``"ready"`` to ``"executing"``
+        before releasing it. This prevents two concurrent
+        ``execute_ready`` calls from double-executing the same
+        action — a real bug in the pre-audit code where both
+        callers saw the same ready list and fired the executor
+        twice per action.
+        """
+        results: list[dict[str, Any]] = []
 
         with self._lock:
-            ready = [a for a in self._scheduled if a["status"] == "ready"]
+            claimed = [a for a in self._scheduled if a.get("status") == "ready"]
+            # Sort under the lock so the ordering is stable
+            # w.r.t. concurrent schedule() calls.
+            claimed.sort(key=lambda a: a.get("priority", 5))
+            for action in claimed:
+                action["status"] = "executing"
 
-        # Sort by priority (lower = more urgent)
-        ready.sort(key=lambda a: a["priority"])
-
-        for action in ready:
+        for action in claimed:
             action_id = action["action_id"]
             action_type = action["action_type"]
             target_id = action.get("target_id", "")
 
-            # Execute
-            action["status"] = "executing"
             try:
                 if executor:
                     result = executor(action)
                 else:
                     result = {"status": "executed", "action": action_type}
 
-                action["status"] = "executed"
-                action["executed_at"] = time.time()
-
-                # Record cooldown
-                cooldown_key = f"{action_type}:{target_id}" if target_id else action_type
-                self._cooldowns[cooldown_key] = time.time()
+                with self._lock:
+                    action["status"] = "executed"
+                    action["executed_at"] = time.time()
+                    cooldown_key = f"{action_type}:{target_id}" if target_id else action_type
+                    self._cooldowns[cooldown_key] = time.time()
 
                 results.append({"action_id": action_id, "status": "executed", "result": result})
 
-            except Exception as exc:
-                action["status"] = "failed"
-                action["error"] = str(exc)
+            except Exception as exc:  # noqa: BLE001
+                with self._lock:
+                    action["status"] = "failed"
+                    action["error"] = str(exc)
                 results.append({"action_id": action_id, "status": "failed", "error": str(exc)})
 
         with self._lock:
             self._executed.extend(results)
             if len(self._executed) > 2000:
-                self._executed = self._executed[-2000:]
+                del self._executed[:len(self._executed) - 2000]
 
         return results
 
@@ -184,37 +216,75 @@ class SmartScheduler:
         return self._check_seasonal()
 
     def _check_seasonal(self) -> dict[str, Any]:
-        """Check if any seasonal events are upcoming."""
+        """Check if any seasonal events are upcoming.
+
+        The pre-audit implementation hardcoded ``30`` as the
+        length of the previous month and compared
+        ``event_month - 1`` which broke the December → January
+        wrap (New Year prep couldn't fire in December because
+        ``1 - 1 == 0`` never matches any real month). This
+        version uses ``calendar.monthrange`` and real month
+        wrap arithmetic.
+        """
         now = time.localtime()
+        year = now.tm_year
         month = now.tm_mon
         day = now.tm_mday
 
-        upcoming = []
-        active = []
+        upcoming: list[dict[str, Any]] = []
+        active: list[dict[str, Any]] = []
 
         for event_name, config in SEASONAL_EVENTS.items():
-            event_month = config["month"]
-            day_start, day_end = config["day_range"]
-            prep_days = config["prep_days"]
+            event_month = config.get("month")
+            day_range = config.get("day_range", (0, 0))
+            prep_days = config.get("prep_days", 0)
+            if not isinstance(event_month, int) or not (1 <= event_month <= 12):
+                continue
+            if (not isinstance(day_range, tuple)) or len(day_range) != 2:
+                continue
+            day_start, day_end = day_range
+            if not isinstance(prep_days, int) or prep_days < 0:
+                prep_days = 0
 
-            # Check if event is active
+            # Event is currently active.
             if month == event_month and day_start <= day <= day_end:
                 active.append({
                     "event": event_name,
                     "status": "active",
-                    "actions": config["actions"],
+                    "actions": config.get("actions", []),
                 })
+                continue
 
-            # Check if we should be preparing
-            elif (month == event_month and day < day_start and day_start - day <= prep_days) or \
-                 (month == event_month - 1 and (30 - day + day_start) <= prep_days):
-                days_until = day_start - day if month == event_month else 30 - day + day_start
-                upcoming.append({
-                    "event": event_name,
-                    "days_until": max(0, days_until),
-                    "prep_actions": config["actions"],
-                    "status": "prep_time",
-                })
+            # Same month, still approaching.
+            if month == event_month and day < day_start:
+                days_until = day_start - day
+                if days_until <= prep_days:
+                    upcoming.append({
+                        "event": event_name,
+                        "days_until": days_until,
+                        "prep_actions": config.get("actions", []),
+                        "status": "prep_time",
+                    })
+                continue
+
+            # Previous calendar month, with year wrap for
+            # January events (prep fires from December).
+            prev_month = event_month - 1 if event_month > 1 else 12
+            prev_month_year = year if event_month > 1 else year - 1
+            if month == prev_month:
+                # Real last-day-of-month instead of hardcoded 30.
+                try:
+                    _, last_day = monthrange(prev_month_year, prev_month)
+                except Exception:  # noqa: BLE001
+                    last_day = 30
+                days_until = (last_day - day) + day_start
+                if 0 <= days_until <= prep_days:
+                    upcoming.append({
+                        "event": event_name,
+                        "days_until": days_until,
+                        "prep_actions": config.get("actions", []),
+                        "status": "prep_time",
+                    })
 
         return {
             "active_events": active,
@@ -223,42 +293,58 @@ class SmartScheduler:
             "should_prepare": len(upcoming) > 0,
         }
 
-    def _is_cooled_down(self, key: str, action_type: str) -> bool:
+    # ── Cooldown / dedup helpers ──────────────────────────────
+    #
+    # All three methods below assume the caller is already
+    # holding ``self._lock``. The public-facing ``schedule()``
+    # now does both checks + the append inside a single
+    # critical section so a concurrent duplicate cannot slip
+    # through between the "is-duplicate" check and the
+    # "append" step.
+
+    def _is_cooled_down_locked(self, key: str, action_type: str) -> bool:
         cooldown = ACTION_COOLDOWNS.get(action_type, 300)
         last = self._cooldowns.get(key, 0)
         return (time.time() - last) < cooldown
 
-    def _cooldown_remaining(self, key: str, action_type: str) -> float:
+    def _cooldown_remaining_locked(self, key: str, action_type: str) -> float:
         cooldown = ACTION_COOLDOWNS.get(action_type, 300)
         last = self._cooldowns.get(key, 0)
         return max(0, cooldown - (time.time() - last))
 
-    def _is_duplicate(self, action_type: str, target_id: str, data: dict) -> bool:
-        """Check if same action is already scheduled and pending."""
-        with self._lock:
-            for a in self._scheduled:
-                if (a["status"] in ("ready", "scheduled") and
-                        a["action_type"] == action_type and
-                        a.get("target_id") == target_id):
-                    return True
+    def _is_duplicate_locked(self, action_type: str, target_id: str) -> bool:
+        """Check if same (action_type, target_id) is still queued."""
+        for a in self._scheduled:
+            if (a.get("status") in ("ready", "scheduled") and
+                    a.get("action_type") == action_type and
+                    a.get("target_id") == target_id):
+                return True
         return False
 
     def get_queue(self, status: str | None = None) -> list[dict[str, Any]]:
+        """Return a deep-copied snapshot of queued actions.
+
+        Pre-audit this returned ``list(self._scheduled)`` — a
+        shallow copy. Callers mutating entries in place would
+        corrupt scheduler state. Deep-copying keeps the
+        scheduler's internal dicts private.
+        """
         with self._lock:
             if status:
-                return [a for a in self._scheduled if a["status"] == status]
-            return list(self._scheduled)
+                return [copy.deepcopy(a) for a in self._scheduled if a.get("status") == status]
+            return [copy.deepcopy(a) for a in self._scheduled]
 
     def get_stats(self) -> dict[str, Any]:
         with self._lock:
-            statuses = {}
+            statuses: dict[str, int] = {}
             for a in self._scheduled:
-                s = a["status"]
+                s = a.get("status", "unknown")
                 statuses[s] = statuses.get(s, 0) + 1
+            now = time.time()
+            active_cd = sum(1 for v in self._cooldowns.values() if now - v < 86400)
             return {
                 "total_scheduled": len(self._scheduled),
                 "total_executed": len(self._executed),
                 "by_status": statuses,
-                "active_cooldowns": len([k for k, v in self._cooldowns.items()
-                                         if time.time() - v < 86400]),
+                "active_cooldowns": active_cd,
             }

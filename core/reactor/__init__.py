@@ -54,12 +54,33 @@ class EventReactor:
     # ── Event Submission ──
 
     def react(self, event_type: str, data: dict[str, Any],
-              priority: str = "medium", source: str = "webhook") -> dict[str, Any]:
+              priority: str = "medium", source: str = "webhook",
+              event_id: str | None = None) -> dict[str, Any]:
         """Submit an event for reactive processing.
 
         Returns immediately with event_id and processing status.
+
+        Args:
+            event_type: the event kind (e.g. ``"order.paid"``).
+            data: event payload dict.
+            priority: ``"critical"|"high"|"medium"|"low"``.
+            source: origin label (webhook, polling, etc.).
+            event_id: optional pre-assigned id. ``react_async``
+                uses this so the id it returned to the caller
+                matches the id that actually gets processed
+                (pre-audit the two ids diverged — audit pass
+                38 fix).
         """
-        event_id = generate_id("evt")
+        # Defensive coercion. Caller contract says these are
+        # typed but upstream webhook code may drop None on
+        # malformed payloads.
+        event_type = event_type if isinstance(event_type, str) and event_type else "unknown"
+        data = data if isinstance(data, dict) else {}
+        priority = priority if isinstance(priority, str) else "medium"
+        source = source if isinstance(source, str) else "webhook"
+        if not isinstance(event_id, str) or not event_id:
+            event_id = generate_id("evt")
+
         event = {
             "event_id": event_id,
             "type": event_type,
@@ -69,42 +90,60 @@ class EventReactor:
             "received_at": time.time(),
         }
 
+        event_hash = self._hash_event(event_type, data)
+        cooldown_key = (
+            f"{event_type}:"
+            f"{data.get('id') or data.get('product_id') or data.get('customer_id') or ''}"
+        )
+
+        # Do stats / dedup / cooldown / seen-bookkeeping inside
+        # a single critical section so two concurrent react()
+        # calls with the same payload can't both pass the
+        # "is this a duplicate?" gate.
         with self._lock:
             self._stats["received"] += 1
-
-        # Dedup check
-        event_hash = self._hash_event(event_type, data)
-        if self._is_duplicate(event_hash):
-            with self._lock:
+            if self._is_duplicate_locked(event_hash):
                 self._stats["deduplicated"] += 1
-            return {"event_id": event_id, "status": "deduplicated", "reason": "Similar event processed recently"}
-
-        # Cooldown check
-        cooldown_key = f"{event_type}:{data.get('id', data.get('product_id', data.get('customer_id', '')))}"
-        if self._is_cooled_down(cooldown_key, event_type):
-            with self._lock:
+                return {
+                    "event_id": event_id,
+                    "status": "deduplicated",
+                    "reason": "Similar event processed recently",
+                }
+            if self._is_cooled_down_locked(cooldown_key, event_type):
                 self._stats["cooled_down"] += 1
-            return {"event_id": event_id, "status": "cooled_down", "reason": "Action cooldown active"}
+                return {
+                    "event_id": event_id,
+                    "status": "cooled_down",
+                    "reason": "Action cooldown active",
+                }
+            # Mark as seen / cooled down NOW (before handler
+            # runs) so overlapping react() calls on the same
+            # hash collapse into one execution. If the handler
+            # later raises, we still consider this payload
+            # processed — identical to the pre-audit behaviour
+            # of updating _seen AFTER the handler.
+            self._seen[event_hash] = time.time()
+            self._cooldowns[cooldown_key] = time.time()
+            self._clean_seen_locked()
 
-        # Process event
-        result = self._process_event(event)
-
-        # Record cooldown
-        self._cooldowns[cooldown_key] = time.time()
-
-        # Record dedup
-        self._seen[event_hash] = time.time()
-        self._clean_seen()
-
-        return result
+        # Handler runs outside the lock — handlers can be slow
+        # (LLM calls, HTTP round-trips) and we don't want to
+        # serialise every event behind one mutex.
+        return self._process_event(event)
 
     def react_async(self, event_type: str, data: dict[str, Any],
                     priority: str = "medium") -> str:
-        """Submit event for async processing. Returns event_id immediately."""
+        """Submit event for async processing. Returns event_id immediately.
+
+        The id returned here is the SAME id that ``react()``
+        will stamp on the processed event — pre-audit the
+        background thread generated its own id and the caller
+        lost all trace of their submission.
+        """
         event_id = generate_id("evt")
         thread = threading.Thread(
             target=self.react,
-            args=(event_type, data, priority),
+            args=(event_type, data, priority, "webhook", event_id),
             daemon=True,
         )
         thread.start()
@@ -118,10 +157,11 @@ class EventReactor:
         event_id = event["event_id"]
         data = event["data"]
 
-        handler = self._handlers.get(event_type)
-        if handler is None:
-            # Try generic handler
-            handler = self._handlers.get("*")
+        with self._lock:
+            # Snapshot the handler lookup so register_handler()
+            # from another thread can't swap the dict out from
+            # under us mid-dispatch.
+            handler = self._handlers.get(event_type) or self._handlers.get("*")
 
         if handler is None:
             return {"event_id": event_id, "status": "no_handler", "type": event_type}
@@ -152,7 +192,10 @@ class EventReactor:
 
     def register_handler(self, event_type: str, handler: Callable) -> None:
         """Register a handler for an event type."""
-        self._handlers[event_type] = handler
+        if not isinstance(event_type, str) or not callable(handler):
+            return
+        with self._lock:
+            self._handlers[event_type] = handler
 
     def _register_defaults(self) -> None:
         """Register built-in handlers for common Shopify events."""
@@ -317,25 +360,44 @@ class EventReactor:
         "revenue.drop": 1800,
     }
 
-    def _is_cooled_down(self, key: str, event_type: str) -> bool:
-        cooldown_period = self._COOLDOWN_MAP.get(event_type, 600)
+    # ── Cooldown / dedup helpers ──────────────────────────────
+    #
+    # The ``*_locked`` variants assume the caller already
+    # holds ``self._lock``. ``react()`` batches the
+    # stats/dedup/cooldown/bookkeeping steps into one critical
+    # section so concurrent callers can't race.
+
+    _DEFAULT_COOLDOWN = 600
+
+    def _is_cooled_down_locked(self, key: str, event_type: str) -> bool:
+        cooldown_period = self._COOLDOWN_MAP.get(event_type, self._DEFAULT_COOLDOWN)
         if cooldown_period == 0:
             return False
         last = self._cooldowns.get(key, 0)
         return (time.time() - last) < cooldown_period
 
-    def _is_duplicate(self, event_hash: str) -> bool:
+    def _is_duplicate_locked(self, event_hash: str) -> bool:
         ts = self._seen.get(event_hash, 0)
         return (time.time() - ts) < self._seen_ttl
 
     @staticmethod
     def _hash_event(event_type: str, data: dict) -> str:
         import hashlib
-        key = f"{event_type}:{sorted(data.items())}"
+        # Defensive: the pre-audit code did ``sorted(data.items())``
+        # which crashes with AttributeError if ``data`` is None.
+        # react() now coerces, but keep this robust for direct
+        # callers / tests.
+        safe_data = data if isinstance(data, dict) else {}
+        try:
+            items_repr = repr(sorted(safe_data.items()))
+        except TypeError:
+            # Mixed-type keys in a dict can make sorted() raise.
+            items_repr = repr(list(safe_data.items()))
+        key = f"{event_type}:{items_repr}"
         return hashlib.md5(key.encode()).hexdigest()[:16]
 
-    def _clean_seen(self) -> None:
-        """Remove expired dedup entries."""
+    def _clean_seen_locked(self) -> None:
+        """Remove expired dedup entries. Caller holds the lock."""
         now = time.time()
         expired = [k for k, v in self._seen.items() if now - v > self._seen_ttl]
         for k in expired:
@@ -349,15 +411,22 @@ class EventReactor:
 
     def get_recent_events(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
-            return list(self._results[-limit:])
+            if not isinstance(limit, int) or limit <= 0:
+                return []
+            return [dict(r) for r in self._results[-limit:]]
 
     def get_active_cooldowns(self) -> dict[str, float]:
         """Get currently active cooldowns with remaining time."""
         now = time.time()
-        active = {}
-        for key, ts in self._cooldowns.items():
-            event_type = key.split(":")[0]
-            period = self._COOLDOWN_MAP.get(event_type, 600)
+        active: dict[str, float] = {}
+        with self._lock:
+            # Iterate a snapshot so concurrent react() writes
+            # to _cooldowns don't raise "dictionary changed
+            # size during iteration".
+            snapshot = list(self._cooldowns.items())
+        for key, ts in snapshot:
+            event_type = key.split(":", 1)[0]
+            period = self._COOLDOWN_MAP.get(event_type, self._DEFAULT_COOLDOWN)
             remaining = period - (now - ts)
             if remaining > 0:
                 active[key] = round(remaining, 1)
