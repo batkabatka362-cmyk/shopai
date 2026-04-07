@@ -442,6 +442,23 @@ class GoalManager:
 
     # ── Internal helpers ───────────────────────────────────────
 
+    # Columns the _transition() helper is allowed to update via its
+    # `extra` parameter. Anything else is silently dropped — defensive
+    # whitelist that prevents arbitrary column names (or worse, raw
+    # SQL fragments) from being interpolated into the generated UPDATE
+    # statement when a future caller passes attacker-controlled keys.
+    _ALLOWED_TRANSITION_EXTRA_COLUMNS = frozenset({
+        "progress",
+        "completed_at",
+        "result_notes",
+        "impact",
+        "urgency",
+        "confidence",
+        "cost",
+        "priority",
+        "deadline",
+    })
+
     def _transition(
         self,
         goal_id: str,
@@ -465,6 +482,12 @@ class GoalManager:
         params: list[Any] = [new_state, now]
         if extra:
             for k, v in extra.items():
+                if k not in self._ALLOWED_TRANSITION_EXTRA_COLUMNS:
+                    logger.warning(
+                        "Goal _transition: dropping disallowed extra "
+                        "column %r (goal=%s)", k, goal_id,
+                    )
+                    continue
                 sets.append(f"{k} = ?")
                 params.append(v)
         params.append(goal_id)
@@ -510,25 +533,44 @@ class GoalManager:
             return 0.5
         return max(0.0, min(1.0, v))
 
-    def _active_goal_targets(self) -> set[str]:
-        """Set of `source` strings for currently-active goals.
+    # Source-prefix → dedup-namespace map. Both SelfModel
+    # (`self_model.*`) and Reflection (`reflection.*`) propose goals
+    # that target capability subjects, so we normalize them into the
+    # same dedup keys (`practice:<subject>` for "improve this thing"
+    # goals and `explore:<subject>` for "investigate this thing"
+    # goals). Without this, two cognitive paths could each propose a
+    # goal for the same subject and neither would notice.
+    _SOURCE_PREFIX_TO_NAMESPACE: dict[str, str] = {
+        "self_model.weakness:":   "practice",
+        "self_model.gap:":        "explore",
+        "reflection.weakness:":   "practice",
+        "reflection.regression:": "practice",
+        "reflection.pattern:":    "explore",
+        "reflection.blind_spot:": "explore",
+    }
 
-        Used by propose_from_self_model() to avoid creating a duplicate
-        practice/explore goal for a capability that's already being
-        worked on.
+    def _active_goal_targets(self) -> set[str]:
+        """Set of dedup keys for currently-active goals.
+
+        Used by propose_from_self_model() — and indirectly by any
+        path that wants to avoid duplicating a capability-targeted
+        goal — to skip subjects already being worked on. Recognises
+        every source prefix in `_SOURCE_PREFIX_TO_NAMESPACE` so the
+        dedup is symmetric across SelfModel and Reflection.
         """
         rows = self._conn().execute(
             "SELECT source FROM goals "
             "WHERE state IN ('proposed', 'active', 'in_progress')",
         ).fetchall()
-        out = set()
+        out: set[str] = set()
         for r in rows:
             src = r["source"] or ""
-            # "self_model.weakness:engine.a" → "practice:engine.a"
-            if src.startswith("self_model.weakness:"):
-                out.add(f"practice:{src.split(':', 1)[1]}")
-            elif src.startswith("self_model.gap:"):
-                out.add(f"explore:{src.split(':', 1)[1]}")
+            for prefix, namespace in self._SOURCE_PREFIX_TO_NAMESPACE.items():
+                if src.startswith(prefix):
+                    subject = src[len(prefix):].strip()
+                    if subject:
+                        out.add(f"{namespace}:{subject}")
+                    break
         return out
 
     @staticmethod

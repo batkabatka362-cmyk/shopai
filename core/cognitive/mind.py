@@ -663,18 +663,31 @@ class Mind:
     # ── Phase 8: LEARN ────────────────────────────────────────
 
     def _phase_learn(self, ctx: CycleContext, report: CycleReport) -> None:
-        """Record cycle outcomes back into SelfModel.
+        """Record cycle outcomes back into SelfModel + memory.
 
-        Two paths:
+        Three paths run independently:
           1. Format the cycle as a controller-style result and let
              SelfModel.ingest_cycle_result extract phase/engine
              signals from it.
-          2. Always record cognitive-level signals directly via
-             assess() so the SelfModel grows with every cycle even
-             when no engine ran.
+          2. Record cognitive-level signals directly via assess()
+             so the SelfModel grows with every cycle.
+          3. Persist a structured episode to MemoryIntelligence so
+             Reflection has data to reflect on.
+
+        Each path is independent — memory persistence is not gated
+        on having a SelfModel, and SelfModel updates are not gated
+        on having a memory backend.
         """
-        if self.self_model is None:
-            return
+        updates = 0
+        if self.self_model is not None:
+            updates += self._learn_into_self_model(report)
+        if self._record_cycle_episode(report):
+            updates += 1
+        report.learning_updates = updates
+
+    def _learn_into_self_model(self, report: CycleReport) -> int:
+        """SelfModel-only side of LEARN. Returns the number of
+        capability updates applied."""
         updates = 0
         try:
             # Path 1: feed the controller-style fields that
@@ -724,7 +737,101 @@ class Mind:
         except Exception as exc:  # noqa: BLE001
             report.notes.append(f"learn (assess): {exc}")
 
-        report.learning_updates = updates
+        return updates
+
+    # Map the highest-priority action kind to a 1-5 score for the
+    # episode log. Used by `_record_cycle_episode`.
+    _ACTION_KIND_SCORES = {
+        "skill": 4.0,           # we executed something — neutral-good baseline
+        "recommendation": 3.0,  # produced advice but didn't act
+        "abstain": 2.0,         # imagination said no
+        "pause": 2.0,           # prediction said wait
+    }
+
+    def _record_cycle_episode(self, report: CycleReport) -> bool:
+        """Persist a structured episode of this cycle to memory.
+
+        Returns True iff a memory was written. Silently no-ops when
+        no memory backend is wired or when the call fails — Mind
+        must never crash because the journal is unavailable.
+        """
+        if self.memory is None:
+            return False
+        create = getattr(self.memory, "create", None)
+        if not callable(create):
+            return False
+
+        # Pick the dominant action kind for this cycle so the
+        # episode score reflects what actually happened.
+        kind = ""
+        result_status = ""
+        for a in report.actions_taken:
+            kind = a.get("kind", "") or kind
+            r = a.get("result") or {}
+            if isinstance(r, dict):
+                result_status = str(r.get("status", "") or result_status)
+            if kind == "skill":
+                break  # skill outcomes always win
+
+        score = self._ACTION_KIND_SCORES.get(kind, 3.0)
+        # Refine skill score by realized success status.
+        if kind == "skill":
+            if result_status.lower() in self._SUCCESS_STATUSES:
+                score = 4.5
+            elif result_status:
+                score = 1.5  # explicit failure status
+
+        if report.error:
+            score = 1.0
+
+        action_label = (
+            f"mind.cycle.{kind}" if kind else "mind.cycle"
+        )
+
+        content = {
+            "cycle_number": report.cycle_number,
+            "duration_s": round(report.duration_s(), 3),
+            "selected_goal_id": report.selected_goal_id or "",
+            "goals_proposed": list(report.goals_proposed),
+            "actions": [
+                {
+                    "kind": a.get("kind", ""),
+                    "skill": a.get("skill", ""),
+                    "reason": a.get("reason", ""),
+                }
+                for a in report.actions_taken
+            ],
+            "imagined_score": (
+                round(float(report.imagined_plan.expected_score), 3)
+                if report.imagined_plan else None
+            ),
+            "imagined_confidence": (
+                round(float(report.imagined_plan.overall_confidence), 3)
+                if report.imagined_plan else None
+            ),
+            "predictions": len(report.predictions),
+            "error": report.error or "",
+        }
+        result = {
+            "actions_taken": len(report.actions_taken),
+            "goals_proposed": len(report.goals_proposed),
+            "consolidation_ran": report.consolidation_ran,
+            "status": result_status or ("error" if report.error else "ok"),
+        }
+        try:
+            create(
+                category="mind",
+                content=content,
+                action=action_label,
+                result=result,
+                score=score,
+                memory_type="episodic",
+                tags=["mind", "cycle", kind] if kind else ["mind", "cycle"],
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            report.notes.append(f"learn (memory.create): {exc}")
+            return False
 
     # ── Phase 8.5: GOAL LIFECYCLE ─────────────────────────────
 

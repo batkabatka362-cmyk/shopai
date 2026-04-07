@@ -840,6 +840,133 @@ def _ctx():
     return CycleContext(cycle_number=1, started_at=time.time())
 
 
+# ── LEARN phase writes episodes to memory ────────────────────
+
+
+class _RecordingMemory:
+    """Captures every memory.create() call so we can verify Mind
+    actually persists episodes during LEARN."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return len(self.calls)  # fake memory id
+
+
+class TestLearnPhaseWritesMemory:
+    def test_no_memory_means_no_call(self):
+        from core.cognitive.mind import Mind, CycleReport
+        m = Mind(memory=None, self_model=None)
+        rep = CycleReport(cycle_number=1, started_at=time.time())
+        # Should not raise.
+        assert m._record_cycle_episode(rep) is False
+
+    def test_memory_without_create_method(self):
+        from core.cognitive.mind import Mind, CycleReport
+        m = Mind(memory=object())  # no .create
+        rep = CycleReport(cycle_number=1, started_at=time.time())
+        assert m._record_cycle_episode(rep) is False
+
+    def test_skill_success_records_high_score(self):
+        from core.cognitive.mind import Mind, CycleReport
+        mem = _RecordingMemory()
+        m = Mind(memory=mem)
+        rep = CycleReport(cycle_number=7, started_at=time.time())
+        rep.actions_taken = [
+            {"kind": "skill", "skill": "ship", "result": {"status": "ok"}},
+        ]
+        rep.finished_at = time.time()
+        assert m._record_cycle_episode(rep) is True
+        assert len(mem.calls) == 1
+        call = mem.calls[0]
+        assert call["category"] == "mind"
+        assert call["score"] == 4.5  # success bumps to 4.5
+        assert "skill" in call["tags"]
+        assert call["content"]["cycle_number"] == 7
+
+    def test_skill_failure_records_low_score(self):
+        from core.cognitive.mind import Mind, CycleReport
+        mem = _RecordingMemory()
+        m = Mind(memory=mem)
+        rep = CycleReport(cycle_number=1, started_at=time.time())
+        rep.actions_taken = [
+            {"kind": "skill", "skill": "x", "result": {"status": "error"}},
+        ]
+        m._record_cycle_episode(rep)
+        assert mem.calls[0]["score"] == 1.5
+
+    def test_abstain_records_neutral_low_score(self):
+        from core.cognitive.mind import Mind, CycleReport
+        mem = _RecordingMemory()
+        m = Mind(memory=mem)
+        rep = CycleReport(cycle_number=1, started_at=time.time())
+        rep.actions_taken = [{"kind": "abstain", "reason": "test"}]
+        m._record_cycle_episode(rep)
+        assert mem.calls[0]["score"] == 2.0
+        assert "abstain" in mem.calls[0]["tags"]
+
+    def test_error_drives_score_to_floor(self):
+        from core.cognitive.mind import Mind, CycleReport
+        mem = _RecordingMemory()
+        m = Mind(memory=mem)
+        rep = CycleReport(cycle_number=1, started_at=time.time())
+        rep.error = "boom"
+        rep.actions_taken = [
+            {"kind": "skill", "skill": "x", "result": {"status": "ok"}},
+        ]
+        m._record_cycle_episode(rep)
+        assert mem.calls[0]["score"] == 1.0
+
+    def test_memory_create_failure_does_not_crash(self):
+        from core.cognitive.mind import Mind, CycleReport
+
+        class _Boom:
+            def create(self, **k):
+                raise RuntimeError("disk full")
+
+        m = Mind(memory=_Boom())
+        rep = CycleReport(cycle_number=1, started_at=time.time())
+        rep.actions_taken = [{"kind": "abstain"}]
+        assert m._record_cycle_episode(rep) is False
+        assert any("memory.create" in n for n in rep.notes)
+
+    def test_learn_phase_records_episode_without_self_model(self):
+        # Regression: previously _phase_learn early-returned when
+        # self_model was None, so memory was never written even
+        # though the backend was wired. Now the three paths run
+        # independently.
+        from core.cognitive.mind import Mind, CycleReport, CycleContext
+        mem = _RecordingMemory()
+        m = Mind(memory=mem, self_model=None)
+        rep = CycleReport(cycle_number=2, started_at=time.time())
+        rep.actions_taken = [
+            {"kind": "skill", "skill": "x", "result": {"status": "ok"}},
+        ]
+        rep.finished_at = time.time()
+        ctx = CycleContext(cycle_number=2, started_at=time.time())
+        m._phase_learn(ctx, rep)
+        assert len(mem.calls) == 1
+        assert rep.learning_updates == 1
+
+    def test_full_learn_with_self_model_records_episode(self):
+        # With a self_model wired, the LEARN phase should write to
+        # memory at the end.
+        from core.cognitive.mind import Mind, CycleReport, CycleContext
+        mem = _RecordingMemory()
+        sm = _real_self_model()
+        m = Mind(memory=mem, self_model=sm)
+        rep = CycleReport(cycle_number=3, started_at=time.time())
+        rep.actions_taken = [
+            {"kind": "skill", "skill": "x", "result": {"status": "ok"}},
+        ]
+        rep.finished_at = time.time()
+        ctx = CycleContext(cycle_number=3, started_at=time.time())
+        m._phase_learn(ctx, rep)
+        assert len(mem.calls) == 1
+
+
 class TestSingleton:
     def test_get_mind_caches(self):
         from core.cognitive import mind as mod

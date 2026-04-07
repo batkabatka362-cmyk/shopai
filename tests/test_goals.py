@@ -383,3 +383,89 @@ class TestSingleton:
         a = mod.get_goal_manager()
         b = mod.get_goal_manager()
         assert a is b
+
+
+# ── Defensive: _transition extra-column whitelist ────────────
+
+
+class TestTransitionExtraWhitelist:
+    def test_disallowed_column_is_dropped_silently(self):
+        gm = _fresh()
+        gid = gm.propose("X", urgency=0.5)
+        # Pass a malicious key — must not be interpolated into SQL
+        # and must not raise. The goal still transitions.
+        gm._transition(
+            gid, "active",
+            extra={"progress; DROP TABLE goals; --": "evil"},
+        )
+        goal = gm.get(gid)
+        assert goal["state"] == "active"
+        # Table still exists and queryable.
+        assert gm.get(gid) is not None
+
+    def test_allowed_column_still_writes(self):
+        gm = _fresh()
+        gid = gm.propose("X", urgency=0.5)
+        gm._transition(gid, "completed", extra={"progress": 1.0})
+        goal = gm.get(gid)
+        assert goal["state"] == "completed"
+        assert goal["progress"] == pytest.approx(1.0)
+
+    def test_complete_via_public_api_still_works(self):
+        # Regression: complete() passes a known-safe extra dict; the
+        # whitelist must accept progress + completed_at + result_notes.
+        gm = _fresh()
+        gid = gm.propose("X", urgency=0.5)
+        gm.complete(gid, result_notes="done")
+        assert gm.get(gid)["state"] == "completed"
+        assert gm.get(gid)["progress"] == pytest.approx(1.0)
+
+
+# ── Cross-source dedup (SelfModel ↔ Reflection) ──────────────
+
+
+class TestActiveGoalTargetsDedup:
+    def test_recognises_reflection_weakness_prefix(self):
+        gm = _fresh()
+        gm.propose(
+            "Improve foo",
+            source="reflection.weakness:engine.foo",
+            urgency=0.5,
+        )
+        targets = gm._active_goal_targets()
+        assert "practice:engine.foo" in targets
+
+    def test_recognises_reflection_pattern_prefix(self):
+        gm = _fresh()
+        gm.propose(
+            "Investigate bar",
+            source="reflection.pattern:bar",
+            urgency=0.5,
+        )
+        assert "explore:bar" in gm._active_goal_targets()
+
+    def test_self_model_and_reflection_dedupe_each_other(self):
+        # If Reflection already created a goal for engine.x,
+        # propose_from_self_model must not create a duplicate.
+        gm = _fresh()
+        gm.propose(
+            "Improve engine.x",
+            source="reflection.weakness:engine.x",
+            urgency=0.5,
+        )
+
+        class _SM:
+            def weaknesses(self, top_n):
+                return [{"name": "engine.x", "score": 0.2, "confidence": 0.9}]
+            def knowledge_gaps(self, top_n):
+                return []
+
+        created = gm.propose_from_self_model(_SM())
+        assert created == []  # blocked by Reflection's pre-existing goal
+
+    def test_unknown_prefix_is_ignored(self):
+        gm = _fresh()
+        gm.propose("Random", source="custom.thing:x", urgency=0.5)
+        # Not in the whitelist → not in dedup keys
+        targets = gm._active_goal_targets()
+        assert not any(t.endswith(":x") for t in targets)
