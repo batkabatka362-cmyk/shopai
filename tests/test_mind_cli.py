@@ -317,6 +317,45 @@ class TestLLMStatus:
         assert "Fallback chain" in out
 
 
+# ── Calibration block in `mind status` ───────────────────────
+
+
+class TestMindStatusCalibration:
+    def test_no_history_means_no_calibration_block(self, fresh_mind, capsys):
+        import cli
+        cli.main(["mind", "status"])
+        out = capsys.readouterr().out
+        assert "Calibration:" not in out
+
+    def test_after_cycles_shows_calibration_section(
+        self, fresh_mind, capsys,
+    ):
+        # Pre-seed a previous cycle so the next run_cycle calibrates
+        from core.cognitive.imagination import ImaginedPlan
+        from core.cognitive.mind import CycleReport
+        import time as _t
+
+        rep = CycleReport(cycle_number=1, started_at=_t.time())
+        rep.imagined_plan = ImaginedPlan(
+            plan_what="x", backend="heuristic",
+            expected_score=1.0, overall_confidence=0.9,
+        )
+        rep.actions_taken = [
+            {"kind": "skill", "skill": "s", "result": {"status": "ok"}},
+        ]
+        rep.finished_at = _t.time()
+        fresh_mind._cycle_history.append(rep)
+
+        fresh_mind.run_cycle()
+
+        import cli
+        cli.main(["mind", "status"])
+        out = capsys.readouterr().out
+        assert "Calibration:" in out
+        assert "imagination:" in out
+        assert "well-calibrated" in out
+
+
 # ── LLM stats embedded in `mind status` ──────────────────────
 
 

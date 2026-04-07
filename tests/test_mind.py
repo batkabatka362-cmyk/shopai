@@ -487,6 +487,199 @@ class TestActDeliberationGate:
         assert report.actions_taken[0]["kind"] == "abstain"
 
 
+# ── Cycle history + calibration loop ─────────────────────────
+
+
+def _seeded_prev_cycle(
+    *,
+    imagined_score=0.8,
+    imagined_confidence=0.8,
+    skill_results=None,
+    actions_extra=None,
+    predictions=None,
+):
+    """Build a CycleReport that mimics one that just finished, so a
+    fresh cycle can calibrate against it."""
+    from core.cognitive.imagination import ImaginedPlan
+    from core.cognitive.mind import CycleReport
+
+    rep = CycleReport(cycle_number=1, started_at=time.time())
+    rep.imagined_plan = ImaginedPlan(
+        plan_what="x",
+        backend="heuristic",
+        expected_score=imagined_score,
+        overall_confidence=imagined_confidence,
+    )
+    rep.actions_taken = []
+    for i, status in enumerate(skill_results or []):
+        rep.actions_taken.append({
+            "kind": "skill",
+            "skill": f"skill_{i}",
+            "result": {"status": status},
+        })
+    if actions_extra:
+        rep.actions_taken.extend(actions_extra)
+    if predictions:
+        rep.predictions = list(predictions)
+    rep.finished_at = time.time()
+    return rep
+
+
+class TestCycleHistory:
+    def test_history_starts_empty(self):
+        from core.cognitive.mind import Mind
+        m = Mind()
+        assert m.last_cycles() == []
+        assert m.previous_cycle() is None
+
+    def test_run_cycle_appends_history(self):
+        m = _wired_mind()
+        m.run_cycle()
+        m.run_cycle()
+        assert len(m.last_cycles()) == 2
+        assert m.previous_cycle() is not None
+
+    def test_history_is_bounded(self):
+        from core.cognitive.mind import Mind
+        m = Mind(cycle_history_size=3)
+        for _ in range(7):
+            m.run_cycle()  # Mind() with no modules → trivial cycles
+        assert len(m.last_cycles(100)) == 3
+
+    def test_last_cycles_returns_newest_last(self):
+        m = _wired_mind()
+        for _ in range(3):
+            m.run_cycle()
+        cycles = m.last_cycles(2)
+        assert len(cycles) == 2
+        assert cycles[-1].cycle_number > cycles[0].cycle_number
+
+
+class TestImaginationCalibration:
+    def test_perfect_when_score_matches_success_rate(self):
+        from core.cognitive.mind import Mind
+        m = Mind()
+        prev = _seeded_prev_cycle(
+            imagined_score=1.0,
+            skill_results=["ok", "ok"],
+        )
+        cal = m._calibrate_imagination(prev)
+        assert cal == 1.0
+
+    def test_low_when_overconfident(self):
+        from core.cognitive.mind import Mind
+        m = Mind()
+        prev = _seeded_prev_cycle(
+            imagined_score=0.9,
+            skill_results=["error", "error"],  # 0% success
+        )
+        # imagined 0.9 vs actual 0.0 → error 0.9 → calibration 0.1
+        cal = m._calibrate_imagination(prev)
+        assert cal == pytest.approx(0.1, abs=1e-6)
+
+    def test_partial_success(self):
+        from core.cognitive.mind import Mind
+        m = Mind()
+        prev = _seeded_prev_cycle(
+            imagined_score=0.5,
+            skill_results=["ok", "error"],  # 50% success
+        )
+        cal = m._calibrate_imagination(prev)
+        assert cal == 1.0  # perfect — predicted 0.5, actual 0.5
+
+    def test_returns_none_without_imagination(self):
+        from core.cognitive.mind import Mind, CycleReport
+        m = Mind()
+        rep = CycleReport(cycle_number=1, started_at=time.time())
+        assert m._calibrate_imagination(rep) is None
+
+    def test_credits_abstain_modestly(self):
+        from core.cognitive.mind import Mind
+        m = Mind()
+        prev = _seeded_prev_cycle(
+            imagined_score=0.1,
+            skill_results=None,
+            actions_extra=[{"kind": "abstain", "reason": "imagination pessimistic"}],
+        )
+        cal = m._calibrate_imagination(prev)
+        assert cal == 0.6
+
+    def test_returns_none_when_no_actions_or_abstain(self):
+        from core.cognitive.mind import Mind
+        m = Mind()
+        prev = _seeded_prev_cycle(imagined_score=0.5)  # no actions
+        assert m._calibrate_imagination(prev) is None
+
+
+class TestPredictionCalibration:
+    def test_returns_none_without_predictions(self):
+        from core.cognitive.mind import Mind
+        m = Mind()
+        prev = _seeded_prev_cycle()
+        assert m._calibrate_predictions(prev) is None
+
+    def test_pause_credited_when_no_skills_ran(self):
+        from core.cognitive.mind import Mind
+        from core.cognitive.theory_of_mind import Prediction
+        m = Mind()
+        prev = _seeded_prev_cycle(
+            actions_extra=[{"kind": "pause", "reason": "neg pred"}],
+            predictions=[Prediction(
+                agent_id="x", action_proposed="y",
+                predicted_response="will reject", confidence=0.9,
+            )],
+        )
+        assert m._calibrate_predictions(prev) == 0.55
+
+    def test_skill_success_rate_used_when_skills_ran(self):
+        from core.cognitive.mind import Mind
+        from core.cognitive.theory_of_mind import Prediction
+        m = Mind()
+        prev = _seeded_prev_cycle(
+            skill_results=["ok", "ok", "error"],  # 2/3
+            predictions=[Prediction(
+                agent_id="x", action_proposed="y",
+                predicted_response="indifferent", confidence=0.4,
+            )],
+        )
+        cal = m._calibrate_predictions(prev)
+        assert cal == pytest.approx(2/3, abs=1e-6)
+
+
+class TestCalibrationIntegratesWithSelfModel:
+    def test_calibrate_phase_writes_to_self_model(self):
+        m = _wired_mind()
+        # Inject a hand-built previous cycle into history
+        prev = _seeded_prev_cycle(
+            imagined_score=0.9,
+            skill_results=["ok", "ok"],
+        )
+        m._cycle_history.append(prev)
+        # Run a fresh cycle — calibrate phase will run
+        m.run_cycle()
+        cap = m.self_model.get_capability("mind.imagination_calibration")
+        assert cap is not None
+        # imagined 0.9 vs actual 1.0 → error 0.1 → calibration 0.9
+        assert cap["score"] == pytest.approx(0.9, abs=0.01)
+
+    def test_calibration_snapshot_after_run(self):
+        m = _wired_mind()
+        prev = _seeded_prev_cycle(
+            imagined_score=0.5, skill_results=["ok", "error"],
+        )
+        m._cycle_history.append(prev)
+        m.run_cycle()
+        snap = m.calibration_snapshot()
+        assert snap["last_imagination_calibration"] == pytest.approx(1.0)
+        assert snap["history_size"] >= 2
+
+    def test_first_cycle_does_not_calibrate(self):
+        m = _wired_mind()
+        m.run_cycle()
+        cap = m.self_model.get_capability("mind.imagination_calibration")
+        assert cap is None  # nothing to calibrate against
+
+
 class TestSingleton:
     def test_get_mind_caches(self):
         from core.cognitive import mind as mod

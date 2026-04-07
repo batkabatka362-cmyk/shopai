@@ -536,8 +536,48 @@ def _cmd_mind_status(args=None) -> None:
             print(f"  [{g['state']:11s}] priority={g['priority']:.2f}  {g['what']}")
     print()
     print(f"Total cycles run: {mind.cycle_count()}")
+    _print_mind_calibration_summary(mind)
     _print_mind_llm_summary()
     print()
+
+
+def _print_mind_calibration_summary(mind) -> None:
+    """Render the latest self-calibration scores so the operator
+    can see at a glance whether the Mind's predictions match
+    reality."""
+    try:
+        snap = mind.calibration_snapshot()
+    except Exception:
+        return
+
+    img = snap.get("last_imagination_calibration")
+    pred = snap.get("last_prediction_calibration")
+    history_size = snap.get("history_size", 0)
+
+    if img is None and pred is None and history_size == 0:
+        return
+
+    print()
+    print("Calibration:")
+    print(f"  cycle journal size: {history_size}")
+    if img is None:
+        print("  imagination: (not yet calibrated)")
+    else:
+        print(f"  imagination: {img:.2f}  ({_calibration_label(img)})")
+    if pred is None:
+        print("  prediction:  (not yet calibrated)")
+    else:
+        print(f"  prediction:  {pred:.2f}  ({_calibration_label(pred)})")
+
+
+def _calibration_label(score: float) -> str:
+    if score >= 0.8:
+        return "well-calibrated"
+    if score >= 0.6:
+        return "acceptable"
+    if score >= 0.4:
+        return "drift"
+    return "miscalibrated"
 
 
 def _print_mind_llm_summary() -> None:

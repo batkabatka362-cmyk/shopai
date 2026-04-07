@@ -27,6 +27,7 @@ phase emits a recommendation instead of invoking).
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -128,6 +129,14 @@ class Mind:
     detected and the cycle gracefully skips dependent phases.
     """
 
+    # How many recent cycle reports to keep in the in-memory journal
+    # so the Mind can introspect its own behaviour over time.
+    _CYCLE_HISTORY_SIZE = 50
+
+    # Outcome statuses we treat as "skill succeeded" when calibrating
+    # imagination predictions.
+    _SUCCESS_STATUSES = frozenset({"ok", "success", "completed", "done"})
+
     def __init__(
         self,
         *,
@@ -142,6 +151,7 @@ class Mind:
         theory_of_mind: Optional[TheoryOfMind] = None,
         memory: Any = None,
         consolidate_every_n: int = 10,
+        cycle_history_size: Optional[int] = None,
     ) -> None:
         self.self_model = self_model
         self.goal_manager = goal_manager
@@ -156,6 +166,12 @@ class Mind:
 
         self._cycle_count = 0
         self._consolidate_every_n = max(1, int(consolidate_every_n))
+        self._cycle_history: deque[CycleReport] = deque(
+            maxlen=int(cycle_history_size or self._CYCLE_HISTORY_SIZE),
+        )
+        # Latest calibration scores (None until first calibrated cycle)
+        self._last_imagination_calibration: Optional[float] = None
+        self._last_prediction_calibration: Optional[float] = None
 
     # ── Public API ─────────────────────────────────────────────
 
@@ -181,6 +197,7 @@ class Mind:
         )
 
         try:
+            self._phase_calibrate(ctx, report)
             self._phase_perceive(ctx, report)
             self._phase_reflect(ctx, report)
             self._phase_set_goals(ctx, report)
@@ -195,11 +212,181 @@ class Mind:
             logger.exception("Mind cycle %d failed", ctx.cycle_number)
 
         report.finished_at = time.time()
+        self._cycle_history.append(report)
         logger.info("Mind cycle %d: %s", ctx.cycle_number, report.headline())
         return report
 
     def cycle_count(self) -> int:
         return self._cycle_count
+
+    def last_cycles(self, n: int = 10) -> list[CycleReport]:
+        """Return the most-recent ``n`` cycle reports (newest last)."""
+        if n <= 0:
+            return []
+        return list(self._cycle_history)[-n:]
+
+    def previous_cycle(self) -> Optional[CycleReport]:
+        """Return the report of the cycle that ran just before the
+        current one, or None if no previous cycle exists."""
+        return self._cycle_history[-1] if self._cycle_history else None
+
+    def calibration_snapshot(self) -> dict[str, Any]:
+        """Compact snapshot of the Mind's most recent self-calibration.
+
+        Returns the latest imagination/prediction calibration scores
+        (0–1 where 1 = perfect) plus a small running summary so the
+        CLI / status dashboards can render trust signals."""
+        history = list(self._cycle_history)
+        cycles_with_imagined = sum(1 for r in history if r.imagined_plan is not None)
+        return {
+            "history_size": len(history),
+            "cycles_with_imagination": cycles_with_imagined,
+            "last_imagination_calibration": self._last_imagination_calibration,
+            "last_prediction_calibration": self._last_prediction_calibration,
+        }
+
+    # ── Phase 0: CALIBRATE (cross-cycle self-evaluation) ─────
+
+    def _phase_calibrate(self, ctx: CycleContext, report: CycleReport) -> None:
+        """Score the *previous* cycle's predictions against what
+        actually happened, and feed that score back into SelfModel.
+
+        This is the loop that lets the Mind learn whether its own
+        modules are trustworthy:
+
+          - Imagination predicted ``expected_score`` for a plan, then
+            we acted (or abstained). If we ran skills, we can compare
+            the score against the realized success rate.
+          - TheoryOfMind predicted reactions; if we observed those
+            reactions in the next cycle's reflection lessons, the
+            prediction was good.
+
+        Calibration scores land in SelfModel as ``mind.imagination_
+        calibration`` and ``mind.prediction_calibration``. Because
+        SelfModel weakness/gap detection is what GoalManager.propose_
+        from_self_model uses, a chronically miscalibrated Mind will
+        spontaneously generate goals to improve its own predictions.
+        """
+        prev = self.previous_cycle()
+        if prev is None:
+            return
+
+        # ── Imagination calibration ──
+        cal = self._calibrate_imagination(prev)
+        if cal is not None:
+            self._last_imagination_calibration = cal
+            report.notes.append(
+                f"calibrate: imagination={cal:.2f}"
+            )
+            if self.self_model is not None:
+                try:
+                    self.self_model.assess(
+                        "mind.imagination_calibration",
+                        cal,
+                        source="mind.calibration",
+                        notes=(
+                            f"imagined={float(prev.imagined_plan.expected_score):.2f}"
+                            if prev.imagined_plan else ""
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    report.notes.append(f"calibrate (assess imagination): {exc}")
+
+        # ── Prediction calibration ──
+        pcal = self._calibrate_predictions(prev)
+        if pcal is not None:
+            self._last_prediction_calibration = pcal
+            report.notes.append(
+                f"calibrate: prediction={pcal:.2f}"
+            )
+            if self.self_model is not None:
+                try:
+                    self.self_model.assess(
+                        "mind.prediction_calibration",
+                        pcal,
+                        source="mind.calibration",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    report.notes.append(f"calibrate (assess prediction): {exc}")
+
+    def _calibrate_imagination(self, prev: CycleReport) -> Optional[float]:
+        """Compare last cycle's imagined score against realized skill
+        outcomes. Returns a 0–1 score (1 = perfect prediction) or
+        None when no ground truth is available."""
+        imagined = prev.imagined_plan
+        if imagined is None:
+            return None
+
+        # Pick out skill executions — they're the only actions that
+        # carry an objective success/failure signal.
+        skill_actions = [
+            a for a in prev.actions_taken
+            if a.get("kind") == "skill"
+        ]
+
+        if skill_actions:
+            successes = 0
+            for a in skill_actions:
+                result = a.get("result") or {}
+                status = str(result.get("status", "")).lower()
+                if status in self._SUCCESS_STATUSES:
+                    successes += 1
+            success_rate = successes / len(skill_actions)
+            imagined_score = float(getattr(imagined, "expected_score", 0.0) or 0.0)
+            error = abs(imagined_score - success_rate)
+            return max(0.0, min(1.0, 1.0 - error))
+
+        # If we abstained AND imagination was the reason, that's a
+        # vacuous "correct" — the gate trusted imagination but no
+        # ground truth materialized. Reward modestly so calibration
+        # doesn't sit at None forever in cautious modes, but flag
+        # as "unverified" by capping at 0.6.
+        abstained = any(
+            a.get("kind") == "abstain" for a in prev.actions_taken
+        )
+        if abstained:
+            return 0.6
+
+        return None
+
+    def _calibrate_predictions(self, prev: CycleReport) -> Optional[float]:
+        """Score TheoryOfMind predictions from the previous cycle.
+
+        Heuristic: if any high-confidence prediction caused a pause
+        and we did NOT subsequently observe a regression lesson on
+        the same subject in this cycle's reflection, the prediction
+        was likely a false alarm. If skill actions ran successfully
+        despite confident predictions, the predictions were either
+        positive or noise — both fine.
+        """
+        if not prev.predictions:
+            return None
+
+        paused = [
+            a for a in prev.actions_taken
+            if a.get("kind") == "pause"
+        ]
+        skill_actions = [
+            a for a in prev.actions_taken if a.get("kind") == "skill"
+        ]
+
+        if paused and not skill_actions:
+            # The prediction prevented action; without ground truth
+            # we can't fully verify, but we credit modestly.
+            return 0.55
+
+        if skill_actions:
+            successes = sum(
+                1 for a in skill_actions
+                if str((a.get("result") or {}).get("status", "")).lower()
+                in self._SUCCESS_STATUSES
+            )
+            success_rate = successes / len(skill_actions)
+            # If predictions were ignored (no pause) and skills
+            # succeeded → predictions were correctly low-impact.
+            return max(0.0, min(1.0, success_rate))
+
+        return None
 
     # ── Phase 1: PERCEIVE ─────────────────────────────────────
 
