@@ -32,8 +32,17 @@ def execute_plan(plan: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     failed = 0
 
     for step in plan.get("engines", []):
-        engine_name = step["name"]
-        engine_input = step["input"]
+        # Defensive: skip malformed step entries instead of
+        # crashing the whole execution with KeyError. The
+        # previous version did `step["name"]` direct access.
+        if not isinstance(step, dict):
+            continue
+        engine_name = step.get("name")
+        engine_input = step.get("input")
+        if not engine_name:
+            continue
+        if not isinstance(engine_input, dict):
+            engine_input = {}
 
         # Enrich input with results from dependencies
         if step.get("depends_on"):
@@ -44,8 +53,8 @@ def execute_plan(plan: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
         result = _run_engine_with_retry(engine_name, engine_input)
         elapsed = time.monotonic() - start
 
-        success = result.get("status") == "success"
-        engine_results[engine_name] = result
+        success = isinstance(result, dict) and result.get("status") == "success"
+        engine_results[engine_name] = result if isinstance(result, dict) else {}
 
         if success:
             completed += 1
@@ -56,7 +65,7 @@ def execute_plan(plan: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
             "engine": engine_name,
             "success": success,
             "elapsed_seconds": round(elapsed, 3),
-            "error": result.get("error") if not success else None,
+            "error": (result.get("error") if isinstance(result, dict) else None) if not success else None,
         })
 
     return {
@@ -85,11 +94,24 @@ def _run_engine_with_retry(engine_name: str, engine_input: dict[str, Any]) -> di
     for attempt in range(MAX_RETRIES + 1):
         try:
             result = engine.run(engine_input)
+            # Defensive: a buggy engine stub may return None
+            # instead of a dict. Coerce to {} so the chained
+            # .get() calls below can't crash with AttributeError.
+            if not isinstance(result, dict):
+                last_error = f"engine returned {type(result).__name__}"
+                continue
             if result.get("status") == "success":
                 return result
-            last_error = result.get("error", {}).get("reason", "Unknown error")
-        except Exception as exc:
-            last_error = str(exc)
+            # `dict.get(k, {})` only returns the default when the
+            # key is MISSING — present-but-None error would crash
+            # the chained .get(). `(... or {})` handles both.
+            err_obj = result.get("error") or {}
+            if isinstance(err_obj, dict):
+                last_error = err_obj.get("reason", "Unknown error")
+            else:
+                last_error = str(err_obj)
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{type(exc).__name__}: {exc}"
 
     return {
         "status": "fail",
