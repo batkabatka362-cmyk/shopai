@@ -353,6 +353,73 @@ BUILT_IN_PROMPTS: list[PromptTemplate] = [
         schema_hint='{"action": str, "new_price": float, "reasoning": str, "confidence": float}',
     ),
 
+    # ── Content generation ───────────────────────────────────
+    PromptTemplate(
+        name="content.product_description",
+        version=1,
+        purpose="Rewrite a heuristic product description into rich copy",
+        role="creative",
+        system=(
+            "You are a senior e-commerce copywriter. Given a product "
+            "and a draft description, rewrite it into compelling, "
+            "specific, benefit-driven copy. Avoid filler words. Use "
+            "the requested tone. Output ONLY a JSON object:\n"
+            '{"headline": "...", "subheadline": "...", '
+            '"body": "...", "bullets": ["..."], '
+            '"meta_description": "..."}\n'
+            "meta_description must be ≤ 160 characters."
+        ),
+        template=(
+            "Product: {product_name}\n"
+            "Category: {category}\n"
+            "Features: {features}\n"
+            "Tone: {tone}\n"
+            "\n"
+            "Draft headline (rewrite this): {heuristic_headline}\n"
+            "Draft body (improve this): {heuristic_body}\n"
+            "\n"
+            "Return JSON only."
+        ),
+        placeholders=[
+            "product_name", "category", "features", "tone",
+            "heuristic_headline", "heuristic_body",
+        ],
+        schema_hint='{"headline": str, "subheadline": str, "body": str, "bullets": [str], "meta_description": str}',
+    ),
+
+    PromptTemplate(
+        name="content.ad_copy",
+        version=1,
+        purpose="Rewrite a heuristic ad into platform-appropriate copy",
+        role="creative",
+        system=(
+            "You are an expert performance marketer writing ad copy "
+            "for a specific platform. Match the platform's voice "
+            "(Facebook is casual + benefit-led; Instagram is "
+            "aspirational + visual; Google is keyword-led; TikTok "
+            "is short + punchy). Output ONLY a JSON object:\n"
+            '{"headline": "...", "body": "...", '
+            '"cta": "...", "tags": ["..."]}\n'
+            "Keep the headline under 40 chars and the body under "
+            "125 chars unless the platform demands more."
+        ),
+        template=(
+            "Product: {product_name}\n"
+            "Price: ${price}\n"
+            "Platform: {platform}\n"
+            "\n"
+            "Draft headline (rewrite): {heuristic_headline}\n"
+            "Draft body (improve): {heuristic_body}\n"
+            "\n"
+            "Return JSON only."
+        ),
+        placeholders=[
+            "product_name", "price", "platform",
+            "heuristic_headline", "heuristic_body",
+        ],
+        schema_hint='{"headline": str, "body": str, "cta": str, "tags": [str]}',
+    ),
+
     # ── Mind think (ad-hoc reasoning) ────────────────────────
     PromptTemplate(
         name="mind.think",

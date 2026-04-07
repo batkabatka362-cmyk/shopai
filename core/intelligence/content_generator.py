@@ -2,12 +2,14 @@
 
 Not templates with {placeholders} — actual formatted copy ready to use.
 Works WITHOUT LLM by using rule-based generation with product attributes.
-When LLM is available, uses it for enhanced creative output.
+When LLM is available, uses it for enhanced creative output via the
+`*_with_llm()` variants that wrap the deterministic generators with
+an LLM rewrite layer.
 """
 from __future__ import annotations
 
 import random
-from typing import Any
+from typing import Any, Optional
 
 
 # Copywriting formulas
@@ -40,6 +42,9 @@ CTA_OPTIONS = ["Shop Now", "Add to Cart", "Get Yours", "Buy Now", "Order Today",
 
 class ContentGenerator:
     """Generates real, formatted e-commerce copy from product data."""
+
+    def __init__(self, *, llm: Any = None) -> None:
+        self._llm = llm
 
     def product_description(self, product: dict[str, Any], tone: str = "professional") -> dict[str, Any]:
         """Generate a complete product description with headline, body, bullets, SEO."""
@@ -300,3 +305,162 @@ class ContentGenerator:
             if not matched:
                 benefits.append(f"Enjoy {feature.lower()}")
         return benefits[:5]
+
+    # ── LLM-backed wrappers ───────────────────────────────────
+
+    def product_description_with_llm(
+        self,
+        product: dict[str, Any],
+        tone: str = "professional",
+    ) -> dict[str, Any]:
+        """Generate a product description with an LLM rewrite layer.
+
+        Always runs the deterministic generator first so callers
+        get a result. When an LLM is wired, the deterministic
+        output is fed to the LLM as a starting point and rewritten
+        for richer copy. The final dict carries both versions:
+
+            {
+                "heuristic": <rule-based output>,
+                "llm": {headline, subheadline, body, bullets,
+                        meta_description} or {"error": "..."},
+                "source": "llm" | "heuristic_only",
+            }
+        """
+        heuristic = self.product_description(product, tone=tone)
+        result: dict[str, Any] = {
+            "heuristic": heuristic,
+            "llm": None,
+            "source": "heuristic_only",
+        }
+
+        llm = self._get_llm()
+        if llm is None:
+            return result
+        try:
+            if not llm.is_available():
+                return result
+        except Exception:  # noqa: BLE001
+            return result
+
+        try:
+            from core.system.prompt_library import get_prompt
+        except Exception:  # noqa: BLE001
+            return result
+        template = get_prompt("content.product_description")
+        if template is None:
+            return result
+
+        rendered = template.render(
+            product_name=product.get("name", product.get("title", "Product")),
+            category=product.get("category", product.get("type", "")),
+            features=", ".join(product.get("features", []) or self._infer_features(product)),
+            tone=tone,
+            heuristic_headline=heuristic.get("headline", ""),
+            heuristic_body=heuristic.get("body", "")[:400],
+        )
+
+        try:
+            structured = llm.ask_structured(
+                role=template.role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["llm"] = {"error": str(exc)[:200]}
+            return result
+
+        if not getattr(structured, "ok", False):
+            result["llm"] = {"error": structured.error or "unparseable"}
+            return result
+
+        data = structured.data or {}
+        try:
+            result["llm"] = {
+                "headline": str(data.get("headline", heuristic.get("headline", ""))),
+                "subheadline": str(data.get("subheadline", "")),
+                "body": str(data.get("body", "")),
+                "bullets": [str(b) for b in (data.get("bullets") or [])][:6],
+                "meta_description": str(data.get("meta_description", ""))[:160],
+            }
+            result["source"] = "llm"
+        except (TypeError, ValueError) as exc:
+            result["llm"] = {"error": f"normalization failed: {exc}"}
+        return result
+
+    def ad_copy_with_llm(
+        self,
+        product: dict[str, Any],
+        platform: str = "facebook",
+    ) -> dict[str, Any]:
+        """Generate ad copy with an LLM rewrite layer."""
+        heuristic = self.ad_copy(product, platform=platform)
+        result: dict[str, Any] = {
+            "heuristic": heuristic,
+            "llm": None,
+            "source": "heuristic_only",
+        }
+
+        llm = self._get_llm()
+        if llm is None:
+            return result
+        try:
+            if not llm.is_available():
+                return result
+        except Exception:  # noqa: BLE001
+            return result
+
+        try:
+            from core.system.prompt_library import get_prompt
+        except Exception:  # noqa: BLE001
+            return result
+        template = get_prompt("content.ad_copy")
+        if template is None:
+            return result
+
+        rendered = template.render(
+            product_name=product.get("name", product.get("title", "Product")),
+            price=product.get("price", 0),
+            platform=platform,
+            heuristic_headline=heuristic.get("headline", ""),
+            heuristic_body=heuristic.get("body", "")[:300],
+        )
+
+        try:
+            structured = llm.ask_structured(
+                role=template.role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["llm"] = {"error": str(exc)[:200]}
+            return result
+
+        if not getattr(structured, "ok", False):
+            result["llm"] = {"error": structured.error or "unparseable"}
+            return result
+
+        data = structured.data or {}
+        try:
+            result["llm"] = {
+                "headline": str(data.get("headline", "")),
+                "body": str(data.get("body", "")),
+                "cta": str(data.get("cta", "Shop Now")),
+                "tags": [str(t) for t in (data.get("tags") or [])][:8],
+            }
+            result["source"] = "llm"
+        except (TypeError, ValueError) as exc:
+            result["llm"] = {"error": f"normalization failed: {exc}"}
+        return result
+
+    def _get_llm(self) -> Any:
+        """Lazily resolve the LLM adapter."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from core.system.llm_adapter import get_llm
+            return get_llm()
+        except Exception:  # noqa: BLE001
+            return None
