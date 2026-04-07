@@ -105,6 +105,9 @@ TRAFFIC_SOURCE_PAGES = {
 class CustomerJourney:
     """Full customer lifecycle orchestration engine."""
 
+    def __init__(self, *, llm: Any = None) -> None:
+        self._llm = llm
+
     def full_analysis(
         self,
         customers: list[dict[str, Any]],
@@ -327,3 +330,121 @@ class CustomerJourney:
         if prospect_pct > 50:
             return f"{prospect_pct}% are prospects — improve first-purchase conversion with welcome series"
         return "Customer lifecycle is balanced — focus on loyalty program expansion"
+
+    # ── LLM-backed personalization plan ──────────────────────
+
+    def personalize_with_llm(
+        self,
+        customers: list[dict[str, Any]],
+        orders: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Run the heuristic full_analysis, then ask the LLM to draft
+        a per-segment personalization plan.
+
+        Returns:
+            {
+                "heuristic": <full_analysis output>,
+                "llm": {segments: [...], top_segment, expected_uplift_pct,
+                        confidence, reasoning} or {"error": "..."},
+                "source": "llm" | "heuristic_only",
+            }
+        """
+        heuristic = self.full_analysis(customers, orders=orders)
+        result: dict[str, Any] = {
+            "heuristic": heuristic,
+            "llm": None,
+            "source": "heuristic_only",
+        }
+
+        if not customers:
+            return result
+
+        llm = self._get_llm()
+        if llm is None:
+            return result
+        try:
+            if not llm.is_available():
+                return result
+        except Exception:  # noqa: BLE001
+            return result
+
+        try:
+            from core.system.prompt_library import get_prompt
+        except Exception:  # noqa: BLE001
+            return result
+        template = get_prompt("customer.personalization_plan")
+        if template is None:
+            return result
+
+        # Compact summary for the LLM (don't dump every customer)
+        try:
+            import json
+            lifecycle = heuristic.get("lifecycle_segments", {}).get("summary", {})
+            winback = heuristic.get("winback_candidates", {})
+            summary = {
+                "lifecycle": lifecycle,
+                "winback_count": len(winback.get("candidates", [])),
+                "total_customers": len(customers),
+            }
+            summary_json = json.dumps(summary, default=str)[:2000]
+        except Exception:  # noqa: BLE001
+            return result
+
+        rendered = template.render(
+            customer_count=len(customers),
+            order_count=len(orders or []),
+            heuristic_summary=summary_json,
+        )
+
+        try:
+            structured = llm.ask_structured(
+                role=template.role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["llm"] = {"error": str(exc)[:200]}
+            return result
+
+        if not getattr(structured, "ok", False):
+            result["llm"] = {"error": structured.error or "unparseable"}
+            return result
+
+        data = structured.data or {}
+        try:
+            segments = data.get("segments") or []
+            if not isinstance(segments, list):
+                segments = []
+            normalized_segments = []
+            for s in segments[:6]:
+                if not isinstance(s, dict):
+                    continue
+                normalized_segments.append({
+                    "name": str(s.get("name", "")),
+                    "size_estimate": str(s.get("size_estimate", "")),
+                    "tactic": str(s.get("tactic", "")),
+                    "channel": str(s.get("channel", "")),
+                    "expected_response_pct": float(s.get("expected_response_pct", 0)),
+                })
+            result["llm"] = {
+                "segments": normalized_segments,
+                "top_segment": str(data.get("top_segment", "")),
+                "expected_uplift_pct": float(data.get("expected_uplift_pct", 0)),
+                "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
+                "reasoning": str(data.get("reasoning", ""))[:500],
+            }
+            result["source"] = "llm"
+        except (TypeError, ValueError) as exc:
+            result["llm"] = {"error": f"normalization failed: {exc}"}
+        return result
+
+    def _get_llm(self) -> Any:
+        """Lazily resolve the LLM adapter."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from core.system.llm_adapter import get_llm
+            return get_llm()
+        except Exception:  # noqa: BLE001
+            return None

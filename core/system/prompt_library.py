@@ -388,6 +388,42 @@ BUILT_IN_PROMPTS: list[PromptTemplate] = [
     ),
 
     PromptTemplate(
+        name="customer.personalization_plan",
+        version=1,
+        purpose="Convert lifecycle analysis into a per-segment plan",
+        role="reasoner",
+        system=(
+            "You are a CRM strategist for a small / mid e-commerce "
+            "store. Given a structured lifecycle analysis you must "
+            "produce a personalization plan: which segments deserve "
+            "outreach in the next 14 days, what tactic to use for "
+            "each, and what response rate to expect. Be concrete and "
+            "honest about uncertainty.\n\n"
+            "Output ONLY a JSON object:\n"
+            '{"segments": ['
+            '{"name": "...", "size_estimate": "...", "tactic": "...", '
+            '"channel": "email|sms|push|ad|...", '
+            '"expected_response_pct": float}, ...], '
+            '"top_segment": "name of the most important segment", '
+            '"expected_uplift_pct": float, '
+            '"confidence": 0.0-1.0, '
+            '"reasoning": "..."}'
+        ),
+        template=(
+            "Customers: {customer_count}, orders: {order_count}\n"
+            "\n"
+            "Lifecycle analysis summary:\n"
+            "{heuristic_summary}\n"
+            "\n"
+            "Draft a 14-day personalization plan. Return JSON only."
+        ),
+        placeholders=[
+            "customer_count", "order_count", "heuristic_summary",
+        ],
+        schema_hint='{"segments": [{"name": str, "tactic": str, ...}], "top_segment": str, "confidence": float}',
+    ),
+
+    PromptTemplate(
         name="marketing.synthesize_strategy",
         version=1,
         purpose="Turn heuristic marketing analysis into a prioritized plan",
