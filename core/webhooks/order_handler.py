@@ -10,6 +10,7 @@ This is the CRITICAL piece that makes learning real.
 """
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from utils.logger import get_logger
@@ -22,6 +23,12 @@ class OrderWebhookHandler:
     """Handles order webhooks and records outcomes for learning."""
 
     def __init__(self) -> None:
+        # ``_processed`` is a plain counter but webhooks arrive
+        # on multiple threads (HTTP server worker + async
+        # dispatch from ShopifyWebhookHandler.handle_async).
+        # Pre-audit ``self._processed += 1`` was not
+        # thread-safe. Audit pass 42.
+        self._lock = threading.Lock()
         self._processed = 0
 
     def handle_order_paid(self, order_data: dict[str, Any]) -> dict[str, Any]:
@@ -33,28 +40,42 @@ class OrderWebhookHandler:
         Returns:
             Summary of what was recorded.
         """
+        # Defensive coercion of public entry point. Audit pass 42.
+        if not isinstance(order_data, dict):
+            order_data = {}
+
         # Extract revenue data
-        order_id = str(order_data.get("id", order_data.get("order_id", "")))
-        revenue = safe_float(order_data.get("total_price", order_data.get("total", 0)))
-        subtotal = safe_float(order_data.get("subtotal_price", order_data.get("subtotal", revenue)))
-        items = order_data.get("line_items", [])
-        item_count = len(items) if isinstance(items, list) else safe_int(order_data.get("items", 0))
-        customer_id = str(order_data.get("customer", {}).get("id", order_data.get("customer_id", "")))
+        order_id = str(order_data.get("id") or order_data.get("order_id") or "")
+        revenue = safe_float(order_data.get("total_price") or order_data.get("total"))
+        subtotal = safe_float(
+            order_data.get("subtotal_price") or order_data.get("subtotal") or revenue
+        )
+        items = order_data.get("line_items") or []
+        item_count = len(items) if isinstance(items, list) else safe_int(order_data.get("items"))
+        # ``.get("customer", {})`` returns ``{}`` only when the
+        # key is MISSING. Shopify sends ``"customer": null`` on
+        # guest orders → crashes the chained ``.get("id")``.
+        # Same ``or {}`` pattern as pass 32/36/40/41.
+        customer = order_data.get("customer") or {}
+        if not isinstance(customer, dict):
+            customer = {}
+        customer_id = str(customer.get("id") or order_data.get("customer_id") or "")
 
         # Attribution: check for campaign/decision tracking
-        note_attrs = order_data.get("note_attributes", [])
+        note_attrs = order_data.get("note_attributes") or []
         decision_id = None
         campaign_id = None
-        for attr in note_attrs if isinstance(note_attrs, list) else []:
-            if isinstance(attr, dict):
-                if attr.get("name") == "shopai_decision_id":
-                    decision_id = attr.get("value")
-                if attr.get("name") == "shopai_campaign_id":
-                    campaign_id = attr.get("value")
+        if isinstance(note_attrs, list):
+            for attr in note_attrs:
+                if isinstance(attr, dict):
+                    if attr.get("name") == "shopai_decision_id":
+                        decision_id = attr.get("value")
+                    if attr.get("name") == "shopai_campaign_id":
+                        campaign_id = attr.get("value")
 
         # Also check UTM source for attribution
-        source = order_data.get("source_name", order_data.get("referring_site", ""))
-        landing = order_data.get("landing_site", "")
+        source = order_data.get("source_name") or order_data.get("referring_site") or ""
+        landing = order_data.get("landing_site") or ""
 
         recorded = {"order_id": order_id, "revenue": revenue, "items": item_count}
 
@@ -111,20 +132,24 @@ class OrderWebhookHandler:
             logger.warning("RevenueTracker failed: %s", exc)
             recorded["revenue_tracked"] = False
 
-        self._processed += 1
-        recorded["total_processed"] = self._processed
+        with self._lock:
+            self._processed += 1
+            recorded["total_processed"] = self._processed
         return recorded
 
     def handle_order_cancelled(self, order_data: dict[str, Any]) -> dict[str, Any]:
         """Process a cancelled order — record negative outcome."""
-        order_id = str(order_data.get("id", ""))
-        revenue = safe_float(order_data.get("total_price", order_data.get("total", 0)))
+        if not isinstance(order_data, dict):
+            order_data = {}
+        order_id = str(order_data.get("id") or "")
+        revenue = safe_float(order_data.get("total_price") or order_data.get("total"))
 
-        note_attrs = order_data.get("note_attributes", [])
+        note_attrs = order_data.get("note_attributes") or []
         decision_id = None
-        for attr in note_attrs if isinstance(note_attrs, list) else []:
-            if isinstance(attr, dict) and attr.get("name") == "shopai_decision_id":
-                decision_id = attr.get("value")
+        if isinstance(note_attrs, list):
+            for attr in note_attrs:
+                if isinstance(attr, dict) and attr.get("name") == "shopai_decision_id":
+                    decision_id = attr.get("value")
 
         if decision_id:
             try:
@@ -137,10 +162,11 @@ class OrderWebhookHandler:
                     "reason": "cancelled",
                 })
                 return {"order_id": order_id, "outcome_tracked": True, "type": "cancellation"}
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
         return {"order_id": order_id, "outcome_tracked": False, "type": "cancellation"}
 
     def get_stats(self) -> dict[str, Any]:
-        return {"orders_processed": self._processed}
+        with self._lock:
+            return {"orders_processed": self._processed}

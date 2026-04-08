@@ -222,7 +222,13 @@ class ShopAIHandler(BaseHTTPRequestHandler):
 
         from core.webhooks import ShopifyWebhookHandler
         handler = ShopifyWebhookHandler()
-        result = handler.handle(topic, body, hmac_val, shop)
+        # ``_read_body`` stashes the raw request bytes on
+        # ``self._last_raw_body`` — the webhook handler needs
+        # them for HMAC verification because Python's
+        # ``json.dumps(body)`` doesn't round-trip to the bytes
+        # Shopify actually signed. Audit pass 42 security fix.
+        raw_body = getattr(self, "_last_raw_body", None)
+        result = handler.handle(topic, body, hmac_val, shop, raw_body=raw_body)
 
         # Store in experience DB
         try:
@@ -309,6 +315,11 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length)
+            # Stash the raw bytes so handlers that need them
+            # (Shopify webhook HMAC verification) can read them
+            # via ``self._last_raw_body`` without changing the
+            # return shape of ``_read_body``. Audit pass 42.
+            self._last_raw_body = raw
             return json.loads(raw) if raw else {}
         except (json.JSONDecodeError, ValueError) as exc:
             self._json_response(400, {"error": f"Invalid JSON: {exc}"})
