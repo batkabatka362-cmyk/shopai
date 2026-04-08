@@ -481,7 +481,9 @@ class TestAutonomousControllerAdapter:
     def test_initialize_exposes_adapter_router(self):
         """``AutonomousController.initialize`` must populate
         ``self._adapter_router`` and ``self._adapter_status``
-        when the adapter layer loads cleanly."""
+        when the adapter layer loads cleanly. Both Phase 1 LLM
+        adapters AND Phase 2 Shopify native adapters must be
+        registered in one go."""
         import tempfile
         from data_pipeline.store.db import ShopAIDatabase
         from data_pipeline.store.store_manager import StoreManager
@@ -497,13 +499,20 @@ class TestAutonomousControllerAdapter:
         assert hasattr(ac, "_adapter_router")
         assert ac._adapter_router is not None
         assert hasattr(ac, "_adapter_status")
-        # All 7 LLM adapters should have been registered
-        assert len(ac._adapter_status) == 7
+
+        # 7 LLM + 4 Shopify native = 11 adapters total
+        assert len(ac._adapter_status) == 11
         names = set(ac._adapter_status.keys())
-        assert names == {
+        # Phase 1 LLM adapters
+        assert {
             "groq", "gemini", "deepseek", "mistral",
             "ollama_local", "openrouter", "huggingface",
-        }
+        } <= names
+        # Phase 2 Shopify native adapters
+        assert {
+            "shopify_risk", "shopify_inventory",
+            "shopify_fulfillment", "shopify_metafield",
+        } <= names
 
     def test_initialize_degraded_mode_still_safe(self, monkeypatch):
         """If the adapter bootstrap blows up entirely, the

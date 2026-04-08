@@ -114,27 +114,35 @@ class AutonomousController:
             self._agent_dispatcher = AgentDispatcher()
             self._agent_dispatcher.initialize()
 
-            # ── Adapter layer (Phase 0 + Phase 1 LLM adapters) ──
+            # ── Adapter layer (Phase 1 LLM + Phase 2 Shopify) ──
             #
             # Wire the brain to the universal adapter ecosystem.
-            # This single bootstrap call registers every available
-            # LLM adapter (Groq, Gemini, DeepSeek, Mistral, Ollama,
-            # OpenRouter, HuggingFace) into the process-wide
-            # ``AdapterRegistry``. Adapters whose API key is unset
-            # still register; the smart router skips them via
-            # ``is_configured()``. The brain + agent dispatcher
-            # pick up ``get_router()`` lazily, so failures here
-            # MUST NOT take down the rest of the controller — the
-            # legacy ``self._llm`` path keeps working as before.
+            # Two bootstrap calls register every available LLM
+            # adapter (Groq, Gemini, DeepSeek, Mistral, Ollama,
+            # OpenRouter, HuggingFace) AND every Shopify native
+            # adapter (risk, inventory, fulfillment, metafield)
+            # into the process-wide ``AdapterRegistry``. Adapters
+            # whose credentials are unset still register; the
+            # smart router skips them via ``is_configured()``.
+            # The brain + agent dispatcher pick up ``get_router()``
+            # lazily, so failures here MUST NOT take down the
+            # rest of the controller — the legacy ``self._llm``
+            # path keeps working as before.
             try:
                 from core.adapters import get_router
-                from core.adapters.llm.bootstrap import register_all
-                self._adapter_status = register_all()
+                from core.adapters.llm.bootstrap import register_all as register_llms
+                from core.adapters.shopify.bootstrap import register_all as register_shopify
+                llm_status = register_llms()
+                shopify_status = register_shopify()
+                self._adapter_status = {**llm_status, **shopify_status}
                 self._adapter_router = get_router()
                 logger.info(
-                    "Adapter layer initialised: %d LLM adapters registered, %d configured",
+                    "Adapter layer initialised: %d adapters registered, "
+                    "%d configured (%d LLM, %d Shopify native)",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
+                    len(llm_status),
+                    len(shopify_status),
                 )
             except Exception as adapter_exc:  # noqa: BLE001
                 logger.warning(

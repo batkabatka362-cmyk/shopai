@@ -163,20 +163,25 @@ class DecisionBrain:
 
         # ── Adapter layer SmartRouter ──
         # Lazily attach the singleton SmartRouter so brain calls
-        # can route through the Phase 1 LLM adapter ecosystem
-        # (Groq / Gemini / DeepSeek / Mistral / Ollama /
-        # OpenRouter / HuggingFace) without depending on the
-        # controller having already bootstrapped them. The
-        # bootstrap call below is idempotent (uses replace=True
-        # internally) so calling it twice from controller +
+        # can route through both adapter ecosystems:
+        #
+        #   * Phase 1 LLM adapters (Groq / Gemini / DeepSeek /
+        #     Mistral / Ollama / OpenRouter / HuggingFace)
+        #   * Phase 2 Shopify native adapters (risk / inventory /
+        #     fulfillment / metafield)
+        #
+        # Both bootstrap calls are idempotent (uses replace=True
+        # internally) so calling them from both controller and
         # brain is safe — second call is a no-op against an
         # already-populated registry. Failure here is non-fatal:
         # the legacy ``self._llm`` path keeps working.
         if not self._llm_router:
             try:
                 from core.adapters import get_router
-                from core.adapters.llm.bootstrap import register_all
-                register_all()
+                from core.adapters.llm.bootstrap import register_all as register_llms
+                from core.adapters.shopify.bootstrap import register_all as register_shopify
+                register_llms()
+                register_shopify()
                 self._llm_router = get_router()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("smart router init failed: %s", exc)
