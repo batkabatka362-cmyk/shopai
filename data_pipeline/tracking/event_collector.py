@@ -14,11 +14,41 @@ import time
 from pathlib import Path
 from typing import Any
 
+from utils.helpers import safe_float
 from utils.logger import get_logger
 
 logger = get_logger("event_collector")
 
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "events.db"
+
+
+def _safe_json_dumps(value: Any, default: str = "{}") -> str:
+    """Serialize to JSON, returning *default* on any error.
+
+    Mirrors the helper added to ``data_pipeline.store.db`` in
+    pass 48. The event collector writes arbitrary caller-
+    supplied dicts into ``events.data`` and ``training_data.
+    features`` / ``label`` — bare ``json.dumps(value)``
+    crashed on sets, datetimes, and custom objects.
+    """
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError) as exc:
+        logger.warning("event_collector: failed to encode JSON (%s)", exc)
+        return default
+
+
+def _safe_json_loads(text: Any, default: Any) -> Any:
+    """Parse JSON, returning *default* on any error."""
+    if text is None:
+        return default
+    if not isinstance(text, (str, bytes, bytearray)):
+        return default
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        logger.warning("event_collector: failed to decode JSON column")
+        return default
 
 
 def _v1_initial_schema(conn: sqlite3.Connection) -> None:
@@ -93,12 +123,19 @@ class EventCollector:
     def track(self, store_id: str, event_type: str, entity_type: str = "",
               entity_id: str = "", data: dict | None = None) -> None:
         """Track any event."""
+        # Defensive coercion of public entry point. Audit pass 49.
+        store_id = store_id if isinstance(store_id, str) else ""
+        event_type = event_type if isinstance(event_type, str) else ""
+        entity_type = entity_type if isinstance(entity_type, str) else ""
+        entity_id = entity_id if isinstance(entity_id, str) else ""
+        if not event_type:
+            return
         event = {
             "store_id": store_id,
             "event_type": event_type,
             "entity_type": entity_type,
             "entity_id": entity_id,
-            "data": json.dumps(data or {}),
+            "data": _safe_json_dumps(data or {}),
             "timestamp": time.time(),
         }
         with self._buffer_lock:
@@ -107,8 +144,10 @@ class EventCollector:
                 self._flush()
 
     def track_order(self, store_id: str, order: dict) -> None:
+        if not isinstance(order, dict):
+            return
         self.track(store_id, "order_created", "order",
-                  str(order.get("id", "")), {
+                  str(order.get("id") or ""), {
                       "total": order.get("total", 0),
                       "items": order.get("items", 0),
                       "customer_id": order.get("customer_id", ""),
@@ -116,20 +155,33 @@ class EventCollector:
 
     def track_price_change(self, store_id: str, product_id: str,
                           old_price: float, new_price: float, reason: str = "") -> None:
+        # Coerce numerics so non-numeric strings don't crash
+        # the REAL-column INSERT below. Audit pass 49.
+        old_price = safe_float(old_price)
+        new_price = safe_float(new_price)
         self.track(store_id, "price_changed", "product", product_id, {
             "old_price": old_price, "new_price": new_price, "reason": reason,
         })
         conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO price_history (store_id, product_id, old_price, new_price, reason, timestamp) VALUES (?,?,?,?,?,?)",
-            (store_id, product_id, old_price, new_price, reason, time.time()),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO price_history (store_id, product_id, old_price, new_price, reason, timestamp) VALUES (?,?,?,?,?,?)",
+                (store_id, product_id, old_price, new_price, reason, time.time()),
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("event_collector: price_history insert failed: %s", exc)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
 
     def track_product_added(self, store_id: str, product: dict) -> None:
+        if not isinstance(product, dict):
+            return
         self.track(store_id, "product_added", "product",
-                  str(product.get("id", "")), {
-                      "name": product.get("name", product.get("title", "")),
+                  str(product.get("id") or ""), {
+                      "name": product.get("name") or product.get("title") or "",
                       "price": product.get("price", 0),
                       "category": product.get("category", ""),
                   })
@@ -145,12 +197,27 @@ class EventCollector:
     def add_training_sample(self, model_type: str, features: dict,
                            label: Any, weight: float = 1.0) -> None:
         """Store a training sample for ML models."""
+        if not isinstance(model_type, str) or not model_type:
+            return
         conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO training_data (model_type, features, label, weight, created_at) VALUES (?,?,?,?,?)",
-            (model_type, json.dumps(features), json.dumps(label), weight, time.time()),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO training_data (model_type, features, label, weight, created_at) VALUES (?,?,?,?,?)",
+                (
+                    model_type,
+                    _safe_json_dumps(features),
+                    _safe_json_dumps(label),
+                    safe_float(weight, default=1.0),
+                    time.time(),
+                ),
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("event_collector: add_training_sample failed: %s", exc)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
 
     def get_training_data(self, model_type: str, limit: int = 10000) -> list[dict[str, Any]]:
         """Get training data for a specific model."""
@@ -158,9 +225,12 @@ class EventCollector:
             "SELECT features, label, weight FROM training_data WHERE model_type = ? ORDER BY created_at DESC LIMIT ?",
             (model_type, limit),
         ).fetchall()
+        # ``json.loads`` replaced with ``_safe_json_loads`` —
+        # a corrupted row no longer takes down the whole
+        # training batch. Audit pass 49.
         return [{
-            "features": json.loads(r["features"]),
-            "label": json.loads(r["label"]),
+            "features": _safe_json_loads(r["features"], default={}),
+            "label": _safe_json_loads(r["label"], default=None),
             "weight": r["weight"],
         } for r in rows]
 
@@ -212,7 +282,7 @@ class EventCollector:
         results = []
         for r in rows:
             d = dict(r)
-            d["data"] = json.loads(d.get("data", "{}"))
+            d["data"] = _safe_json_loads(d.get("data"), default={})
             results.append(d)
         return results
 
@@ -253,16 +323,61 @@ class EventCollector:
     # ── Flush ────────────────────────────────────────────────
 
     def _flush(self) -> None:
+        """Write buffered events to the DB.
+
+        Audit pass 49 bug fix: pre-audit the inner
+        ``conn.execute(...)`` could raise mid-iteration on a
+        single bad event. The exception propagated out of the
+        for loop, ``conn.commit()`` and ``self._buffer.clear()``
+        never ran, the partial transaction stayed open, and
+        every subsequent ``track()`` call appended MORE events
+        to the already-full buffer. Buffer grew unbounded
+        until memory exhaustion — a real resource leak.
+
+        Fix:
+          * Per-event try/except so one bad event is dropped
+            with a warning instead of killing the whole batch.
+          * Buffer is cleared and commit is attempted even on
+            partial success.
+          * Rollback on transaction-level failure.
+        """
         if not self._buffer:
             return
         conn = self._get_conn()
-        for e in self._buffer:
-            conn.execute(
-                "INSERT INTO events (store_id, event_type, entity_type, entity_id, data, timestamp) VALUES (?,?,?,?,?,?)",
-                (e["store_id"], e["event_type"], e["entity_type"], e["entity_id"], e["data"], e["timestamp"]),
-            )
-        conn.commit()
+        to_flush = list(self._buffer)
+        # Clear FIRST so we never retry the same failing batch
+        # on the next ``track()`` call — drop-on-failure is
+        # the right policy for a fire-and-forget event
+        # collector.
         self._buffer.clear()
+
+        good = 0
+        for e in to_flush:
+            try:
+                conn.execute(
+                    "INSERT INTO events (store_id, event_type, entity_type, entity_id, data, timestamp) VALUES (?,?,?,?,?,?)",
+                    (
+                        e.get("store_id", ""),
+                        e.get("event_type", ""),
+                        e.get("entity_type", ""),
+                        e.get("entity_id", ""),
+                        e.get("data", "{}"),
+                        e.get("timestamp", time.time()),
+                    ),
+                )
+                good += 1
+            except sqlite3.Error as exc:
+                logger.warning("event_collector: skipped bad event: %s", exc)
+        try:
+            conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("event_collector: commit failed: %s", exc)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+        if good:
+            logger.debug("event_collector: flushed %d/%d events", good, len(to_flush))
 
     def flush(self) -> None:
         with self._buffer_lock:
@@ -277,10 +392,20 @@ class EventCollector:
 
 # Singleton
 _collector: EventCollector | None = None
+_collector_lock = threading.Lock()
 
 
 def get_event_collector() -> EventCollector:
+    """Thread-safe singleton accessor.
+
+    Pre-audit two concurrent first-callers could both pass
+    the ``None`` check and both construct an EventCollector —
+    the second overwrote the first, discarding the first
+    collector's buffered events and its DB connection.
+    Audit pass 49.
+    """
     global _collector
-    if _collector is None:
-        _collector = EventCollector()
-    return _collector
+    with _collector_lock:
+        if _collector is None:
+            _collector = EventCollector()
+        return _collector

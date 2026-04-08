@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.finance import margin as _margin
+from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("price_history")
@@ -101,76 +102,137 @@ class PriceHistory:
                      source: str = "system", reason: str = "",
                      store_id: str = "") -> int:
         """Record a price point for a product."""
-        m = _margin(price, cost, precision=3)
+        # Defensive coercion of public entry point. Audit pass 49.
+        pid = str(product_id) if product_id is not None else ""
+        if not pid:
+            return 0
+        price_f = safe_float(price)
+        cost_f = safe_float(cost)
+        if price_f <= 0:
+            return 0
+        m = _margin(price_f, cost_f, precision=3)
         conn = self._conn()
-        cur = conn.execute(
-            "INSERT INTO price_points (product_id, store_id, price, cost, margin, source, reason, timestamp) VALUES (?,?,?,?,?,?,?,?)",
-            (str(product_id), store_id, price, cost, m, source, reason, time.time()),
-        )
-        conn.commit()
-        return cur.lastrowid or 0
+        try:
+            cur = conn.execute(
+                "INSERT INTO price_points (product_id, store_id, price, cost, margin, source, reason, timestamp) VALUES (?,?,?,?,?,?,?,?)",
+                (pid, str(store_id or ""), price_f, cost_f, m,
+                 str(source or "system"), str(reason or ""), time.time()),
+            )
+            conn.commit()
+            return cur.lastrowid or 0
+        except sqlite3.Error as exc:
+            logger.warning("price_history: record_price failed: %s", exc)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            return 0
 
     def record_prices_batch(self, products: list[dict], store_id: str = "",
                             source: str = "sync") -> int:
         """Record current prices for all products (called each cycle)."""
+        if not isinstance(products, list):
+            return 0
         conn = self._conn()
         count = 0
-        # Only record if price changed since last recording
-        for p in products:
-            pid = str(p.get("id", ""))
-            price = float(p.get("price", 0))
-            cost = float(p.get("cost", 0))
-            if not pid or price <= 0:
-                continue
+        # Only record if price changed since last recording.
+        # Pre-audit ``float(p.get("price", 0))`` crashed on
+        # currency strings; non-dict items in the list also
+        # crashed. Same bug class as pass 48. Audit pass 49.
+        try:
+            for p in products:
+                if not isinstance(p, dict):
+                    continue
+                pid = str(p.get("id") or "")
+                price = safe_float(p.get("price"))
+                cost = safe_float(p.get("cost"))
+                if not pid or price <= 0:
+                    continue
 
-            # Check last recorded price
-            last = conn.execute(
-                "SELECT price FROM price_points WHERE product_id = ? ORDER BY timestamp DESC LIMIT 1",
-                (pid,),
-            ).fetchone()
+                # Check last recorded price
+                last = conn.execute(
+                    "SELECT price FROM price_points WHERE product_id = ? ORDER BY timestamp DESC LIMIT 1",
+                    (pid,),
+                ).fetchone()
 
-            if last and abs(last["price"] - price) < 0.01:
-                continue  # Price unchanged, skip
+                if last and abs(last["price"] - price) < 0.01:
+                    continue  # Price unchanged, skip
 
-            m = _margin(price, cost, precision=3)
-            conn.execute(
-                "INSERT INTO price_points (product_id, store_id, price, cost, margin, source, timestamp) VALUES (?,?,?,?,?,?,?)",
-                (pid, store_id, price, cost, m, source, time.time()),
-            )
-            count += 1
-
-        conn.commit()
+                m = _margin(price, cost, precision=3)
+                try:
+                    conn.execute(
+                        "INSERT INTO price_points (product_id, store_id, price, cost, margin, source, timestamp) VALUES (?,?,?,?,?,?,?)",
+                        (pid, str(store_id or ""), price, cost, m,
+                         str(source or "sync"), time.time()),
+                    )
+                    count += 1
+                except sqlite3.Error as exc:
+                    logger.warning("price_history: skipped row %s: %s", pid, exc)
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
         return count
 
     def record_competitor_price(self, product_id: str, competitor: str,
                                 price: float) -> None:
         """Record a competitor price observation."""
+        pid = str(product_id) if product_id is not None else ""
+        if not pid:
+            return
+        price_f = safe_float(price)
+        if price_f <= 0:
+            return
         conn = self._conn()
-        conn.execute(
-            "INSERT INTO competitor_prices (product_id, competitor, price, timestamp) VALUES (?,?,?,?)",
-            (str(product_id), competitor, price, time.time()),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO competitor_prices (product_id, competitor, price, timestamp) VALUES (?,?,?,?)",
+                (pid, str(competitor or ""), price_f, time.time()),
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("price_history: record_competitor_price failed: %s", exc)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
 
     def record_outcome(self, product_id: str, price: float,
                        revenue_after: float = 0.0, orders_after: int = 0,
                        conversion_rate: float = 0.0, period_days: int = 7) -> None:
         """Record the outcome of a price point."""
+        pid = str(product_id) if product_id is not None else ""
+        if not pid:
+            return
+        price_f = safe_float(price)
+        revenue_after_f = safe_float(revenue_after)
+        orders_after_i = safe_int(orders_after)
+        conversion_rate_f = safe_float(conversion_rate)
+        period_days_i = safe_int(period_days, default=7)
+
         score = 3.0
-        if revenue_after > 0:
+        if revenue_after_f > 0:
             score += 0.5
-        if orders_after > 0:
+        if orders_after_i > 0:
             score += 0.5
-        if conversion_rate > 0.03:
+        if conversion_rate_f > 0.03:
             score += 0.5
         score = min(5.0, score)
 
         conn = self._conn()
-        conn.execute(
-            "INSERT INTO price_outcomes (product_id, price, revenue_after, orders_after, conversion_rate, period_days, score, timestamp) VALUES (?,?,?,?,?,?,?,?)",
-            (str(product_id), price, revenue_after, orders_after, conversion_rate, period_days, score, time.time()),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO price_outcomes (product_id, price, revenue_after, orders_after, conversion_rate, period_days, score, timestamp) VALUES (?,?,?,?,?,?,?,?)",
+                (pid, price_f, revenue_after_f, orders_after_i,
+                 conversion_rate_f, period_days_i, score, time.time()),
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("price_history: record_outcome failed: %s", exc)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
 
     # == ANALYSIS ==================================================
 
@@ -265,9 +327,19 @@ class PriceHistory:
 
 
 _instance: PriceHistory | None = None
+_instance_lock = threading.Lock()
+
 
 def get_price_history() -> PriceHistory:
+    """Thread-safe singleton accessor.
+
+    Pre-audit two concurrent first-callers could both construct
+    a PriceHistory instance with its own thread-local DB
+    connection pool. The second instance silently overwrote
+    the first. Audit pass 49.
+    """
     global _instance
-    if _instance is None:
-        _instance = PriceHistory()
-    return _instance
+    with _instance_lock:
+        if _instance is None:
+            _instance = PriceHistory()
+        return _instance
