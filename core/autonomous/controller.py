@@ -354,13 +354,31 @@ class AutonomousController:
             except Exception:
                 pass
 
-            cycle_result["phases"]["brain"] = {
+            # Pre-fix the phase summary dropped every adapter-
+            # layer signal the brain surfaced (``ai_reasoning``,
+            # ``via``, ``adapter``, ``model``) so operators had
+            # no way to tell which LLM answered. Surface the
+            # relevant fields so ``cli.py auto`` and the
+            # observability dashboard can display them.
+            ai_reasoning = thought.get("ai_reasoning") or {}
+            brain_summary = {
                 "health_score": thought.get("health_score", 0),
                 "problems": len(thought.get("problems", [])),
                 "opportunities": len(thought.get("opportunities", [])),
                 "decisions": len(thought.get("decisions", [])),
                 "top_action": thought["action_plan"][0]["action"] if thought.get("action_plan") else "none",
             }
+            if isinstance(ai_reasoning, dict) and ai_reasoning.get("available"):
+                brain_summary["ai_available"] = True
+                brain_summary["ai_via"] = ai_reasoning.get("via", "")
+                brain_summary["ai_adapter"] = ai_reasoning.get("adapter", "")
+                brain_summary["ai_model"] = ai_reasoning.get("model", "")
+                if ai_reasoning.get("tokens_in") or ai_reasoning.get("tokens_out"):
+                    brain_summary["ai_tokens_in"] = ai_reasoning.get("tokens_in", 0)
+                    brain_summary["ai_tokens_out"] = ai_reasoning.get("tokens_out", 0)
+            else:
+                brain_summary["ai_available"] = False
+            cycle_result["phases"]["brain"] = brain_summary
             # Store brain decisions for phase 3
             cycle_result["_brain_decisions"] = thought.get("decisions", [])
         except Exception as exc:
@@ -552,9 +570,15 @@ class AutonomousController:
                                       "orders": data.get("order_data", []),
                                       "customers": data.get("customer_data", [])},
                 )
+                # Pre-fix the summary dropped the
+                # ``router_attached`` flag the dispatcher added
+                # to its result envelope, so operators had no way
+                # to tell whether agents actually had the
+                # SmartRouter available during dispatch.
                 cycle_result["phases"]["agents"] = {
                     "dispatched": agent_result.get("dispatched", 0),
                     "agents_available": agent_result.get("agents_available", 0),
+                    "router_attached": bool(agent_result.get("router_attached", False)),
                 }
             except Exception as exc:
                 logger.debug("Agent dispatch: %s", exc)
@@ -905,10 +929,26 @@ class AutonomousController:
                 data.get("products", []),
             )
             if ff_result.get("total_orders", 0) > 0:
+                # Pre-fix the fulfillment summary dropped the
+                # ``shipping_rate_source`` field the migrated
+                # ``auto_fulfill`` adds to every per-order
+                # result, so the operator couldn't see whether
+                # shipping rates came from a real carrier
+                # adapter or fell back to the placeholder.
+                # Aggregate the per-order sources into a count
+                # map and surface it here.
+                rate_sources: dict[str, int] = {}
+                for r in ff_result.get("results", []):
+                    if not isinstance(r, dict):
+                        continue
+                    src = r.get("shipping_rate_source", "")
+                    if src:
+                        rate_sources[src] = rate_sources.get(src, 0) + 1
                 cycle_result["phases"]["fulfillment"] = {
                     "total": ff_result.get("total_orders", 0),
                     "fulfillable": ff_result.get("fulfillable", 0),
                     "blocked": ff_result.get("blocked", 0),
+                    "shipping_rate_sources": rate_sources,
                 }
         except Exception as exc:
             logger.debug("Fulfillment: %s", exc)

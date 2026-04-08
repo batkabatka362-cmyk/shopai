@@ -412,8 +412,17 @@ class DecisionBrain:
         action_plan = self._create_action_plan(decisions)
         thought["action_plan"] = action_plan
 
-        # Step 7: Think with LLM if available (deep reasoning)
-        if self._llm and (problems or opportunities):
+        # Step 7: Think with LLM if available (deep reasoning).
+        #
+        # Pre-fix this gate was ``if self._llm and ...`` which made
+        # the adapter SmartRouter path in ``_deep_think`` completely
+        # unreachable — the router-only case (legacy llm absent,
+        # adapters configured) was impossible to hit. Smoke run on
+        # the ``test`` store confirmed ``ai_reasoning`` was never
+        # populated even with a live router. Accept EITHER the
+        # legacy ``self._llm`` OR the adapter router; the inner
+        # method already handles both paths with fallback.
+        if (self._llm or self._llm_router) and (problems or opportunities):
             ai_thought = self._deep_think(state, problems, opportunities)
             thought["ai_reasoning"] = ai_thought
 
