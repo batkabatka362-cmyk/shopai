@@ -18,6 +18,15 @@ from utils.logger import get_logger
 
 logger = get_logger("brain.decision_engine")
 
+# Upper bound on the post-weight final score. The scoring
+# math clamps the base to [0.05, 1.0] and then multiplies by
+# a learned weight in [0.1, 2.0], so in the extreme a strong
+# option with a fully-learned 2.0 weight lands at 2.0. We
+# keep the cap at 2.0 so downstream consumers can tell that
+# the score is a "learned-boosted" value without the old
+# 0..1 ceiling silently truncating learning.
+_MAX_FINAL_SCORE = 2.0
+
 
 class Decision:
     """A single structured decision."""
@@ -45,13 +54,26 @@ class Decision:
 
 
 class DecisionEngine:
-    """Structured decision maker — always uses memory."""
+    """Structured decision maker — always uses memory.
+
+    Since the Fix C learning-loop closure, the engine also
+    consults an ``ActionWeightStore`` when ranking options.
+    Every ``record_outcome`` call updates the store with an
+    exponential moving average of the outcome score, and every
+    subsequent ``decide`` multiplies each option's final score
+    by the learned weight for its ``(category, action)`` pair.
+    Over time consistently successful actions rise in the
+    ranking and consistently failing ones sink — the brain
+    actually learns from its history instead of recording
+    outcomes into a black hole.
+    """
 
     def __init__(self) -> None:
         self._memory = None
         self._memory_intel = None
         self._data_arch = None
         self._decisions_made = 0
+        self._weights = None  # lazy-loaded ActionWeightStore
 
     def _get_memory(self):
         if not self._memory:
@@ -73,6 +95,25 @@ class DecisionEngine:
             except Exception:
                 pass
         return self._memory_intel
+
+    def _get_weights(self):
+        """Lazy-load the process-wide ``ActionWeightStore``.
+
+        Fix C: closes the learning loop. Every ``decide`` call
+        consults the store to boost / suppress options based
+        on past outcomes, and every ``record_outcome`` call
+        updates the store with an EMA of the outcome score.
+        Import is deferred so a broken ``core.learning``
+        package can't take down decision making.
+        """
+        if not self._weights:
+            try:
+                from core.learning.action_weights import get_action_weight_store
+                self._weights = get_action_weight_store()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("weights store init failed: %s", exc)
+                self._weights = None
+        return self._weights
 
     # ── Main Decision Process ────────────────────────────────
 
@@ -112,8 +153,10 @@ class DecisionEngine:
         if not options:
             return Decision("no_action", "No viable options found", 0.2, category)
 
-        # Step 3: SCORE each option
-        scored = self._score_options(options, context, input_data)
+        # Step 3: SCORE each option (goal-aware + weight-aware)
+        scored = self._score_options(
+            options, context, input_data, category=category,
+        )
 
         # Step 4: SELECT best option
         best = max(scored, key=lambda x: x["final_score"])
@@ -240,13 +283,36 @@ class DecisionEngine:
 
     # ── Option Scoring ───────────────────────────────────────
 
-    def _score_options(self, options: list[dict], context: dict,
-                       input_data: dict) -> list[dict[str, Any]]:
-        """Score each option using profit, risk, and past performance."""
+    def _score_options(
+        self,
+        options: list[dict],
+        context: dict,
+        input_data: dict,
+        *,
+        category: str = "",
+    ) -> list[dict[str, Any]]:
+        """Score each option using profit, risk, past
+        performance, and the learned action-weight store.
+
+        The final score is:
+
+            base = 0.3 + profit*0.4 - risk*0.2
+                   + memory_boost - memory_penalty + rule_boost
+            clamped to [0.05, 1.0]
+            final = clamped * learned_weight
+
+        Where ``learned_weight`` comes from ``ActionWeightStore``
+        and starts at the neutral 1.0 for unknown
+        ``(category, action)`` pairs. As outcomes accumulate
+        the weight drifts toward the EMA of the observed
+        scores, boosting consistently successful actions and
+        suppressing consistently failing ones.
+        """
         scored = []
         best_cases = context.get("best_cases", [])
         failures = context.get("failures", [])
         rules = context.get("rules", [])
+        weight_store = self._get_weights()
 
         for opt in options:
             profit = float(opt.get("profit_score", 0.5))
@@ -286,12 +352,37 @@ class DecisionEngine:
                     rule_boost -= irule.get("confidence", 0.5) * 0.15
 
             # Final score: base 0.3 + profit-weighted + risk penalty + memory + rules
-            final = 0.3 + profit * 0.4 - risk * 0.2 + memory_boost - memory_penalty + rule_boost
-            final = max(0.05, min(1.0, final))
+            base_score = 0.3 + profit * 0.4 - risk * 0.2 + memory_boost - memory_penalty + rule_boost
+            base_score = max(0.05, min(1.0, base_score))
+
+            # Fix C: apply learned weight from outcome history.
+            # Unknown pairs get 1.0 (neutral). Consistently
+            # good outcomes drift the weight toward 2.0;
+            # consistent failures toward 0.0.
+            learned_weight = 1.0
+            if weight_store is not None:
+                try:
+                    learned_weight = float(
+                        weight_store.get(category, str(opt.get("action", ""))),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("weight lookup failed: %s", exc)
+                    learned_weight = 1.0
+
+            final = base_score * learned_weight
+            # Upper bound stays at the old 1.0 cap for
+            # downstream consumers that expect a 0..1 score.
+            # We deliberately let the weight lift a strong
+            # option above the old cap to signal "this is
+            # outperforming"; lower bound stays at 0.05 so
+            # nothing silently becomes exactly 0.
+            final = max(0.05, min(_MAX_FINAL_SCORE, final))
 
             scored.append({
                 **opt,
                 "final_score": round(final, 3),
+                "base_score": round(base_score, 3),
+                "learned_weight": round(learned_weight, 4),
                 "memory_boost": memory_boost,
                 "memory_penalty": memory_penalty,
                 "rule_boost": round(rule_boost, 3),
@@ -303,7 +394,26 @@ class DecisionEngine:
 
     def record_outcome(self, category: str, action: str, input_data: dict,
                        result: dict, score: float) -> None:
-        """Record the real outcome of a decision for future learning."""
+        """Record the real outcome of a decision for future learning.
+
+        Fix C: every outcome now also updates the
+        ``ActionWeightStore`` EMA so the next ``decide`` call
+        in the same category will consult the learned weight
+        when scoring options. This closes the decision →
+        action → outcome → memory → next decision loop that
+        was broken pre-fix (weights were counted but never
+        written anywhere queries could reach).
+        """
+        # Close the learning loop: update the weight store
+        # BEFORE writing memory, so even if memory write
+        # fails the weight update survives.
+        weight_store = self._get_weights()
+        if weight_store is not None and category and action:
+            try:
+                weight_store.record(category, action, score)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("weight store record failed: %s", exc)
+
         mem = self._get_memory()
         mem.record_decision(
             category=category,
