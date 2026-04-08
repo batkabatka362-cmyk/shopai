@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
+from utils.helpers import safe_float
+
 logger = logging.getLogger("data_pipeline.normalizer")
 
 # Ordered list of date formats tried during normalize_date
@@ -70,16 +72,37 @@ class DataNormalizer:
         Returns:
             New list of normalized records.
         """
-        if not config:
+        # Defensive coercion of public entry point. Audit pass 41.
+        if not isinstance(data, list):
+            return []
+        data = [r for r in data if isinstance(r, dict)]
+
+        if not config or not isinstance(config, dict):
             return [dict(r) for r in data]
 
         logger.info("Normalizing %d records", len(data))
-        price_fields: list[str] = config.get("price_fields", [])
-        date_fields: list[str] = config.get("date_fields", [])
-        url_fields: list[str] = config.get("url_fields", [])
-        min_max_fields: dict[str, dict[str, float]] = config.get("min_max_fields", {})
-        z_score_fields: dict[str, dict[str, float]] = config.get("z_score_fields", {})
-        rename: dict[str, str] = config.get("rename", {})
+        price_fields: list[str] = config.get("price_fields") or []
+        date_fields: list[str] = config.get("date_fields") or []
+        url_fields: list[str] = config.get("url_fields") or []
+        min_max_fields: dict[str, dict[str, float]] = config.get("min_max_fields") or {}
+        z_score_fields: dict[str, dict[str, float]] = config.get("z_score_fields") or {}
+        rename: dict[str, str] = config.get("rename") or {}
+
+        # Normalise config shapes so downstream ``in`` /
+        # ``.get`` / ``["key"]`` operations can't crash on
+        # non-list / non-dict values.
+        if not isinstance(price_fields, list):
+            price_fields = []
+        if not isinstance(date_fields, list):
+            date_fields = []
+        if not isinstance(url_fields, list):
+            url_fields = []
+        if not isinstance(min_max_fields, dict):
+            min_max_fields = {}
+        if not isinstance(z_score_fields, dict):
+            z_score_fields = {}
+        if not isinstance(rename, dict):
+            rename = {}
 
         result: list[dict[str, Any]] = []
         for record in data:
@@ -95,14 +118,27 @@ class DataNormalizer:
                 elif key in url_fields and value is not None:
                     new_rec[out_key] = self.normalize_url(str(value))
                 elif key in min_max_fields and value is not None:
-                    cfg = min_max_fields[key]
+                    cfg = min_max_fields.get(key)
+                    if not isinstance(cfg, dict):
+                        new_rec[out_key] = value
+                        continue
+                    lo = safe_float(cfg.get("min"))
+                    hi = safe_float(cfg.get("max"))
+                    # ``float(value)`` crashes on non-numeric
+                    # strings; safe_float handles "$99.99",
+                    # None, and garbage. Audit pass 41.
                     new_rec[out_key] = self.min_max_scale(
-                        float(value), cfg["min"], cfg["max"]
+                        safe_float(value), lo, hi
                     )
                 elif key in z_score_fields and value is not None:
-                    cfg = z_score_fields[key]
+                    cfg = z_score_fields.get(key)
+                    if not isinstance(cfg, dict):
+                        new_rec[out_key] = value
+                        continue
+                    mean = safe_float(cfg.get("mean"))
+                    std = safe_float(cfg.get("std"))
                     new_rec[out_key] = self.z_score(
-                        float(value), cfg["mean"], cfg["std"]
+                        safe_float(value), mean, std
                     )
                 else:
                     new_rec[out_key] = value

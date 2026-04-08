@@ -40,25 +40,50 @@ class DataTransformer:
         Returns:
             Transformed records as a new list.
         """
-        result = [dict(r) for r in data]
+        # Defensive coercion of public entry point. Audit pass 41.
+        if not isinstance(data, list):
+            return []
+        if not isinstance(transformations, list):
+            transformations = []
+
+        # Start from a clean list of dict-shaped records only
+        # so downstream ops can't crash on a raw string / None.
+        result = [dict(r) for r in data if isinstance(r, dict)]
         for tdef in transformations:
+            if not isinstance(tdef, dict):
+                continue
             op = tdef.get("op", "")
             if op == "rename":
-                result = [self.rename_fields(r, tdef.get("field_map", {})) for r in result]
+                field_map = tdef.get("field_map") or {}
+                if not isinstance(field_map, dict):
+                    continue
+                result = [self.rename_fields(r, field_map) for r in result]
             elif op == "flatten":
-                result = [self.flatten(r, tdef.get("separator", "_")) for r in result]
+                sep = tdef.get("separator", "_")
+                if not isinstance(sep, str):
+                    sep = "_"
+                result = [self.flatten(r, sep) for r in result]
             elif op == "derive":
                 field = tdef.get("field", "")
                 expr = tdef.get("expression", "")
+                if not isinstance(field, str) or not field:
+                    continue
+                if not isinstance(expr, str):
+                    continue
                 result = [self.compute_derived_field(r, field, expr) for r in result]
             elif op == "drop":
-                drop_fields: list[str] = tdef.get("fields", [])
+                drop_fields = tdef.get("fields") or []
+                if not isinstance(drop_fields, list):
+                    continue
+                drop_set = set(drop_fields)
                 result = [
-                    {k: v for k, v in r.items() if k not in drop_fields}
+                    {k: v for k, v in r.items() if k not in drop_set}
                     for r in result
                 ]
             elif op == "keep":
-                keep_fields: list[str] = tdef.get("fields", [])
+                keep_fields = tdef.get("fields") or []
+                if not isinstance(keep_fields, list):
+                    continue
                 result = [
                     {k: r[k] for k in keep_fields if k in r}
                     for r in result
@@ -96,6 +121,10 @@ class DataTransformer:
         Returns:
             Flat dict with no nested dicts.
         """
+        if not isinstance(data, dict):
+            return {}
+        if not isinstance(separator, str):
+            separator = "_"
         return self._flatten_recursive(data, parent_key="", separator=separator)
 
     @staticmethod
@@ -134,6 +163,10 @@ class DataTransformer:
         Returns:
             New record dict with renamed keys.
         """
+        if not isinstance(record, dict):
+            return {}
+        if not isinstance(field_map, dict):
+            field_map = {}
         return {field_map.get(k, k): v for k, v in record.items()}
 
     @staticmethod
@@ -167,7 +200,14 @@ class DataTransformer:
             expression = "price - cost"
             → adds "margin": 4.0
         """
+        if not isinstance(record, dict):
+            return {field_name: None} if isinstance(field_name, str) else {}
         new_rec = dict(record)
+        if not isinstance(field_name, str) or not field_name:
+            return new_rec
+        if not isinstance(expression, str):
+            new_rec[field_name] = None
+            return new_rec
         try:
             new_rec[field_name] = _eval_expression(expression, record)
         except Exception as exc:  # noqa: BLE001
@@ -210,10 +250,19 @@ class DataTransformer:
             → {"2024-01": 1000, "2024-02": 1200}
         """
         result: dict[str, Any] = {}
+        if not isinstance(data, list):
+            return result
         for record in data:
+            if not isinstance(record, dict):
+                continue
             key = record.get(key_field)
             val = record.get(value_field)
             if key is None:
+                continue
+            # Keys going into a dict must be hashable.
+            try:
+                hash(key)
+            except TypeError:
                 continue
             if key in result:
                 existing = result[key]
