@@ -17,43 +17,76 @@ Integrates with UnifiedMemory — stores quality reports for brain to consult.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("data_quality")
+
+
+def _nonempty_str(val: Any) -> str:
+    """Return ``val`` as a stripped string, or ``""`` if None/non-str.
+
+    Pre-audit several rules did ``str(p.get("title", ""))`` which
+    turns a present-but-None value into the literal string
+    ``"None"`` — non-empty, so ``title_not_empty`` silently
+    passed on products with ``"title": null``. Audit pass 47.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.strip()
+    return str(val).strip()
+
+
+def _first_nonempty(*vals: Any) -> str:
+    """Return the first truthy stripped string from *vals*, or ``""``."""
+    for v in vals:
+        s = _nonempty_str(v)
+        if s:
+            return s
+    return ""
+
 
 # --- Schemas for each data type ---
 
 PRODUCT_REQUIRED = ["id", "price"]
 PRODUCT_RULES = {
-    "price_positive": lambda p: float(p.get("price", 0)) > 0,
-    "title_not_empty": lambda p: bool(str(p.get("title", p.get("name", ""))).strip()),
+    "price_positive": lambda p: safe_float(p.get("price")) > 0,
+    "title_not_empty": lambda p: bool(_first_nonempty(p.get("title"), p.get("name"))),
     "cost_reasonable": lambda p: (
-        float(p.get("cost", 0)) <= float(p.get("price", 1)) * 2
-        if p.get("cost") and p.get("price") else True
+        # Pre-audit: ``p.get("cost") and p.get("price")`` — if cost is 0
+        # or missing, the rule short-circuits to True. That's fine, but
+        # the float() calls below used to crash on non-numeric strings.
+        safe_float(p.get("cost")) <= safe_float(p.get("price"), default=1.0) * 2
+        if safe_float(p.get("cost")) > 0 and safe_float(p.get("price")) > 0 else True
     ),
     "cost_less_than_price": lambda p: (
-        float(p.get("cost", 0)) < float(p.get("price", 1))
-        if p.get("cost") and p.get("price") else True
+        safe_float(p.get("cost")) < safe_float(p.get("price"), default=1.0)
+        if safe_float(p.get("cost")) > 0 and safe_float(p.get("price")) > 0 else True
     ),
-    "inventory_non_negative": lambda p: int(p.get("inventory_quantity", 0)) >= 0,
-    "has_description": lambda p: bool(str(p.get("body_html", p.get("description", ""))).strip()),
+    "inventory_non_negative": lambda p: safe_int(p.get("inventory_quantity")) >= 0,
+    "has_description": lambda p: bool(_first_nonempty(p.get("body_html"), p.get("description"))),
     "has_images": lambda p: bool(p.get("images") or p.get("image") or p.get("image_url")),
-    "has_cost": lambda p: float(p.get("cost", 0)) > 0,
+    "has_cost": lambda p: safe_float(p.get("cost")) > 0,
 }
 
 ORDER_REQUIRED = ["id"]
 ORDER_RULES = {
-    "has_total": lambda o: float(o.get("total_price", o.get("total", 0))) > 0,
+    "has_total": lambda o: (
+        safe_float(o.get("total_price")) > 0
+        or safe_float(o.get("total")) > 0
+    ),
     "has_date": lambda o: bool(o.get("created_at")),
 }
 
 CUSTOMER_REQUIRED = ["id"]
 CUSTOMER_RULES = {
     "has_email": lambda c: bool(c.get("email")),
-    "has_orders": lambda c: int(c.get("orders_count", 0)) >= 0,
+    "has_orders": lambda c: safe_int(c.get("orders_count")) >= 0,
 }
 
 
@@ -74,9 +107,18 @@ class DataQualityPipeline:
         """
         start = time.monotonic()
 
-        products = store_data.get("products", [])
-        orders = store_data.get("order_data", store_data.get("orders", []))
-        customers = store_data.get("customer_data", store_data.get("customers", []))
+        # Defensive coercion of public entry point. Audit pass 47.
+        if not isinstance(store_data, dict):
+            store_data = {}
+
+        products = store_data.get("products") or []
+        orders = store_data.get("order_data") or store_data.get("orders") or []
+        customers = store_data.get("customer_data") or store_data.get("customers") or []
+        # Filter each list to dicts only so downstream loops
+        # can't crash on a stray string / None / int item.
+        products = [p for p in products if isinstance(p, dict)] if isinstance(products, list) else []
+        orders = [o for o in orders if isinstance(o, dict)] if isinstance(orders, list) else []
+        customers = [c for c in customers if isinstance(c, dict)] if isinstance(customers, list) else []
 
         # Stage 1: Validate
         product_quality = self._validate_records(products, PRODUCT_REQUIRED, PRODUCT_RULES, "product")
@@ -203,16 +245,19 @@ class DataQualityPipeline:
         """Clean and enrich product records."""
         cleaned = []
         for p in products:
+            if not isinstance(p, dict):
+                continue
             rec = dict(p)
 
-            # Ensure numeric fields
-            for field in ("price", "cost"):
-                try:
-                    rec[field] = float(rec.get(field, 0))
-                except (TypeError, ValueError):
-                    rec[field] = 0.0
-
-            rec["inventory_quantity"] = int(rec.get("inventory_quantity", 0))
+            # Ensure numeric fields. Pre-audit ``float()`` was
+            # try/except-wrapped but ``int(rec.get("inventory_quantity",
+            # 0))`` was NOT — crashed on non-numeric strings
+            # from scraped / file-loaded data. Replaced with
+            # ``safe_float`` / ``safe_int`` for consistency.
+            # Audit pass 47.
+            rec["price"] = safe_float(rec.get("price"))
+            rec["cost"] = safe_float(rec.get("cost"))
+            rec["inventory_quantity"] = safe_int(rec.get("inventory_quantity"))
 
             # Derive missing fields
             if rec["cost"] > 0 and rec["price"] > 0:
@@ -226,7 +271,9 @@ class DataQualityPipeline:
             rec["_quality"] = {
                 "has_cost": rec["cost"] > 0,
                 "has_images": bool(rec.get("images") or rec.get("image") or rec.get("image_url")),
-                "has_description": bool(str(rec.get("body_html", rec.get("description", ""))).strip()),
+                "has_description": bool(
+                    _first_nonempty(rec.get("body_html"), rec.get("description"))
+                ),
                 "profitable": rec["margin"] > 0.1 if rec["cost"] > 0 else None,
             }
 
@@ -245,17 +292,24 @@ class DataQualityPipeline:
         if not products:
             return anomalies
 
-        # Price anomalies
-        prices = [p["price"] for p in products if p.get("price", 0) > 0]
+        # Price anomalies. Pre-audit ``p["price"] > 0`` crashed
+        # on non-numeric strings (``"$99.99" > 0`` → TypeError).
+        # Now use safe_float throughout. Audit pass 47.
+        dict_products = [p for p in products if isinstance(p, dict)]
+        prices = [
+            safe_float(p.get("price"))
+            for p in dict_products
+        ]
+        prices = [x for x in prices if x > 0]
         if prices:
             avg_price = sum(prices) / len(prices)
-            for p in products:
-                price = float(p.get("price", 0))
+            for p in dict_products:
+                price = safe_float(p.get("price"))
                 if price > 0 and price > avg_price * 5:
                     anomalies.append({
                         "type": "price_outlier_high",
                         "severity": "warning",
-                        "product": p.get("title", p.get("id", "")),
+                        "product": _first_nonempty(p.get("title"), p.get("id")),
                         "value": price,
                         "expected_range": f"< {avg_price * 3:.2f}",
                     })
@@ -263,35 +317,56 @@ class DataQualityPipeline:
                     anomalies.append({
                         "type": "price_outlier_low",
                         "severity": "warning",
-                        "product": p.get("title", p.get("id", "")),
+                        "product": _first_nonempty(p.get("title"), p.get("id")),
                         "value": price,
                         "expected_range": f"> {avg_price * 0.2:.2f}",
                     })
 
         # Margin anomalies
-        for p in products:
+        for p in dict_products:
             margin = p.get("margin", 0)
+            if isinstance(margin, bool):
+                # ``bool`` is a subclass of int; reject it for
+                # numeric checks — same rule as pass 41/45.
+                continue
             if isinstance(margin, (int, float)) and margin < 0:
                 anomalies.append({
                     "type": "negative_margin",
                     "severity": "critical",
-                    "product": p.get("title", p.get("id", "")),
+                    "product": _first_nonempty(p.get("title"), p.get("id")),
                     "value": margin,
                     "message": "Product costs more than its price",
                 })
 
-        # Zero inventory with recent orders
-        zero_stock = [p for p in products if p.get("inventory_quantity", 0) == 0]
+        # Zero inventory with recent orders. Pre-audit
+        # ``p.get("inventory_quantity", 0) == 0`` compared
+        # strings vs ints and silently missed string-zero
+        # cases (``"0" == 0`` is False in Python). Now uses
+        # safe_int.
+        zero_stock = [
+            p for p in dict_products
+            if safe_int(p.get("inventory_quantity")) == 0
+        ]
         if zero_stock:
             anomalies.append({
                 "type": "zero_inventory",
                 "severity": "warning",
                 "count": len(zero_stock),
-                "products": [p.get("title", "") for p in zero_stock[:5]],
+                "products": [
+                    _first_nonempty(p.get("title"))
+                    for p in zero_stock[:5]
+                ],
             })
 
-        # Duplicate detection (same title)
-        titles = [p.get("title", "").lower().strip() for p in products if p.get("title")]
+        # Duplicate detection (same title). Pre-audit
+        # ``p.get("title", "").lower().strip()`` crashed on
+        # ``"title": null`` because None.lower() is not a
+        # method.
+        titles = []
+        for p in dict_products:
+            t = _nonempty_str(p.get("title")).lower()
+            if t:
+                titles.append(t)
         seen: set[str] = set()
         dupes: list[str] = []
         for t in titles:
@@ -407,8 +482,19 @@ class DataQualityPipeline:
         return self._last_report
 
 
+_singleton_lock = threading.Lock()
+
+
 def get_data_quality() -> DataQualityPipeline:
-    """Get singleton data quality pipeline."""
-    if not hasattr(get_data_quality, "_instance"):
-        get_data_quality._instance = DataQualityPipeline()
-    return get_data_quality._instance
+    """Get singleton data quality pipeline.
+
+    Thread-safe: two concurrent first-callers will observe the
+    same instance instead of silently creating two (pre-audit
+    the check-then-assign pattern could race). Audit pass 47.
+    """
+    with _singleton_lock:
+        inst = getattr(get_data_quality, "_instance", None)
+        if inst is None:
+            inst = DataQualityPipeline()
+            get_data_quality._instance = inst  # type: ignore[attr-defined]
+        return inst
