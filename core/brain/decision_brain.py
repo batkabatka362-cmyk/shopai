@@ -48,6 +48,78 @@ WORLDVIEW = {
 }
 
 
+# ── Goal-aware action weights ────────────────────────────────
+#
+# The ``GoalManager`` tells the brain what the store's strategic
+# goal is right now. The brain uses this table to boost or
+# suppress specific action types during decision ranking —
+# e.g. in ``survive_crisis`` mode we boost ``lower_price`` and
+# ``clear_inventory`` while suppressing ``add_products``
+# (expansion during a crisis is almost always wrong).
+#
+# Each weight is a multiplier applied to the decision's raw
+# score (priority-derived). Values > 1 boost, values < 1
+# suppress. The default weight is 1.0 (unchanged). Action types
+# not listed use the default.
+#
+# The table is intentionally small and explicit — machine-
+# learned rankers have no place at the core decision layer
+# because we need the behaviour to be auditable. The brain's
+# learning loop operates a layer above this (weight updates
+# flow from outcome tracker into a separate fast-lookup table
+# that Fix C will introduce).
+
+_GOAL_ACTION_WEIGHTS: dict[str, dict[str, float]] = {
+    "survive_crisis": {
+        # When cash is tight, lower prices + clear slow stock +
+        # collect cash. Never expand.
+        "lower_price":         1.5,
+        "clear_inventory":     1.5,
+        "clearance_sale":      1.5,
+        "restock":             0.3,   # don't tie up cash
+        "add_products":        0.1,   # absolutely not
+        "raise_price":         0.4,   # risky when demand is soft
+        "marketing_push":      1.2,   # traffic is cheap survival
+        "email_campaign":      1.3,
+    },
+    "grow_customers": {
+        # Churn is the threat. Retention wins, acquisition
+        # follows. Price moves are secondary.
+        "win_back_campaign":   1.6,
+        "vip_program":         1.5,
+        "loyalty_program":     1.5,
+        "email_campaign":      1.4,
+        "customer_segment":    1.3,
+        "marketing_push":      1.3,
+        "raise_price":         0.5,   # don't alienate at-risk customers
+    },
+    "capture_opportunity": {
+        # Short window. Expand the catalog and push hard. Margin
+        # can be recovered later.
+        "add_products":        1.6,
+        "add_similar":         1.5,
+        "trending_product_hunt": 1.5,
+        "marketing_push":      1.5,
+        "social_media":        1.4,
+        "paid_ads":            1.4,
+        "raise_price":         1.1,   # capture is OK if demand is clearly there
+    },
+    "increase_aov": {
+        # Customer base is stable. Push dollars-per-order.
+        "promote_high_margin": 1.5,
+        "cross_sell":          1.5,
+        "upsell":              1.5,
+        "create_bundles":      1.4,
+        "add_premium":         1.4,
+        "raise_price":         1.2,
+        "marketing_push":      0.8,   # traffic is not the bottleneck
+    },
+    "maximize_profit": {
+        # Default mode. No modulation — rank purely by severity.
+    },
+}
+
+
 class StoreState:
     """Current understanding of the store's situation."""
 
@@ -323,23 +395,59 @@ class DecisionBrain:
 
     # ── Main thinking process ────────────────────────────────
 
-    def think(self, store_data: dict[str, Any]) -> dict[str, Any]:
+    def think(
+        self,
+        store_data: dict[str, Any],
+        goal: str | None = None,
+    ) -> dict[str, Any]:
         """Main thinking process — observe, understand, decide, plan.
 
         This is called each cycle. The brain:
           1. Observes current state
           2. Identifies problems and opportunities
           3. Considers past experience
-          4. Decides what to focus on
+          4. Decides what to focus on (GOAL-AWARE)
           5. Creates a priority action plan
+
+        Args:
+            store_data: Per-cycle store snapshot (products,
+                orders, customers, ...) the brain will reason
+                about.
+            goal: Optional strategic goal selected by
+                ``GoalManager`` — one of ``"survive_crisis"``,
+                ``"grow_customers"``, ``"capture_opportunity"``,
+                ``"increase_aov"``, ``"maximize_profit"``. When
+                provided the brain re-ranks decisions using the
+                goal weights defined in ``_GOAL_ACTION_WEIGHTS``
+                so pricing / product / marketing actions reflect
+                the current business priority instead of being
+                evaluated in isolation. Pre-fix the brain took
+                NO goal parameter and the GoalManager's output
+                was dead code within the autonomous cycle.
+                Defaults to ``None`` (ranks by severity alone)
+                for backwards compatibility.
         """
         self._init_components()
         start = time.monotonic()
 
         state = StoreState(store_data)
+        # Normalise the goal — strip whitespace and reject
+        # unknown values so downstream scoring can trust the
+        # key. Unknown goals fall back to the weight-free path.
+        normalised_goal = (
+            goal.strip().lower() if isinstance(goal, str) and goal.strip() else None
+        )
+        if normalised_goal is not None and normalised_goal not in _GOAL_ACTION_WEIGHTS:
+            logger.debug(
+                "think: unknown goal %r, falling back to severity-only ranking",
+                goal,
+            )
+            normalised_goal = None
+
         thought: dict[str, Any] = {
             "timestamp": time.time(),
             "state": state.summary(),
+            "goal": normalised_goal or "",
             "observations": [],
             "problems": [],
             "opportunities": [],
@@ -380,7 +488,10 @@ class DecisionBrain:
         thought["experience"] = experience_advice
 
         # Step 5: DECIDE — what to do? (uses DecisionEngine + memory)
-        decisions = self._decide(state, problems, opportunities, experience_advice)
+        decisions = self._decide(
+            state, problems, opportunities, experience_advice,
+            goal=normalised_goal,
+        )
 
         # Step 5a: Structured decisions via DecisionEngine (top 2 for speed)
         if self._decision_engine:
@@ -652,9 +763,24 @@ class DecisionBrain:
 
     # ── Step 5: Decide ───────────────────────────────────────
 
-    def _decide(self, state: StoreState, problems: list,
-                opportunities: list, experience: dict) -> list[dict[str, Any]]:
-        """Make decisions — what to do, in priority order."""
+    def _decide(
+        self,
+        state: StoreState,
+        problems: list,
+        opportunities: list,
+        experience: dict,
+        *,
+        goal: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Make decisions — what to do, in priority order.
+
+        When ``goal`` is supplied (and known to
+        ``_GOAL_ACTION_WEIGHTS``), each candidate's score is
+        multiplied by the goal-specific weight so the final
+        ranking reflects the store's current strategic goal.
+        Unknown / missing goals fall back to the severity-only
+        ranking that existed before Fix A.
+        """
         decisions = []
 
         # Priority 1: Fix critical problems
@@ -699,7 +825,29 @@ class DecisionBrain:
                 "confidence": 0.6,
             })
 
-        return sorted(decisions, key=lambda d: d["priority"])
+        # Compute a continuous score derived from priority
+        # (lower priority number → higher score so a
+        # priority-1 critical beats a priority-4 medium).
+        # We then modulate by the goal weight so the brain
+        # actually honours the strategic goal selected by
+        # GoalManager.
+        weight_table = _GOAL_ACTION_WEIGHTS.get(goal or "", {}) if goal else {}
+
+        for d in decisions:
+            base_score = 5.0 - float(d.get("priority", 5))  # 4.0..1.0
+            weight = float(weight_table.get(d.get("type", ""), 1.0))
+            d["score"] = round(base_score * weight, 3)
+            d["goal_weight"] = weight
+            if goal:
+                d["goal"] = goal
+
+        # Sort by score DESC (tiebreak by original priority
+        # ascending for deterministic order when goals don't
+        # distinguish two decisions).
+        return sorted(
+            decisions,
+            key=lambda d: (-d["score"], d["priority"]),
+        )
 
     # ── Step 5b: Validate Decisions ─────────────────────────
 

@@ -359,11 +359,60 @@ class AutonomousController:
         except Exception as exc:
             _record("competitor_scan", exc)
 
+        # Phase 1a-goal: GOAL SELECTION — choose strategic goal
+        #
+        # Pre-fix the GoalManager existed but was orphaned from
+        # the cycle — only CoreOrchestrator called it and the
+        # brain had no parameter to receive the goal. Core
+        # audit flagged this as the #1 CRITICAL weakness
+        # (goal-system dead code). Fix A wires it in:
+        #   1. build a situation dict from the current cycle data
+        #   2. call GoalManager.select_goal(situation, cycle_num)
+        #   3. pass the chosen goal to brain.think(data, goal=...)
+        # Failures here are non-fatal — when selection fails,
+        # the brain falls back to the severity-only ranking
+        # that existed before Fix A (``goal=None``).
+        selected_goal: str | None = None
+        goal_reason = ""
+        try:
+            from core.goals.goal_manager import GoalManager
+            if not hasattr(self, "_goal_manager") or self._goal_manager is None:
+                self._goal_manager = GoalManager()
+            situation = {
+                "financial": {
+                    "health_grade": cycle_result["phases"].get("data", {}).get("source", "B"),
+                    "critical_alerts": 0,
+                },
+                "customers": {
+                    "churn_risk_pct": 0,
+                    "total_customers": len(data.get("customer_data", [])),
+                },
+                "inventory": {
+                    "total_products": len(data.get("products", [])),
+                },
+                "health": {
+                    "overall_grade": "B",
+                },
+            }
+            goal_result = self._goal_manager.select_goal(
+                situation, cycle_number=self._cycle_count,
+            )
+            selected_goal = goal_result.get("goal", "maximize_profit")
+            goal_reason = goal_result.get("reason", "")
+            cycle_result["phases"]["goal"] = {
+                "selected": selected_goal,
+                "reason": goal_reason[:120],
+                "switched": bool(goal_result.get("switched", False)),
+                "confidence": float(goal_result.get("confidence", 0) or 0),
+            }
+        except Exception as exc:
+            _record("goal_selection", exc)
+
         # Phase 1b: BRAIN THINK — autonomous reasoning
         try:
             from core.brain.decision_brain import DecisionBrain
             brain = DecisionBrain()
-            thought = brain.think(data)
+            thought = brain.think(data, goal=selected_goal)
             # Record exploration
             try:
                 from core.brain.smart_rotation import get_exploration_boost
