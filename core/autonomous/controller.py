@@ -731,7 +731,47 @@ class AutonomousController:
                 "duration_s": se.get("duration_s", 0),
             })
 
+        # Fix F: close the learning loop for cycle-level smart
+        # execution. Pre-fix every smart execution result was
+        # recorded into the cycle_result dict but never flowed
+        # into the ActionWeightStore that Fix C introduced, so
+        # the weight-store pathway only learned from manual
+        # ``DecisionEngine.record_outcome`` calls. This block
+        # writes each execution's (action_type, score) pair into
+        # the store so autonomous cycles actually build
+        # accumulated weight history over time.
+        #
+        # Key choice: we write under ``(action_type, action_type)``
+        # — same string for both category and action — because
+        # SmartExecutor operates on action types, not brain
+        # decision categories. The DecisionEngine's
+        # ``_score_options`` reads via ``(category, option_action)``
+        # so it won't find smart-exec weights directly today;
+        # aligning the two naming spaces is a separate refactor.
+        # The immediate value of this fix is that the store
+        # now accumulates real cycle-execution history that can
+        # be queried + inspected, ending the data-on-the-floor
+        # problem the audit flagged as CRITICAL #3.
+        weight_updates = 0
+        try:
+            from core.learning.action_weights import get_action_weight_store
+            _weight_store = get_action_weight_store()
+            for se in se_results:
+                action_type = str(se.get("action_type", "") or "")
+                if not action_type:
+                    continue
+                score = float(se.get("score", 0) or 0)
+                _weight_store.record(action_type, action_type, score)
+                weight_updates += 1
+        except Exception as exc:
+            _record("weight_store_update", exc)
+
         learning = self._phase_learn(sid, cycle_id, analysis, all_executions)
+        # Surface the Fix F update count on the learning phase
+        # summary so operators can see how many smart-exec
+        # outcomes landed in the weight store this cycle.
+        if isinstance(learning, dict):
+            learning["weight_updates"] = weight_updates
 
         # Brain learning loop — learn from this cycle + smart executions
         try:
