@@ -238,6 +238,24 @@ class AutonomousController:
             "phases": {},
         }
 
+        # Per-cycle error ledger. Pre-fix every phase caught its
+        # own exception with ``except Exception: logger.debug(...)``
+        # and the failure was invisible at the default INFO log
+        # level — operators had no way to diagnose why a cycle
+        # ran with degraded intelligence. Core audit flagged this
+        # as 23+ silent failure points. The ``_record`` helper
+        # below promotes every catch to a WARNING log AND
+        # appends the typed error string to this dict, which is
+        # surfaced on ``cycle_result["phase_errors"]`` at the end
+        # of the run so ``cli.py auto`` and the observability
+        # dashboard can display which subsystems failed and why.
+        phase_errors: dict[str, str] = {}
+
+        def _record(phase_name: str, exc: BaseException) -> None:
+            err = f"{type(exc).__name__}: {exc}"
+            phase_errors[phase_name] = err
+            logger.warning("cycle phase %r failed: %s", phase_name, err)
+
         # Phase 0: TIME + CONTEXT awareness
         try:
             from core.brain.smart_rotation import get_time_awareness, get_exploration_boost
@@ -275,7 +293,7 @@ class AutonomousController:
             if recorded:
                 cycle_result["phases"]["price_tracking"] = {"new_prices": recorded}
         except Exception as exc:
-            logger.debug("Price history: %s", exc)
+            _record("price_history", exc)
 
         # Phase 1a: DATA QUALITY — validate and score data before AI uses it
         try:
@@ -293,7 +311,7 @@ class AutonomousController:
             if quality_report.get("cleaned_products"):
                 data["products"] = quality_report["cleaned_products"]
         except Exception as exc:
-            logger.debug("Data quality pipeline: %s", exc)
+            _record("data_quality_pipeline", exc)
 
         # Populate unified memory (skip if same data as last cycle)
         _data_key = f"{sid}_{len(data.get('products', []))}_{len(data.get('order_data', []))}"
@@ -339,7 +357,7 @@ class AutonomousController:
             data["competitor_data"] = comp_scan.get("results", [])
             data["market_position"] = comp_scan.get("summary", {})
         except Exception as exc:
-            logger.debug("Competitor scan: %s", exc)
+            _record("competitor_scan", exc)
 
         # Phase 1b: BRAIN THINK — autonomous reasoning
         try:
@@ -382,7 +400,7 @@ class AutonomousController:
             # Store brain decisions for phase 3
             cycle_result["_brain_decisions"] = thought.get("decisions", [])
         except Exception as exc:
-            logger.debug("Brain think: %s", exc)
+            _record("brain_think", exc)
             thought = {}
 
         # Store brain context in working memory for other phases
@@ -445,7 +463,7 @@ class AutonomousController:
                 if action:
                     cog.reflection.record_decision(action, confidence, score)
         except Exception as exc:
-            logger.debug("Cognitive thinking: %s", exc)
+            _record("cognitive_thinking", exc)
 
         # Phase 1f: RL PRICING — learned pricing recommendations
         try:
@@ -466,7 +484,7 @@ class AutonomousController:
                 ),
             }
         except Exception as exc:
-            logger.debug("RL pricing: %s", exc)
+            _record("rl_pricing", exc)
 
         # Phase 1g: CUSTOMER SEGMENTATION — segment customers
         try:
@@ -479,7 +497,7 @@ class AutonomousController:
                     "segments": seg_result.get("segment_distribution", {}),
                 }
         except Exception as exc:
-            logger.debug("Segmentation: %s", exc)
+            _record("segmentation", exc)
 
         # Phase 1h: DEMAND FORECASTING — predict future demand
         try:
@@ -495,7 +513,7 @@ class AutonomousController:
                 "trends": fc_result.get("trend_summary", {}),
             }
         except Exception as exc:
-            logger.debug("Demand forecast: %s", exc)
+            _record("demand_forecast", exc)
 
         # Phase 1i: IMAGE SOURCING — find images for products without them
         try:
@@ -509,7 +527,7 @@ class AutonomousController:
                     "method": img_result.get("method", ""),
                 }
         except Exception as exc:
-            logger.debug("Image sourcing: %s", exc)
+            _record("image_sourcing", exc)
 
         # Phase 2: ANALYZE — Run analysis engines
         analysis = self._phase_analyze(sid, data)
@@ -581,7 +599,7 @@ class AutonomousController:
                     "router_attached": bool(agent_result.get("router_attached", False)),
                 }
             except Exception as exc:
-                logger.debug("Agent dispatch: %s", exc)
+                _record("agent_dispatch", exc)
                 cycle_result["phases"]["agents"] = {"error": str(exc)[:80]}
 
         # Phase 4: EXECUTE — Smart execution with simulation + learning
@@ -606,7 +624,7 @@ class AutonomousController:
                 if self._action_executor:
                     self._action_executor._pending_actions.clear()
         except Exception as exc:
-            logger.debug("Smart execution: %s", exc)
+            _record("smart_execution", exc)
 
         cycle_result["phases"]["execution"] = {
             "executed": len([e for e in executions if e.get("status") == "executed"]),
@@ -634,7 +652,7 @@ class AutonomousController:
                     "memory_informed": sum(1 for r in ic_results if r.get("memory_informed")),
                 }
             except Exception as exc:
-                logger.debug("Intelligence cycle: %s", exc)
+                _record("intelligence_cycle", exc)
 
             # Capture engine results into data architecture
             try:
@@ -699,7 +717,7 @@ class AutonomousController:
                 )
                 learning["outcomes_recorded"] = learning.get("outcomes_recorded", 0) + 1
         except Exception as exc:
-            logger.debug("Brain learning: %s", exc)
+            _record("brain_learning", exc)
 
         cycle_result["phases"]["learning"] = learning
 
@@ -719,7 +737,7 @@ class AutonomousController:
                 "estimated_revenue": mkt_result.get("estimated_revenue", 0),
             }
         except Exception as exc:
-            logger.debug("Marketing automation: %s", exc)
+            _record("marketing_automation", exc)
 
         # Phase 5a2: STRATEGY PLANNER — long-term plans
         if self._cycle_count % 5 == 1:  # Every 5 cycles
@@ -738,7 +756,7 @@ class AutonomousController:
                     "intelligence": plan.get("intelligence_used", {}),
                 }
             except Exception as exc:
-                logger.debug("Strategy planner: %s", exc)
+                _record("strategy_planner", exc)
 
         # Phase 5b: DOMAIN CAPTURE — fill all 12 data domains
         if hasattr(self, '_unified_memory') and self._unified_memory:
@@ -749,7 +767,7 @@ class AutonomousController:
                 )
                 cycle_result["phases"]["domain_capture"] = domain_stats
             except Exception as exc:
-                logger.debug("Domain capture: %s", exc)
+                _record("domain_capture", exc)
 
         # Phase 6: REPORT — Generate cycle summary
         elapsed = time.monotonic() - start
@@ -763,7 +781,7 @@ class AutonomousController:
             review = improver.review_cycle(cycle_result)
             cycle_result["phases"]["self_improvement"] = review
         except Exception as exc:
-            logger.debug("Self-improvement review: %s", exc)
+            _record("self_improvement_review", exc)
 
         # Phase 6c: MAINTENANCE — prune old data, cleanup
         if self._cycle_count % 10 == 0:  # Every 10 cycles
@@ -792,7 +810,7 @@ class AutonomousController:
                 "recommendations": health.get("recommendations", []),
             }
         except Exception as exc:
-            logger.debug("Rule health: %s", exc)
+            _record("rule_health", exc)
 
         # Phase 7b: EXECUTION PROMOTION — track and promote modes
         try:
@@ -812,7 +830,7 @@ class AutonomousController:
             if promotion_recs:
                 cycle_result["phases"]["execution_promotion"] = promotion_recs
         except Exception as exc:
-            logger.debug("Execution promotion: %s", exc)
+            _record("execution_promotion", exc)
 
         # Phase 7c: STRATEGY EXPANSION — every 5 cycles
         if self._cycle_count % 5 == 0:
@@ -826,7 +844,7 @@ class AutonomousController:
                         "coverage": expansion.get("categories_covered_after", 0),
                     }
             except Exception as exc:
-                logger.debug("Strategy expansion: %s", exc)
+                _record("strategy_expansion", exc)
 
         # Phase 8: PRODUCT SCORING — AI-learned product ranking
         try:
@@ -841,7 +859,7 @@ class AutonomousController:
                 "grade_D": sum(1 for s in product_scores if s["grade"] == "D"),
             }
         except Exception as exc:
-            logger.debug("Product scoring: %s", exc)
+            _record("product_scoring", exc)
 
         # Phase 8b: COMPETITIVE INTELLIGENCE — deep market analysis
         try:
@@ -858,7 +876,7 @@ class AutonomousController:
                 "recommendations": comp_intel.get("recommendations", [])[:2],
             }
         except Exception as exc:
-            logger.debug("Competitive intel: %s", exc)
+            _record("competitive_intel", exc)
 
         # Phase 8c: ALERTS — check for important events
         try:
@@ -873,7 +891,7 @@ class AutonomousController:
                     "messages": [a["message"] for a in cycle_alerts[:3]],
                 }
         except Exception as exc:
-            logger.debug("Alerts: %s", exc)
+            _record("alerts", exc)
 
         # Phase 8d: PRODUCT PERFORMANCE — track over time
         try:
@@ -897,7 +915,7 @@ class AutonomousController:
                     "details": trends.get("trends", {}),
                 }
         except Exception as exc:
-            logger.debug("Trend analysis: %s", exc)
+            _record("trend_analysis", exc)
 
         # Phase 8f: CHAIN OF THOUGHT — structured reasoning on top problem
         try:
@@ -918,7 +936,7 @@ class AutonomousController:
                 "steps": reasoning.get("reasoning_length", 0),
             }
         except Exception as exc:
-            logger.debug("Chain of thought: %s", exc)
+            _record("chain_of_thought", exc)
 
         # Phase 8g: FULFILLMENT — check order fulfillment status
         try:
@@ -951,7 +969,7 @@ class AutonomousController:
                     "shipping_rate_sources": rate_sources,
                 }
         except Exception as exc:
-            logger.debug("Fulfillment: %s", exc)
+            _record("fulfillment", exc)
 
         # Phase 8h: MULTI-STORE — share learnings
         try:
@@ -965,7 +983,7 @@ class AutonomousController:
                     "shareable_strategies": shared.get("shareable_strategies", 0),
                 }
         except Exception as exc:
-            logger.debug("Multi-store: %s", exc)
+            _record("multi_store", exc)
 
         # Phase 8i: DASHBOARD — generate dashboard snapshot
         try:
@@ -1006,7 +1024,7 @@ class AutonomousController:
                         "success": sum(1 for r in live_results if r.get("status") == "success"),
                     }
         except Exception as exc:
-            logger.debug("Live execution: %s", exc)
+            _record("live_execution", exc)
 
         # Phase 8k: CONTINUOUS OPTIMIZATION — auto-fix store issues
         try:
@@ -1025,7 +1043,7 @@ class AutonomousController:
             if co_result.get("fixes_applied", 0) > 0:
                 cycle_result["phases"]["continuous_optimization"] = co_result
         except Exception as exc:
-            logger.debug("Continuous optimizer: %s", exc)
+            _record("continuous_optimizer", exc)
 
         # Phase 8k2: REVENUE STRATEGY — generate revenue plan
         if self._cycle_count % 10 == 1:
@@ -1043,7 +1061,7 @@ class AutonomousController:
                     "immediate_actions": len(rev_plan.get("immediate_actions", [])),
                 }
             except Exception as exc:
-                logger.debug("Revenue strategy: %s", exc)
+                _record("revenue_strategy", exc)
 
         # Phase 8k3: SEO ANALYSIS
         try:
@@ -1056,7 +1074,7 @@ class AutonomousController:
                 "top_issues": seo_result.get("top_issues", [])[:3],
             }
         except Exception as exc:
-            logger.debug("SEO analysis: %s", exc)
+            _record("seo_analysis", exc)
 
         # Phase 8k4: PROFIT CALCULATOR
         try:
@@ -1070,7 +1088,7 @@ class AutonomousController:
                 "needs_attention": len(profit.get("needs_attention", [])),
             }
         except Exception as exc:
-            logger.debug("Profit calculator: %s", exc)
+            _record("profit_calculator", exc)
 
         # Phase 8k5: SOCIAL CONTENT — generate posts for top products
         if self._cycle_count % 5 == 1:
@@ -1083,7 +1101,7 @@ class AutonomousController:
                     "platforms": 4,
                 }
             except Exception as exc:
-                logger.debug("Social content: %s", exc)
+                _record("social_content", exc)
 
         # Phase 8k6: EMAIL SEQUENCES — build on first cycle
         if self._cycle_count <= 1:
@@ -1097,7 +1115,7 @@ class AutonomousController:
                     "total_emails": emails.get("total_emails", 0),
                 }
             except Exception as exc:
-                logger.debug("Email sequences: %s", exc)
+                _record("email_sequences", exc)
 
         # Phase 8k7: MODEL WORKERS — AI model tasks on products
         try:
@@ -1119,7 +1137,7 @@ class AutonomousController:
                     "models_used": list(set(t.get("model", "") for t in model_tasks)),
                 }
         except Exception as exc:
-            logger.debug("Model workers: %s", exc)
+            _record("model_workers", exc)
 
         # Phase 8l: TOOL DISCOVERY — check available tools
         if self._cycle_count <= 1:
@@ -1132,7 +1150,7 @@ class AutonomousController:
                     "total": disc.get("total_tools", 0),
                 }
             except Exception as exc:
-                logger.debug("Tool discovery: %s", exc)
+                _record("tool_discovery", exc)
 
         # Phase 8m: TIMESERIES — domain trend analysis
         try:
@@ -1145,7 +1163,7 @@ class AutonomousController:
                 "stable": trends.get("stable", 0),
             }
         except Exception as exc:
-            logger.debug("Timeseries: %s", exc)
+            _record("timeseries", exc)
 
         # Phase 8n: SIMILARITY SEARCH — find related memories for top decision
         try:
@@ -1162,7 +1180,7 @@ class AutonomousController:
                     "top_similarity": similar[0].get("_similarity", 0) if similar else 0,
                 }
         except Exception as exc:
-            logger.debug("Similarity: %s", exc)
+            _record("similarity", exc)
 
         # Phase 8o: CONTENT CALENDAR — plan upcoming content
         if self._cycle_count <= 1:
@@ -1176,7 +1194,7 @@ class AutonomousController:
                     "types": cal.get("by_type", {}),
                 }
             except Exception as exc:
-                logger.debug("Content calendar: %s", exc)
+                _record("content_calendar", exc)
 
         # Phase 8p: REAL IMAGE FINDER — search for better images
         if self._cycle_count % 10 == 1:
@@ -1187,7 +1205,7 @@ class AutonomousController:
                 if img_result.get("found", 0) > 0:
                     cycle_result["phases"]["real_images"] = img_result
             except Exception as exc:
-                logger.debug("Real images: %s", exc)
+                _record("real_images", exc)
 
         # Phase 9: STRUCTURED LOGGING — log this cycle
         try:
@@ -1222,6 +1240,24 @@ class AutonomousController:
             cognitive_report = self._run_cognitive_phase(cycle_result)
             if cognitive_report is not None:
                 cycle_result["cognitive"] = cognitive_report
+
+        # Surface the per-cycle error ledger. ``phase_errors``
+        # was populated by every phase's ``_record`` call-site
+        # so operators can see which subsystems failed even
+        # when the cycle overall completed. Empty dict means
+        # every phase ran clean; presence of keys means
+        # something degraded.
+        if phase_errors:
+            cycle_result["phase_errors"] = dict(phase_errors)
+            cycle_result["phase_error_count"] = len(phase_errors)
+            logger.warning(
+                "Cycle %s had %d phase failures: %s",
+                cycle_id, len(phase_errors),
+                ", ".join(sorted(phase_errors.keys())),
+            )
+        else:
+            cycle_result["phase_errors"] = {}
+            cycle_result["phase_error_count"] = 0
 
         # Save to history
         self._cycle_history.append(cycle_result)
