@@ -42,6 +42,8 @@ class JSONLoader:
         Raises:
             JSONLoaderError: If the file is missing or contains invalid JSON.
         """
+        if not isinstance(filepath, str) or not filepath:
+            raise JSONLoaderError("filepath must be a non-empty string")
         filepath = os.path.expanduser(filepath)
         if not os.path.isfile(filepath):
             raise JSONLoaderError(f"File not found: {filepath}")
@@ -73,6 +75,8 @@ class JSONLoader:
         Raises:
             JSONLoaderError: If the file cannot be opened.
         """
+        if not isinstance(filepath, str) or not filepath:
+            raise JSONLoaderError("filepath must be a non-empty string")
         filepath = os.path.expanduser(filepath)
         if not os.path.isfile(filepath):
             raise JSONLoaderError(f"File not found: {filepath}")
@@ -134,6 +138,11 @@ class JSONLoader:
             ``(is_valid, errors)`` where *errors* is a list of human-readable
             violation strings (empty when valid).
         """
+        if not isinstance(schema, dict):
+            # No schema → everything is trivially valid
+            # (matches the processing/validator.py pass-41
+            # convention).
+            return True, []
         errors: list[str] = []
         self._validate_node(data, schema, path="$", errors=errors)
         return (len(errors) == 0, errors)
@@ -144,6 +153,16 @@ class JSONLoader:
 
     def load_string(self, text: str) -> Any:
         """Parse a JSON string and return the Python object."""
+        if not isinstance(text, (str, bytes, bytearray)):
+            # Pre-audit ``json.loads(None)`` raised TypeError
+            # which the ``except json.JSONDecodeError`` clause
+            # did NOT catch, so the error propagated with a
+            # confusing "expected str/bytes" message instead
+            # of the JSONLoaderError the docstring implies.
+            # Audit pass 45.
+            raise JSONLoaderError(
+                f"load_string expected str/bytes, got {type(text).__name__}"
+            )
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
@@ -169,43 +188,68 @@ class JSONLoader:
         path: str,
         errors: list[str],
     ) -> None:
+        if not isinstance(schema, dict):
+            # Malformed schema sub-node → report once, don't
+            # crash.
+            errors.append(f"{path}: invalid schema (not a dict)")
+            return
         expected_type = schema.get("type")
 
         if expected_type == "object":
             if not isinstance(value, dict):
                 errors.append(f"{path}: expected object, got {type(value).__name__}")
                 return
-            for field in schema.get("required", []):
-                if field not in value:
-                    errors.append(f"{path}.{field}: required field missing")
-            for field, field_schema in schema.get("properties", {}).items():
-                if field in value:
-                    self._validate_node(value[field], field_schema, f"{path}.{field}", errors)
+            required = schema.get("required") or []
+            if isinstance(required, list):
+                for field in required:
+                    if isinstance(field, str) and field not in value:
+                        errors.append(f"{path}.{field}: required field missing")
+            properties = schema.get("properties") or {}
+            if isinstance(properties, dict):
+                for field, field_schema in properties.items():
+                    if field in value:
+                        self._validate_node(
+                            value[field], field_schema, f"{path}.{field}", errors
+                        )
 
         elif expected_type == "array":
             if not isinstance(value, list):
                 errors.append(f"{path}: expected array, got {type(value).__name__}")
                 return
             item_schema = schema.get("item_schema")
-            if item_schema:
+            if isinstance(item_schema, dict):
                 for i, item in enumerate(value):
                     self._validate_node(item, item_schema, f"{path}[{i}]", errors)
 
         elif expected_type in self._TYPE_MAP:
             py_type = self._TYPE_MAP[expected_type]
-            # Allow int where float is expected
-            if expected_type == "float" and isinstance(value, int):
-                value = float(value)
+            # ``bool`` is a subclass of ``int`` in Python, so
+            # ``isinstance(True, int)`` is ``True``. Reject
+            # bool explicitly when the schema expects int or
+            # float — same bug class fixed in pass 41 for
+            # ``data_pipeline.processing.validator``. Audit
+            # pass 45.
+            if expected_type == "int" and isinstance(value, bool):
+                errors.append(f"{path}: expected int, got bool")
+                return
+            if expected_type == "float":
+                if isinstance(value, bool):
+                    errors.append(f"{path}: expected float, got bool")
+                    return
+                if isinstance(value, int):
+                    value = float(value)
             if not isinstance(value, py_type):
                 errors.append(
                     f"{path}: expected {expected_type}, got {type(value).__name__}"
                 )
                 return
             if expected_type in ("int", "float"):
-                if "min" in schema and value < schema["min"]:
-                    errors.append(f"{path}: {value} is below minimum {schema['min']}")
-                if "max" in schema and value > schema["max"]:
-                    errors.append(f"{path}: {value} exceeds maximum {schema['max']}")
+                lo = schema.get("min")
+                hi = schema.get("max")
+                if isinstance(lo, (int, float)) and not isinstance(lo, bool) and value < lo:
+                    errors.append(f"{path}: {value} is below minimum {lo}")
+                if isinstance(hi, (int, float)) and not isinstance(hi, bool) and value > hi:
+                    errors.append(f"{path}: {value} exceeds maximum {hi}")
 
         elif expected_type is not None:
             errors.append(f"{path}: unknown schema type '{expected_type}'")
