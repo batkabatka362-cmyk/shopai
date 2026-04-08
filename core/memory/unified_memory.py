@@ -146,6 +146,45 @@ class UnifiedMemory:
         if not self._initialized:
             self.initialize()
 
+    # ── Backend accessors (Fix D) ────────────────────────────
+    #
+    # Pre-fix, ``DecisionBrain`` and ``DecisionEngine`` imported
+    # ``core.brain.memory.get_brain_memory`` and
+    # ``core.memory.intelligence.get_memory_intelligence``
+    # directly. That bypassed ``UnifiedMemory`` entirely even
+    # though it was supposed to be THE single entry point, and
+    # the audit flagged the two parallel SQLite DBs
+    # (``brain_memory.db`` + ``memory_intelligence.db``) as
+    # the #2 CRITICAL weakness — the two systems could drift
+    # out of sync because callers didn't go through one
+    # owner. These accessors give callers a single way in so
+    # future observability / swapping only has to be wired
+    # up in one place.
+
+    def get_brain_memory(self) -> Any:
+        """Return the underlying ``IntelligentMemory`` backend
+        (the 6-layer ``core.brain.memory`` instance) via the
+        unified memory. Lazily initialises the layer if it
+        hasn't been loaded yet.
+
+        Returns ``None`` when the backend failed to load
+        during ``initialize()`` — callers should check and
+        either skip the memory step or use
+        ``get_memory_intelligence()`` as a fallback.
+        """
+        self._ensure_init()
+        return self._brain
+
+    def get_memory_intelligence(self) -> Any:
+        """Return the underlying ``MemoryIntelligence`` backend
+        (the 4-level ``core.memory.intelligence`` instance) via
+        the unified memory. Lazily initialises the layer.
+
+        Returns ``None`` when the backend failed to load.
+        """
+        self._ensure_init()
+        return self._memory_intel
+
     # ── INGEST — data enters the system ──────────────────────
 
     def ingest(self, category: str, data: Any, source: str = "",

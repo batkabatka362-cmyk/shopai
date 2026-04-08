@@ -76,18 +76,47 @@ class DecisionEngine:
         self._weights = None  # lazy-loaded ActionWeightStore
 
     def _get_memory(self):
-        if not self._memory:
-            from core.brain.memory import get_brain_memory
-            self._memory = get_brain_memory()
+        """Lazily fetch the 6-layer ``IntelligentMemory``
+        backend via the ``UnifiedMemory`` entry point.
+
+        Pre-fix this imported ``core.brain.memory.get_brain_memory``
+        directly, bypassing ``UnifiedMemory``. The audit
+        flagged that as the #2 CRITICAL weakness: two
+        parallel SQLite DBs with no single owner. Fix D
+        routes through ``UnifiedMemory.get_brain_memory()``
+        so all brain code shares one entry point.
+
+        Raises ``RuntimeError`` if the unified memory backend
+        cannot provide a brain memory instance — the
+        DecisionEngine REQUIRES memory to function, same
+        semantics as the pre-fix direct import which would
+        raise ImportError.
+        """
+        if self._memory:
+            return self._memory
+        try:
+            from core.memory.unified_memory import get_unified_memory
+            self._memory = get_unified_memory().get_brain_memory()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("brain memory load failed: %s", exc)
+            self._memory = None
+        if self._memory is None:
+            raise RuntimeError(
+                "DecisionEngine requires IntelligentMemory — "
+                "UnifiedMemory.get_brain_memory() returned None",
+            )
         return self._memory
 
     def _get_intelligence(self):
+        """Lazily fetch the 4-level ``MemoryIntelligence``
+        backend via ``UnifiedMemory``. Same rationale as
+        ``_get_memory``."""
         if not self._memory_intel:
             try:
-                from core.memory.intelligence import get_memory_intelligence
-                self._memory_intel = get_memory_intelligence()
-            except Exception:
-                pass
+                from core.memory.unified_memory import get_unified_memory
+                self._memory_intel = get_unified_memory().get_memory_intelligence()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("memory intelligence load failed: %s", exc)
         if not self._data_arch:
             try:
                 from core.data.architecture import get_data_architecture

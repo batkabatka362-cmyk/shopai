@@ -286,25 +286,38 @@ class DecisionBrain:
                 self._memory = get_shared_memory()
             except Exception:
                 pass
-        # Connect intelligent memory + decision engine + learning loop
+        # Connect brain memory + intelligence memory via the
+        # UnifiedMemory entry point (Fix D). Pre-fix this code
+        # imported ``core.brain.memory.get_brain_memory`` and
+        # ``core.memory.intelligence.get_memory_intelligence``
+        # directly, bypassing ``UnifiedMemory`` entirely. That
+        # left two parallel SQLite DBs with no single owner
+        # and made any future observability / backend swap a
+        # grep-the-codebase exercise. Now both backends come
+        # from ``UnifiedMemory.get_brain_memory()`` and
+        # ``UnifiedMemory.get_memory_intelligence()`` so
+        # callers don't have to know the underlying module
+        # layout.
         if not hasattr(self, "_brain_memory") or not self._brain_memory:
             try:
-                from core.brain.memory import get_brain_memory
+                from core.memory.unified_memory import get_unified_memory
                 from core.brain.decision_engine import DecisionEngine
                 from core.brain.learning_loop import LearningLoop
-                self._brain_memory = get_brain_memory()
+                _unified = get_unified_memory()
+                self._brain_memory = _unified.get_brain_memory()
                 self._decision_engine = DecisionEngine()
                 self._learning_loop = LearningLoop()
             except Exception:
                 self._brain_memory = None
                 self._decision_engine = None
                 self._learning_loop = None
-        # Connect new intelligence systems
+        # Connect MemoryIntelligence (4-level) + DataArchitecture
         if not hasattr(self, "_memory_intel") or not self._memory_intel:
             try:
-                from core.memory.intelligence import get_memory_intelligence
+                from core.memory.unified_memory import get_unified_memory
                 from core.data.architecture import get_data_architecture
-                self._memory_intel = get_memory_intelligence()
+                _unified = get_unified_memory()
+                self._memory_intel = _unified.get_memory_intelligence()
                 self._data_arch = get_data_architecture()
             except Exception:
                 self._memory_intel = None
