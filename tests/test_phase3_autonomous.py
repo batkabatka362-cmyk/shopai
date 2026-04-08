@@ -225,5 +225,118 @@ class TestCLIAutoCommands:
         assert len(captured.out) > 0
 
 
+class TestControllerCognitiveBrainDecisionsBug:
+    """Regression: phase 1d (cognitive thinking) referenced
+    ``brain_decisions`` before the variable was defined (it's
+    assigned in phase 3, ~120 lines later). The try/except
+    around the whole cognitive phase silently swallowed the
+    NameError, which meant ``cog.curiosity.record_exploration``
+    was never called during a cycle — cognitive curiosity
+    tracking has been dark since the phase was added.
+
+    Verified in two ways:
+
+      1. Source-level: walk the AST of ``run_cycle`` and make
+         sure the cognitive phase doesn't reference any name
+         that isn't yet in scope at that point.
+      2. Behavioral: patch ``get_cognitive_module`` to record
+         ``record_exploration`` calls and run a real cycle;
+         assert the exploration list has at least one entry.
+    """
+
+    def test_cognitive_phase_references_defined_names(self):
+        """AST-level check: the cognitive phase should pull
+        decisions from ``thought`` (which IS defined earlier)
+        rather than ``brain_decisions`` (which isn't)."""
+        import ast
+        import inspect
+        import textwrap
+        from core.autonomous.controller import AutonomousController
+
+        source = textwrap.dedent(
+            inspect.getsource(AutonomousController.run_cycle),
+        )
+        tree = ast.parse(source)
+
+        # Find the cognitive phase — identify by the inner
+        # ``cog.curiosity.record_exploration`` call
+        found_loop_over_thought = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.For):
+                continue
+            # The fixed loop: ``for dec in thought.get(...)``
+            iter_src = ast.unparse(node.iter)
+            body_src = "\n".join(ast.unparse(s) for s in node.body)
+            if "record_exploration" in body_src and "thought" in iter_src:
+                found_loop_over_thought = True
+                # And must NOT use bare ``brain_decisions``
+                assert "brain_decisions" not in iter_src, (
+                    "cognitive exploration loop still references "
+                    "undefined ``brain_decisions`` (fixed in pass 54)"
+                )
+
+        assert found_loop_over_thought, (
+            "cognitive exploration loop not found — test is out of date"
+        )
+
+    def test_cognitive_exploration_actually_runs(self):
+        """Behavioral regression: run a cycle with a patched
+        cognitive module and confirm ``record_exploration`` was
+        called. Pre-fix the silent NameError meant zero calls."""
+        import tempfile
+        from unittest.mock import patch, MagicMock
+
+        from data_pipeline.store.db import ShopAIDatabase
+        from data_pipeline.store.store_manager import StoreManager
+        from core.autonomous.controller import AutonomousController
+
+        tmp = tempfile.mktemp(suffix=".db")
+        db = ShopAIDatabase(tmp)
+        sm = StoreManager(db)
+        sm.add_store("test", "test.myshopify.com", "shpat_test")
+        # Data that will provoke at least one brain decision
+        # (no orders → critical "no_revenue" problem →
+        # marketing_push decision).
+        db.upsert_products("test", [
+            {"id": "p1", "title": "Widget", "price": 19.99,
+             "cost": 5.0, "status": "active"},
+            {"id": "p2", "title": "Gadget", "price": 29.99,
+             "cost": 8.0, "status": "active"},
+        ])
+        db.log_sync("test", "products", "success", 2, 0.1)
+        db.log_sync("test", "orders", "success", 0, 0.1)
+        db.log_sync("test", "customers", "success", 0, 0.1)
+
+        controller = AutonomousController(sm, auto_approve=False)
+        controller.initialize()
+
+        # Patch get_cognitive_module so we can observe the calls
+        calls: list[str] = []
+        mock_cog = MagicMock()
+        mock_cog.think_deep.return_value = {
+            "understanding": {"products_analyzed": 2,
+                              "critical": 0, "clusters": []},
+            "reasoning": {"hypotheses": []},
+            "failure_analysis": {"near_misses": []},
+            "curiosity": {"questions": [], "exploration": {"suggest": ""}},
+        }
+        mock_cog.curiosity.record_exploration.side_effect = (
+            lambda t: calls.append(t)
+        )
+
+        with patch(
+            "core.brain.cognitive.get_cognitive_module",
+            return_value=mock_cog,
+        ):
+            controller.run_cycle("test")
+
+        # Pre-fix this list was ALWAYS empty (NameError silently
+        # aborted the loop before the first iteration).
+        assert len(calls) > 0, (
+            "cognitive.curiosity.record_exploration never called — "
+            "phase 1d is still silently broken"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

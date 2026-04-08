@@ -347,8 +347,15 @@ class AutonomousController:
                 "exploration": deep["curiosity"]["exploration"].get("suggest", ""),
             }
 
-            # Record exploration
-            for dec in brain_decisions:
+            # Record exploration. Previously this loop referenced
+            # ``brain_decisions`` which is only assigned later (phase
+            # 3, line ~470), so every iteration raised NameError and
+            # was silently swallowed by the enclosing try/except —
+            # meaning cognitive curiosity tracking has been dark
+            # since the phase was added. Pull from the ``thought``
+            # object returned by ``brain.think(data)`` instead, which
+            # is the canonical source for this cycle's decisions.
+            for dec in thought.get("decisions", []) if isinstance(thought, dict) else []:
                 cog.curiosity.record_exploration(dec.get("type", "unknown"))
 
             # Track confidence calibration from recent decisions
