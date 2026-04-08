@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 from utils.logger import get_logger
-from utils.helpers import safe_float
+from utils.helpers import safe_float, safe_int
 
 logger = get_logger("intelligence.kpi")
 
@@ -39,19 +39,20 @@ class KPITracker:
                                  success: bool, data_quality: int,
                                  execution_results: dict[str, Any] | None = None) -> None:
         """Record a decision and its outcome for KPI analysis."""
+        # Defensive coercion of public entry point. Audit pass 40.
         entry = {
-            "decision_id": decision_id,
-            "decision_type": decision_type,
-            "confidence": confidence,
-            "confidence_score": confidence_score,
-            "success": success,
-            "data_quality": data_quality,
+            "decision_id": decision_id if isinstance(decision_id, str) else "",
+            "decision_type": decision_type if isinstance(decision_type, str) else "unknown",
+            "confidence": confidence if isinstance(confidence, str) else "unknown",
+            "confidence_score": safe_int(confidence_score, default=50),
+            "success": bool(success),
+            "data_quality": safe_int(data_quality),
             "timestamp": time.time(),
         }
-        if execution_results:
-            entry["dispatched"] = execution_results.get("dispatched", 0)
-            entry["success_count"] = execution_results.get("success_count", 0)
-            entry["fail_count"] = execution_results.get("fail_count", 0)
+        if isinstance(execution_results, dict):
+            entry["dispatched"] = safe_int(execution_results.get("dispatched"))
+            entry["success_count"] = safe_int(execution_results.get("success_count"))
+            entry["fail_count"] = safe_int(execution_results.get("fail_count"))
 
         self._append("decisions", entry)
 
@@ -59,8 +60,15 @@ class KPITracker:
                               cost: float = 0, conversion_count: int = 0,
                               impression_count: int = 0, click_count: int = 0) -> None:
         """Record a revenue event with e-commerce metrics."""
+        # Defensive coercion. Audit pass 40.
+        revenue = safe_float(revenue)
+        cost = safe_float(cost)
+        conversion_count = safe_int(conversion_count)
+        impression_count = safe_int(impression_count)
+        click_count = safe_int(click_count)
+
         entry = {
-            "decision_id": decision_id,
+            "decision_id": decision_id if isinstance(decision_id, str) else "",
             "revenue": revenue,
             "cost": cost,
             "profit": round(revenue - cost, 2),
@@ -146,50 +154,98 @@ class KPITracker:
         if not events:
             return {"status": "no_data"}
 
+        # Filter to dict entries only so generator expressions
+        # below don't crash on a stray non-dict from a corrupted
+        # file. Audit pass 40.
+        events = [e for e in events if isinstance(e, dict)]
+        if not events:
+            return {"status": "no_data"}
+
         total_revenue = sum(safe_float(e.get("revenue")) for e in events)
         total_cost = sum(safe_float(e.get("cost")) for e in events)
-        total_conversions = sum(int(e.get("conversions", 0)) for e in events)
-        total_impressions = sum(int(e.get("impressions", 0)) for e in events)
-        total_clicks = sum(int(e.get("clicks", 0)) for e in events)
+        # ``int(e.get("conversions", 0))`` crashed on None /
+        # non-numeric strings. safe_int handles both.
+        total_conversions = sum(safe_int(e.get("conversions")) for e in events)
+        total_impressions = sum(safe_int(e.get("impressions")) for e in events)
+        total_clicks = sum(safe_int(e.get("clicks")) for e in events)
 
         return {
             "total_revenue": round(total_revenue, 2),
             "total_cost": round(total_cost, 2),
             "total_profit": round(total_revenue - total_cost, 2),
             "total_conversions": total_conversions,
-            "overall_ctr": round(total_clicks / max(total_impressions, 1) * 100, 2) if total_impressions else None,
-            "overall_conversion_rate": round(total_conversions / max(total_impressions, 1) * 100, 2) if total_impressions else None,
-            "overall_cac": round(total_cost / max(total_conversions, 1), 2) if total_conversions else None,
-            "overall_roas": round(total_revenue / max(total_cost, 0.01), 2) if total_cost > 0 else None,
+            "overall_ctr": round(total_clicks / total_impressions * 100, 2) if total_impressions > 0 else None,
+            "overall_conversion_rate": round(total_conversions / total_impressions * 100, 2) if total_impressions > 0 else None,
+            "overall_cac": round(total_cost / total_conversions, 2) if total_conversions > 0 else None,
+            "overall_roas": round(total_revenue / total_cost, 2) if total_cost > 0 else None,
             "events_tracked": len(events),
         }
+
+    def _backup_corrupted(self, path: str) -> None:
+        """Move a corrupted KPI file aside with a timestamp.
+
+        Mirrors the observability pattern established in earlier
+        audit passes (StoreSnapshot, FeedbackStore, CycleJournal)
+        — never silently overwrite a file that failed to
+        decode; keep it around so an operator can inspect what
+        went wrong.
+        """
+        if not os.path.exists(path):
+            return
+        try:
+            backup = f"{path}.corrupted.{int(time.time())}"
+            os.replace(path, backup)
+            logger.warning("kpi_tracker: corrupted file moved to %s", backup)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("kpi_tracker: failed to back up corrupted file %s: %s", path, exc)
 
     def _append(self, name: str, entry: dict) -> None:
         with self._lock:
             path = os.path.join(_KPI_DIR, f"{name}.json")
-            entries = []
+            entries: list = []
             if os.path.exists(path):
                 try:
                     with open(path) as f:
-                        entries = json.load(f)
+                        loaded = json.load(f)
+                    entries = loaded if isinstance(loaded, list) else []
+                    if not isinstance(loaded, list):
+                        # Not a list → treat as corrupted, back
+                        # it up, start fresh.
+                        self._backup_corrupted(path)
+                        entries = []
                 except (json.JSONDecodeError, OSError):
+                    self._backup_corrupted(path)
                     entries = []
             entries.append(entry)
             if len(entries) > 5000:
                 entries = entries[-5000:]
             tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(entries, f)
-            os.replace(tmp, path)
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(entries, f)
+                os.replace(tmp, path)
+            except OSError as exc:
+                logger.warning("kpi_tracker: failed to write %s: %s", path, exc)
+                # Best-effort cleanup of the tmp file so we
+                # don't leave garbage behind.
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except OSError:
+                    pass
 
     def _load(self, name: str) -> list[dict]:
         with self._lock:
             path = os.path.join(_KPI_DIR, f"{name}.json")
-            if os.path.exists(path):
-                try:
-                    with open(path) as f:
-                        data = json.load(f)
-                        return data if isinstance(data, list) else []
-                except (json.JSONDecodeError, OSError):
-                    pass
-        return []
+            if not os.path.exists(path):
+                return []
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self._backup_corrupted(path)
+                return []
+            if not isinstance(data, list):
+                self._backup_corrupted(path)
+                return []
+            return data

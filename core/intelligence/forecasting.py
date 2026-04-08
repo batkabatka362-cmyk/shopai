@@ -12,6 +12,49 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from utils.helpers import safe_float
+
+
+_UNPARSEABLE = float("nan")
+
+
+def _coerce_values(values: Any) -> list[float]:
+    """Coerce an arbitrary input to a list of floats.
+
+    Pre-audit the forecasting algorithms assumed ``values``
+    was a clean list of numbers. Callers from the autonomous
+    loop sometimes pass a list with None, strings, or dicts
+    in it (e.g. raw order.total_price fields from a JSON
+    webhook that occasionally comes back as a string). That
+    crashed the arithmetic in ``_exponential_smoothing`` /
+    ``_linear_trend`` / ``_seasonal_forecast``. Audit pass 40.
+    """
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        return []
+    cleaned: list[float] = []
+    for v in values:
+        if isinstance(v, bool):
+            # ``bool`` is a subclass of ``int`` in Python; reject
+            # explicitly so a list of bools doesn't silently
+            # become a list of 0s and 1s.
+            continue
+        if isinstance(v, (int, float)):
+            if math.isnan(v) or math.isinf(v):
+                continue
+            cleaned.append(float(v))
+            continue
+        if isinstance(v, str):
+            # ``safe_float`` strips $/commas and returns 0 on
+            # parse failure. Use a NaN sentinel so we can tell
+            # a successful "0" apart from a failed parse.
+            parsed = safe_float(v, default=_UNPARSEABLE)
+            if not math.isnan(parsed) and not math.isinf(parsed):
+                cleaned.append(parsed)
+        # All other types (dict, None, object) are dropped.
+    return cleaned
+
 
 class Forecasting:
     """Real forecasting algorithms for e-commerce data."""
@@ -24,8 +67,15 @@ class Forecasting:
             periods: how many periods to forecast
             method: auto, sma, ema, linear, seasonal
         """
-        if not values or len(values) < 3:
-            return {"error": "Need at least 3 data points", "values_provided": len(values) if values else 0}
+        # Defensive coercion. Audit pass 40.
+        values = _coerce_values(values)
+        if not isinstance(periods, int) or periods <= 0:
+            periods = 7
+        if not isinstance(method, str):
+            method = "auto"
+
+        if len(values) < 3:
+            return {"error": "Need at least 3 data points", "values_provided": len(values)}
 
         if method == "auto":
             method = self._select_method(values)
@@ -73,13 +123,20 @@ class Forecasting:
 
     def revenue_forecast(self, daily_revenue: list[float], days_ahead: int = 30) -> dict[str, Any]:
         """Revenue-specific forecast with business context."""
+        # Coerce once so the sum() below can't crash on a
+        # non-numeric webhook payload. Audit pass 40.
+        daily_revenue = _coerce_values(daily_revenue)
         result = self.forecast(daily_revenue, days_ahead, method="auto")
         if "error" in result:
             return result
 
         forecast = result["forecast"]
         total_forecast = sum(forecast)
-        historical_total = sum(daily_revenue[-days_ahead:]) if len(daily_revenue) >= days_ahead else sum(daily_revenue)
+        historical_total = (
+            sum(daily_revenue[-days_ahead:])
+            if len(daily_revenue) >= days_ahead
+            else sum(daily_revenue)
+        )
 
         result["revenue_summary"] = {
             "forecast_total": round(total_forecast, 2),
@@ -93,6 +150,7 @@ class Forecasting:
 
     def demand_forecast(self, daily_units: list[float], days_ahead: int = 14) -> dict[str, Any]:
         """Demand-specific forecast with inventory context."""
+        daily_units = _coerce_values(daily_units)
         result = self.forecast(daily_units, days_ahead, method="auto")
         if "error" in result:
             return result

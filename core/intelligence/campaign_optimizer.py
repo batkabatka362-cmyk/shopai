@@ -32,6 +32,11 @@ class CampaignOptimizer:
 
         Each campaign dict should have: campaign_id, roas, ctr, cpc, budget, status
         """
+        # Defensive coercion of the public entry point. Audit
+        # pass 40.
+        if not isinstance(campaigns, list):
+            return []
+
         actions = []
 
         for camp in campaigns:
@@ -83,8 +88,11 @@ class CampaignOptimizer:
                     "priority": "medium",
                 })
 
-            # Rule 4: Moderate ROAS but declining → reduce budget
-            if 2.0 <= roas < 3.0 and ctr < 2.0:
+            # Rule 4: Moderate ROAS but declining → reduce budget.
+            # Require ctr > 0 so a campaign with missing click
+            # data isn't treated as "low CTR" and budget-reduced.
+            # Audit pass 40 bug fix.
+            if 2.0 <= roas < 3.0 and 0 < ctr < 2.0:
                 reduce = round(budget * BUDGET_REDUCE_PCT / 100, 2)
                 camp_actions.append({
                     "action": "reduce_budget",
@@ -109,6 +117,13 @@ class CampaignOptimizer:
 
     def get_campaign_health(self, campaigns: list[dict[str, Any]]) -> dict[str, Any]:
         """Overall campaign portfolio health assessment."""
+        # Defensive coercion.
+        if not isinstance(campaigns, list) or not campaigns:
+            return {"status": "no_campaigns"}
+
+        # Filter to dict entries only so sum / generator
+        # expressions don't crash on a stray None / string item.
+        campaigns = [c for c in campaigns if isinstance(c, dict)]
         if not campaigns:
             return {"status": "no_campaigns"}
 
@@ -121,15 +136,21 @@ class CampaignOptimizer:
         pause_count = sum(1 for a in actions if a.get("action") == "pause")
         boost_count = sum(1 for a in actions if a.get("action") == "increase_budget")
 
-        avg_roas = round(sum(roas_values) / max(len(roas_values), 1), 2) if roas_values else 0
+        avg_roas = round(sum(roas_values) / len(roas_values), 2) if roas_values else 0
         grade = "A" if avg_roas > 4 else "B" if avg_roas > 2.5 else "C" if avg_roas > 1.5 else "F"
+
+        # Guard portfolio_roas against zero-spend portfolios.
+        # Pre-audit this divided by ``max(total_spend, 0.01)``
+        # which turned total_spend=0 into an absurdly inflated
+        # ROAS of revenue*100. Audit pass 40.
+        portfolio_roas = round(total_revenue / total_spend, 2) if total_spend > 0 else 0
 
         return {
             "total_campaigns": len(campaigns),
             "active": active,
             "total_spend": round(total_spend, 2),
             "total_revenue": round(total_revenue, 2),
-            "portfolio_roas": round(total_revenue / max(total_spend, 0.01), 2),
+            "portfolio_roas": portfolio_roas,
             "avg_roas": avg_roas,
             "grade": grade,
             "actions_needed": len([a for a in actions if a.get("action") != "maintain"]),
