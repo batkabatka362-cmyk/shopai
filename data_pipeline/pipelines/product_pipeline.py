@@ -92,6 +92,9 @@ class ProductPipeline:
             }``
         """
         start = time.monotonic()
+        # Defensive: coerce None / non-list at entry. Audit pass 50.
+        if not isinstance(raw_products, list):
+            raw_products = []
         logger.info("ProductPipeline.run: processing %d raw products", len(raw_products))
 
         # Step 0: Normalize field names (name→title, etc.)

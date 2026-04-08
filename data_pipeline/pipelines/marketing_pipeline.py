@@ -11,6 +11,7 @@ from data_pipeline.processing.validator import DataValidator
 from data_pipeline.feature_engineering.feature_builder import FeatureBuilder
 from data_pipeline.feature_engineering.feature_store import FeatureStore
 from data_pipeline.ingestion.api.ads_api import AdsAPI
+from utils.helpers import safe_float, safe_int
 
 logger = logging.getLogger("data_pipeline.marketing_pipeline")
 
@@ -46,12 +47,16 @@ def _compute_ad_metrics(record: dict[str, Any]) -> dict[str, Any]:
     * ``conversion_rate``  — conversions / clicks.
     * ``cost_per_conversion`` — spend / conversions.
     """
+    if not isinstance(record, dict):
+        return {}
     rec = dict(record)
-    impressions = float(rec.get("impressions") or 0)
-    clicks = float(rec.get("clicks") or 0)
-    spend = float(rec.get("spend") or 0.0)
-    conversions = float(rec.get("conversions") or 0)
-    revenue = float(rec.get("revenue") or 0.0)
+    # safe_float handles currency strings / None / garbage.
+    # Audit pass 50.
+    impressions = safe_float(rec.get("impressions"))
+    clicks = safe_float(rec.get("clicks"))
+    spend = safe_float(rec.get("spend"))
+    conversions = safe_float(rec.get("conversions"))
+    revenue = safe_float(rec.get("revenue"))
 
     rec["ctr"] = round(clicks / impressions, 6) if impressions > 0 else 0.0
     rec["cpc"] = round(spend / clicks, 4) if clicks > 0 else 0.0
@@ -115,6 +120,9 @@ class MarketingPipeline:
             }``
         """
         start = time.monotonic()
+        # Defensive: coerce None / non-list at entry. Audit pass 50.
+        if not isinstance(raw_ad_data, list):
+            raw_ad_data = []
         logger.info("MarketingPipeline.run: %d raw records", len(raw_ad_data))
 
         # Step 1: Clean
@@ -127,16 +135,16 @@ class MarketingPipeline:
         normalized = self._normalizer.normalize(valid, _ADS_NORM_CONFIG)
 
         # Step 4: Compute KPIs per campaign
-        campaigns = [_compute_ad_metrics(r) for r in normalized]
+        campaigns = [_compute_ad_metrics(r) for r in normalized if isinstance(r, dict)]
 
         # Step 5: Store
         self._feature_store.store("marketing_latest", campaigns)
 
         duration = round(time.monotonic() - start, 3)
 
-        total_spend = sum(float(c.get("spend") or 0) for c in campaigns)
-        total_clicks = sum(int(c.get("clicks") or 0) for c in campaigns)
-        total_impressions = sum(int(c.get("impressions") or 0) for c in campaigns)
+        total_spend = sum(safe_float(c.get("spend")) for c in campaigns)
+        total_clicks = sum(safe_int(c.get("clicks")) for c in campaigns)
+        total_impressions = sum(safe_int(c.get("impressions")) for c in campaigns)
         blended_ctr = (
             round(total_clicks / total_impressions, 6) if total_impressions > 0 else 0.0
         )

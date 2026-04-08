@@ -12,14 +12,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from typing import Any
 
 logger = logging.getLogger("data_pipeline.feature_store")
 
 _STORE_DIR = "/tmp/shopai_features"
 
-# Module-level in-process cache shared across all FeatureStore instances
+# Module-level in-process cache shared across all FeatureStore instances.
+# Protected by ``_cache_lock`` — pre-audit two concurrent
+# ``store()`` calls could race on the dict assignment.
+# Audit pass 50.
 _MEMORY_CACHE: dict[str, list[dict[str, Any]]] = {}
+_cache_lock = threading.Lock()
 
 
 class FeatureStoreError(Exception):
@@ -55,7 +60,10 @@ class FeatureStore:
             FeatureStoreError: If the file cannot be written.
         """
         self._validate_name(feature_set_name)
-        _MEMORY_CACHE[feature_set_name] = features
+        if not isinstance(features, list):
+            features = []
+        with _cache_lock:
+            _MEMORY_CACHE[feature_set_name] = features
         self._persist(feature_set_name, features)
         logger.info(
             "FeatureStore: stored '%s' (%d records)", feature_set_name, len(features)
@@ -72,13 +80,18 @@ class FeatureStore:
         Returns:
             List of feature record dicts, or an empty list if not found.
         """
-        if feature_set_name in _MEMORY_CACHE:
+        if not isinstance(feature_set_name, str) or not feature_set_name:
+            return []
+        with _cache_lock:
+            cached = _MEMORY_CACHE.get(feature_set_name)
+        if cached is not None:
             logger.debug("FeatureStore: cache hit for '%s'", feature_set_name)
-            return _MEMORY_CACHE[feature_set_name]
+            return cached
 
         features = self._load(feature_set_name)
         if features is not None:
-            _MEMORY_CACHE[feature_set_name] = features
+            with _cache_lock:
+                _MEMORY_CACHE[feature_set_name] = features
             return features
 
         logger.warning("FeatureStore: feature set '%s' not found", feature_set_name)
@@ -108,7 +121,9 @@ class FeatureStore:
         Raises:
             FeatureStoreError: If the file exists but cannot be removed.
         """
-        _MEMORY_CACHE.pop(feature_set_name, None)
+        self._validate_name(feature_set_name)
+        with _cache_lock:
+            _MEMORY_CACHE.pop(feature_set_name, None)
         path = self._feature_path(feature_set_name)
         if os.path.isfile(path):
             try:
@@ -173,7 +188,19 @@ class FeatureStore:
 
     @staticmethod
     def _validate_name(name: str) -> None:
+        """Validate the feature set name.
+
+        Pre-audit ``re.match()`` on a non-string (None, int)
+        raised ``TypeError: expected string or bytes-like
+        object`` instead of the documented FeatureStoreError.
+        Path traversal is blocked by the regex (rejects ``/``
+        and ``..``). Audit pass 50.
+        """
         import re
+        if not isinstance(name, str) or not name:
+            raise FeatureStoreError(
+                "Invalid feature set name: must be a non-empty string"
+            )
         if not re.match(r"^[A-Za-z0-9_\-]+$", name):
             raise FeatureStoreError(
                 f"Invalid feature set name '{name}': only alphanumeric, '_', and '-' allowed"
