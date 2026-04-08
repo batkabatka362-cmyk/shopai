@@ -28,6 +28,38 @@ logger = get_logger("shopify.auth")
 _TOKEN_CACHE_DIR = Path(__file__).resolve().parents[2] / "data"
 _TOKEN_CACHE_FILE = _TOKEN_CACHE_DIR / ".shopify_tokens.json"
 
+# Module-level lock for ``_TOKEN_CACHE_FILE`` read-modify-write
+# cycles. Pre-audit ``_save_cached_token`` did:
+#     cache = _load_all_cached()    # full dict
+#     cache[self._shop_url] = ...   # mutate
+#     _TOKEN_CACHE_FILE.write_text(json.dumps(cache))  # whole
+# Without a lock, two ShopifyAuth instances (e.g. for store A
+# and store B) saving concurrently could interleave:
+#   A: load → {}
+#   B: load → {}
+#   A: write → {"A": ...}
+#   B: write → {"B": ...}   # A's update LOST
+# Audit pass 53.
+_CACHE_LOCK = threading.Lock()
+
+
+def _normalize_shop_url(raw: Any) -> str:
+    """Strip any ``http(s)://`` prefix and trailing slashes.
+
+    Same helper as pass 43 for shopify_api — pre-audit the
+    auth module had the same double-scheme bug, producing
+    ``https://https://mystore.myshopify.com/...`` when a
+    caller passed a scheme-prefixed URL. Audit pass 53.
+    """
+    if not isinstance(raw, str):
+        return ""
+    s = raw.strip().rstrip("/")
+    if s.startswith("https://"):
+        s = s[len("https://"):]
+    elif s.startswith("http://"):
+        s = s[len("http://"):]
+    return s
+
 
 class ShopifyAuth:
     """Manages Shopify OAuth tokens with auto-refresh.
@@ -43,9 +75,14 @@ class ShopifyAuth:
     _REFRESH_BACKOFF_S = 300
 
     def __init__(self, shop_url: str, client_id: str, client_secret: str) -> None:
-        self._shop_url = shop_url.rstrip("/")
-        self._client_id = client_id
-        self._client_secret = client_secret
+        # Pre-audit ``shop_url.rstrip("/")`` crashed on None
+        # and produced ``https://https://...`` URLs downstream
+        # when callers passed a scheme-prefixed URL. Same
+        # double-scheme bug fixed in pass 43 for shopify_api.
+        # Audit pass 53.
+        self._shop_url = _normalize_shop_url(shop_url)
+        self._client_id = client_id if isinstance(client_id, str) else ""
+        self._client_secret = client_secret if isinstance(client_secret, str) else ""
         self._access_token: str = ""
         self._expires_at: float = 0
         self._last_refresh_failure: float = 0.0
@@ -74,19 +111,38 @@ class ShopifyAuth:
 
         try:
             return self.refresh_token()
-        except Exception:
+        except Exception:  # noqa: BLE001
             with self._lock:
                 self._last_refresh_failure = time.time()
             return self._access_token
 
     def refresh_token(self) -> str:
-        """Force refresh the access token."""
+        """Force refresh the access token.
+
+        Pre-audit the whole refresh (including the blocking
+        HTTP call) ran under ``self._lock`` — fine for
+        correctness, but the double-check on entry is now
+        kept to avoid hammering Shopify when multiple threads
+        race past ``get_token``'s check. Audit pass 53.
+        """
         with self._lock:
+            # Double-checked locking: another thread may have
+            # refreshed the token while we were waiting for
+            # the lock. Pre-audit this path re-requested even
+            # when the token was already valid.
+            if self._is_valid():
+                return self._access_token
             try:
                 token_data = self._request_token()
                 self._access_token = token_data["access_token"]
-                # Shopify tokens expire in 24 hours (86400 seconds)
-                expires_in = int(token_data.get("expires_in", 86400))
+                # Shopify tokens expire in 24 hours (86400 seconds).
+                # Coerce defensively so a non-int expires_in
+                # (None / string) doesn't crash the int() call.
+                raw_expires = token_data.get("expires_in", 86400)
+                try:
+                    expires_in = int(raw_expires) if raw_expires is not None else 86400
+                except (TypeError, ValueError):
+                    expires_in = 86400
                 self._expires_at = time.time() + expires_in
                 self._save_cached_token()
                 logger.info("Token refreshed for %s (expires in %dh)",
@@ -115,6 +171,8 @@ class ShopifyAuth:
 
     def _request_token(self) -> dict[str, Any]:
         """Request new access token from Shopify using authorization code exchange."""
+        if not self._shop_url:
+            raise RuntimeError("ShopifyAuth: shop_url not configured")
         url = f"https://{self._shop_url}/admin/oauth/access_token"
 
         payload = json.dumps({
@@ -134,15 +192,24 @@ class ShopifyAuth:
 
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if "access_token" not in data:
-                    raise ValueError(f"No access_token in response: {data}")
-                return data
+                raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(
                 f"Shopify token request failed ({exc.code}): {body}"
             ) from exc
+
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            raise RuntimeError(f"Shopify token response was not JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Shopify token response is {type(data).__name__}, expected dict"
+            )
+        if "access_token" not in data or not data["access_token"]:
+            raise ValueError(f"No access_token in response: {data}")
+        return data
 
     def get_auth_url(self, scopes: str = "", redirect_uri: str = "") -> str:
         """Generate the Shopify authorization URL for browser approval.
@@ -204,40 +271,101 @@ class ShopifyAuth:
     # ── Token Cache (disk persistence) ───────────────────────
 
     def _save_cached_token(self) -> None:
-        """Save token to disk so it survives restarts."""
+        """Save token to disk so it survives restarts.
+
+        Audit pass 53: the whole read-modify-write cycle runs
+        inside ``_CACHE_LOCK`` so two instances saving
+        concurrently can't stomp on each other, AND the write
+        goes to ``<path>.tmp`` + ``os.replace`` so a crash
+        mid-write doesn't corrupt the shared cache file.
+        """
         try:
             _TOKEN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            cache = self._load_all_cached()
-            cache[self._shop_url] = {
-                "access_token": self._access_token,
-                "expires_at": self._expires_at,
-                "client_id": self._client_id[:8] + "...",  # Don't store full credentials
-            }
-            _TOKEN_CACHE_FILE.write_text(json.dumps(cache, indent=2))
-        except Exception as exc:
-            logger.debug("Token cache save failed: %s", exc)
+        except OSError as exc:
+            logger.debug("Token cache dir create failed: %s", exc)
+            return
+        with _CACHE_LOCK:
+            try:
+                cache = self._load_all_cached()
+                cache[self._shop_url] = {
+                    "access_token": self._access_token,
+                    "expires_at": self._expires_at,
+                    "client_id": self._client_id[:8] + "..." if self._client_id else "",
+                }
+                tmp = _TOKEN_CACHE_FILE.with_suffix(_TOKEN_CACHE_FILE.suffix + ".tmp")
+                tmp.write_text(json.dumps(cache, indent=2))
+                os.replace(str(tmp), str(_TOKEN_CACHE_FILE))
+                # Restrict file permissions — tokens are
+                # sensitive. 0600 = owner read/write only.
+                try:
+                    os.chmod(str(_TOKEN_CACHE_FILE), 0o600)
+                except OSError:
+                    pass
+            except OSError as exc:
+                logger.debug("Token cache save failed: %s", exc)
+                # Clean up half-written tmp.
+                try:
+                    tmp_path = _TOKEN_CACHE_FILE.with_suffix(_TOKEN_CACHE_FILE.suffix + ".tmp")
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except OSError:
+                    pass
 
     def _load_cached_token(self) -> None:
         """Load cached token from disk."""
         try:
-            cache = self._load_all_cached()
+            with _CACHE_LOCK:
+                cache = self._load_all_cached()
             if self._shop_url in cache:
                 entry = cache[self._shop_url]
+                if not isinstance(entry, dict):
+                    return
                 token = entry.get("access_token", "")
                 expires = entry.get("expires_at", 0)
+                if not isinstance(expires, (int, float)):
+                    return
                 if token and time.time() < expires:
                     self._access_token = token
                     self._expires_at = expires
                     logger.info("Loaded cached token for %s (%.1fh remaining)",
                                self._shop_url, (expires - time.time()) / 3600)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     @staticmethod
     def _load_all_cached() -> dict[str, Any]:
-        if _TOKEN_CACHE_FILE.exists():
-            return json.loads(_TOKEN_CACHE_FILE.read_text())
-        return {}
+        """Load the full token cache, with corrupted-file backup.
+
+        Pre-audit a corrupted cache file (crash mid-write, or
+        a manual edit) raised JSONDecodeError which leaked up
+        past ``_load_cached_token``'s broad except, leaving
+        the auth layer in a confused state. Now the corrupted
+        file is moved to ``<path>.corrupted.<ts>`` and an
+        empty cache is returned — same pattern as passes
+        48/49/52. Audit pass 53.
+        """
+        if not _TOKEN_CACHE_FILE.exists():
+            return {}
+        try:
+            data = json.loads(_TOKEN_CACHE_FILE.read_text())
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"token cache is {type(data).__name__}, expected dict"
+                )
+            return data
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            try:
+                backup = _TOKEN_CACHE_FILE.with_suffix(
+                    _TOKEN_CACHE_FILE.suffix + f".corrupted.{int(time.time())}"
+                )
+                os.replace(str(_TOKEN_CACHE_FILE), str(backup))
+                logger.warning(
+                    "Corrupted token cache %s: %s — moved to %s",
+                    _TOKEN_CACHE_FILE, exc, backup,
+                )
+            except OSError:
+                logger.warning("Corrupted token cache %s: %s", _TOKEN_CACHE_FILE, exc)
+            return {}
 
 
 class ShopifyAuthManager:
