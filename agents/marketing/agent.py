@@ -8,15 +8,33 @@ This is the AGENT file. It ONLY orchestrates — delegates to:
 Agent contract:
   Input:  {goal: str, context: {products, audiences, ...}, constraints: {}}
   Output: {status, data: {plan, results, evaluation, recommendation}, meta: {agent, steps}, error}
+
+Phase 6 note: ``execute()`` now also queries the adapter
+``SmartRouter`` for LLM-generated marketing copy when the
+dispatcher has injected ``context["_router"]`` and the goal
+mentions a product or campaign context. Real copy supplements
+the existing template-based content engine output.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from utils.logger import get_logger
+
 from agents.base import BaseAgent
 from .planner import create_plan
 from .executor import execute_plan
 from .evaluator import evaluate_results
+
+logger = get_logger("agent.marketing")
+
+_COPY_SYSTEM_PROMPT = (
+    "You are a direct-response e-commerce copywriter. Given a "
+    "product or campaign context, produce ONE compelling subject "
+    "line (<=60 chars) and ONE 2-sentence body. Be concrete, "
+    "specific, and honest — do NOT invent prices, discounts, or "
+    "features the context doesn't mention."
+)
 
 
 class MarketingAgent(BaseAgent):
@@ -35,8 +53,101 @@ class MarketingAgent(BaseAgent):
         return create_plan(goal, context, constraints)
 
     def execute(self, plan: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        """Delegate execution to executor module."""
-        return execute_plan(plan, context)
+        """Delegate execution to executor module, then augment
+        with LLM-generated marketing copy via the adapter
+        SmartRouter when available."""
+        results = execute_plan(plan, context)
+        if not isinstance(results, dict):
+            results = {}
+        augmentation = self._augment_with_llm_copy(context)
+        if augmentation is not None:
+            results.setdefault("adapter_augmentations", {})
+            results["adapter_augmentations"]["copy_generation"] = augmentation
+        return results
+
+    def _augment_with_llm_copy(
+        self,
+        context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Ask the router for a piece of LLM-generated copy
+        grounded in the caller's product / campaign context.
+
+        Scope: this is intentionally NOT a send-email call —
+        the marketing agent should not dispatch customer-facing
+        messages during the orchestration phase. Copy
+        generation is a safe augmentation that gives the
+        recommender extra material without touching any
+        external delivery channel. The SEND_EMAIL capability
+        is reserved for a later execution phase.
+        """
+        router = context.get("_router") if isinstance(context, dict) else None
+        if router is None:
+            return None
+
+        # Build a short prompt from whatever product / campaign
+        # data the context happens to carry. If nothing useful
+        # is present, skip the augmentation silently.
+        product_hint = ""
+        if isinstance(context, dict):
+            products = context.get("products") or []
+            if isinstance(products, list) and products:
+                first = products[0] if isinstance(products[0], dict) else {}
+                name = first.get("name") or first.get("title") or ""
+                price = first.get("price")
+                if name:
+                    product_hint = f"Product: {name}"
+                    if price:
+                        product_hint += f" (price: ${price})"
+
+        campaign_hint = ""
+        if isinstance(context, dict):
+            goal_ctx = context.get("campaign_goal") or context.get("goal")
+            if goal_ctx:
+                campaign_hint = f"Campaign goal: {goal_ctx}"
+
+        if not product_hint and not campaign_hint:
+            return None
+
+        prompt_lines = [
+            "Write marketing email copy grounded in:",
+            product_hint,
+            campaign_hint,
+        ]
+        prompt = "\n".join(line for line in prompt_lines if line)
+
+        try:
+            from core.adapters import Capability
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            result = router.execute(
+                Capability.CHAT_COMPLETE,
+                {
+                    "prompt": prompt,
+                    "system": _COPY_SYSTEM_PROMPT,
+                    "max_tokens": 200,
+                    "temperature": 0.4,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("marketing copy augmentation raised: %s", exc)
+            return None
+
+        if not result.ok:
+            return None
+
+        data = result.data or {}
+        text = str(data.get("text", "") or "").strip()
+        if not text:
+            return None
+        return {
+            "adapter": result.adapter,
+            "model": result.model,
+            "copy": text,
+            "tokens_in": result.tokens_in,
+            "tokens_out": result.tokens_out,
+        }
 
     def evaluate(self, results: dict[str, Any], goal: str) -> dict[str, Any]:
         """Delegate evaluation to evaluator module."""
