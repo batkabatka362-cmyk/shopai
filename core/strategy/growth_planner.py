@@ -11,7 +11,7 @@ import math
 from typing import Any
 
 from utils.logger import get_logger
-from utils.helpers import safe_float
+from utils.helpers import safe_float, safe_int
 
 logger = get_logger("strategy.growth_planner")
 
@@ -122,6 +122,14 @@ class GrowthPlanner:
         current_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a growth roadmap from current to target revenue."""
+        # Defensive coercion. Pre-audit ``current_revenue <= 0``
+        # crashed with TypeError on None / non-numeric inputs.
+        # Audit pass 51.
+        current_revenue = safe_float(current_revenue)
+        target_revenue = safe_float(target_revenue)
+        months = safe_int(months, default=6)
+        if months <= 0:
+            months = 6
         if current_revenue <= 0:
             return {"status": "error", "error": "Current revenue must be positive"}
         if target_revenue <= current_revenue:
@@ -175,14 +183,27 @@ class GrowthPlanner:
 
         Revenue = Traffic × Conversion × AOV × Repeat Rate
         """
-        traffic = safe_float(current_metrics.get("monthly_traffic", 10000))
-        cvr = safe_float(current_metrics.get("conversion_rate", 0.02))
-        aov = safe_float(current_metrics.get("aov", 50))
-        repeat_rate = safe_float(current_metrics.get("repeat_rate", 1.2))
+        target_revenue = safe_float(target_revenue)
+        months = safe_int(months, default=6)
+        if months <= 0:
+            months = 6
+        if not isinstance(current_metrics, dict):
+            current_metrics = {}
+        # Pre-audit ``safe_float(metric.get("key", default))``
+        # used the default only when the key was MISSING —
+        # present-but-None coerced to 0, producing a
+        # zero-revenue error below. Use ``or default`` pattern.
+        # Audit pass 51.
+        traffic = safe_float(current_metrics.get("monthly_traffic") or 10000)
+        cvr = safe_float(current_metrics.get("conversion_rate") or 0.02)
+        aov = safe_float(current_metrics.get("aov") or 50)
+        repeat_rate = safe_float(current_metrics.get("repeat_rate") or 1.2)
 
         current_revenue = traffic * cvr * aov * repeat_rate
         if current_revenue <= 0:
             return {"status": "error", "error": "Current metrics produce zero revenue"}
+        if target_revenue <= 0:
+            return {"status": "error", "error": "Target revenue must be positive"}
 
         growth_factor = target_revenue / current_revenue
 
@@ -236,7 +257,11 @@ class GrowthPlanner:
                     "tactics": config["tactics"][:3],
                 })
 
-        recommended.sort(key=lambda r: {"low": 0, "medium": 1, "high": 2, "very_high": 3}[r["effort"]])
+        # Use ``.get()`` with default so an unexpected effort
+        # value doesn't crash the sort with KeyError. Audit
+        # pass 51.
+        effort_rank = {"low": 0, "medium": 1, "high": 2, "very_high": 3}
+        recommended.sort(key=lambda r: effort_rank.get(r.get("effort", ""), 99))
         return recommended[:5]
 
     def _determine_stage(self, revenue):

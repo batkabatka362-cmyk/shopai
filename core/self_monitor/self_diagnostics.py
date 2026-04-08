@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from utils.helpers import safe_float
 from utils.logger import get_logger
 
 logger = get_logger("self_monitor.diagnostics")
@@ -190,6 +191,9 @@ class SelfDiagnostics:
 
     def shopify_health_check(self, store_config: dict[str, Any] | None = None) -> dict[str, Any]:
         """Check Shopify store configuration for optimization opportunities."""
+        if not isinstance(store_config, dict):
+            store_config = None
+
         sections = {}
         total_checks = 0
         total_issues = 0
@@ -199,7 +203,12 @@ class SelfDiagnostics:
             for check_name, info in checks.items():
                 enabled = False
                 if store_config:
-                    enabled = store_config.get(section, {}).get(check_name, False)
+                    # Pre-audit ``store_config.get(section, {}).get(...)``
+                    # crashed when ``section`` was present-but-None.
+                    # Audit pass 51.
+                    section_cfg = store_config.get(section) or {}
+                    if isinstance(section_cfg, dict):
+                        enabled = bool(section_cfg.get(check_name, False))
 
                 section_results.append({
                     "check": check_name,
@@ -238,23 +247,27 @@ class SelfDiagnostics:
         """Run full diagnostic scan and return prioritized fix list."""
         issues_found = []
 
-        # Auto-detect issues from metrics
-        if metrics:
-            if metrics.get("conversion_rate", 100) < 1:
+        # Auto-detect issues from metrics. Pre-audit
+        # ``metrics.get("conversion_rate", 100) < 1`` crashed
+        # on present-but-None / non-numeric values. safe_float
+        # handles both. Audit pass 51.
+        if isinstance(metrics, dict):
+            if safe_float(metrics.get("conversion_rate"), default=100) < 1:
                 issues_found.append(self.diagnose("conversion_drop", store_data))
-            if metrics.get("cart_abandonment", 0) > 70:
+            if safe_float(metrics.get("cart_abandonment")) > 70:
                 issues_found.append(self.diagnose("high_cart_abandonment", store_data))
-            if metrics.get("email_open_rate", 100) < 10:
+            if safe_float(metrics.get("email_open_rate"), default=100) < 10:
                 issues_found.append(self.diagnose("email_not_working", store_data))
-            if metrics.get("return_rate", 0) > 10:
+            if safe_float(metrics.get("return_rate")) > 10:
                 issues_found.append(self.diagnose("high_return_rate", store_data))
-            if metrics.get("page_load", 0) > 3:
+            if safe_float(metrics.get("page_load")) > 3:
                 issues_found.append(self.diagnose("slow_site", store_data))
 
         # Shopify config check
         shopify_health = self.shopify_health_check(store_config)
 
-        # Prioritize
+        # Prioritize. Skip non-dict entries defensively.
+        issues_found = [i for i in issues_found if isinstance(i, dict)]
         priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         issues_found.sort(key=lambda i: priority_order.get(i.get("priority", "low"), 3))
 

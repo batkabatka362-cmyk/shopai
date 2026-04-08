@@ -11,11 +11,12 @@ Plan types:
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
+from utils.helpers import generate_id, safe_float, safe_int
 from utils.logger import get_logger
-from utils.helpers import generate_id
 
 logger = get_logger("strategy.planner")
 
@@ -122,6 +123,9 @@ class StrategyPlanner:
 
     def __init__(self) -> None:
         self._plans: dict[str, dict[str, Any]] = {}
+        # Protect ``_plans`` from concurrent create/update.
+        # Audit pass 51.
+        self._lock = threading.RLock()
 
     def create_plan(
         self,
@@ -130,7 +134,8 @@ class StrategyPlanner:
         custom_targets: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a new strategic plan from a template."""
-        if plan_type not in PLAN_TEMPLATES:
+        # Defensive coercion. Audit pass 51.
+        if not isinstance(plan_type, str) or plan_type not in PLAN_TEMPLATES:
             return {
                 "status": "error",
                 "error": f"Unknown plan type: {plan_type}",
@@ -150,8 +155,8 @@ class StrategyPlanner:
             "status": "active",
             "current_day": 1,
             "current_phase": template["phases"][0]["name"],
-            "context": context or {},
-            "custom_targets": custom_targets or {},
+            "context": context if isinstance(context, dict) else {},
+            "custom_targets": custom_targets if isinstance(custom_targets, dict) else {},
             "phases": [],
         }
 
@@ -169,21 +174,23 @@ class StrategyPlanner:
         # Mark first phase as active
         plan["phases"][0]["status"] = "active"
 
-        self._plans[plan_id] = plan
+        with self._lock:
+            self._plans[plan_id] = plan
         logger.info("Plan created: %s (%s) — %d phases", plan_id, plan_type, len(plan["phases"]))
 
         return plan
 
     def check_progress(self, plan_id: str, current_day: int | None = None) -> dict[str, Any]:
         """Check progress of a plan and advance phases if needed."""
-        plan = self._plans.get(plan_id)
+        with self._lock:
+            plan = self._plans.get(plan_id) if isinstance(plan_id, str) else None
         if not plan:
             return {"status": "not_found", "plan_id": plan_id}
 
         if current_day is not None:
-            plan["current_day"] = current_day
+            plan["current_day"] = safe_int(current_day, default=plan.get("current_day", 1))
 
-        day = plan["current_day"]
+        day = safe_int(plan.get("current_day"), default=1)
         behind = False
         ahead = False
 
@@ -231,28 +238,38 @@ class StrategyPlanner:
 
     def complete_task(self, plan_id: str, phase_name: str, task_name: str) -> bool:
         """Mark a task as completed."""
-        plan = self._plans.get(plan_id)
-        if not plan:
-            return False
+        with self._lock:
+            plan = self._plans.get(plan_id) if isinstance(plan_id, str) else None
+            if not plan:
+                return False
 
-        for phase in plan["phases"]:
-            if phase["name"] == phase_name:
-                for task in phase["tasks"]:
-                    if task["task"] == task_name:
-                        task["status"] = "completed"
-                        # Check if all tasks in phase are done
-                        if all(t["status"] == "completed" for t in phase["tasks"]):
-                            phase["milestone_met"] = True
-                            phase["status"] = "completed"
-                        return True
+            for phase in plan["phases"]:
+                if phase["name"] == phase_name:
+                    for task in phase["tasks"]:
+                        if task["task"] == task_name:
+                            task["status"] = "completed"
+                            # Check if all tasks in phase are done
+                            if all(t["status"] == "completed" for t in phase["tasks"]):
+                                phase["milestone_met"] = True
+                                phase["status"] = "completed"
+                            return True
         return False
 
     def recommend_plan_type(self, situation: dict[str, Any]) -> dict[str, Any]:
         """Recommend the best plan type based on current store situation."""
-        financial = situation.get("financial", {})
+        # Defensive: None situation / non-dict situation crashed
+        # the first ``.get()`` call. Audit pass 51.
+        situation = situation if isinstance(situation, dict) else {}
+        financial = situation.get("financial") or {}
+        if not isinstance(financial, dict):
+            financial = {}
         health_grade = financial.get("health_grade", "B")
-        inventory = situation.get("inventory", {})
-        customers = situation.get("customers", {})
+        inventory = situation.get("inventory") or {}
+        if not isinstance(inventory, dict):
+            inventory = {}
+        customers = situation.get("customers") or {}
+        if not isinstance(customers, dict):
+            customers = {}
 
         if health_grade in ("D", "F"):
             return {"plan_type": "recovery", "reason": f"Financial health {health_grade} — recovery needed"}
@@ -260,26 +277,32 @@ class StrategyPlanner:
         if inventory.get("stockout_risk"):
             return {"plan_type": "seasonal_prep", "reason": "Inventory at risk — prepare and stabilize"}
 
-        if customers.get("churn_risk_pct", 0) > 30:
-            return {"plan_type": "recovery", "reason": f"High churn ({customers['churn_risk_pct']}%) — need retention focus"}
+        # ``churn_risk_pct`` can arrive as None or a string ("30%").
+        # Pre-audit ``None > 30`` crashed. safe_float handles
+        # both. Audit pass 51.
+        churn_pct = safe_float(customers.get("churn_risk_pct"))
+        if churn_pct > 30:
+            return {"plan_type": "recovery", "reason": f"High churn ({churn_pct}%) — need retention focus"}
 
         return {"plan_type": "growth_sprint", "reason": "Store healthy — push for growth"}
 
     def get_active_plans(self) -> list[dict[str, Any]]:
         """Get all active plans."""
-        return [
-            {"plan_id": pid, "type": p["type"], "day": p["current_day"], "phase": p["current_phase"]}
-            for pid, p in self._plans.items()
-            if p["status"] == "active"
-        ]
+        with self._lock:
+            return [
+                {"plan_id": pid, "type": p["type"], "day": p["current_day"], "phase": p["current_phase"]}
+                for pid, p in self._plans.items()
+                if p["status"] == "active"
+            ]
 
     def get_today_tasks(self, plan_id: str) -> list[dict[str, Any]]:
         """Get tasks for today's phase."""
-        plan = self._plans.get(plan_id)
+        with self._lock:
+            plan = self._plans.get(plan_id) if isinstance(plan_id, str) else None
         if not plan:
             return []
 
-        day = plan["current_day"]
+        day = safe_int(plan.get("current_day"), default=1)
         for phase in plan["phases"]:
             start, end = phase["days"]
             if start <= day <= end:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("self_monitor.capability")
@@ -46,10 +47,17 @@ class CapabilityAssessor:
         Returns:
             Capability assessment with calibration check.
         """
+        # Defensive coercion. Pre-audit
+        # ``claimed_confidence - actual_rate`` crashed on non-
+        # numeric inputs. Audit pass 51.
+        if not isinstance(decision_type, str):
+            decision_type = str(decision_type) if decision_type is not None else ""
+        claimed_confidence = safe_int(claimed_confidence, default=50)
+
         profile = self._get_capability_profile(decision_type)
 
-        actual_rate = profile["success_rate"]
-        sample_size = profile["sample_size"]
+        actual_rate = safe_float(profile.get("success_rate"), default=50.0)
+        sample_size = safe_int(profile.get("sample_size"))
 
         # Calibration: compare claimed vs actual
         calibration_gap = claimed_confidence - actual_rate if sample_size >= 3 else 0
@@ -114,19 +122,34 @@ class CapabilityAssessor:
         if self._memory is None:
             return {"success_rate": 50, "sample_size": 0, "status": "no_data"}
 
-        rate_data = self._memory.get_success_rate(decision_type)
-        total = rate_data.get("total", 0)
-        successes = rate_data.get("successes", 0)
-        failures = rate_data.get("failures", 0)
-        success_rate = rate_data.get("success_rate", 50)
+        try:
+            rate_data = self._memory.get_success_rate(decision_type) or {}
+        except Exception:  # noqa: BLE001
+            rate_data = {}
+        if not isinstance(rate_data, dict):
+            rate_data = {}
+        total = safe_int(rate_data.get("total"))
+        successes = safe_int(rate_data.get("successes"))
+        failures = safe_int(rate_data.get("failures"))
+        success_rate = safe_float(rate_data.get("success_rate"), default=50.0)
 
-        # Get recent trend (last 5 episodes)
-        lessons = self._memory.get_lessons(decision_type, limit=5)
-        recent_success = sum(1 for l in lessons if l.get("success", False))
+        # Get recent trend (last 5 episodes). Defensive: memory
+        # backend may raise or return non-list. Audit pass 51.
+        try:
+            lessons = self._memory.get_lessons(decision_type, limit=5) or []
+        except Exception:  # noqa: BLE001
+            lessons = []
+        if not isinstance(lessons, list):
+            lessons = []
+        recent_success = sum(1 for l in lessons if isinstance(l, dict) and l.get("success"))
         recent_total = len(lessons)
-        trend = "improving" if recent_total >= 3 and recent_success / recent_total > success_rate / 100 else "stable"
-        if recent_total >= 3 and recent_success / recent_total < (success_rate / 100) * 0.7:
-            trend = "declining"
+        trend = "stable"
+        if recent_total >= 3:
+            ratio = recent_success / recent_total
+            if ratio > success_rate / 100:
+                trend = "improving"
+            elif ratio < (success_rate / 100) * 0.7:
+                trend = "declining"
 
         return {
             "success_rate": success_rate,
