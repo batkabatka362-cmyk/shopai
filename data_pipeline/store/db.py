@@ -13,9 +13,45 @@ import time
 from pathlib import Path
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("data_pipeline.db")
+
+
+def _safe_json_loads(text: Any, default: Any) -> Any:
+    """Parse JSON from a DB column, returning *default* on any error.
+
+    Pre-audit ``_product_to_dict`` / ``_order_to_dict`` /
+    ``_customer_to_dict`` called ``json.loads(d.get("tags", "[]"))``
+    directly — a corrupted JSON column (from a crash mid-write
+    or a manual DB edit) propagated the JSONDecodeError out of
+    the data accessor, taking down whatever engine was using
+    the result. Audit pass 48.
+    """
+    if text is None:
+        return default
+    if not isinstance(text, (str, bytes, bytearray)):
+        return default
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        logger.warning("db: failed to decode JSON column, using default")
+        return default
+
+
+def _safe_json_dumps(value: Any, default: str = "{}") -> str:
+    """Serialize *value* to JSON, returning *default* on any error.
+
+    Pre-audit ``save_snapshot`` / ``upsert_*`` used bare
+    ``json.dumps(value)`` — a non-serialisable value (set,
+    datetime, custom object) crashed the write. Audit pass 48.
+    """
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError) as exc:
+        logger.warning("db: failed to encode JSON value (%s), using default", exc)
+        return default
 
 _DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "shopai.db"
 
@@ -204,39 +240,53 @@ class ShopAIDatabase:
     # ── Products ─────────────────────────────────────────────
 
     def upsert_products(self, store_id: str, products: list[dict[str, Any]]) -> int:
+        # Defensive coercion of public entry point. Audit pass 48.
+        if not isinstance(store_id, str) or not store_id:
+            return 0
+        if not isinstance(products, list):
+            return 0
         now = time.time()
         conn = self._get_conn()
         count = 0
-        for p in products:
-            conn.execute(
-                """INSERT OR REPLACE INTO products
-                   (id, store_id, shopify_id, title, price, cost, compare_at_price,
-                    vendor, product_type, tags, status, inventory_qty, weight,
-                    image_url, description, variants, raw_data, created_at, updated_at, synced_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    str(p.get("id", "")), store_id,
-                    str(p.get("shopify_id", p.get("id", ""))),
-                    p.get("title", p.get("name", "")),
-                    float(p.get("price", 0) or 0),
-                    float(p.get("cost", 0) or 0),
-                    float(p.get("compare_at_price", 0) or 0),
-                    p.get("vendor", ""),
-                    p.get("product_type", p.get("category", "")),
-                    json.dumps(p.get("tags", [])),
-                    p.get("status", "active"),
-                    int(p.get("inventory_quantity", p.get("inventory_qty", 0)) or 0),
-                    float(p.get("weight", 0) or 0),
-                    p.get("image_url", ""),
-                    p.get("body_html", p.get("description", "")),
-                    json.dumps(p.get("variants", [])),
-                    json.dumps(p.get("_raw", {})),
-                    p.get("created_at_ts", now),
-                    now, now,
-                ),
-            )
-            count += 1
-        conn.commit()
+        try:
+            for p in products:
+                if not isinstance(p, dict):
+                    continue
+                try:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO products
+                           (id, store_id, shopify_id, title, price, cost, compare_at_price,
+                            vendor, product_type, tags, status, inventory_qty, weight,
+                            image_url, description, variants, raw_data, created_at, updated_at, synced_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            str(p.get("id") or ""), store_id,
+                            str(p.get("shopify_id") or p.get("id") or ""),
+                            str(p.get("title") or p.get("name") or ""),
+                            safe_float(p.get("price")),
+                            safe_float(p.get("cost")),
+                            safe_float(p.get("compare_at_price")),
+                            str(p.get("vendor") or ""),
+                            str(p.get("product_type") or p.get("category") or ""),
+                            _safe_json_dumps(p.get("tags") or [], default="[]"),
+                            str(p.get("status") or "active"),
+                            safe_int(p.get("inventory_quantity") or p.get("inventory_qty")),
+                            safe_float(p.get("weight")),
+                            str(p.get("image_url") or ""),
+                            str(p.get("body_html") or p.get("description") or ""),
+                            _safe_json_dumps(p.get("variants") or [], default="[]"),
+                            _safe_json_dumps(p.get("_raw") or {}),
+                            safe_float(p.get("created_at_ts"), default=now),
+                            now, now,
+                        ),
+                    )
+                    count += 1
+                except sqlite3.Error as exc:
+                    logger.warning("db: upsert_products skipped row (%s): %s", p.get("id"), exc)
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
         return count
 
     def get_products(self, store_id: str, status: str = "active", limit: int = 500) -> list[dict[str, Any]]:
@@ -256,33 +306,56 @@ class ShopAIDatabase:
     # ── Orders ───────────────────────────────────────────────
 
     def upsert_orders(self, store_id: str, orders: list[dict[str, Any]]) -> int:
+        if not isinstance(store_id, str) or not store_id:
+            return 0
+        if not isinstance(orders, list):
+            return 0
         now = time.time()
         conn = self._get_conn()
         count = 0
-        for o in orders:
-            conn.execute(
-                """INSERT OR REPLACE INTO orders
-                   (id, store_id, shopify_id, total, subtotal, financial_status,
-                    fulfillment_status, item_count, customer_id, line_items,
-                    raw_data, order_date, created_at, synced_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    str(o.get("id", "")), store_id,
-                    str(o.get("shopify_id", o.get("id", ""))),
-                    float(o.get("total", o.get("total_price", 0)) or 0),
-                    float(o.get("subtotal", o.get("subtotal_price", 0)) or 0),
-                    o.get("financial_status", o.get("status", "")),
-                    o.get("fulfillment_status", ""),
-                    int(o.get("item_count", o.get("items", len(o.get("line_items", [])))) or 0),
-                    str(o.get("customer_id", "")),
-                    json.dumps(o.get("line_items", [])),
-                    json.dumps(o.get("_raw", {})),
-                    o.get("order_date_ts", now),
-                    now, now,
-                ),
-            )
-            count += 1
-        conn.commit()
+        try:
+            for o in orders:
+                if not isinstance(o, dict):
+                    continue
+                line_items = o.get("line_items") or []
+                if not isinstance(line_items, list):
+                    line_items = []
+                # ``item_count`` fallback cascade: explicit field
+                # → ``items`` alias → length of line_items.
+                item_count_raw = o.get("item_count")
+                if item_count_raw is None:
+                    item_count_raw = o.get("items")
+                if item_count_raw is None:
+                    item_count_raw = len(line_items)
+                try:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO orders
+                           (id, store_id, shopify_id, total, subtotal, financial_status,
+                            fulfillment_status, item_count, customer_id, line_items,
+                            raw_data, order_date, created_at, synced_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            str(o.get("id") or ""), store_id,
+                            str(o.get("shopify_id") or o.get("id") or ""),
+                            safe_float(o.get("total") or o.get("total_price")),
+                            safe_float(o.get("subtotal") or o.get("subtotal_price")),
+                            str(o.get("financial_status") or o.get("status") or ""),
+                            str(o.get("fulfillment_status") or ""),
+                            safe_int(item_count_raw),
+                            str(o.get("customer_id") or ""),
+                            _safe_json_dumps(line_items, default="[]"),
+                            _safe_json_dumps(o.get("_raw") or {}),
+                            safe_float(o.get("order_date_ts"), default=now),
+                            now, now,
+                        ),
+                    )
+                    count += 1
+                except sqlite3.Error as exc:
+                    logger.warning("db: upsert_orders skipped row (%s): %s", o.get("id"), exc)
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
         return count
 
     def get_orders(self, store_id: str, days_back: int = 30, limit: int = 1000) -> list[dict[str, Any]]:
@@ -303,29 +376,42 @@ class ShopAIDatabase:
     # ── Customers ────────────────────────────────────────────
 
     def upsert_customers(self, store_id: str, customers: list[dict[str, Any]]) -> int:
+        if not isinstance(store_id, str) or not store_id:
+            return 0
+        if not isinstance(customers, list):
+            return 0
         now = time.time()
         conn = self._get_conn()
         count = 0
-        for c in customers:
-            conn.execute(
-                """INSERT OR REPLACE INTO customers
-                   (id, store_id, shopify_id, name, email, orders_count,
-                    total_spent, tags, raw_data, created_at, synced_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    str(c.get("id", "")), store_id,
-                    str(c.get("shopify_id", c.get("id", ""))),
-                    c.get("name", ""),
-                    c.get("email", ""),
-                    int(c.get("orders_count", c.get("orders", 0)) or 0),
-                    float(c.get("total_spent", 0) or 0),
-                    json.dumps(c.get("tags", [])),
-                    json.dumps(c.get("_raw", {})),
-                    now, now,
-                ),
-            )
-            count += 1
-        conn.commit()
+        try:
+            for c in customers:
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO customers
+                           (id, store_id, shopify_id, name, email, orders_count,
+                            total_spent, tags, raw_data, created_at, synced_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            str(c.get("id") or ""), store_id,
+                            str(c.get("shopify_id") or c.get("id") or ""),
+                            str(c.get("name") or ""),
+                            str(c.get("email") or ""),
+                            safe_int(c.get("orders_count") or c.get("orders")),
+                            safe_float(c.get("total_spent")),
+                            _safe_json_dumps(c.get("tags") or [], default="[]"),
+                            _safe_json_dumps(c.get("_raw") or {}),
+                            now, now,
+                        ),
+                    )
+                    count += 1
+                except sqlite3.Error as exc:
+                    logger.warning("db: upsert_customers skipped row (%s): %s", c.get("id"), exc)
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
         return count
 
     def get_customers(self, store_id: str, limit: int = 1000) -> list[dict[str, Any]]:
@@ -339,9 +425,13 @@ class ShopAIDatabase:
 
     def save_snapshot(self, store_id: str, snapshot_type: str, data: dict[str, Any]) -> int:
         conn = self._get_conn()
+        # ``_safe_json_dumps`` catches non-serialisable values
+        # (sets, datetimes, custom objects) — pre-audit a
+        # single bad snapshot took down the snapshot pipeline
+        # entirely. Audit pass 48.
         cursor = conn.execute(
             "INSERT INTO analytics_snapshots (store_id, snapshot_type, data, created_at) VALUES (?, ?, ?, ?)",
-            (store_id, snapshot_type, json.dumps(data), time.time()),
+            (store_id, snapshot_type, _safe_json_dumps(data, default="{}"), time.time()),
         )
         conn.commit()
         return cursor.lastrowid or 0
@@ -353,8 +443,11 @@ class ShopAIDatabase:
                ORDER BY created_at DESC LIMIT ?""",
             (store_id, snapshot_type, limit),
         ).fetchall()
+        # ``_safe_json_loads`` survives a corrupted ``data``
+        # column from an old crash mid-write.
         return [{"id": r["id"], "type": r["snapshot_type"],
-                 "data": json.loads(r["data"]), "created_at": r["created_at"]}
+                 "data": _safe_json_loads(r["data"], default={}),
+                 "created_at": r["created_at"]}
                 for r in rows]
 
     # ── Sync Log ─────────────────────────────────────────────
@@ -403,8 +496,10 @@ class ShopAIDatabase:
     @staticmethod
     def _product_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        d["tags"] = json.loads(d.get("tags", "[]"))
-        d["variants"] = json.loads(d.get("variants", "[]"))
+        # Pre-audit ``json.loads(d.get("tags", "[]"))`` propagated
+        # JSONDecodeError from a corrupted column. Audit pass 48.
+        d["tags"] = _safe_json_loads(d.get("tags"), default=[])
+        d["variants"] = _safe_json_loads(d.get("variants"), default=[])
         d["name"] = d.pop("title", "")
         d["category"] = d.pop("product_type", "")
         d["inventory_quantity"] = d.pop("inventory_qty", 0)
@@ -413,7 +508,7 @@ class ShopAIDatabase:
     @staticmethod
     def _order_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        d["line_items"] = json.loads(d.get("line_items", "[]"))
+        d["line_items"] = _safe_json_loads(d.get("line_items"), default=[])
         d["items"] = d.pop("item_count", 0)
         d["status"] = d.pop("financial_status", "")
         return d
@@ -421,6 +516,6 @@ class ShopAIDatabase:
     @staticmethod
     def _customer_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        d["tags"] = json.loads(d.get("tags", "[]"))
+        d["tags"] = _safe_json_loads(d.get("tags"), default=[])
         d["orders"] = d.pop("orders_count", 0)
         return d

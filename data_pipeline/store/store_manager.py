@@ -6,6 +6,7 @@ Supports adding/removing stores, switching active store, and batch operations.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Any
 
@@ -17,17 +18,26 @@ logger = get_logger("store_manager")
 # repeated token cache loads and refresh attempts on every credential lookup.
 # get_credentials() may be called multiple times per cycle.
 _auth_instances: dict[tuple[str, str, str], Any] = {}
+_auth_lock = threading.Lock()
 
 
 def _get_auth_instance(shop_url: str, client_id: str, client_secret: str) -> Any:
-    """Return a cached ShopifyAuth instance, creating it on first access."""
+    """Return a cached ShopifyAuth instance, creating it on first access.
+
+    Thread-safe: pre-audit two concurrent first-callers with
+    the same key could both pass the ``None`` check and both
+    construct a ShopifyAuth — the second assignment silently
+    overwrote the first, discarding its token cache state.
+    Audit pass 48.
+    """
     key = (shop_url, client_id, client_secret)
-    auth = _auth_instances.get(key)
-    if auth is None:
-        from core.auth.shopify_auth import ShopifyAuth
-        auth = ShopifyAuth(shop_url, client_id, client_secret)
-        _auth_instances[key] = auth
-    return auth
+    with _auth_lock:
+        auth = _auth_instances.get(key)
+        if auth is None:
+            from core.auth.shopify_auth import ShopifyAuth
+            auth = ShopifyAuth(shop_url, client_id, client_secret)
+            _auth_instances[key] = auth
+        return auth
 
 
 class StoreManager:
@@ -38,6 +48,11 @@ class StoreManager:
         self._db: ShopAIDatabase = db or ShopAIDatabase()
         self._active_store_id: str = ""
         self._store_credentials: dict[str, dict[str, str]] = {}
+        # Protects _active_store_id and _store_credentials from
+        # concurrent access. Multiple API handlers can call
+        # add_store / set_active_store / get_credentials in
+        # parallel. Audit pass 48.
+        self._lock = threading.RLock()
 
     # ── Store CRUD ───────────────────────────────────────────
 
@@ -53,36 +68,45 @@ class StoreManager:
         client_secret: str = "",
     ) -> dict[str, Any]:
         """Register a new Shopify store. Supports OAuth (client_id+secret) or legacy key."""
-        self._store_credentials[store_id] = {
-            "shop_url": shop_url,
-            "api_key": api_key,
-            "client_id": client_id,
-            "client_secret": client_secret,
-        }
+        if not isinstance(store_id, str) or not store_id:
+            return {"error": "store_id required"}
+        if not isinstance(shop_url, str) or not shop_url:
+            return {"error": "shop_url required"}
+
+        # Write the DB row FIRST. If the DB add fails, we don't
+        # want the in-memory credentials to be left hanging.
+        # Audit pass 48.
         result = self._db.add_store(
             store_id, shop_url,
             name=name, niche=niche, store_type=store_type,
             config={"api_version": "2024-01"},
         )
+        with self._lock:
+            self._store_credentials[store_id] = {
+                "shop_url": shop_url,
+                "api_key": api_key or "",
+                "client_id": client_id or "",
+                "client_secret": client_secret or "",
+            }
+            if not self._active_store_id:
+                self._active_store_id = store_id
         logger.info("Store added: %s (%s)", store_id, shop_url)
-
-        if not self._active_store_id:
-            self._active_store_id = store_id
-
         return result
 
     def remove_store(self, store_id: str) -> dict[str, Any]:
         """Deactivate a store (soft delete)."""
-        self._store_credentials.pop(store_id, None)
+        with self._lock:
+            self._store_credentials.pop(store_id, None)
         conn = self._db._get_conn()
         conn.execute(
             "UPDATE stores SET status = 'inactive', updated_at = ? WHERE store_id = ?",
             (time.time(), store_id),
         )
         conn.commit()
-        if self._active_store_id == store_id:
-            stores = self._db.list_stores()
-            self._active_store_id = stores[0]["store_id"] if stores else ""
+        with self._lock:
+            if self._active_store_id == store_id:
+                stores = self._db.list_stores()
+                self._active_store_id = stores[0]["store_id"] if stores else ""
         return {"store_id": store_id, "status": "removed"}
 
     def get_store(self, store_id: str) -> dict[str, Any] | None:
@@ -90,10 +114,20 @@ class StoreManager:
 
     def list_stores(self) -> list[dict[str, Any]]:
         stores = self._db.list_stores()
+        with self._lock:
+            active = self._active_store_id
+            creds_keys = set(self._store_credentials.keys())
+        # Make defensive copies so caller mutation doesn't
+        # leak into the DB row cache. Audit pass 48.
+        result = []
         for s in stores:
-            s["is_active"] = s["store_id"] == self._active_store_id
-            s["has_credentials"] = s["store_id"] in self._store_credentials
-        return stores
+            if not isinstance(s, dict):
+                continue
+            row = dict(s)
+            row["is_active"] = row.get("store_id") == active
+            row["has_credentials"] = row.get("store_id") in creds_keys
+            result.append(row)
+        return result
 
     # ── Active Store ─────────────────────────────────────────
 
@@ -101,28 +135,38 @@ class StoreManager:
         store = self._db.get_store(store_id)
         if not store:
             return {"error": f"Store {store_id} not found"}
-        self._active_store_id = store_id
+        with self._lock:
+            self._active_store_id = store_id
         logger.info("Active store set to: %s", store_id)
         return {"active_store": store_id, "shop_url": store["shop_url"]}
 
     @property
     def active_store_id(self) -> str:
-        return self._active_store_id
+        with self._lock:
+            return self._active_store_id
 
     @property
     def active_store(self) -> dict[str, Any] | None:
-        if not self._active_store_id:
+        with self._lock:
+            sid = self._active_store_id
+        if not sid:
             return None
-        return self._db.get_store(self._active_store_id)
+        return self._db.get_store(sid)
 
     # ── Credentials ──────────────────────────────────────────
 
     def get_credentials(self, store_id: str = "") -> dict[str, str]:
         """Get API credentials for a store. Supports OAuth auto-refresh."""
-        sid = store_id or self._active_store_id
-        if sid in self._store_credentials:
-            creds = dict(self._store_credentials[sid])
-            # Try OAuth token refresh
+        with self._lock:
+            sid = store_id or self._active_store_id
+            # Snapshot the credentials dict inside the lock so
+            # a concurrent ``set_credentials`` can't mutate our
+            # copy mid-read.
+            cached = self._store_credentials.get(sid) if sid else None
+            creds: dict[str, str] | None = dict(cached) if cached else None
+        if creds is not None:
+            # Token refresh runs OUTSIDE the lock — it may
+            # make a blocking HTTP call.
             creds["api_key"] = self._resolve_token(creds)
             return creds
         # Fallback to env vars (single-store mode)
@@ -159,10 +203,13 @@ class StoreManager:
         return os.environ.get("SHOPAI_SHOPIFY_KEY", "")
 
     def set_credentials(self, store_id: str, shop_url: str, api_key: str) -> None:
-        self._store_credentials[store_id] = {
-            "shop_url": shop_url,
-            "api_key": api_key,
-        }
+        if not isinstance(store_id, str) or not store_id:
+            return
+        with self._lock:
+            self._store_credentials[store_id] = {
+                "shop_url": shop_url if isinstance(shop_url, str) else "",
+                "api_key": api_key if isinstance(api_key, str) else "",
+            }
 
     # ── Store Data Access ────────────────────────────────────
 

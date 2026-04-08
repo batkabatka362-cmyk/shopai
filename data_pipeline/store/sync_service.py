@@ -9,6 +9,7 @@ import time
 import threading
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("sync_service")
@@ -279,91 +280,176 @@ class SyncService:
         return None
 
     def _sync_product_costs(self, store_id: str, creds: dict[str, str], products: list[dict]) -> None:
-        """Fetch product costs via inventory_items API (costs not in products endpoint)."""
+        """Fetch product costs via inventory_items API (costs not in products endpoint).
+
+        Audit pass 48 fixes:
+          * double-scheme URL bug (same as pass 43) — if
+            ``creds["shop_url"]`` already has ``https://`` the
+            pre-audit f-string produced ``https://https://shop.../``.
+          * ``variants[0]`` non-list crash.
+          * Bare ``float()`` on inventory cost crash.
+          * ``p["id"]`` direct access on non-dict / missing key.
+        """
+        if not isinstance(creds, dict) or not isinstance(products, list):
+            return
         try:
-            import json, urllib.request
-            token = creds["api_key"]
-            shop = creds["shop_url"]
+            import json
+            import urllib.request
+            from data_pipeline.ingestion.api.shopify_api import _normalize_shop_url
+
+            token = creds.get("api_key") or ""
+            shop = _normalize_shop_url(creds.get("shop_url") or "")
+            if not shop or not token:
+                return
             conn = self._sm.db._get_conn()
 
             for p in products:
-                variant = p.get("variants", [{}])[0] if p.get("variants") else {}
+                if not isinstance(p, dict):
+                    continue
+                variants = p.get("variants")
+                variant: dict[str, Any] = {}
+                if isinstance(variants, list) and variants:
+                    first = variants[0]
+                    if isinstance(first, dict):
+                        variant = first
                 inv_item_id = variant.get("inventory_item_id")
                 if not inv_item_id:
+                    continue
+                pid = p.get("id")
+                if not pid:
                     continue
                 try:
                     url = f"https://{shop}/admin/api/2024-01/inventory_items/{inv_item_id}.json"
                     req = urllib.request.Request(url, headers={"X-Shopify-Access-Token": token})
-                    data = json.loads(urllib.request.urlopen(req, timeout=15).read())
-                    cost = float(data.get("inventory_item", {}).get("cost", 0) or 0)
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        data = json.loads(resp.read())
+                    if not isinstance(data, dict):
+                        continue
+                    inv_item = data.get("inventory_item") or {}
+                    if not isinstance(inv_item, dict):
+                        continue
+                    cost = safe_float(inv_item.get("cost"))
                     if cost > 0:
                         conn.execute(
                             "UPDATE products SET cost = ? WHERE store_id = ? AND shopify_id = ?",
-                            (cost, store_id, str(p["id"])),
+                            (cost, store_id, str(pid)),
                         )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
 
             conn.commit()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Cost sync: %s", exc)
 
     @staticmethod
     def _normalize_products(raw_products: list[dict]) -> list[dict[str, Any]]:
-        """Convert raw Shopify API products to DB-ready format."""
+        """Convert raw Shopify API products to DB-ready format.
+
+        Pre-audit used bare ``float()`` / ``int()`` on variant
+        fields which crashed on currency strings, and did
+        ``p.get("variants", [{}])[0]`` which crashed when
+        ``variants`` was a dict (not a list). Audit pass 48.
+        """
+        if not isinstance(raw_products, list):
+            return []
         normalized = []
         for p in raw_products:
-            variant = p.get("variants", [{}])[0] if p.get("variants") else {}
+            if not isinstance(p, dict):
+                continue
+            # Safe variant extraction: must be a non-empty list
+            # AND the first element must be a dict.
+            variants_raw = p.get("variants")
+            variant: dict[str, Any] = {}
+            if isinstance(variants_raw, list) and variants_raw:
+                first = variants_raw[0]
+                if isinstance(first, dict):
+                    variant = first
+            # Safe image extraction.
+            image = p.get("image") or {}
+            if not isinstance(image, dict):
+                image = {}
+            # Safe tags extraction: string → split, list → as-is,
+            # None / anything else → [].
+            raw_tags = p.get("tags")
+            if isinstance(raw_tags, str):
+                tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+            elif isinstance(raw_tags, list):
+                tags = raw_tags
+            else:
+                tags = []
             normalized.append({
-                "id": str(p.get("id", "")),
-                "shopify_id": str(p.get("id", "")),
-                "title": p.get("title", ""),
-                "price": float(variant.get("price", 0) or 0),
-                "cost": float(variant.get("cost", 0) or 0),
-                "compare_at_price": float(variant.get("compare_at_price", 0) or 0),
-                "vendor": p.get("vendor", ""),
-                "product_type": p.get("product_type", ""),
-                "tags": p.get("tags", "").split(", ") if isinstance(p.get("tags"), str) else p.get("tags", []),
-                "status": p.get("status", "active"),
-                "inventory_quantity": int(variant.get("inventory_quantity", 0) or 0),
-                "weight": float(variant.get("weight", 0) or 0),
-                "image_url": (p.get("image", {}) or {}).get("src", ""),
-                "body_html": p.get("body_html", ""),
-                "variants": p.get("variants", []),
+                "id": str(p.get("id") or ""),
+                "shopify_id": str(p.get("id") or ""),
+                "title": p.get("title") or "",
+                "price": safe_float(variant.get("price")),
+                "cost": safe_float(variant.get("cost")),
+                "compare_at_price": safe_float(variant.get("compare_at_price")),
+                "vendor": p.get("vendor") or "",
+                "product_type": p.get("product_type") or "",
+                "tags": tags,
+                "status": p.get("status") or "active",
+                "inventory_quantity": safe_int(variant.get("inventory_quantity")),
+                "weight": safe_float(variant.get("weight")),
+                "image_url": image.get("src") or "",
+                "body_html": p.get("body_html") or "",
+                "variants": variants_raw if isinstance(variants_raw, list) else [],
                 "_raw": p,
             })
         return normalized
 
     @staticmethod
     def _normalize_orders(raw_orders: list[dict]) -> list[dict[str, Any]]:
+        if not isinstance(raw_orders, list):
+            return []
         normalized = []
         for o in raw_orders:
+            if not isinstance(o, dict):
+                continue
+            customer = o.get("customer") or {}
+            if not isinstance(customer, dict):
+                customer = {}
+            line_items = o.get("line_items") or []
+            if not isinstance(line_items, list):
+                line_items = []
             normalized.append({
-                "id": str(o.get("id", "")),
-                "shopify_id": str(o.get("id", "")),
-                "total": float(o.get("total_price", 0) or 0),
-                "subtotal": float(o.get("subtotal_price", 0) or 0),
-                "financial_status": o.get("financial_status", ""),
-                "fulfillment_status": o.get("fulfillment_status", ""),
-                "item_count": len(o.get("line_items", [])),
-                "customer_id": str((o.get("customer") or {}).get("id", "")),
-                "line_items": o.get("line_items", []),
+                "id": str(o.get("id") or ""),
+                "shopify_id": str(o.get("id") or ""),
+                "total": safe_float(o.get("total_price")),
+                "subtotal": safe_float(o.get("subtotal_price")),
+                "financial_status": o.get("financial_status") or "",
+                "fulfillment_status": o.get("fulfillment_status") or "",
+                "item_count": len(line_items),
+                "customer_id": str(customer.get("id") or ""),
+                "line_items": line_items,
                 "_raw": o,
             })
         return normalized
 
     @staticmethod
     def _normalize_customers(raw_customers: list[dict]) -> list[dict[str, Any]]:
+        if not isinstance(raw_customers, list):
+            return []
         normalized = []
         for c in raw_customers:
+            if not isinstance(c, dict):
+                continue
+            first = c.get("first_name") or ""
+            last = c.get("last_name") or ""
+            raw_tags = c.get("tags")
+            if isinstance(raw_tags, str):
+                tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+            elif isinstance(raw_tags, list):
+                tags = raw_tags
+            else:
+                tags = []
             normalized.append({
-                "id": str(c.get("id", "")),
-                "shopify_id": str(c.get("id", "")),
-                "name": f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(),
-                "email": c.get("email", ""),
-                "orders_count": int(c.get("orders_count", 0) or 0),
-                "total_spent": float(c.get("total_spent", 0) or 0),
-                "tags": c.get("tags", "").split(", ") if isinstance(c.get("tags"), str) else c.get("tags", []),
+                "id": str(c.get("id") or ""),
+                "shopify_id": str(c.get("id") or ""),
+                "name": f"{first} {last}".strip(),
+                "email": c.get("email") or "",
+                "orders_count": safe_int(c.get("orders_count")),
+                "total_spent": safe_float(c.get("total_spent")),
+                "tags": tags,
                 "_raw": c,
             })
         return normalized

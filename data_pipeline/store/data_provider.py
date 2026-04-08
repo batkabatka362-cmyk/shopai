@@ -183,6 +183,11 @@ class DataProvider:
     @staticmethod
     def _engine_data_needs(engine_name: str) -> set[str]:
         """Determine what data types an engine needs."""
+        # Defensive: pre-audit ``engine_name.lower()`` crashed
+        # on None / non-string. Audit pass 48.
+        if not isinstance(engine_name, str):
+            return {"products"}
+
         product_keywords = {
             "product", "pricing", "price", "catalog", "seo", "description",
             "inventory", "ranking", "optimization", "selection", "upsell",
