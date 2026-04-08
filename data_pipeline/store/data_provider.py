@@ -4,7 +4,17 @@ Engines call DataProvider to get data. DataProvider reads from:
 1. Local DB cache (fast, always available)
 2. Live Shopify API (if cache is stale or missing)
 
-This replaces mock data with real data throughout the system.
+If both fail the provider returns an **empty** result with
+``source="empty"`` instead of silently substituting a hardcoded
+mock dataset. Pre-cleanup this module shipped 5 fake products, 5
+fake orders, and 4 fake customers that every engine treated as
+real — inventory checks, revenue forecasts, customer segmentation
+and pricing decisions were quietly trained on fiction whenever a
+store was not yet wired up. Callers now have to either:
+
+* inspect ``source == "empty"`` and short-circuit, or
+* catch ``ValueError`` from ``get_products/orders/customers`` and
+  decide what to do explicitly.
 """
 from __future__ import annotations
 
@@ -56,33 +66,35 @@ class DataProvider:
         if "analytics" in needs:
             data["analytics"] = self._get_analytics(sid)
 
-        # If we got no data at all, flag it
+        # If we got no data at all, mark the source as "empty"
+        # instead of substituting the old 5-product mock dataset.
+        # Callers can inspect ``source`` and decide how to react
+        # (skip the cycle, raise, or prompt reconnection) — the
+        # important change is that the downstream engine sees
+        # honest empty lists, not fictional products.
         has_data = any(
             data.get(k) for k in ("products", "order_data", "customer_data")
         )
         if not has_data:
-            data["source"] = "mock"
-            data["products"] = self._mock_products()
-            data["order_data"] = self._mock_orders()
-            data["customer_data"] = self._mock_customers()
+            data["source"] = "empty"
+            data.setdefault("products", [])
+            data.setdefault("order_data", [])
+            data.setdefault("customer_data", [])
 
         data["fetched_at"] = time.time()
         return data
 
     def get_products(self, store_id: str = "", **kwargs: Any) -> list[dict[str, Any]]:
         sid = store_id or self._sm.active_store_id
-        products = self._get_products(sid, **kwargs)
-        return products if products else self._mock_products()
+        return self._get_products(sid, **kwargs)
 
     def get_orders(self, store_id: str = "", **kwargs: Any) -> list[dict[str, Any]]:
         sid = store_id or self._sm.active_store_id
-        orders = self._get_orders(sid, **kwargs)
-        return orders if orders else self._mock_orders()
+        return self._get_orders(sid, **kwargs)
 
     def get_customers(self, store_id: str = "", **kwargs: Any) -> list[dict[str, Any]]:
         sid = store_id or self._sm.active_store_id
-        customers = self._get_customers(sid, **kwargs)
-        return customers if customers else self._mock_customers()
+        return self._get_customers(sid, **kwargs)
 
     # ── Internal data fetching ───────────────────────────────
 
@@ -222,38 +234,13 @@ class DataProvider:
 
         return needs
 
-    # ── Mock data fallback ───────────────────────────────────
-
-    @staticmethod
-    def _mock_products() -> list[dict[str, Any]]:
-        return [
-            {"id": "1", "name": "Wireless Earbuds Pro", "price": 49.99, "cost": 15, "category": "electronics",
-             "inventory_quantity": 150, "compare_at_price": 69.99, "vendor": "TechSource"},
-            {"id": "2", "name": "Premium Yoga Mat", "price": 39.99, "cost": 12, "category": "fitness",
-             "inventory_quantity": 80, "vendor": "FitGear"},
-            {"id": "3", "name": "LED Desk Lamp", "price": 34.99, "cost": 18, "category": "home",
-             "inventory_quantity": 45, "vendor": "HomeBright"},
-            {"id": "4", "name": "Phone Case Ultra", "price": 19.99, "cost": 3, "category": "accessories",
-             "inventory_quantity": 300, "vendor": "CaseCraft"},
-            {"id": "5", "name": "Resistance Bands Set", "price": 24.99, "cost": 5, "category": "fitness",
-             "inventory_quantity": 200, "vendor": "FitGear"},
-        ]
-
-    @staticmethod
-    def _mock_orders() -> list[dict[str, Any]]:
-        return [
-            {"id": "1001", "total": 89.98, "subtotal": 84.98, "status": "paid", "items": 2, "customer_id": "c1"},
-            {"id": "1002", "total": 49.99, "subtotal": 49.99, "status": "paid", "items": 1, "customer_id": "c2"},
-            {"id": "1003", "total": 124.97, "subtotal": 119.97, "status": "paid", "items": 3, "customer_id": "c1"},
-            {"id": "1004", "total": 34.99, "subtotal": 34.99, "status": "refunded", "items": 1, "customer_id": "c3"},
-            {"id": "1005", "total": 64.98, "subtotal": 59.98, "status": "paid", "items": 2, "customer_id": "c4"},
-        ]
-
-    @staticmethod
-    def _mock_customers() -> list[dict[str, Any]]:
-        return [
-            {"id": "c1", "name": "Alice Kim", "email": "alice@example.com", "orders": 8, "total_spent": 650},
-            {"id": "c2", "name": "Bob Park", "email": "bob@example.com", "orders": 1, "total_spent": 49.99},
-            {"id": "c3", "name": "Carol Lee", "email": "carol@example.com", "orders": 3, "total_spent": 180},
-            {"id": "c4", "name": "Dave Song", "email": "dave@example.com", "orders": 0, "total_spent": 0},
-        ]
+    # ── Mock data fallbacks removed ──────────────────────────
+    #
+    # ``_mock_products/orders/customers`` used to live here and
+    # served hardcoded sample data whenever the database was empty
+    # and no live Shopify credentials were configured. Engines
+    # treated the 5 fake products / 5 fake orders / 4 fake
+    # customers as truth, corrupting every decision that touched a
+    # freshly-bootstrapped installation. The fallback is gone —
+    # the provider now returns empty lists with ``source="empty"``
+    # and lets the caller react honestly.

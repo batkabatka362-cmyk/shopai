@@ -1,4 +1,22 @@
-"""Tests for CoreOrchestrator — the central brain + all coordination components."""
+"""Tests for CoreOrchestrator — the central brain + all coordination components.
+
+Pre-cleanup these tests implicitly relied on ``ShopifyBridge``
+silently substituting a hardcoded mock dataset (5 fake products,
+5 fake orders, 4 fake customers) whenever no real Shopify store
+was wired up. The mock fallback was removed as part of the stub
+cleanup pass — the bridge now raises ``ShopifyBridgeUnavailable``
+in that situation, which would leave every cycle in this test
+file with empty data and break the assertions that expect
+positive product / revenue counts.
+
+The autouse ``_seed_shopify_bridge`` fixture below restores the
+old behaviour explicitly: it patches the bridge to return a
+controlled test dataset only inside this file. Any test that
+previously depended on the silent mock continues to pass; any
+test that wants to assert the *new* honest "no data" behaviour
+should opt out of the fixture or use ``ShopifyBridgeUnavailable``
+directly (see ``tests/test_stub_cleanup.py``).
+"""
 import time
 import pytest
 from core.core_orchestrator import CoreOrchestrator
@@ -6,6 +24,65 @@ from core.orchestrator.store_snapshot import StoreSnapshot
 from core.orchestrator.priority_engine import PriorityEngine
 from core.orchestrator.action_coordinator import ActionCoordinator
 from core.orchestrator.cycle_journal import CycleJournal
+
+
+_TEST_PRODUCTS = [
+    {"id": "1", "name": "Test Earbuds", "price": 49.99, "cost": 15,
+     "category": "electronics", "inventory_quantity": 150},
+    {"id": "2", "name": "Test Mat", "price": 39.99, "cost": 12,
+     "category": "fitness", "inventory_quantity": 80},
+    {"id": "3", "name": "Test Lamp", "price": 34.99, "cost": 18,
+     "category": "home", "inventory_quantity": 45},
+]
+_TEST_ORDERS = [
+    {"id": "1001", "total": 89.98, "subtotal": 84.98, "status": "paid",
+     "items": 2, "customer_id": "c1"},
+    {"id": "1002", "total": 49.99, "subtotal": 49.99, "status": "paid",
+     "items": 1, "customer_id": "c2"},
+    {"id": "1003", "total": 124.97, "subtotal": 119.97, "status": "paid",
+     "items": 3, "customer_id": "c1"},
+]
+_TEST_CUSTOMERS = [
+    {"id": "c1", "name": "Test Alice", "email": "alice@test.local",
+     "orders": 8, "total_spent": 650},
+    {"id": "c2", "name": "Test Bob", "email": "bob@test.local",
+     "orders": 1, "total_spent": 49.99},
+]
+
+
+@pytest.fixture(autouse=True)
+def _seed_shopify_bridge(monkeypatch):
+    """Patch ``ShopifyBridge`` and ``DataProvider`` so the cycle has
+    deterministic test data without depending on the deleted silent
+    ``_mock_*`` fallback. Replaces the pre-cleanup implicit mock."""
+    from core.bridge.shopify_bridge import ShopifyBridge
+    from data_pipeline.store.data_provider import DataProvider
+
+    monkeypatch.setattr(
+        ShopifyBridge, "fetch_products",
+        lambda self, limit=50: list(_TEST_PRODUCTS)[:limit],
+    )
+    monkeypatch.setattr(
+        ShopifyBridge, "fetch_orders",
+        lambda self, days_back=30, limit=100: list(_TEST_ORDERS)[:limit],
+    )
+    monkeypatch.setattr(
+        ShopifyBridge, "fetch_customers",
+        lambda self, limit=100: list(_TEST_CUSTOMERS)[:limit],
+    )
+    monkeypatch.setattr(
+        DataProvider, "get_products",
+        lambda self, store_id="", **kw: list(_TEST_PRODUCTS),
+    )
+    monkeypatch.setattr(
+        DataProvider, "get_orders",
+        lambda self, store_id="", **kw: list(_TEST_ORDERS),
+    )
+    monkeypatch.setattr(
+        DataProvider, "get_customers",
+        lambda self, store_id="", **kw: list(_TEST_CUSTOMERS),
+    )
+    yield
 
 
 # ── CoreOrchestrator Init ──

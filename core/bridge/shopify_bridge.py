@@ -3,7 +3,13 @@
 Data flow:
   1. Try DB cache (fast, always available)
   2. If stale/missing → fetch from Shopify API → store in DB
-  3. Fallback to mock data only if nothing else works
+  3. If both fail → raise ``ShopifyBridgeUnavailable``
+
+Previously step 3 returned a hardcoded "mock" dataset (5 products,
+5 orders, 4 customers) when both the cache and the live API
+failed. Downstream engines treated the mock rows as truth and made
+decisions against fictional inventory, fictional revenue, and
+fictional customers — the mock silently masked real failures.
 
 Requires: SHOPAI_SHOPIFY_URL and SHOPAI_SHOPIFY_KEY env vars.
 """
@@ -17,6 +23,30 @@ from utils.logger import get_logger
 from utils.helpers import generate_id
 
 logger = get_logger("bridge.shopify")
+
+
+class ShopifyBridgeUnavailable(RuntimeError):
+    """Raised when the bridge cannot serve a request — neither the
+    DB cache nor the live Shopify API returned usable data.
+
+    Before this class existed the bridge silently returned a small
+    hardcoded mock dataset in the same situation, which let broken
+    API credentials, network outages, and empty caches all masquerade
+    as "successful" reads and quietly corrupt downstream decisions.
+    Callers that want the old behaviour must now handle this
+    exception explicitly and choose their own fallback strategy.
+    """
+
+    def __init__(self, resource: str, reason: str = "") -> None:
+        msg = (
+            f"ShopifyBridge cannot serve {resource!r}: no cache, "
+            f"no live API data"
+        )
+        if reason:
+            msg += f" ({reason})"
+        super().__init__(msg)
+        self.resource = resource
+        self.reason = reason
 
 
 class ShopifyBridge:
@@ -66,13 +96,17 @@ class ShopifyBridge:
     # --- Fetch data for engines ---
 
     def fetch_products(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Fetch products: DB cache → live API → mock."""
-        # Try DB cache first
+        """Fetch products: DB cache → live API.
+
+        Raises ``ShopifyBridgeUnavailable`` if neither path yields
+        data. Pre-cleanup this method silently returned a hardcoded
+        5-product mock dataset in the same failure case.
+        """
         cached = self._read_cache("products", limit)
         if cached:
             return cached
 
-        # Try live API
+        last_error = ""
         if self._connected and self._api:
             try:
                 raw = self._api.fetch_products(self._shop_url, self._api_key)
@@ -80,16 +114,22 @@ class ShopifyBridge:
                 self._write_cache("products", products)
                 return products
             except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
                 logger.error("Shopify fetch_products failed: %s", exc)
 
-        return self._mock_products()
+        raise ShopifyBridgeUnavailable("products", last_error)
 
     def fetch_orders(self, days_back: int = 30, limit: int = 100) -> list[dict[str, Any]]:
-        """Fetch orders: DB cache → live API → mock."""
+        """Fetch orders: DB cache → live API.
+
+        Raises ``ShopifyBridgeUnavailable`` if neither path yields
+        data. See ``fetch_products`` for the mock-removal rationale.
+        """
         cached = self._read_cache("orders", limit)
         if cached:
             return cached
 
+        last_error = ""
         if self._connected and self._api:
             try:
                 raw = self._api.fetch_orders(self._shop_url, self._api_key, days_back=days_back)
@@ -97,16 +137,22 @@ class ShopifyBridge:
                 self._write_cache("orders", orders)
                 return orders
             except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
                 logger.error("Shopify fetch_orders failed: %s", exc)
 
-        return self._mock_orders()
+        raise ShopifyBridgeUnavailable("orders", last_error)
 
     def fetch_customers(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Fetch customers: DB cache → live API → mock."""
+        """Fetch customers: DB cache → live API.
+
+        Raises ``ShopifyBridgeUnavailable`` if neither path yields
+        data. See ``fetch_products`` for the mock-removal rationale.
+        """
         cached = self._read_cache("customers", limit)
         if cached:
             return cached
 
+        last_error = ""
         if self._connected and self._api:
             try:
                 raw = self._api.fetch_customers(self._shop_url, self._api_key)
@@ -114,9 +160,10 @@ class ShopifyBridge:
                 self._write_cache("customers", customers)
                 return customers
             except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
                 logger.error("Shopify fetch_customers failed: %s", exc)
 
-        return self._mock_customers()
+        raise ShopifyBridgeUnavailable("customers", last_error)
 
     def fetch_for_engine(self, engine_name: str) -> dict[str, Any]:
         """Fetch the right data for a specific engine — uses DataProvider if available."""
@@ -283,42 +330,4 @@ class ShopifyBridge:
             })
         return customers
 
-    # --- Mock data (last resort fallback) ---
-
-    @staticmethod
-    def _mock_products() -> list[dict[str, Any]]:
-        return [
-            {"id": "1", "name": "Wireless Earbuds Pro", "price": 49.99, "cost": 15, "weight": 0.1, "category": "electronics",
-             "inventory_quantity": 150, "compare_at_price": 69.99, "rating": 4.6, "reviews": 280, "search_volume": 12000, "competition": 4},
-            {"id": "2", "name": "Premium Yoga Mat", "price": 39.99, "cost": 12, "weight": 2.0, "category": "fitness",
-             "inventory_quantity": 80, "compare_at_price": 0, "rating": 4.3, "reviews": 150, "search_volume": 8500, "competition": 6},
-            {"id": "3", "name": "LED Desk Lamp", "price": 34.99, "cost": 18, "weight": 1.5, "category": "home",
-             "inventory_quantity": 45, "compare_at_price": 44.99, "rating": 4.1, "reviews": 95, "search_volume": 6200, "competition": 5},
-            {"id": "4", "name": "Phone Case Ultra", "price": 19.99, "cost": 3, "weight": 0.05, "category": "accessories",
-             "inventory_quantity": 300, "compare_at_price": 0, "rating": 4.0, "reviews": 420, "search_volume": 15000, "competition": 8},
-            {"id": "5", "name": "Resistance Bands Set", "price": 24.99, "cost": 5, "weight": 0.3, "category": "fitness",
-             "inventory_quantity": 200, "compare_at_price": 34.99, "rating": 4.7, "reviews": 310, "search_volume": 9800, "competition": 3},
-        ]
-
-    @staticmethod
-    def _mock_orders() -> list[dict[str, Any]]:
-        return [
-            {"id": "1001", "total": 89.98, "subtotal": 84.98, "status": "paid", "items": 2, "customer_id": "c1"},
-            {"id": "1002", "total": 49.99, "subtotal": 49.99, "status": "paid", "items": 1, "customer_id": "c2"},
-            {"id": "1003", "total": 124.97, "subtotal": 119.97, "status": "paid", "items": 3, "customer_id": "c1"},
-            {"id": "1004", "total": 34.99, "subtotal": 34.99, "status": "refunded", "items": 1, "customer_id": "c3"},
-            {"id": "1005", "total": 64.98, "subtotal": 59.98, "status": "paid", "items": 2, "customer_id": "c4"},
-        ]
-
-    @staticmethod
-    def _mock_customers() -> list[dict[str, Any]]:
-        return [
-            {"id": "c1", "name": "Alice Kim", "email": "alice@example.com", "orders": 8, "total_spent": 650,
-             "days_since_last_order": 5, "tags": ["vip", "repeat"], "created_at": "2024-01-15"},
-            {"id": "c2", "name": "Bob Park", "email": "bob@example.com", "orders": 1, "total_spent": 49.99,
-             "days_since_last_order": 90, "tags": ["new"], "created_at": "2025-11-20"},
-            {"id": "c3", "name": "Carol Lee", "email": "carol@example.com", "orders": 3, "total_spent": 180,
-             "days_since_last_order": 35, "tags": ["returning"], "created_at": "2025-06-10"},
-            {"id": "c4", "name": "Dave Song", "email": "dave@example.com", "orders": 0, "total_spent": 0,
-             "days_since_last_order": 0, "tags": ["lead"], "created_at": "2026-03-01"},
-        ]
+    # --- Mock data fallbacks removed (see ShopifyBridgeUnavailable) ---

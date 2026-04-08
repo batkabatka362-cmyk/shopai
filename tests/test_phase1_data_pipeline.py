@@ -243,7 +243,14 @@ class TestDataProvider:
         data = dp.get_data_for_engine("analytics")
         assert "order_data" in data
 
-    def test_fallback_to_mock_when_no_store(self):
+    def test_empty_when_no_store(self):
+        """Pre-cleanup this test asserted that ``get_data_for_engine``
+        returned a hardcoded 5-product "mock" dataset when no
+        database or store was wired up. The mock caused every
+        engine to make decisions against fictional inventory,
+        revenue and customers, so it was removed. The provider now
+        returns empty lists with ``source="empty"`` and the caller
+        is expected to inspect the source and short-circuit."""
         from data_pipeline.store.db import ShopAIDatabase
         from data_pipeline.store.store_manager import StoreManager
         from data_pipeline.store.data_provider import DataProvider
@@ -252,8 +259,14 @@ class TestDataProvider:
         sm = StoreManager(db)
         dp = DataProvider(sm)
         data = dp.get_data_for_engine("pricing")
-        assert data["source"] == "mock"
-        assert len(data["products"]) > 0
+        assert data["source"] == "empty"
+        assert data["products"] == []
+        # Ensure no residual fake "Wireless Earbuds Pro" /
+        # "Alice Kim" rows leak back in from anywhere.
+        assert not any(
+            isinstance(p, dict) and "Wireless Earbuds" in str(p.get("name", ""))
+            for p in data.get("products", [])
+        )
 
     def test_engine_data_needs_mapping(self):
         from data_pipeline.store.data_provider import DataProvider

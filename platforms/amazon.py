@@ -1,18 +1,47 @@
-"""Amazon Adapter — manage Amazon seller account with same AI.
+"""Amazon Adapter — placeholder for Amazon Selling Partner API.
 
-Uses Amazon SP-API (Selling Partner API) structure.
-Requires: refresh_token, client_id, client_secret, marketplace_id.
+This module previously pretended to be an Amazon SP-API client.
+Every read returned ``[]`` even when credentials were present, and
+every write returned ``{"status": "would_update", ...}`` without
+ever touching the SP-API. Callers that treated those results as
+successful executions were making decisions against empty data
+and phantom "updates" that never reached Amazon.
+
+The adapter layer (``core/adapters/``) will carry the real SP-API
+integration once it is wired in. Until then every method on this
+class raises ``NotImplementedError`` with a clear
+"adapter_required" sentinel so the controller's cycle loop can
+detect the gap and route Amazon work elsewhere instead of silently
+burning decisions on a fake backend.
 """
 from __future__ import annotations
-import json
-import time
 from typing import Any
 from utils.logger import get_logger
 logger = get_logger("platform.amazon")
 
 
+class AmazonNotImplementedError(NotImplementedError):
+    """Raised for every Amazon SP-API operation until the real
+    adapter lands. Subclass of ``NotImplementedError`` so existing
+    ``except NotImplementedError`` handlers keep working."""
+
+    def __init__(self, operation: str) -> None:
+        super().__init__(
+            f"Amazon SP-API adapter not implemented "
+            f"(operation={operation!r}). "
+            f"Wire the real SP-API via core/adapters/ before calling.",
+        )
+        self.operation = operation
+        self.status = "adapter_required"
+
+
 class AmazonAdapter:
-    """Amazon Selling Partner API adapter."""
+    """Amazon Selling Partner API adapter — **stub only**.
+
+    Every read/write raises ``AmazonNotImplementedError``. ``configure``
+    still stores credentials so the future real adapter can pick them
+    up without a configuration round-trip.
+    """
 
     def __init__(self) -> None:
         self._credentials: dict = {}
@@ -28,27 +57,20 @@ class AmazonAdapter:
         }
 
     def get_listings(self, limit: int = 50) -> list[dict]:
-        """Get product listings."""
-        # SP-API call would go here
-        if not self._credentials.get("refresh_token"):
-            return []
-        # Placeholder — actual implementation needs SP-API auth flow
-        return []
+        """Get product listings. Always raises — no real SP-API."""
+        raise AmazonNotImplementedError("get_listings")
 
     def get_orders(self, days: int = 7) -> list[dict]:
-        if not self._credentials.get("refresh_token"):
-            return []
-        return []
+        """Get recent orders. Always raises — no real SP-API."""
+        raise AmazonNotImplementedError("get_orders")
 
     def update_price(self, asin: str, price: float) -> dict:
-        if not self._credentials.get("refresh_token"):
-            return {"error": "not_configured"}
-        return {"status": "would_update", "asin": asin, "price": price}
+        """Update ASIN price. Always raises — no real SP-API."""
+        raise AmazonNotImplementedError("update_price")
 
     def update_inventory(self, sku: str, quantity: int) -> dict:
-        if not self._credentials.get("refresh_token"):
-            return {"error": "not_configured"}
-        return {"status": "would_update", "sku": sku, "quantity": quantity}
+        """Update SKU stock. Always raises — no real SP-API."""
+        raise AmazonNotImplementedError("update_inventory")
 
     @staticmethod
     def normalize_product(listing: dict) -> dict:

@@ -161,33 +161,69 @@ class TestChainIntegration(unittest.TestCase):
 
 
 class TestShopifyBridgeIntegration(unittest.TestCase):
-    """Test Shopify bridge data flow."""
+    """Test Shopify bridge data flow.
 
-    def test_mock_data_available(self):
+    Pre-cleanup these tests relied on a hardcoded mock dataset that
+    ``fetch_products/orders/customers`` silently returned when no
+    credentials were configured. The mock masked real API failures
+    and has been removed (see ``ShopifyBridgeUnavailable``), so
+    these tests now verify the post-cleanup behaviour:
+
+    * ``fetch_*`` raises when there is no cache and no live API
+    * ``fetch_for_engine`` returns a dict (possibly empty) or fails
+      gracefully via the DataProvider path
+    """
+
+    def test_fetch_products_raises_when_unavailable(self):
+        from core.bridge.shopify_bridge import (
+            ShopifyBridge, ShopifyBridgeUnavailable,
+        )
+        sb = ShopifyBridge()
+        with self.assertRaises(ShopifyBridgeUnavailable):
+            sb.fetch_products()
+
+    def test_fetch_for_engine_returns_dict(self):
         from core.bridge.shopify_bridge import ShopifyBridge
         sb = ShopifyBridge()
-        products = sb.fetch_products()
-        self.assertGreater(len(products), 0)
-        self.assertIn("name", products[0])
-        self.assertIn("price", products[0])
-
-    def test_fetch_for_engine(self):
-        from core.bridge.shopify_bridge import ShopifyBridge
-        sb = ShopifyBridge()
-        data = sb.fetch_for_engine("product_selection")
-        self.assertIn("products", data)
+        try:
+            data = sb.fetch_for_engine("product_selection")
+            self.assertIsInstance(data, dict)
+        except Exception as exc:
+            self.assertTrue(
+                "Unavailable" in type(exc).__name__
+                or "unavailable" in str(exc).lower()
+                or isinstance(exc, (KeyError, RuntimeError)),
+            )
 
     def test_shopify_data_to_engine(self):
-        """End-to-end: Shopify data → engine → result."""
+        """End-to-end: Shopify data → engine → result.
+
+        With no real store configured the bridge now raises
+        ``ShopifyBridgeUnavailable`` instead of returning mock data,
+        so the test simply asserts that the pipeline either runs
+        against (possibly empty) DataProvider output or signals the
+        gap cleanly.
+        """
         from core.orchestrator import MainOrchestrator
         from core.bridge.shopify_bridge import ShopifyBridge
         orch = MainOrchestrator()
         orch.initialize()
-        sb = ShopifyBridge()
-        data = sb.fetch_for_engine("pricing")
-        result = orch.submit_task("pricing", data)
-        self.assertIn(result["status"], ["completed", "partial", "failed"])
-        orch.shutdown()
+        try:
+            sb = ShopifyBridge()
+            data = sb.fetch_for_engine("pricing")
+            result = orch.submit_task("pricing", data)
+            self.assertIn(result["status"], ["completed", "partial", "failed"])
+        except Exception as exc:
+            # Post-cleanup the bridge may refuse to serve when
+            # no real data source is wired — acceptable for this
+            # integration smoke test.
+            self.assertTrue(
+                "Unavailable" in type(exc).__name__
+                or "unavailable" in str(exc).lower()
+                or isinstance(exc, (KeyError, RuntimeError)),
+            )
+        finally:
+            orch.shutdown()
 
 
 class TestExecutionBridgeIntegration(unittest.TestCase):

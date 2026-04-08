@@ -361,13 +361,35 @@ class SmartExecutor:
             return {"error": str(exc), "success": False}
 
     def _execute_dry_run(self, action: dict) -> dict[str, Any]:
-        """Validate everything but don't execute."""
+        """Validate the action shape WITHOUT touching any real backend.
+
+        Pre-cleanup this method returned ``{"validated": True,
+        "would_execute": True, "success": True}`` unconditionally
+        — no actual validation ran, but the success flag let
+        downstream scoring count every dry-run as a successful
+        execution. The hardcoded ``success=True`` is gone; the
+        method now performs minimal structural validation
+        (action.type present, params is a dict) and reports the
+        result honestly. Real semantic validation will move into
+        the adapter layer once it lands.
+        """
+        action_type = str(action.get("type", "")).strip()
+        params = action.get("params", {})
+
+        errors: list[str] = []
+        if not action_type:
+            errors.append("missing_type")
+        if params is not None and not isinstance(params, dict):
+            errors.append("params_not_dict")
+
+        validated = not errors
         return {
             "type": "dry_run",
-            "action_type": action.get("type", ""),
-            "would_execute": True,
-            "validated": True,
-            "success": True,
+            "action_type": action_type,
+            "would_execute": validated,
+            "validated": validated,
+            "success": validated,
+            "validation_errors": errors,
         }
 
     # == SCORING ===================================================

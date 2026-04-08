@@ -65,29 +65,31 @@ class FulfillmentAutomation:
             return {"order_id": oid, "status": "blocked",
                     "reason": "out_of_stock", "products": out_of_stock}
 
-        # Step 3: Estimate shipping
-        shipping_est = self._estimate_shipping(order)
+        # Step 3: Route. Previously this computed a hardcoded
+        # shipping ETA from a country → days table (US/CA=3,
+        # EU=7, other=10). The numbers were invented and unrelated
+        # to real carrier rates, so downstream engines that trusted
+        # ``shipping_days`` were acting on fiction. ETA now comes
+        # from the carrier rate adapter (Shippo/EasyPost/Shopify
+        # Shipping) that will be wired in via the adapter layer —
+        # until then this field is absent, which is signalled by
+        # ``shipping_rate_source="adapter_required"`` so callers
+        # can detect the gap instead of silently using a stale fake.
+        shipping_country = ""
+        addr = order.get("shipping_address") or {}
+        if isinstance(addr, dict):
+            shipping_country = str(
+                addr.get("country_code") or addr.get("country") or "",
+            )
 
-        # Step 4: Route
         return {
             "order_id": oid,
             "status": "fulfillable",
             "total": total,
-            "shipping_days": shipping_est,
+            "shipping_country": shipping_country,
+            "shipping_rate_source": "adapter_required",
             "action": "ship",
         }
-
-    @staticmethod
-    def _estimate_shipping(order: dict) -> int:
-        country = ""
-        addr = order.get("shipping_address", {})
-        if isinstance(addr, dict):
-            country = addr.get("country_code", addr.get("country", "US"))
-        if country in ("US", "CA"):
-            return 3
-        elif country in ("GB", "AU", "DE", "FR"):
-            return 7
-        return 10
 
     def get_stats(self) -> dict[str, Any]:
         fulfillable = sum(1 for r in self._processed if r.get("status") == "fulfillable")

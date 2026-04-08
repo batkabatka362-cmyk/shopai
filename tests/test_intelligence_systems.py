@@ -2,6 +2,18 @@
 
 Tests every system built in this session — import, init, basic function.
 Run: python -m pytest tests/test_intelligence_systems.py -v
+
+Pre-cleanup the ``TestFullCycle`` tests at the bottom of this file
+relied on ``data_provider._mock_orders()`` (5 fake orders) being
+silently injected by ``AutonomousController._phase_data`` whenever
+the test's empty StoreManager returned no orders. The mock
+fallback was removed in the stub cleanup pass — without it the
+``payment_optimization`` engine fails (it requires a non-empty
+transaction list) and the autonomous cycle completes 11 of 12
+layers instead of 12. The local fixture ``_seed_full_cycle`` at
+the bottom of this file injects deterministic test data into the
+StoreManager so the integration tests keep their old shape
+without bringing the silent mock back.
 """
 import pytest
 import time
@@ -266,8 +278,65 @@ class TestSystemModules:
         assert rid > 0
 
 
+_FULL_CYCLE_PRODUCTS = [
+    {"id": "fc1", "name": "FC Earbuds", "title": "FC Earbuds",
+     "price": 49.99, "cost": 15, "category": "electronics",
+     "product_type": "electronics", "inventory_quantity": 150},
+    {"id": "fc2", "name": "FC Mat", "title": "FC Mat",
+     "price": 39.99, "cost": 12, "category": "fitness",
+     "product_type": "fitness", "inventory_quantity": 80},
+    {"id": "fc3", "name": "FC Lamp", "title": "FC Lamp",
+     "price": 34.99, "cost": 18, "category": "home",
+     "product_type": "home", "inventory_quantity": 45},
+]
+_FULL_CYCLE_ORDERS = [
+    {"id": "fco1", "total": 89.98, "total_price": 89.98,
+     "status": "paid", "financial_status": "paid",
+     "items": 2, "customer_id": "c1", "created_at": "2026-04-01"},
+    {"id": "fco2", "total": 49.99, "total_price": 49.99,
+     "status": "paid", "financial_status": "paid",
+     "items": 1, "customer_id": "c2", "created_at": "2026-04-02"},
+    {"id": "fco3", "total": 124.97, "total_price": 124.97,
+     "status": "paid", "financial_status": "paid",
+     "items": 3, "customer_id": "c1", "created_at": "2026-04-03"},
+]
+_FULL_CYCLE_CUSTOMERS = [
+    {"id": "c1", "name": "FC Alice", "email": "alice@fc.local",
+     "orders_count": 8, "total_spent": 650},
+    {"id": "c2", "name": "FC Bob", "email": "bob@fc.local",
+     "orders_count": 1, "total_spent": 49.99},
+]
+
+
+@pytest.fixture
+def _seed_full_cycle(monkeypatch):
+    """Inject deterministic test data into StoreManager so the
+    autonomous cycle has products / orders / customers to chew on.
+
+    Pre-cleanup ``AutonomousController._phase_data`` silently
+    swapped in ``DataProvider._mock_orders()`` (5 fake orders)
+    when StoreManager returned nothing — the mock kept the
+    ``payment_optimization`` engine happy and let all 12 layers
+    complete. The fallback was deleted; this fixture restores the
+    same data shape explicitly only inside ``TestFullCycle``."""
+    from data_pipeline.store.store_manager import StoreManager
+    monkeypatch.setattr(
+        StoreManager, "get_products",
+        lambda self, store_id, **kw: list(_FULL_CYCLE_PRODUCTS),
+    )
+    monkeypatch.setattr(
+        StoreManager, "get_orders",
+        lambda self, store_id, **kw: list(_FULL_CYCLE_ORDERS),
+    )
+    monkeypatch.setattr(
+        StoreManager, "get_customers",
+        lambda self, store_id, **kw: list(_FULL_CYCLE_CUSTOMERS),
+    )
+    yield
+
+
 class TestFullCycle:
-    def test_cycle_runs(self):
+    def test_cycle_runs(self, _seed_full_cycle):
         from core.autonomous.controller import AutonomousController
         ac = AutonomousController(auto_approve=False)
         ac.initialize()
@@ -275,7 +344,7 @@ class TestFullCycle:
         assert result["status"] == "complete"
         assert result["phases"]["layers"]["layers_run"] == 12
 
-    def test_cycle_has_30_phases(self):
+    def test_cycle_has_30_phases(self, _seed_full_cycle):
         from core.autonomous.controller import AutonomousController
         ac = AutonomousController(auto_approve=False)
         ac.initialize()

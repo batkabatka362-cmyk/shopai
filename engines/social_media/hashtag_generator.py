@@ -56,20 +56,19 @@ _GOAL_HASHTAGS: dict[str, list[str]] = {
 
 
 # ---------------------------------------------------------------------------
-# Volume scoring (simulated)
+# Volume scoring (placeholder — awaits real trends adapter)
+#
+# Previously this module shipped a 20-entry ``_VOLUME_SCORES`` dict
+# with hand-picked decimal scores (``"#fyp": 0.99``, ``"#viral":
+# 0.95``, ...) and a ``_DEFAULT_VOLUME`` of ``0.40`` for anything
+# not in the dict. Downstream ranking then sorted hashtags by
+# those fake scores and treated the top entries as "trending",
+# when in reality the values came from nowhere. Real trend data
+# will be pulled from a Google Trends / Exploding Topics adapter
+# — until then every tag receives ``volume_score = None`` so the
+# caller can tell the source is missing instead of trusting a
+# made-up decimal.
 # ---------------------------------------------------------------------------
-
-_VOLUME_SCORES: dict[str, float] = {
-    "#fyp": 0.99, "#foryoupage": 0.97, "#viral": 0.95,
-    "#trending": 0.93, "#instagood": 0.92, "#photooftheday": 0.90,
-    "#explorepage": 0.88, "#reels": 0.87, "#instadaily": 0.85,
-    "#tiktokmademebuyit": 0.84, "#tiktok": 0.83,
-    "#ootd": 0.80, "#foodie": 0.78, "#fitfam": 0.76,
-    "#shopnow": 0.74, "#linkinbio": 0.72, "#newlaunch": 0.70,
-    "#sale": 0.68, "#homedecor": 0.65, "#skincare": 0.63,
-}
-
-_DEFAULT_VOLUME = 0.40
 
 
 # ---------------------------------------------------------------------------
@@ -185,10 +184,15 @@ def _get_hashtag_limit(
 
 
 def _rank_by_volume(tags: list[str]) -> list[dict[str, Any]]:
-    """Rank hashtags by simulated volume score, descending."""
-    ranked = []
-    for tag in tags:
-        score = _VOLUME_SCORES.get(tag, _DEFAULT_VOLUME)
-        ranked.append({"tag": tag, "volume_score": score})
-    ranked.sort(key=lambda r: r["volume_score"], reverse=True)
-    return ranked
+    """Return tags as a flat list with ``volume_score = None``.
+
+    Pre-cleanup this sorted tags by a hand-picked fake decimal
+    score from ``_VOLUME_SCORES`` (``#fyp: 0.99``, ``#viral:
+    0.95``, ...) and a ``0.40`` default. The scores came from
+    nowhere and corrupted any caller that trusted the ordering.
+    The real trend data will arrive via a Google Trends /
+    Exploding Topics adapter; until then every entry carries
+    ``volume_score = None`` and tags stay in insertion order so
+    the caller can detect the missing signal.
+    """
+    return [{"tag": tag, "volume_score": None} for tag in tags]

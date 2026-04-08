@@ -29,15 +29,31 @@ def validate_results(
 
         executed: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
+        pending: list[dict[str, Any]] = []
 
+        # Post-cleanup note: ``action_dispatcher`` no longer invents
+        # a ``"dispatched"`` status for non-dry-run actions — it
+        # returns ``"adapter_required"`` instead (see
+        # ``action_dispatcher.py`` for the rationale). We still
+        # count legacy ``"dispatched"`` as executed so older
+        # pre-cleanup callers keep working, but the new state is
+        # surfaced in its own ``pending`` bucket so callers can
+        # see how many actions are waiting for the adapter layer.
         for d in dispatched:
             action = d.get("action", {})
             action_id = str(action.get("id", "unknown"))
+            status = d.get("status")
 
-            if d.get("status") in ("dispatched", "dry_run") and action_id not in error_actions:
+            if status in ("dispatched", "dry_run") and action_id not in error_actions:
                 executed.append({
                     "action": action,
                     "status": "success",
+                    "result": d.get("result", {}),
+                })
+            elif status == "adapter_required":
+                pending.append({
+                    "action": action,
+                    "status": "adapter_required",
                     "result": d.get("result", {}),
                 })
             else:
@@ -50,6 +66,7 @@ def validate_results(
             "total": len(dispatched),
             "executed": len(executed),
             "failed": len(failed),
+            "pending": len(pending),
             "success_rate": round(len(executed) / max(len(dispatched), 1), 2),
             "phase": progress_data.get("phase", "complete"),
         }
@@ -59,6 +76,7 @@ def validate_results(
             "result": {
                 "executed": executed,
                 "failed": failed,
+                "pending": pending,
                 "progress": progress,
             },
         }

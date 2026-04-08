@@ -1214,18 +1214,25 @@ class AutonomousController:
         except Exception as exc:
             logger.debug("Pre-cycle sync: %s", exc)
 
-        # Now read from DB (freshly synced)
+        # Now read from DB (freshly synced). Pre-cleanup the empty
+        # case fell back to ``data_provider._mock_*`` (5 fake
+        # products, 5 fake orders, 4 fake customers) and labelled
+        # the source as ``"mock"`` — every cycle that ran against
+        # an unconfigured store quietly trained on fiction. The
+        # mock helpers are gone; missing data now stays empty and
+        # the source is labelled ``"empty"`` so downstream phases
+        # can either skip or short-circuit.
         data: dict[str, Any] = {"store_id": store_id, "source": "database"}
         products = self._store_manager.get_products(store_id)
         orders = self._store_manager.get_orders(store_id)
         customers = self._store_manager.get_customers(store_id)
 
-        data["products"] = products if products else self._data_provider._mock_products()
-        data["order_data"] = orders if orders else self._data_provider._mock_orders()
-        data["customer_data"] = customers if customers else self._data_provider._mock_customers()
+        data["products"] = products or []
+        data["order_data"] = orders or []
+        data["customer_data"] = customers or []
 
         if not products and not orders and not customers:
-            data["source"] = "mock"
+            data["source"] = "empty"
 
         return data
 

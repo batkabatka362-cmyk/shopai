@@ -24,9 +24,17 @@ def track_progress(
         dispatched = copy.deepcopy(dispatch_data.get("dispatched", []))
         total = len(dispatched)
 
+        # Post-cleanup: ``action_dispatcher`` no longer fakes a
+        # ``"dispatched"`` status for non-dry-run actions. We keep
+        # counting legacy ``"dispatched"`` plus ``"dry_run"`` as
+        # completed, and surface the new ``"adapter_required"``
+        # state in its own ``pending`` bucket so the autonomous
+        # loop can tell how much work is still waiting on the
+        # adapter layer instead of believing every action finished.
         completed = sum(1 for d in dispatched if d.get("status") in ("dispatched", "dry_run"))
         skipped = sum(1 for d in dispatched if d.get("status") == "skipped")
         failed = sum(1 for d in dispatched if d.get("status") == "failed")
+        pending = sum(1 for d in dispatched if d.get("status") == "adapter_required")
 
         pct = round(completed / max(total, 1) * 100, 1)
 
@@ -37,6 +45,7 @@ def track_progress(
                 "completed": completed,
                 "skipped": skipped,
                 "failed": failed,
+                "pending": pending,
                 "progress_pct": pct,
                 "phase": "complete" if pct >= 100 else "in_progress",
             },
