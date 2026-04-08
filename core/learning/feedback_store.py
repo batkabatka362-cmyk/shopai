@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -18,6 +19,16 @@ from utils.logger import get_logger
 logger = get_logger("learning.feedback_store")
 
 _STORE_DIR = "/tmp/shopai_learning"
+
+# Same path-traversal guard as outcome_tracker (audit pass 52).
+# Engine names go into the filesystem as ``<engine_name>.json``
+# so a caller passing ``"../../etc/passwd"`` can escape the
+# store directory without this check.
+_ENGINE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _valid_engine_name(engine: Any) -> bool:
+    return isinstance(engine, str) and bool(_ENGINE_NAME_RE.match(engine))
 
 
 def _safe_keys(value: Any) -> list[str]:
@@ -65,6 +76,15 @@ class FeedbackStore:
         error: str | None = None,
     ) -> str:
         """Record feedback from an engine execution."""
+        # SECURITY: engine_name lands in the filesystem as the
+        # persist filename. Reject anything other than
+        # alphanumeric + ``_-`` so a caller with partial
+        # control over engine_name can't write to
+        # ``../../etc/passwd`` via ``_persist_engine``. Audit
+        # pass 52.
+        if not _valid_engine_name(engine_name):
+            logger.warning("FeedbackStore.record: invalid engine_name %r", engine_name)
+            return ""
         # uuid instead of millisecond timestamp + last 6 chars of
         # task_id: the previous form collided whenever two engines
         # ran with the same / empty task_id within the same ms.
@@ -109,6 +129,8 @@ class FeedbackStore:
         in-memory store. Same defensive-copy pattern as audit
         passes 12 / 17 / 18 / 19 / 22.
         """
+        if not _valid_engine_name(engine_name):
+            return []
         with self._lock:
             if engine_name not in self._memory:
                 self._memory[engine_name] = self._load_engine(engine_name)
@@ -152,11 +174,16 @@ class FeedbackStore:
         """Get stats for all engines that have feedback."""
         with self._lock:
             engine_names = set(self._memory.keys())
-        # Also check persisted files
+        # Also check persisted files. Skip any on-disk file
+        # whose stem isn't a valid engine name — rejects
+        # ``.corrupted.<ts>`` backups and anything a future
+        # audit leaves lying around. Audit pass 52.
         if os.path.isdir(self._store_dir):
             for f in os.listdir(self._store_dir):
                 if f.endswith(".json"):
-                    engine_names.add(f[:-5])
+                    stem = f[:-5]
+                    if _valid_engine_name(stem):
+                        engine_names.add(stem)
         return {name: self.get_stats(name) for name in sorted(engine_names)}
 
     def _calculate_trend(self, history: list[dict[str, Any]]) -> str:

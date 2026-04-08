@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -21,6 +22,18 @@ try:
     _OUTCOME_DIR = outcomes_dir()
 except Exception:
     _OUTCOME_DIR = "/tmp/shopai_outcomes"
+
+
+# Engine names go into the filesystem as ``<engine>.json``. Only
+# alphanumeric + ``_-`` are allowed so a caller passing
+# ``"../../etc/passwd"`` can't escape ``_OUTCOME_DIR``. This is
+# the same path-traversal class bug fixed in pass 50 for
+# ``feature_store.delete``. Audit pass 52.
+_ENGINE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _valid_engine_name(engine: Any) -> bool:
+    return isinstance(engine, str) and bool(_ENGINE_NAME_RE.match(engine))
 
 
 class OutcomeTracker:
@@ -43,6 +56,12 @@ class OutcomeTracker:
         in heterogeneous code paths sometimes pass the raw response
         object instead of a dict; we now coerce gracefully.
         """
+        if not _valid_engine_name(engine):
+            logger.warning("OutcomeTracker.record_decision: invalid engine name %r", engine)
+            return
+        if not isinstance(decision_id, str) or not decision_id:
+            return
+
         if isinstance(decision, dict):
             clean_decision = {
                 k: v for k, v in decision.items()
@@ -91,6 +110,11 @@ class OutcomeTracker:
         Returns True iff a matching decision was found AND updated.
         Defensive against non-dict outcome values.
         """
+        if not _valid_engine_name(engine):
+            logger.warning("OutcomeTracker.record_outcome: invalid engine name %r", engine)
+            return False
+        if not isinstance(decision_id, str) or not decision_id:
+            return False
         if not isinstance(outcome, dict):
             logger.warning(
                 "OutcomeTracker.record_outcome: outcome for %s/%s is "
@@ -113,6 +137,8 @@ class OutcomeTracker:
 
     def get_winning_patterns(self, engine: str, min_success: int = 1) -> dict[str, Any]:
         """Analyze outcomes with correlation check — only learn REAL patterns."""
+        if not _valid_engine_name(engine):
+            return {"engine": engine, "patterns": [], "data_points": 0, "error": "invalid_engine_name"}
         entries = self._load(engine)
         outcomes = [e for e in entries if e.get("outcome") is not None]
 
@@ -209,8 +235,17 @@ class OutcomeTracker:
 
     def should_proceed(self, engine: str, decision: dict[str, Any]) -> dict[str, Any]:
         """Use past outcomes to advise on a new decision."""
+        # Defensive: non-dict decision crashed ``.get()`` chain
+        # below. Audit pass 52.
+        if not isinstance(decision, dict):
+            decision = {}
         patterns = self.get_winning_patterns(engine)
-        score = safe_float(decision.get("total_score", decision.get("score", decision.get("opportunity_score", 5))))
+        score = safe_float(
+            decision.get("total_score")
+            or decision.get("score")
+            or decision.get("opportunity_score")
+            or 5
+        )
 
         advice = {"proceed": True, "confidence": "medium", "reasons": []}
 
@@ -282,16 +317,44 @@ class OutcomeTracker:
             return self._load_unlocked(engine)
 
     def _load_unlocked(self, engine: str) -> list[dict]:
-        """Load without acquiring lock — caller must hold lock."""
+        """Load without acquiring lock — caller must hold lock.
+
+        On any load failure the corrupted file is moved aside
+        as ``<path>.corrupted.<ts>`` before falling back to an
+        empty list. Pre-audit the file was silently returned
+        as empty and the next ``_save_unlocked`` call then
+        overwrote it with the fresh data — destroying the
+        engine's entire outcome history forever. Same data-
+        loss bug pattern as pass 48 (feedback_store) and
+        pass 20 (StoreSnapshot). Audit pass 52.
+        """
+        if not _valid_engine_name(engine):
+            return []
         path = os.path.join(_OUTCOME_DIR, f"{engine}.json")
-        if os.path.exists(path):
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                raise ValueError(
+                    f"outcome file is {type(data).__name__}, expected list"
+                )
+            return data
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            backup = f"{path}.corrupted.{int(time.time())}"
             try:
-                with open(path) as f:
-                    data = json.load(f)
-                    return data if isinstance(data, list) else []
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Corrupted outcome file %s: %s", path, exc)
-        return []
+                os.replace(path, backup)
+                logger.warning(
+                    "Corrupted outcome file %s: %s — moved to %s",
+                    path, exc, backup,
+                )
+            except OSError as move_exc:
+                logger.warning(
+                    "Corrupted outcome file %s: %s; backup failed (%s)",
+                    path, exc, move_exc,
+                )
+            return []
 
     def _save(self, engine: str, entries: list[dict]) -> None:
         with self._lock:
@@ -299,6 +362,8 @@ class OutcomeTracker:
 
     def _save_unlocked(self, engine: str, entries: list[dict]) -> None:
         """Save without acquiring lock — caller must hold lock."""
+        if not _valid_engine_name(engine):
+            return
         path = os.path.join(_OUTCOME_DIR, f"{engine}.json")
         tmp_path = path + ".tmp"
         try:
@@ -307,3 +372,9 @@ class OutcomeTracker:
             os.replace(tmp_path, path)  # Atomic on POSIX
         except OSError as exc:
             logger.error("Failed to save outcomes for %s: %s", engine, exc)
+            # Clean up half-written tmp so we don't leak it.
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass

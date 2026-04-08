@@ -47,11 +47,16 @@ class RootCauseAnalyzer:
         Compares the failed episode's context to successful episodes
         of the same decision type. Differences = likely causes.
         """
-        if not failed_episode:
+        # Defensive: non-dict episode (truthy string, list, int)
+        # passed the ``if not failed_episode`` check but then
+        # crashed on ``.get()``. Audit pass 52.
+        if not isinstance(failed_episode, dict):
             return {"root_causes": [], "lesson": "", "contributing_factors": []}
 
         decision_type = failed_episode.get("decision_type", "general")
-        failed_context = failed_episode.get("context", {})
+        failed_context = failed_episode.get("context") or {}
+        if not isinstance(failed_context, dict):
+            failed_context = {}
         action = failed_episode.get("action", "unknown")
 
         # Get successful episodes for comparison
@@ -106,10 +111,16 @@ class RootCauseAnalyzer:
         if not failures:
             return {"status": "no_failures", "decision_type": decision_type}
 
-        # Count factor frequencies across failures
+        # Count factor frequencies across failures. Defensive:
+        # ep / context can be non-dict from a misbehaving
+        # memory backend. Audit pass 52.
         factor_freq: dict[str, dict[str, int]] = {}
         for ep in failures:
-            ctx = ep.get("context", {})
+            if not isinstance(ep, dict):
+                continue
+            ctx = ep.get("context") or {}
+            if not isinstance(ctx, dict):
+                continue
             for factor in ANALYSIS_FACTORS:
                 val = ctx.get(factor)
                 if val is not None:
@@ -172,19 +183,28 @@ class RootCauseAnalyzer:
         if not successes:
             return [{"factor": "no_comparison_data", "note": "No successful episodes to compare against"}]
 
-        # Compute average context values for successes
+        # Compute average context values for successes. Same
+        # non-dict ep / ctx guard as analyze_pattern. Audit
+        # pass 52.
         success_avgs: dict[str, float] = {}
         for factor in ANALYSIS_FACTORS:
             vals = []
             for ep in successes:
-                ctx = ep.get("context", {})
+                if not isinstance(ep, dict):
+                    continue
+                ctx = ep.get("context") or {}
+                if not isinstance(ctx, dict):
+                    continue
                 v = ctx.get(factor)
-                if isinstance(v, (int, float)):
+                if isinstance(v, bool):
+                    # Check bool FIRST — bool is a subclass of
+                    # int in Python, and we want True/False to
+                    # become 1.0/0.0 not be counted as ints.
+                    vals.append(1.0 if v else 0.0)
+                elif isinstance(v, (int, float)):
                     vals.append(v)
                 elif isinstance(v, str) and v in GRADE_ORDER:
                     vals.append(GRADE_ORDER[v])
-                elif isinstance(v, bool):
-                    vals.append(1.0 if v else 0.0)
             if vals:
                 success_avgs[factor] = sum(vals) / len(vals)
 
