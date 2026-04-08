@@ -1,5 +1,17 @@
 """Revenue Strategy — AI plan to generate first sales and grow revenue.
 
+Division of labor (see ``strategy_planner.py`` for the
+full picture):
+
+  * ``strategy_planner.py`` — **memory-driven**.
+  * ``strategy_expander.py`` — **coverage-driven**.
+  * ``revenue_strategy.py`` (this file) — **state-driven**.
+    Picks actionable plays based on the store's CURRENT
+    phase (launch / growth / scale) from raw products +
+    orders + customers. Does NOT consult accumulated memory
+    or rule history — those are the planner's job. Runs
+    every cycle as part of the fast plan phase.
+
 Analyzes store state and creates actionable revenue plan:
   1. SEO optimization (title, description, tags)
   2. Social media strategy

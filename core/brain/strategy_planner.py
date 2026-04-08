@@ -1,7 +1,30 @@
 """Strategy Planner — long-term AI-generated business strategies.
 
-Uses all intelligence systems to build 5 strategy types:
-  growth, pricing, retention, efficiency, competitive
+This module is one of THREE strategy modules in the brain.
+The division of labor is:
+
+  * ``strategy_planner.py`` (this file) — **memory-driven**.
+    Walks the accumulated learned rules + past strategies +
+    failure history to synthesise 5 strategy types (growth,
+    pricing, retention, efficiency, competitive). Runs every
+    5 cycles in phase 7. Output goes to memory for the
+    expander to extend.
+  * ``strategy_expander.py`` — **coverage-driven**. Finds
+    categories the planner hasn't touched yet and creates
+    stub strategies for them. Additive only, never modifies
+    existing strategies. Runs every 5 cycles in phase 7c.
+  * ``revenue_strategy.py`` — **state-driven**. Picks
+    actionable plays based on the store's CURRENT phase
+    (launch / growth / scale), not history. Runs every
+    cycle as part of the fast plan phase.
+
+Core audit flagged these three modules as "redundant" but
+the responsibilities are actually distinct — they operate
+on different axes (history vs. coverage vs. current
+state). Fix E leaves them as three files but routes all
+three through ``UnifiedMemory.get_memory_intelligence()``
+so they share a single memory entry point (matching the
+Fix D pattern for brain + engine).
 """
 from __future__ import annotations
 
@@ -22,10 +45,17 @@ class StrategyPlanner:
         self._data_arch = None
 
     def _ensure_init(self) -> None:
+        # Fix D pattern: route through UnifiedMemory instead
+        # of importing ``core.memory.intelligence`` directly,
+        # so all three strategy modules share one memory
+        # entry point. Pre-fix each file imported the
+        # backend separately, making it impossible to swap
+        # the implementation without a grep-the-codebase
+        # sweep.
         if not self._memory_intel:
             try:
-                from core.memory.intelligence import get_memory_intelligence
-                self._memory_intel = get_memory_intelligence()
+                from core.memory.unified_memory import get_unified_memory
+                self._memory_intel = get_unified_memory().get_memory_intelligence()
             except Exception:
                 pass
         if not self._data_arch:

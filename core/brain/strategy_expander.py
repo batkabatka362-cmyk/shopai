@@ -2,6 +2,22 @@
 
 ADDITIVE ONLY — does not modify existing strategies.
 Creates new strategies for categories that lack them.
+
+Division of labor (see ``strategy_planner.py`` for the
+full picture):
+
+  * ``strategy_planner.py`` owns **memory-driven** strategy
+    synthesis (history → new strategies).
+  * ``strategy_expander.py`` (this file) owns
+    **coverage-driven** strategy expansion. It only fills
+    gaps in the strategy catalog for categories the planner
+    hasn't touched yet. Never modifies existing strategies.
+  * ``revenue_strategy.py`` owns **state-driven** action
+    selection for the current launch/growth/scale phase.
+
+Fix E routes all three through
+``UnifiedMemory.get_memory_intelligence()`` so memory
+access is owned in one place.
 """
 from __future__ import annotations
 
@@ -18,10 +34,16 @@ class StrategyExpander:
 
     def expand(self) -> dict[str, Any]:
         """Find categories without strategies and create them."""
+        # Fix D pattern: route through UnifiedMemory entry
+        # point instead of directly importing
+        # ``core.memory.intelligence``, so all strategy
+        # modules share one owner.
         try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
         except Exception:
+            return {"status": "unavailable"}
+        if mi is None:
             return {"status": "unavailable"}
 
         stats = mi.get_stats()
