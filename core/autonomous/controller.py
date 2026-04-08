@@ -113,6 +113,37 @@ class AutonomousController:
             self._layer_dispatcher.initialize()
             self._agent_dispatcher = AgentDispatcher()
             self._agent_dispatcher.initialize()
+
+            # ── Adapter layer (Phase 0 + Phase 1 LLM adapters) ──
+            #
+            # Wire the brain to the universal adapter ecosystem.
+            # This single bootstrap call registers every available
+            # LLM adapter (Groq, Gemini, DeepSeek, Mistral, Ollama,
+            # OpenRouter, HuggingFace) into the process-wide
+            # ``AdapterRegistry``. Adapters whose API key is unset
+            # still register; the smart router skips them via
+            # ``is_configured()``. The brain + agent dispatcher
+            # pick up ``get_router()`` lazily, so failures here
+            # MUST NOT take down the rest of the controller — the
+            # legacy ``self._llm`` path keeps working as before.
+            try:
+                from core.adapters import get_router
+                from core.adapters.llm.bootstrap import register_all
+                self._adapter_status = register_all()
+                self._adapter_router = get_router()
+                logger.info(
+                    "Adapter layer initialised: %d LLM adapters registered, %d configured",
+                    len(self._adapter_status),
+                    sum(1 for v in self._adapter_status.values() if v),
+                )
+            except Exception as adapter_exc:  # noqa: BLE001
+                logger.warning(
+                    "Adapter layer initialisation failed (continuing without it): %s",
+                    adapter_exc,
+                )
+                self._adapter_status = {}
+                self._adapter_router = None
+
             self._init_error: str = ""
         except Exception as exc:  # noqa: BLE001
             # Previously this block silently set every subsystem to
@@ -129,10 +160,12 @@ class AutonomousController:
             self._skills = None
             self._layer_dispatcher = None
             self._agent_dispatcher = None
+            self._adapter_router = None
+            self._adapter_status = {}
             self._init_error = f"{type(exc).__name__}: {exc}"
             logger.warning(
                 "AutonomousController running in degraded mode "
-                "(no memory / LLM / dispatchers): %s", self._init_error,
+                "(no memory / LLM / dispatchers / adapters): %s", self._init_error,
             )
 
         if getattr(self, "_init_error", ""):

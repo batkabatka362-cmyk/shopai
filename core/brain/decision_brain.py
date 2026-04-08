@@ -123,10 +123,31 @@ class StoreState:
 
 
 class DecisionBrain:
-    """ShopAI's autonomous decision-making core."""
+    """ShopAI's autonomous decision-making core.
+
+    Holds two LLM execution paths:
+
+      * ``self._llm`` (legacy) — ``core.system.llm_adapter`` from
+        the original ShopAI build. Kept intact for backwards
+        compatibility with the cycle code that already calls
+        ``self._llm.ask(...)``.
+      * ``self._llm_router`` (Phase 1 adapter layer) — the
+        ``SmartRouter`` from ``core.adapters``. Picks the best
+        registered LLM adapter (Groq → Gemini → DeepSeek →
+        Mistral → Ollama → OpenRouter → HuggingFace) for each
+        capability, falls back through the chain on failure,
+        records metrics for every call.
+
+    The ``smart_complete()`` helper is the recommended path for
+    new code; ``_deep_think()`` now tries it first and only
+    falls back to the legacy LLM if the router cannot serve the
+    request. Old call sites that still use ``self._llm.ask(...)``
+    keep working without modification.
+    """
 
     def __init__(self) -> None:
         self._llm = None
+        self._llm_router = None  # Phase 1 adapter SmartRouter
         self._experience = None
         self._skills = None
         self._memory = None
@@ -139,6 +160,28 @@ class DecisionBrain:
                 self._llm = get_llm()
             except Exception:
                 pass
+
+        # ── Adapter layer SmartRouter ──
+        # Lazily attach the singleton SmartRouter so brain calls
+        # can route through the Phase 1 LLM adapter ecosystem
+        # (Groq / Gemini / DeepSeek / Mistral / Ollama /
+        # OpenRouter / HuggingFace) without depending on the
+        # controller having already bootstrapped them. The
+        # bootstrap call below is idempotent (uses replace=True
+        # internally) so calling it twice from controller +
+        # brain is safe — second call is a no-op against an
+        # already-populated registry. Failure here is non-fatal:
+        # the legacy ``self._llm`` path keeps working.
+        if not self._llm_router:
+            try:
+                from core.adapters import get_router
+                from core.adapters.llm.bootstrap import register_all
+                register_all()
+                self._llm_router = get_router()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("smart router init failed: %s", exc)
+                self._llm_router = None
+
         if not self._experience:
             try:
                 from core.ai.experience import get_experience
@@ -180,6 +223,89 @@ class DecisionBrain:
             except Exception:
                 self._memory_intel = None
                 self._data_arch = None
+
+    # ── Adapter-layer convenience helpers ────────────────────
+
+    def smart_complete(
+        self,
+        prompt: str,
+        *,
+        capability: Any = None,
+        system: str | None = None,
+        context: Any = None,
+        **params: Any,
+    ) -> Any:
+        """Route a prompt through the Phase 1 LLM adapter layer.
+
+        Returns:
+            ``AdapterResult`` on success/failure (caller checks
+            ``result.ok``), or ``None`` when the adapter layer is
+            not initialised at all (legacy callers can detect
+            this and fall back to ``self._llm``).
+
+        Args:
+            prompt:     User prompt text. Required.
+            capability: Optional ``Capability`` enum (or string).
+                        Defaults to ``CHAT_COMPLETE``. Use
+                        ``REASON_DEEP`` for strategic reasoning,
+                        ``CODE_GENERATE`` for Shopify Functions
+                        Rust generation, ``LONG_CONTEXT`` when
+                        the prompt exceeds 100K tokens, etc.
+            system:     Optional system prompt prepended to the
+                        message list.
+            context:    Optional ``RouteContext`` carrying budget /
+                        region / PII routing hints. Pass an
+                        instance from ``core.adapters`` directly,
+                        or omit for default routing.
+            **params:   Forwarded to the adapter (model,
+                        max_tokens, temperature, ...).
+
+        Why this exists:
+            New brain code should call this instead of touching
+            ``self._llm.ask(...)`` so the multi-vendor router
+            (with fallback chains, metrics, free-tier quota
+            tracking, PII safety) is used end-to-end. The legacy
+            ``self._llm`` is kept around so existing call sites
+            don't break in this commit, but new features must
+            use ``smart_complete``.
+        """
+        if not self._llm_router:
+            return None
+
+        try:
+            from core.adapters import Capability, RouteContext
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("adapter import failed: %s", exc)
+            return None
+
+        # Default to plain chat completion. Accept either an enum
+        # or a string capability so callers don't have to import
+        # the enum.
+        cap: Any = capability or Capability.CHAT_COMPLETE
+        if isinstance(cap, str):
+            try:
+                cap = Capability(cap)
+            except ValueError:
+                logger.warning("smart_complete: unknown capability %r", cap)
+                return None
+
+        ctx = context or RouteContext()
+
+        call_params: dict[str, Any] = {"prompt": prompt}
+        if system:
+            call_params["system"] = system
+        call_params.update(params)
+
+        try:
+            return self._llm_router.execute(cap, call_params, ctx)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("smart_complete: router raised %s", exc)
+            return None
+
+    def has_smart_router(self) -> bool:
+        """Return True iff the brain has a usable adapter
+        SmartRouter wired up. Useful for tests + observability."""
+        return self._llm_router is not None
 
     # ── Main thinking process ────────────────────────────────
 
@@ -600,8 +726,29 @@ class DecisionBrain:
 
     def _deep_think(self, state: StoreState, problems: list,
                     opportunities: list) -> dict[str, Any]:
-        """Use LLM for deeper strategic reasoning."""
-        if not self._llm:
+        """Use an LLM for deeper strategic reasoning.
+
+        Two execution paths in priority order:
+
+        1. **Adapter SmartRouter** (preferred). Routes the prompt
+           through the Phase 1 LLM adapter ecosystem with
+           ``Capability.REASON_DEEP`` so the router picks the
+           best reasoning model among Groq / DeepSeek / Gemini /
+           Mistral / Ollama / OpenRouter / HuggingFace, with
+           automatic fallback on failure.
+
+        2. **Legacy ``self._llm.ask()``** (fallback). Used when
+           the adapter layer is not initialised, when the router
+           returns ``NoAdapterAvailable`` (no configured adapter
+           supports REASON_DEEP), or when the router run fails
+           outright. Keeping the legacy path means this method
+           still works in environments where adapters are not
+           wired up yet.
+
+        Returns ``{"available": False}`` only if BOTH paths fail.
+        """
+        # If neither path is available, bail early.
+        if not self._llm and not self._llm_router:
             return {"available": False}
 
         summary = state.summary()
@@ -624,14 +771,79 @@ OPPORTUNITIES:
 What are the TOP 3 things this store should do RIGHT NOW? Be specific and actionable.
 Respond in JSON: {{"top_actions": [{{"action": "...", "reason": "...", "expected_impact": "..."}}]}}"""
 
-        try:
-            response = self._llm.ask("analyzer", prompt)
-            if response.success:
-                return {"available": True, "reasoning": response.parse_json(), "model": response.model}
-        except Exception as exc:
-            logger.debug("LLM deep think: %s", exc)
+        # ── Path 1: Adapter SmartRouter ──
+        if self._llm_router:
+            try:
+                from core.adapters import Capability
+                result = self.smart_complete(
+                    prompt,
+                    capability=Capability.REASON_DEEP,
+                    system="You are a strategic e-commerce reasoning engine. Reply ONLY with the requested JSON.",
+                )
+                if result is not None and result.ok:
+                    text = result.data.get("text", "")
+                    parsed = self._try_parse_json(text)
+                    return {
+                        "available": True,
+                        "reasoning": parsed if parsed is not None else {"raw": text},
+                        "model": result.model or result.adapter,
+                        "adapter": result.adapter,
+                        "tokens_in": result.tokens_in,
+                        "tokens_out": result.tokens_out,
+                        "via": "smart_router",
+                    }
+                if result is not None and not result.ok and result.error is not None:
+                    logger.debug(
+                        "smart router deep_think failed (%s), falling back to legacy LLM",
+                        type(result.error).__name__,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("smart router deep_think raised: %s", exc)
+
+        # ── Path 2: Legacy LLM ──
+        if self._llm:
+            try:
+                response = self._llm.ask("analyzer", prompt)
+                if response.success:
+                    return {
+                        "available": True,
+                        "reasoning": response.parse_json(),
+                        "model": response.model,
+                        "via": "legacy_llm",
+                    }
+            except Exception as exc:
+                logger.debug("LLM deep think: %s", exc)
 
         return {"available": False}
+
+    @staticmethod
+    def _try_parse_json(text: str) -> Any:
+        """Best-effort JSON parser used by ``_deep_think`` to
+        normalise the router's text response into the same
+        structure the legacy ``response.parse_json()`` would
+        produce. Returns ``None`` on failure so the caller can
+        fall back to the raw text payload."""
+        if not text:
+            return None
+        import json as _json
+
+        # Strip Markdown code fences if the model wrapped the
+        # JSON in ```json ... ``` (Gemini and DeepSeek both do
+        # this when the system prompt asks for JSON).
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            # Drop the first fence line and the trailing fence
+            lines = stripped.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            stripped = "\n".join(lines).strip()
+
+        try:
+            return _json.loads(stripped)
+        except (ValueError, TypeError):
+            return None
 
     # ── Helpers ──────────────────────────────────────────────
 
