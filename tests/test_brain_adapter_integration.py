@@ -482,8 +482,9 @@ class TestAutonomousControllerAdapter:
         """``AutonomousController.initialize`` must populate
         ``self._adapter_router`` and ``self._adapter_status``
         when the adapter layer loads cleanly. Phase 1 LLM,
-        Phase 2 Shopify native, Phase 3 search, and Phase 4
-        shipping adapters must all be registered in one go."""
+        Phase 2 Shopify native, Phase 3 search, Phase 4
+        shipping, and Phase 5 email adapters must all be
+        registered in one go."""
         import tempfile
         from data_pipeline.store.db import ShopAIDatabase
         from data_pipeline.store.store_manager import StoreManager
@@ -500,8 +501,8 @@ class TestAutonomousControllerAdapter:
         assert ac._adapter_router is not None
         assert hasattr(ac, "_adapter_status")
 
-        # 7 LLM + 4 Shopify native + 3 search + 2 shipping = 16 total
-        assert len(ac._adapter_status) == 16
+        # 7 LLM + 4 Shopify + 3 search + 2 shipping + 2 email = 18
+        assert len(ac._adapter_status) == 18
         names = set(ac._adapter_status.keys())
         # Phase 1 LLM adapters
         assert {
@@ -517,6 +518,8 @@ class TestAutonomousControllerAdapter:
         assert {"brave_search", "serper", "ddgs"} <= names
         # Phase 4 shipping adapters
         assert {"easypost", "shippo"} <= names
+        # Phase 5 email adapters
+        assert {"brevo", "resend"} <= names
         # DDGS is the only one configured by default (no API key)
         assert ac._adapter_status["ddgs"] is True
 

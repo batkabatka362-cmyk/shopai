@@ -114,18 +114,22 @@ class AutonomousController:
             self._agent_dispatcher = AgentDispatcher()
             self._agent_dispatcher.initialize()
 
-            # ── Adapter layer (Phase 1 LLM + Phase 2 Shopify + Phase 3 Search + Phase 4 Shipping) ──
+            # ── Adapter layer (Phase 1 LLM + Phase 2 Shopify + Phase 3 Search + Phase 4 Shipping + Phase 5 Email) ──
             #
             # Wire the brain to the universal adapter ecosystem.
-            # Four bootstrap calls register every available LLM
-            # adapter (Groq, Gemini, DeepSeek, Mistral, Ollama,
-            # OpenRouter, HuggingFace), every Shopify native
-            # adapter (risk, inventory, fulfillment, metafield),
-            # every web search adapter (Brave, Serper, DDGS),
-            # and every shipping adapter (EasyPost, Shippo) into
-            # the process-wide ``AdapterRegistry``. Adapters
-            # whose credentials are unset still register; the
-            # smart router skips them via ``is_configured()``.
+            # Five bootstrap calls register every available
+            # adapter into the process-wide ``AdapterRegistry``:
+            #
+            #   * LLM (Groq, Gemini, DeepSeek, Mistral, Ollama,
+            #     OpenRouter, HuggingFace)
+            #   * Shopify native (risk, inventory, fulfillment,
+            #     metafield)
+            #   * Web search (Brave, Serper, DDGS)
+            #   * Shipping (EasyPost, Shippo)
+            #   * Email (Brevo, Resend)
+            #
+            # Adapters whose credentials are unset still register;
+            # the smart router skips them via ``is_configured()``.
             # The brain + agent dispatcher pick up ``get_router()``
             # lazily, so failures here MUST NOT take down the
             # rest of the controller — the legacy ``self._llm``
@@ -136,24 +140,29 @@ class AutonomousController:
                 from core.adapters.shopify.bootstrap import register_all as register_shopify
                 from core.adapters.search.bootstrap import register_all as register_search
                 from core.adapters.shipping.bootstrap import register_all as register_shipping
+                from core.adapters.email.bootstrap import register_all as register_email
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
                 shipping_status = register_shipping()
+                email_status = register_email()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
+                    **email_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(
                     "Adapter layer initialised: %d adapters registered, "
-                    "%d configured (%d LLM, %d Shopify native, %d search, %d shipping)",
+                    "%d configured (%d LLM, %d Shopify native, %d search, "
+                    "%d shipping, %d email)",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
                     len(llm_status),
                     len(shopify_status),
                     len(search_status),
                     len(shipping_status),
+                    len(email_status),
                 )
             except Exception as adapter_exc:  # noqa: BLE001
                 logger.warning(

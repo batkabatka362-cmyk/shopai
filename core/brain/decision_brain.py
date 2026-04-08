@@ -171,6 +171,7 @@ class DecisionBrain:
         #     fulfillment / metafield)
         #   * Phase 3 Search adapters (Brave / Serper / DDGS)
         #   * Phase 4 Shipping adapters (EasyPost / Shippo)
+        #   * Phase 5 Email adapters (Brevo / Resend)
         #
         # All bootstrap calls are idempotent (uses replace=True
         # internally) so calling them from both controller and
@@ -184,10 +185,12 @@ class DecisionBrain:
                 from core.adapters.shopify.bootstrap import register_all as register_shopify
                 from core.adapters.search.bootstrap import register_all as register_search
                 from core.adapters.shipping.bootstrap import register_all as register_shipping
+                from core.adapters.email.bootstrap import register_all as register_email
                 register_llms()
                 register_shopify()
                 register_search()
                 register_shipping()
+                register_email()
                 self._llm_router = get_router()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("smart router init failed: %s", exc)

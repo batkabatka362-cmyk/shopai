@@ -118,18 +118,20 @@ class AgentDispatcher:
 
         # Adapter SmartRouter — wire once per dispatcher init
         # so every dispatched agent gets the full adapter
-        # ecosystem (LLM + Shopify native + search + shipping)
-        # via context.
+        # ecosystem (LLM + Shopify native + search + shipping
+        # + email) via context.
         try:
             from core.adapters import get_router
             from core.adapters.llm.bootstrap import register_all as register_llms
             from core.adapters.shopify.bootstrap import register_all as register_shopify
             from core.adapters.search.bootstrap import register_all as register_search
             from core.adapters.shipping.bootstrap import register_all as register_shipping
+            from core.adapters.email.bootstrap import register_all as register_email
             register_llms()
             register_shopify()
             register_search()
             register_shipping()
+            register_email()
             self._router = get_router()
             logger.info("AgentDispatcher: SmartRouter attached")
         except Exception as exc:  # noqa: BLE001
