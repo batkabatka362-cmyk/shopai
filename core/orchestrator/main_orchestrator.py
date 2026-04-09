@@ -11,7 +11,6 @@ from core.state.state_manager import StateManager
 from core.context.context_manager import ContextManager
 from core.memory.memory_manager import MemoryManager
 from core.memory.memory_router import MemoryRouter
-from core.memory.memory_sync import MemorySync
 from .task_router import TaskRouter
 from .execution_router import ExecutionRouter
 from .decision_router import DecisionRouter
@@ -53,7 +52,10 @@ class MainOrchestrator:
         self._context = ContextManager()
         self._memory = MemoryManager()
         self._memory_router = MemoryRouter(self._memory)
-        self._memory_sync = MemorySync(self._memory)
+        # Fix I (core audit #8): MemorySync was instantiated
+        # here but none of promote/demote/sync_stats ever
+        # fired in production or tests. Removed along with
+        # the file to cut dead code from the init path.
         self._task_router = TaskRouter()
         self._execution_router = ExecutionRouter()
         self._decision_router = DecisionRouter()

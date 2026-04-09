@@ -2,12 +2,38 @@
 
 When one store learns something, all stores benefit.
 Cross-store pattern detection, rule sharing, strategy transfer.
+
+Fix I (core audit #7): memory access is routed through
+``UnifiedMemory.get_memory_intelligence()`` instead of the
+legacy ``core.memory.intelligence`` direct import. Pre-fix
+this module bypassed the Fix D unified entry point — the
+same consistency violation the strategy modules carried.
+Now every share/apply call goes through the single memory
+owner.
 """
 from __future__ import annotations
 import time
 from typing import Any
 from utils.logger import get_logger
 logger = get_logger("brain.multi_store")
+
+
+def _get_memory_intelligence():
+    """Fetch MemoryIntelligence via UnifiedMemory.
+
+    Returns ``None`` when unified memory cannot provide a
+    backend so the share/apply methods can fall back to
+    ``{"status": "unavailable"}`` without crashing the
+    caller. This preserves the pre-fix behaviour of the
+    ``except Exception`` blocks that surrounded the direct
+    ``core.memory.intelligence`` import.
+    """
+    try:
+        from core.memory.unified_memory import get_unified_memory
+        return get_unified_memory().get_memory_intelligence()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("unified memory intelligence unavailable: %s", exc)
+        return None
 
 
 class MultiStoreIntelligence:
@@ -27,10 +53,8 @@ class MultiStoreIntelligence:
 
     def share_learning(self, from_store: str) -> dict[str, Any]:
         """Extract shareable learnings from a store."""
-        try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
-        except Exception:
+        mi = _get_memory_intelligence()
+        if mi is None:
             return {"status": "unavailable"}
 
         # Get high-confidence rules
@@ -69,10 +93,8 @@ class MultiStoreIntelligence:
 
     def apply_learning(self, to_store: str, shared: dict) -> dict[str, Any]:
         """Apply shared learning to a target store."""
-        try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
-        except Exception:
+        mi = _get_memory_intelligence()
+        if mi is None:
             return {"status": "unavailable"}
 
         applied_rules = 0
