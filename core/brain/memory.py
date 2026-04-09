@@ -217,6 +217,31 @@ class IntelligentMemory:
              score, json.dumps(tags), json.dumps(features), source, store_id, time.time()),
         )
         conn.commit()
+
+        # Fix L (core audit re-scan #5): close the
+        # observational loop. Pre-fix ``_detect_patterns``
+        # only ran from ``record_decision`` (L3 path), so
+        # observational data (products, orders, customers
+        # flowing in every cycle) never graduated to L4
+        # patterns or L5 rules. Now high-quality L2
+        # observations also feed pattern detection, so the
+        # brain can learn from what it sees, not just from
+        # what it decides.
+        #
+        # Only L2-tier data (score >= 3) participates so
+        # junk ingests don't flood the pattern table. Wrapped
+        # in try/except so a pattern-detection failure can't
+        # abort the ingest caller (the store write is what
+        # matters for data integrity; patterns are a
+        # derivative signal).
+        if score >= 3:
+            try:
+                self._detect_patterns(category, features, score)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "observational pattern detection failed: %s", exc,
+                )
+
         return cur.lastrowid or 0
 
     # ── L3: Record Decision + Result ─────────────────────────
