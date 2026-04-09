@@ -308,6 +308,7 @@ class DecisionEngine:
             cost = float(data.get("cost", 0) or 0)
             from utils.finance import margin as _margin
             margin = _margin(price, cost)
+            inventory = float(data.get("inventory_quantity", 0) or 0)
 
             options.append({
                 "action": "keep_price",
@@ -334,10 +335,58 @@ class DecisionEngine:
                     "new_price": higher,
                 })
 
+            # Fix S: context-aware dynamic options
+            if inventory >= 30:
+                options.append({
+                    "action": "bundle_suggestion",
+                    "reason": (
+                        f"Inventory surplus ({int(inventory)} units) — "
+                        f"bundle with related items to accelerate sell-through"
+                    ),
+                    "profit_score": max(0.0, margin * 0.8),
+                    "risk_score": 0.25,
+                })
+            competitor_alerts = context.get("competitor_alerts", []) if isinstance(context, dict) else []
+            if competitor_alerts:
+                options.append({
+                    "action": "match_competitor",
+                    "reason": (
+                        f"{len(competitor_alerts)} competitor price alert(s) — "
+                        f"consider matching to defend conversion"
+                    ),
+                    "profit_score": max(0.0, margin - 0.1),
+                    "risk_score": 0.5,
+                })
+
         elif category == "product":
             options.append({"action": "keep", "reason": "Keep current product lineup", "profit_score": 0.5, "risk_score": 0.1})
             options.append({"action": "add_similar", "reason": "Add complementary products", "profit_score": 0.6, "risk_score": 0.3})
             options.append({"action": "remove_underperformer", "reason": "Remove lowest performer", "profit_score": 0.4, "risk_score": 0.2})
+
+            # Fix S: dynamic product-level options
+            image_url = data.get("image_url")
+            if not image_url:
+                options.append({
+                    "action": "refresh_images",
+                    "reason": "Product has no image URL — refresh or generate images to lift conversion",
+                    "profit_score": 0.55,
+                    "risk_score": 0.15,
+                })
+            price = float(data.get("price", 0) or 0)
+            cost = float(data.get("cost", 0) or 0)
+            if price > 0 and cost > 0:
+                from utils.finance import margin as _margin_p
+                prod_margin = _margin_p(price, cost)
+                if prod_margin < 0.15:
+                    options.append({
+                        "action": "archive_low_margin",
+                        "reason": (
+                            f"Margin {prod_margin:.0%} below 15% floor — "
+                            f"archive or renegotiate cost"
+                        ),
+                        "profit_score": 0.35,
+                        "risk_score": 0.25,
+                    })
 
         elif category == "marketing":
             options.append({"action": "email_campaign", "reason": "Email existing customers", "profit_score": 0.5, "risk_score": 0.2})
