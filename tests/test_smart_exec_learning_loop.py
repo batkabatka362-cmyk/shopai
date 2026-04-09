@@ -177,9 +177,17 @@ class TestSmartExecFeedsWeightStore:
 
     def test_weight_store_failure_does_not_break_cycle(self, tmp_path, monkeypatch):
         """If the weight store raises during the Fix F
-        write, the cycle must still complete and Fix B's
-        phase_errors dict must capture the failure under the
-        ``weight_store_update`` key."""
+        write, the cycle must still complete and the failure
+        must be surfaced on the learning phase summary.
+
+        Fix N (core audit re-scan #4) moved per-item record()
+        failures out of ``phase_errors`` (the top-level Fix B
+        surface) into a dedicated ``weight_store_update_failures``
+        counter on the learning phase, so per-item isolation
+        doesn't stop the loop and failures are countable.
+        Top-level (module import / singleton construction)
+        failures still land in ``phase_errors``.
+        """
         ac = _make_controller(tmp_path)
 
         import core.learning.action_weights as aw_mod
@@ -215,8 +223,18 @@ class TestSmartExecFeedsWeightStore:
 
         result = ac.run_cycle("test")
         assert result.get("status") == "complete"
-        # Fix B surfaced the failure
-        assert "weight_store_update" in result.get("phase_errors", {})
+
+        # Fix N: the failure is surfaced on the learning
+        # phase counter, not phase_errors (phase_errors
+        # catches top-level import/singleton failures only).
+        learning = result["phases"].get("learning", {})
+        assert learning.get("weight_store_update_failures", 0) == 1, (
+            f"expected 1 failure recorded, got "
+            f"{learning.get('weight_store_update_failures')}"
+        )
+        assert learning.get("weight_updates", 0) == 0, (
+            "no successes expected when the store always raises"
+        )
 
     def test_weight_store_accumulates_across_cycles(self, tmp_path, monkeypatch):
         """Run two cycles with the same action + score and

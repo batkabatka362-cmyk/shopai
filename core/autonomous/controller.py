@@ -428,12 +428,22 @@ class AutonomousController:
             # relevant fields so ``cli.py auto`` and the
             # observability dashboard can display them.
             ai_reasoning = thought.get("ai_reasoning") or {}
+            # Fix M (core audit re-scan #2): surface
+            # structured_decisions on the cycle brain phase
+            # so the per-product memory-informed pricing
+            # path (and its Fix H attribution trail) reaches
+            # downstream consumers. Pre-fix the brain wrote
+            # to thought["structured_decisions"] but the
+            # controller ignored it — dead data flow.
+            structured_decisions = thought.get("structured_decisions", []) or []
             brain_summary = {
                 "health_score": thought.get("health_score", 0),
                 "problems": len(thought.get("problems", [])),
                 "opportunities": len(thought.get("opportunities", [])),
                 "decisions": len(thought.get("decisions", [])),
                 "top_action": thought["action_plan"][0]["action"] if thought.get("action_plan") else "none",
+                "structured_decisions": list(structured_decisions),
+                "structured_decisions_count": len(structured_decisions),
             }
             if isinstance(ai_reasoning, dict) and ai_reasoning.get("available"):
                 brain_summary["ai_available"] = True
@@ -752,26 +762,57 @@ class AutonomousController:
         # now accumulates real cycle-execution history that can
         # be queried + inspected, ending the data-on-the-floor
         # problem the audit flagged as CRITICAL #3.
+        # Fix N (core audit re-scan #4): per-item isolation
+        # + failure counter. Pre-fix the loop was wrapped in a
+        # single try/except — one bad record() call stopped
+        # the loop and silently dropped every item after it.
+        # Now each record is isolated; failures are counted
+        # and surfaced on the learning phase so dashboards
+        # can show "N outcomes failed to land in the weight
+        # store" instead of silently drifting.
         weight_updates = 0
+        weight_store_update_failures = 0
         try:
             from core.learning.action_weights import get_action_weight_store
             _weight_store = get_action_weight_store()
+        except Exception as exc:
+            # Top-level import / singleton failure — nothing
+            # can be recorded this cycle. Fix B surfaces this
+            # under phase_errors.
+            _record("weight_store_update", exc)
+            _weight_store = None
+
+        if _weight_store is not None:
             for se in se_results:
                 action_type = str(se.get("action_type", "") or "")
                 if not action_type:
                     continue
-                score = float(se.get("score", 0) or 0)
-                _weight_store.record(action_type, action_type, score)
-                weight_updates += 1
-        except Exception as exc:
-            _record("weight_store_update", exc)
+                try:
+                    score = float(se.get("score", 0) or 0)
+                    _weight_store.record(action_type, action_type, score)
+                    weight_updates += 1
+                except Exception as exc:  # noqa: BLE001
+                    weight_store_update_failures += 1
+                    logger.error(
+                        "weight_store.record failed for action=%s: %s",
+                        action_type, exc,
+                    )
+            if weight_store_update_failures > 0:
+                logger.error(
+                    "weight store: %d/%d outcomes failed to land "
+                    "this cycle — learning signal may drift",
+                    weight_store_update_failures,
+                    weight_updates + weight_store_update_failures,
+                )
 
         learning = self._phase_learn(sid, cycle_id, analysis, all_executions)
-        # Surface the Fix F update count on the learning phase
-        # summary so operators can see how many smart-exec
-        # outcomes landed in the weight store this cycle.
+        # Surface the Fix F update count + Fix N failure count
+        # on the learning phase summary so operators can see
+        # how many smart-exec outcomes landed in the weight
+        # store this cycle and how many dropped.
         if isinstance(learning, dict):
             learning["weight_updates"] = weight_updates
+            learning["weight_store_update_failures"] = weight_store_update_failures
 
         # Brain learning loop — learn from this cycle + smart executions
         try:
@@ -809,6 +850,48 @@ class AutonomousController:
             _record("brain_learning", exc)
 
         cycle_result["phases"]["learning"] = learning
+
+        # Fix K (core audit re-scan #3): record the cycle
+        # outcome against the goal that was selected in
+        # phase 1a-goal, closing the goal → cycle → outcome
+        # → next goal selection loop. Pre-fix GoalManager
+        # never learned from its own choices.
+        try:
+            selected = cycle_result["phases"].get("goal", {}).get("selected", "")
+            if selected and hasattr(self, "_goal_manager") and self._goal_manager is not None:
+                avg_score = (
+                    smart_exec_result.get("avg_score", 0)
+                    if isinstance(smart_exec_result, dict)
+                    else 0
+                )
+                insights = cycle_result["phases"].get("analysis", {}).get(
+                    "insights", 0,
+                )
+                weight_update_count = (
+                    learning.get("weight_updates", 0)
+                    if isinstance(learning, dict)
+                    else 0
+                )
+                # Deltas relative to neutral (score=3.0 is a
+                # "fine" smart-exec outcome; higher is
+                # success). Insights and weight updates are
+                # secondary positive signals.
+                outcome_metrics = {
+                    "profit_delta": float(avg_score - 3.0) if avg_score else 0.0,
+                    "revenue_delta": float(weight_update_count),
+                    "health_delta": float(insights) - 1.0,
+                }
+                self._goal_manager.record_goal_outcome(
+                    selected, outcome_metrics,
+                )
+                # Surface the effectiveness update on the
+                # learning phase so operators can see it
+                if isinstance(learning, dict):
+                    learning["goal_effectiveness"] = round(
+                        self._goal_manager.get_effectiveness(selected), 3,
+                    )
+        except Exception as exc:
+            _record("goal_outcome_update", exc)
 
         # Phase 5a: MARKETING AUTOMATION — generate campaigns
         try:
