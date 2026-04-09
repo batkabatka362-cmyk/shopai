@@ -733,6 +733,7 @@ class CognitiveModule:
             },
             "reasoning": {
                 "hypotheses": len(hypotheses),
+                "hypothesis_list": hypotheses,
                 "top_hypothesis": hypotheses[0] if hypotheses else None,
             },
             "reflection": reflection,

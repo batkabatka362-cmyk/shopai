@@ -23,6 +23,75 @@ from utils.logger import get_logger
 logger = get_logger("autonomous")
 
 
+# Maps cognitive hypothesis keywords to brain decision
+# action types. When a hypothesis title contains a keyword,
+# matching decisions get a cognitive boost.
+_COGNITIVE_ACTION_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "image": ("add_images",),
+    "photo": ("add_images",),
+    "margin": ("raise_price", "lower_price"),
+    "repriced": ("raise_price", "lower_price"),
+    "pricing": ("raise_price", "lower_price"),
+    "critical": ("fix_critical", "add_images", "lower_price"),
+    "conversion": ("add_images", "lower_price"),
+    "inventory": ("restock", "reorder"),
+    "stockout": ("restock", "reorder"),
+}
+
+
+def _cognitive_action_hints(hypotheses: list) -> set[str]:
+    """Extract brain action types implied by cognitive
+    hypothesis titles so the ranking pass can boost them."""
+    hints: set[str] = set()
+    if not isinstance(hypotheses, list):
+        return hints
+    for h in hypotheses:
+        if not isinstance(h, dict):
+            continue
+        title = h.get("title")
+        if not isinstance(title, str):
+            continue
+        title_l = title.lower()
+        for keyword, actions in _COGNITIVE_ACTION_KEYWORDS.items():
+            if keyword in title_l:
+                hints.update(actions)
+    return hints
+
+
+def _apply_cognitive_boost(
+    decisions: list, hints: set[str],
+) -> int:
+    """Apply a 1.15x score boost to decisions whose action
+    matches a cognitive hint. Writes an attribution entry
+    under ``source='cognitive_hypothesis'``. Returns the
+    number of decisions boosted."""
+    if not hints or not decisions:
+        return 0
+    boosted = 0
+    for d in decisions:
+        if not isinstance(d, dict):
+            continue
+        action = d.get("type", "")
+        if action not in hints:
+            continue
+        old_score = float(d.get("score", 0) or 0)
+        new_score = round(old_score * 1.15, 3)
+        d["score"] = new_score
+        trail = d.setdefault("attribution", [])
+        if isinstance(trail, list):
+            trail.append({
+                "source": "cognitive_hypothesis",
+                "rule_id": f"cognitive:{action}",
+                "description": (
+                    f"cognitive hypothesis matched {action} → "
+                    f"score boosted by 15%"
+                ),
+                "impact": round(new_score - old_score, 3),
+            })
+        boosted += 1
+    return boosted
+
+
 class AutonomousController:
     """Self-improving autonomous e-commerce controller."""
 
@@ -489,6 +558,25 @@ class AutonomousController:
 
             # Deep analysis (limit products for speed)
             deep = cog.think_deep(data.get("products", [])[:5], cog_memories, rules)
+            # Fix Q: apply cognitive hypothesis hints to the
+            # brain's decisions before phase 3 rank consumes
+            # them. Pre-fix cognitive was a write-only
+            # dashboard key; now hypothesis titles steer the
+            # ranking.
+            hypothesis_list = deep["reasoning"].get("hypothesis_list", [])
+            hints = _cognitive_action_hints(hypothesis_list)
+            decisions_boosted = _apply_cognitive_boost(
+                thought.get("decisions", []) if isinstance(thought, dict) else [],
+                hints,
+            )
+            # Re-sort now that scores have shifted so phase 3
+            # sees the boosted ranking.
+            if decisions_boosted and isinstance(thought, dict):
+                thought["decisions"] = sorted(
+                    thought.get("decisions", []),
+                    key=lambda d: (-float(d.get("score", 0) or 0), d.get("priority", 5)),
+                )
+                cycle_result["_brain_decisions"] = thought["decisions"]
             cycle_result["phases"]["cognitive"] = {
                 "products_analyzed": deep["understanding"]["products_analyzed"],
                 "critical_products": deep["understanding"]["critical"],
@@ -497,6 +585,7 @@ class AutonomousController:
                 "near_misses": deep["failure_analysis"]["near_misses"],
                 "questions": deep["curiosity"]["questions"][:3],
                 "exploration": deep["curiosity"]["exploration"].get("suggest", ""),
+                "decisions_boosted": decisions_boosted,
             }
 
             # Record exploration. Previously this loop referenced
