@@ -886,11 +886,71 @@ class DecisionBrain:
             ),
         }
 
+        # Fix J (core audit #1): consume experience advice
+        # during ranking. Pre-fix the ``experience`` dict was
+        # passed to ``_decide`` but dropped on the floor —
+        # _consult_experience() built relevant_strategies and
+        # avoid lists every cycle and the ranking code never
+        # touched them. Now:
+        #
+        #   * A high-effectiveness strategy for an action
+        #     lifts that action's score by up to 40%.
+        #   * A low-effectiveness strategy dampens it.
+        #   * An "avoid" mistake description containing the
+        #     action name dampens by 20%.
+        #
+        # Both branches write attribution entries so operators
+        # can trace which past outcome steered the ranking.
+        relevant_strategies = (
+            experience.get("relevant_strategies", [])
+            if isinstance(experience, dict)
+            else []
+        )
+        avoid_list = (
+            experience.get("avoid", [])
+            if isinstance(experience, dict)
+            else []
+        )
+        # Index strategies by action for O(1) lookup
+        strategy_by_action: dict[str, list[float]] = {}
+        for s in relevant_strategies:
+            if not isinstance(s, dict):
+                continue
+            action = str(s.get("for", ""))
+            if not action:
+                continue
+            strategy_by_action.setdefault(action, []).append(
+                float(s.get("effectiveness", 0) or 0),
+            )
+
         for d in decisions:
             base_score = 5.0 - float(d.get("priority", 5))  # 4.0..1.0
             weight = float(weight_table.get(d.get("type", ""), 1.0))
-            d["score"] = round(base_score * weight, 3)
+            action_type = str(d.get("type", ""))
+
+            # Experience multiplier: average effectiveness of
+            # strategies matching this action, mapped to
+            # [0.6, 1.4] so bad strategies dampen and good
+            # strategies boost.
+            experience_mult = 1.0
+            effectiveness_values = strategy_by_action.get(action_type, [])
+            if effectiveness_values:
+                avg_eff = sum(effectiveness_values) / len(effectiveness_values)
+                experience_mult = 0.6 + 0.8 * max(0.0, min(1.0, avg_eff))
+
+            # Mistake dampener: any "avoid" entry mentioning
+            # the action reduces the score by 20%.
+            mistake_hits: list[str] = [
+                m for m in avoid_list
+                if isinstance(m, str) and action_type and action_type in m
+            ]
+            mistake_mult = 0.8 if mistake_hits else 1.0
+
+            d["score"] = round(
+                base_score * weight * experience_mult * mistake_mult, 3,
+            )
             d["goal_weight"] = weight
+            d["experience_mult"] = round(experience_mult, 3)
             if goal:
                 d["goal"] = goal
 
@@ -917,10 +977,40 @@ class DecisionBrain:
                 direction = "boosts" if weight > 1.0 else "suppresses"
                 attribution.append({
                     "source": "goal_weight",
-                    "rule_id": f"goal:{goal}:{d.get('type', '')}",
+                    "rule_id": f"goal:{goal}:{action_type}",
                     "description": (
                         f"goal '{goal}' {direction} "
-                        f"{d.get('type', '')} by {weight:.2f}x"
+                        f"{action_type} by {weight:.2f}x"
+                    ),
+                    "impact": round(delta, 3),
+                })
+
+            # Fix J: experience strategy attribution
+            if effectiveness_values and abs(experience_mult - 1.0) > 1e-9:
+                avg_eff = sum(effectiveness_values) / len(effectiveness_values)
+                delta = base_score * weight * (experience_mult - 1.0)
+                direction = "boosts" if experience_mult > 1.0 else "dampens"
+                attribution.append({
+                    "source": "experience_strategy",
+                    "rule_id": f"experience:{action_type}",
+                    "description": (
+                        f"past experience {direction} {action_type} "
+                        f"(avg effectiveness {avg_eff:.2f} from "
+                        f"{len(effectiveness_values)} strateg"
+                        f"{'y' if len(effectiveness_values) == 1 else 'ies'})"
+                    ),
+                    "impact": round(delta, 3),
+                })
+
+            # Fix J: experience mistake attribution
+            if mistake_hits:
+                delta = base_score * weight * experience_mult * (mistake_mult - 1.0)
+                attribution.append({
+                    "source": "experience_mistake",
+                    "rule_id": f"mistake:{action_type}",
+                    "description": (
+                        f"past mistake involving {action_type}: "
+                        f"{mistake_hits[0][:80]}"
                     ),
                     "impact": round(delta, 3),
                 })
