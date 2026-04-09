@@ -876,7 +876,16 @@ class AutonomousController:
             learning["weight_updates"] = weight_updates
             learning["weight_store_update_failures"] = weight_store_update_failures
 
-        # Brain learning loop — learn from this cycle + smart executions
+        # Brain learning loop — learn from this cycle + smart executions.
+        # Fix R: aggregate the rich failure_insight /
+        # success_insight dicts that learn() returns into a
+        # single brain_insights list on the learning phase
+        # summary, and report success/failure counts so
+        # operators can see the signal in cycle output
+        # instead of silently logging it.
+        brain_insights: list[dict[str, Any]] = []
+        brain_success_count = 0
+        brain_failure_count = 0
         try:
             from core.brain.learning_loop import LearningLoop
             brain_loop = LearningLoop()
@@ -897,19 +906,56 @@ class AutonomousController:
                 "score": brain_learning.get("score", 0),
                 "success": brain_learning.get("success", False),
             }
+            if brain_learning.get("success_insight"):
+                brain_insights.append({
+                    "type": "success",
+                    "action": "autonomous_cycle",
+                    **brain_learning["success_insight"],
+                })
+                brain_success_count += 1
+            if brain_learning.get("failure_insight"):
+                brain_insights.append({
+                    "type": "failure",
+                    "action": "autonomous_cycle",
+                    **brain_learning["failure_insight"],
+                })
+                brain_failure_count += 1
 
             # Learn from each smart execution individually
             for se in se_results:
-                brain_loop.learn(
+                action_name = se.get("action_type", "unknown")
+                se_learning = brain_loop.learn(
                     category=se.get("action_type", "execution"),
-                    input_data={"action": se.get("action_type", ""), "mode": se.get("mode", "")},
-                    action=se.get("action_type", "unknown"),
+                    input_data={"action": action_name, "mode": se.get("mode", "")},
+                    action=action_name,
                     result=se.get("actual_outcome", {}),
                     metrics={"profit": se.get("score", 3.0) - 3.0},
                 )
                 learning["outcomes_recorded"] = learning.get("outcomes_recorded", 0) + 1
+                if se_learning.get("success_insight"):
+                    brain_insights.append({
+                        "type": "success",
+                        "action": action_name,
+                        **se_learning["success_insight"],
+                    })
+                    brain_success_count += 1
+                if se_learning.get("failure_insight"):
+                    brain_insights.append({
+                        "type": "failure",
+                        "action": action_name,
+                        **se_learning["failure_insight"],
+                    })
+                    brain_failure_count += 1
         except Exception as exc:
             _record("brain_learning", exc)
+
+        # Surface aggregated insights regardless of whether
+        # the try-block above completed — partial failures
+        # still yield whatever insights landed before the exception.
+        if isinstance(learning, dict):
+            learning["brain_insights"] = brain_insights
+            learning["brain_success_count"] = brain_success_count
+            learning["brain_failure_count"] = brain_failure_count
 
         cycle_result["phases"]["learning"] = learning
 

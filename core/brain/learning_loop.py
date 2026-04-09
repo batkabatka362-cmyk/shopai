@@ -23,18 +23,22 @@ class LearningLoop:
         self._total_learnings = 0
 
     def _get_memory(self):
+        """Route through UnifiedMemory instead of directly
+        importing get_brain_memory. Same Fix D/I pattern
+        applied elsewhere — UnifiedMemory is the single
+        entry point for the 6-layer brain memory."""
         if not self._memory:
-            from core.brain.memory import get_brain_memory
-            self._memory = get_brain_memory()
+            from core.memory.unified_memory import get_unified_memory
+            self._memory = get_unified_memory().get_brain_memory()
         return self._memory
 
     def _get_intelligence(self):
         if not self._memory_intel:
             try:
-                from core.memory.intelligence import get_memory_intelligence
-                self._memory_intel = get_memory_intelligence()
-            except Exception:
-                pass
+                from core.memory.unified_memory import get_unified_memory
+                self._memory_intel = get_unified_memory().get_memory_intelligence()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("memory intelligence lookup failed: %s", exc)
         if not self._data_arch:
             try:
                 from core.data.architecture import get_data_architecture
