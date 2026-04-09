@@ -69,14 +69,18 @@ class JudgmentAdvisor:
         fn,
         *args,
     ) -> dict[str, Any]:
-        """Run a single check method behind a try/except so a buggy
-        downstream module (FailurePrevention, ActionCoordinator,
-        etc.) can't take down the entire judgment vote.
+        """Run a single check behind a try/except so a buggy
+        downstream module can't take down the entire vote.
 
-        On failure we return a stub check with risk=0 and the same
-        weight the real method would have used, so the missing
-        signal is treated as neutral rather than vetoing or
-        skewing the weighted average.
+        Fix O: on failure the stub returns ``risk=1.0`` (max
+        uncertainty) and ``degraded=True``. Pre-fix this
+        defaulted to ``risk=0.0`` which silently APPROVED
+        decisions the gate couldn't verify — a safety gate
+        that can't assess risk must treat that as high risk,
+        not zero risk. The ``degraded`` flag lets
+        ``evaluate()`` force a minimum verdict of ``delay``
+        so blind checks can't coast through on other low
+        signals.
         """
         try:
             result = fn(*args)
@@ -93,15 +97,17 @@ class JudgmentAdvisor:
             return result
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "JudgmentAdvisor: check %r raised (%s); treating as neutral",
-                name, exc,
+                "JudgmentAdvisor: check %r raised %s: %s — "
+                "treating as DEGRADED (risk=1.0)",
+                name, type(exc).__name__, exc,
             )
             return {
                 "check": name,
-                "risk": 0.0,
+                "risk": 1.0,
                 "weight": self._CHECK_DEFAULTS.get(name, 0.10),
-                "reason": f"{name}: check failed ({type(exc).__name__})",
+                "reason": f"{name}: check failed ({type(exc).__name__}) — signal unavailable",
                 "error": str(exc)[:120],
+                "degraded": True,
             }
 
     def evaluate(
@@ -137,6 +143,9 @@ class JudgmentAdvisor:
         total_weight = sum(c["weight"] for c in checks)
         risk_score = sum(c["risk"] * c["weight"] for c in checks) / max(total_weight, 0.01)
 
+        degraded = [c for c in checks if c.get("degraded")]
+        degraded_count = len(degraded)
+
         # Determine verdict
         if any(c.get("veto") for c in checks):
             verdict = "escalate_to_human"
@@ -158,11 +167,30 @@ class JudgmentAdvisor:
             verdict = "proceed"
             reason = "All checks passed"
 
+        # Fix O fail-safe ratchet: degraded (failed-to-run)
+        # checks can't coast through on other low signals.
+        # One degraded check bumps the minimum verdict to
+        # "delay"; two or more force "escalate_to_human"
+        # since the gate itself looks broken.
+        if degraded_count >= 2 and verdict == "proceed":
+            verdict = "escalate_to_human"
+        elif degraded_count >= 2:
+            verdict = "escalate_to_human"
+        elif degraded_count == 1 and verdict == "proceed":
+            verdict = "delay"
+        if degraded_count:
+            degraded_names = ", ".join(c["check"] for c in degraded)
+            reason = (
+                f"{degraded_count} check(s) degraded [{degraded_names}]"
+                + (f"; {reason}" if reason else "")
+            )
+
         recommendations = [c.get("recommendation", "") for c in checks if c.get("recommendation")]
 
         logger.info(
-            "Judgment: %s (risk=%.2f) for action '%s'",
-            verdict, risk_score, decision.get("action", "?")[:50],
+            "Judgment: %s (risk=%.2f, degraded=%d) for action '%s'",
+            verdict, risk_score, degraded_count,
+            decision.get("action", "?")[:50],
         )
 
         return {
@@ -171,6 +199,7 @@ class JudgmentAdvisor:
             "checks": checks,
             "reason": reason,
             "recommendations": [r for r in recommendations if r],
+            "degraded_checks": degraded_count,
         }
 
     def _check_magnitude(self, decision: dict[str, Any]) -> dict[str, Any]:

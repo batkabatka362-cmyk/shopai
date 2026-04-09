@@ -45,22 +45,27 @@ class TestJudgmentPerCheckIsolation:
         )
 
     def test_broken_check_does_not_crash_evaluate(self):
-        """Regression: previously a broken FailurePrevention.check
-        propagated out of _check_past_failures and crashed the
-        whole evaluate() call. Now it falls back to a neutral
-        stub check."""
+        """Regression: a broken FailurePrevention.check must
+        not crash evaluate() — it falls back to a stub check.
+
+        Fix O changed the fail-safe semantics: a broken
+        check now returns risk=1.0 (max uncertainty) and is
+        tagged ``degraded=True``, instead of silently
+        defaulting to risk=0.0 (approval). A safety gate
+        that can't assess risk must treat that as high risk.
+        """
         advisor = self._broken_advisor()
         result = advisor.evaluate(
             decision={"action": "raise prices", "confidence_score": 70},
             situation={},
         )
         assert "verdict" in result
-        # The broken check still appears in the checks list as
-        # neutral (risk=0.0) so the average isn't skewed.
+        # Broken checks are now marked degraded with risk=1.0
         broken = [c for c in result["checks"] if c.get("error")]
         assert len(broken) >= 2  # past_failures + cooldown both broken
         for c in broken:
-            assert c["risk"] == 0.0
+            assert c["risk"] == 1.0
+            assert c.get("degraded") is True
             assert "check failed" in c["reason"]
 
     def test_broken_check_logs_warning(self, monkeypatch):
@@ -80,19 +85,22 @@ class TestJudgmentPerCheckIsolation:
         assert any("past_failures" in w and "exploded" in w for w in warnings)
         assert any("cooldown" in w and "exploded" in w for w in warnings)
 
-    def test_check_returning_non_dict_treated_as_neutral(self):
+    def test_check_returning_non_dict_treated_as_degraded(self):
+        """A check that returns a non-dict raises a TypeError
+        inside _safe_check. Fix O: the stub lands with
+        risk=1.0 + degraded=True so the invalid signal
+        doesn't silently approve the decision."""
         from core.judgment.judgment_advisor import JudgmentAdvisor
 
         advisor = JudgmentAdvisor()
-        # Override _check_magnitude to return a string
         advisor._check_magnitude = lambda decision: "not a dict"
         result = advisor.evaluate(
             decision={"action": "x", "confidence_score": 80},
             situation={},
         )
-        # Magnitude check still appears as neutral
         mag = next(c for c in result["checks"] if c["check"] == "magnitude")
-        assert mag["risk"] == 0.0
+        assert mag["risk"] == 1.0
+        assert mag.get("degraded") is True
         assert "check failed" in mag["reason"]
 
 
