@@ -428,13 +428,9 @@ class AutonomousController:
             # relevant fields so ``cli.py auto`` and the
             # observability dashboard can display them.
             ai_reasoning = thought.get("ai_reasoning") or {}
-            # Fix M (core audit re-scan #2): surface
-            # structured_decisions on the cycle brain phase
-            # so the per-product memory-informed pricing
-            # path (and its Fix H attribution trail) reaches
-            # downstream consumers. Pre-fix the brain wrote
-            # to thought["structured_decisions"] but the
-            # controller ignored it — dead data flow.
+            # Surface structured_decisions so the per-product
+            # memory-informed pricing trail (with Fix H
+            # attribution) reaches downstream consumers.
             structured_decisions = thought.get("structured_decisions", []) or []
             brain_summary = {
                 "health_score": thought.get("health_score", 0),
@@ -442,7 +438,7 @@ class AutonomousController:
                 "opportunities": len(thought.get("opportunities", [])),
                 "decisions": len(thought.get("decisions", [])),
                 "top_action": thought["action_plan"][0]["action"] if thought.get("action_plan") else "none",
-                "structured_decisions": list(structured_decisions),
+                "structured_decisions": structured_decisions,
                 "structured_decisions_count": len(structured_decisions),
             }
             if isinstance(ai_reasoning, dict) and ai_reasoning.get("available"):
@@ -741,44 +737,21 @@ class AutonomousController:
                 "duration_s": se.get("duration_s", 0),
             })
 
-        # Fix F: close the learning loop for cycle-level smart
-        # execution. Pre-fix every smart execution result was
-        # recorded into the cycle_result dict but never flowed
-        # into the ActionWeightStore that Fix C introduced, so
-        # the weight-store pathway only learned from manual
-        # ``DecisionEngine.record_outcome`` calls. This block
-        # writes each execution's (action_type, score) pair into
-        # the store so autonomous cycles actually build
-        # accumulated weight history over time.
-        #
-        # Key choice: we write under ``(action_type, action_type)``
-        # — same string for both category and action — because
-        # SmartExecutor operates on action types, not brain
-        # decision categories. The DecisionEngine's
-        # ``_score_options`` reads via ``(category, option_action)``
-        # so it won't find smart-exec weights directly today;
+        # Feed smart-execution outcomes into the ActionWeightStore.
+        # Per-item isolation so one bad record() call can't drop
+        # the remaining items; counts are surfaced on the learning
+        # phase (weight_updates + weight_store_update_failures).
+        # Write key is (action_type, action_type): SmartExecutor
+        # works on action types, not brain decision categories —
         # aligning the two naming spaces is a separate refactor.
-        # The immediate value of this fix is that the store
-        # now accumulates real cycle-execution history that can
-        # be queried + inspected, ending the data-on-the-floor
-        # problem the audit flagged as CRITICAL #3.
-        # Fix N (core audit re-scan #4): per-item isolation
-        # + failure counter. Pre-fix the loop was wrapped in a
-        # single try/except — one bad record() call stopped
-        # the loop and silently dropped every item after it.
-        # Now each record is isolated; failures are counted
-        # and surfaced on the learning phase so dashboards
-        # can show "N outcomes failed to land in the weight
-        # store" instead of silently drifting.
         weight_updates = 0
         weight_store_update_failures = 0
         try:
             from core.learning.action_weights import get_action_weight_store
             _weight_store = get_action_weight_store()
         except Exception as exc:
-            # Top-level import / singleton failure — nothing
-            # can be recorded this cycle. Fix B surfaces this
-            # under phase_errors.
+            # Top-level import/singleton failure → route through
+            # phase_errors; per-item failures use the counter.
             _record("weight_store_update", exc)
             _weight_store = None
 
@@ -851,41 +824,27 @@ class AutonomousController:
 
         cycle_result["phases"]["learning"] = learning
 
-        # Fix K (core audit re-scan #3): record the cycle
-        # outcome against the goal that was selected in
-        # phase 1a-goal, closing the goal → cycle → outcome
-        # → next goal selection loop. Pre-fix GoalManager
-        # never learned from its own choices.
+        # Close the goal → cycle → outcome → next selection loop.
+        # profit_delta is the smart-exec avg score vs the 3.0
+        # "fine" midpoint; weight updates and insights are
+        # secondary positive signals.
         try:
             selected = cycle_result["phases"].get("goal", {}).get("selected", "")
-            if selected and hasattr(self, "_goal_manager") and self._goal_manager is not None:
+            if selected and getattr(self, "_goal_manager", None) is not None:
                 avg_score = (
                     smart_exec_result.get("avg_score", 0)
-                    if isinstance(smart_exec_result, dict)
-                    else 0
+                    if isinstance(smart_exec_result, dict) else 0
                 )
-                insights = cycle_result["phases"].get("analysis", {}).get(
-                    "insights", 0,
-                )
+                insights = cycle_result["phases"].get("analysis", {}).get("insights", 0)
                 weight_update_count = (
                     learning.get("weight_updates", 0)
-                    if isinstance(learning, dict)
-                    else 0
+                    if isinstance(learning, dict) else 0
                 )
-                # Deltas relative to neutral (score=3.0 is a
-                # "fine" smart-exec outcome; higher is
-                # success). Insights and weight updates are
-                # secondary positive signals.
-                outcome_metrics = {
+                self._goal_manager.record_goal_outcome(selected, {
                     "profit_delta": float(avg_score - 3.0) if avg_score else 0.0,
                     "revenue_delta": float(weight_update_count),
                     "health_delta": float(insights) - 1.0,
-                }
-                self._goal_manager.record_goal_outcome(
-                    selected, outcome_metrics,
-                )
-                # Surface the effectiveness update on the
-                # learning phase so operators can see it
+                })
                 if isinstance(learning, dict):
                     learning["goal_effectiveness"] = round(
                         self._goal_manager.get_effectiveness(selected), 3,

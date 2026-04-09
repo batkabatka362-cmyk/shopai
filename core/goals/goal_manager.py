@@ -87,10 +87,8 @@ SEASONAL_PEAKS = [
 
 HYSTERESIS_CYCLES = 5  # Don't switch for at least 5 cycles
 
-# Fix K (core audit re-scan #3): effectiveness learning.
-# Each goal carries an EMA of its historical success rate.
-# Positive cycle outcomes drive the EMA toward 1.0, negative
-# toward 0.0. The default is 0.5 (neutral — no data yet).
+# Per-goal effectiveness EMA smoothing. Positive outcomes
+# drive toward 1.0, negative toward 0.0; default is 0.5.
 _EFFECTIVENESS_ALPHA = 0.2
 _EFFECTIVENESS_NEUTRAL = 0.5
 
@@ -103,13 +101,11 @@ class GoalManager:
         result = manager.select_goal(snapshot.get_situation())
         # result = {"goal": "grow_customers", "reason": "...", "confidence": 0.85}
 
-    Fix K adds a feedback loop: ``record_goal_outcome(goal,
-    metrics)`` updates a per-goal EMA, and ``_evaluate_goals``
-    consults it to adjust priority + confidence so
-    historically-successful goals rise in the ranking and
-    persistently-failing ones fall. Crisis detection stays
-    sacrosanct — a D-grade situation always picks
-    ``survive_crisis`` regardless of historical effectiveness.
+    ``record_goal_outcome(goal, metrics)`` feeds a per-goal
+    EMA consulted by ``_evaluate_goals`` to adjust priority
+    (±0.5) and confidence, so historically-successful goals
+    rise in the ranking. Crisis detection stays sacrosanct
+    — a D-grade situation always picks ``survive_crisis``.
     """
 
     # Bound on the in-memory switch history. The previous version
@@ -123,9 +119,10 @@ class GoalManager:
         self._goal_since_cycle = 0
         self._cycle_count = 0
         self._switch_history: list[dict[str, Any]] = []
-        # Fix K: per-goal EMA of observed outcome success
-        self._goal_effectiveness: dict[str, float] = {}
-        self._goal_outcome_count: dict[str, int] = {}
+        # Per-goal learning state: {goal: {"ema": float, "n": int}}.
+        # One dict instead of two parallel ones so ema + count
+        # can't drift out of sync.
+        self._goal_stats: dict[str, dict[str, Any]] = {}
         # Lock guarding the mutable state above. Multiple cycles
         # plus dashboard reads previously raced on _current_goal
         # and _switch_history mutations.
@@ -221,72 +218,61 @@ class GoalManager:
             # poison the in-memory history.
             return [dict(e) for e in self._switch_history[-20:]]
 
-    # ── Fix K: Outcome learning ─────────────────────────────
+    # ── Outcome learning ────────────────────────────────────
 
     def record_goal_outcome(
         self, goal: str, outcome_metrics: dict[str, Any] | None,
     ) -> None:
         """Record the outcome of a cycle that ran under ``goal``.
 
-        ``outcome_metrics`` is a dict with signed deltas:
-        ``profit_delta``, ``revenue_delta``, ``health_delta``.
-        A positive majority vote among the deltas marks the
-        cycle as a success (1.0); negative majority as a
-        failure (0.0); a tie as neutral (0.5). The per-goal
-        EMA is updated with ``_EFFECTIVENESS_ALPHA`` smoothing
-        so it takes ~5 cycles to meaningfully move.
+        ``outcome_metrics`` carries signed deltas
+        (``profit_delta``, ``revenue_delta``, ``health_delta``).
+        A positive majority vote marks the cycle as success
+        (1.0), negative as failure (0.0), a tie as neutral
+        (0.5); the per-goal EMA is then blended with
+        ``_EFFECTIVENESS_ALPHA``.
 
-        Crashes defensively — missing goal, non-dict metrics,
-        or unexpected types never raise; they just no-op with
-        a debug log. This method is called from the cycle
-        learning phase where an exception would abort the
-        learning write chain.
+        Never raises — bad input no-ops so the learning-phase
+        caller can't be aborted by a malformed metrics dict.
         """
         if not goal or not isinstance(outcome_metrics, dict):
             return
+        signals = [
+            safe_float(outcome_metrics.get("profit_delta")),
+            safe_float(outcome_metrics.get("revenue_delta")),
+            safe_float(outcome_metrics.get("health_delta")),
+        ]
+        positive = sum(1 for s in signals if s > 0)
+        negative = sum(1 for s in signals if s < 0)
+        if positive > negative:
+            success = 1.0
+        elif negative > positive:
+            success = 0.0
+        else:
+            success = _EFFECTIVENESS_NEUTRAL
+
         with self._lock:
-            def _f(key: str) -> float:
-                try:
-                    return float(outcome_metrics.get(key, 0) or 0)
-                except (TypeError, ValueError):
-                    return 0.0
-
-            profit = _f("profit_delta")
-            revenue = _f("revenue_delta")
-            health = _f("health_delta")
-            signals = [profit, revenue, health]
-            positive = sum(1 for s in signals if s > 0)
-            negative = sum(1 for s in signals if s < 0)
-            if positive > negative:
-                success = 1.0
-            elif negative > positive:
-                success = 0.0
-            else:
-                success = _EFFECTIVENESS_NEUTRAL
-
-            current = self._goal_effectiveness.get(
-                goal, _EFFECTIVENESS_NEUTRAL,
+            stats = self._goal_stats.setdefault(
+                goal, {"ema": _EFFECTIVENESS_NEUTRAL, "n": 0},
             )
+            current = stats["ema"]
             new_value = (
                 (1.0 - _EFFECTIVENESS_ALPHA) * current
                 + _EFFECTIVENESS_ALPHA * success
             )
-            new_value = max(0.0, min(1.0, new_value))
-            self._goal_effectiveness[goal] = new_value
-            self._goal_outcome_count[goal] = (
-                self._goal_outcome_count.get(goal, 0) + 1
-            )
+            stats["ema"] = max(0.0, min(1.0, new_value))
+            stats["n"] += 1
             logger.info(
                 "Goal '%s' effectiveness: %.3f → %.3f "
                 "(success=%.1f, n=%d)",
-                goal, current, new_value, success,
-                self._goal_outcome_count[goal],
+                goal, current, stats["ema"], success, stats["n"],
             )
 
     def get_effectiveness(self, goal: str) -> float:
         """Return the current EMA for ``goal`` (0.5 default)."""
         with self._lock:
-            return self._goal_effectiveness.get(goal, _EFFECTIVENESS_NEUTRAL)
+            stats = self._goal_stats.get(goal)
+            return stats["ema"] if stats else _EFFECTIVENESS_NEUTRAL
 
     def get_effectiveness_stats(self) -> dict[str, dict[str, Any]]:
         """Return all recorded goal effectiveness +
@@ -294,13 +280,10 @@ class GoalManager:
         with self._lock:
             return {
                 goal: {
-                    "effectiveness": round(
-                        self._goal_effectiveness.get(goal, _EFFECTIVENESS_NEUTRAL),
-                        4,
-                    ),
-                    "n": self._goal_outcome_count.get(goal, 0),
+                    "effectiveness": round(stats["ema"], 4),
+                    "n": stats["n"],
                 }
-                for goal in self._goal_outcome_count
+                for goal, stats in self._goal_stats.items()
             }
 
     def _evaluate_goals(self, situation: dict[str, Any]) -> dict[str, Any]:
@@ -369,27 +352,16 @@ class GoalManager:
             "reason": "Normal operation — optimizing for profit",
         })
 
-        # Fix K: consult learned effectiveness. For each
-        # candidate, apply a priority adjustment of ±0.5 based
-        # on historical success (so a near-perfect goal rises
-        # by 0.5 slots, a chronically-failing one falls by
-        # 0.5) and scale confidence proportionally. The
-        # adjustment is bounded so a crisis-triggered
-        # priority-1 candidate can never be bumped below a
-        # priority-3 non-crisis candidate — safety rules
-        # stay sacrosanct.
+        # Bias priority + confidence by learned effectiveness.
+        # Bounded to ±0.5 priority shift so a priority-1
+        # crisis candidate can't be bumped below priority-3.
         for c in candidates:
-            eff = self._goal_effectiveness.get(
-                c["goal"], _EFFECTIVENESS_NEUTRAL,
-            )
+            stats = self._goal_stats.get(c["goal"])
+            eff = stats["ema"] if stats else _EFFECTIVENESS_NEUTRAL
             c["effectiveness"] = round(eff, 3)
-            # Priority adjustment in [-0.5, +0.5]
             c["adjusted_priority"] = (
                 float(c["priority"]) - (eff - _EFFECTIVENESS_NEUTRAL)
             )
-            # Confidence scaling: 0.5 + eff maps
-            # [0, 1] effectiveness to [0.5x, 1.5x] of the
-            # base confidence, clipped to [0.1, 0.99].
             scaled = float(c.get("confidence", 0.75)) * (0.5 + eff)
             c["confidence"] = round(max(0.1, min(0.99, scaled)), 3)
 
