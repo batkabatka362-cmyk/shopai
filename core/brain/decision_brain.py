@@ -513,20 +513,37 @@ class DecisionBrain:
                 if structured.choice != "no_action":
                     thought.setdefault("structured_decisions", []).append(structured.to_dict())
 
-        # Step 5c: Multi-model analysis via ModelCoordinator
-        try:
-            from core.brain.model_coordinator import ModelCoordinator
-            coordinator = ModelCoordinator()
-            if state.products:
-                top_product = state.products[0]
-                coord_result = coordinator.pricing_decision(top_product)
-                thought["model_coordinator"] = {
-                    "product": top_product.get("name", "?")[:30],
-                    "decision": coord_result.get("decision", {}),
-                    "model": coord_result.get("model", ""),
-                }
-        except Exception as exc:
-            logger.debug("ModelCoordinator: %s", exc)
+        # Fix G note (core audit #5): pre-fix Step 5c here
+        # instantiated a ``ModelCoordinator`` fresh every cycle
+        # and called ``pricing_decision(top_product)``, which
+        # fired a legacy LLM (``core.system.llm_adapter``)
+        # request and dropped the JSON response onto
+        # ``thought["model_coordinator"]``. That key was never
+        # read anywhere in the codebase — grep(thought
+        # \\[.model_coordinator.\\]) returned exactly ONE hit,
+        # the write site itself.
+        #
+        # The pricing decision already goes through
+        # ``DecisionEngine.decide("pricing", p)`` above, which
+        # is deterministic, memory-informed, rule-aware, and
+        # now learning-aware (Fix C). The ModelCoordinator
+        # call was:
+        #
+        #   * wasteful — burned a ~1-5s LLM request per cycle
+        #     with no downstream consumer
+        #   * non-deterministic — two cycles on the same data
+        #     could produce different recommendations
+        #   * competing — produced a pricing opinion that did
+        #     not reconcile with the DecisionEngine output
+        #   * legacy — bypassed the Phase 1 adapter
+        #     ``SmartRouter`` entirely
+        #
+        # Removed. ``ModelCoordinator`` the class itself is
+        # still used by ``tests/test_multi_model.py`` for
+        # testing multi-role LLM orchestration, so the file
+        # stays. New brain code that wants LLM input should
+        # use ``self.smart_complete(...)`` which routes
+        # through the adapter SmartRouter.
 
         # Step 5b: VALIDATE — remove bad decisions
         decisions = self._validate_decisions(decisions, state)
