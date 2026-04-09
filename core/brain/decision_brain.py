@@ -887,6 +887,21 @@ class DecisionBrain:
                 safe_float(s.get("effectiveness")),
             )
 
+        # Consult ExplorationBoost: when the same action has
+        # dominated recent cycles the brain force-diversifies
+        # by dampening it here. Without this hook the signal
+        # was advisory-only and the brain kept repeating.
+        exploration_dampen_action: str = ""
+        exploration_detail: dict[str, Any] = {}
+        try:
+            from core.brain.smart_rotation import get_exploration_boost
+            boost = get_exploration_boost().should_explore()
+            if isinstance(boost, dict) and boost.get("explore"):
+                exploration_dampen_action = str(boost.get("most_common", ""))
+                exploration_detail = boost
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("exploration boost lookup failed: %s", exc)
+
         def _attribute(
             trail: list[dict[str, Any]],
             *,
@@ -922,8 +937,16 @@ class DecisionBrain:
             ]
             mistake_mult = 0.8 if mistake_hits else 1.0
 
+            # ExplorationBoost dampener: if this action has
+            # dominated recent cycles, force the brain to
+            # consider alternatives by reducing its score.
+            exploration_mult = (
+                0.7 if action_type and action_type == exploration_dampen_action
+                else 1.0
+            )
+
             d["score"] = round(
-                base_score * weight * experience_mult * mistake_mult, 3,
+                base_score * weight * experience_mult * mistake_mult * exploration_mult, 3,
             )
             d["goal_weight"] = weight
             d["experience_mult"] = round(experience_mult, 3)
@@ -983,6 +1006,20 @@ class DecisionBrain:
                         f"{mistake_hits[0][:80]}"
                     ),
                     impact=base_score * weight * experience_mult * (mistake_mult - 1.0),
+                )
+
+            if exploration_mult < 1.0:
+                freq = exploration_detail.get("frequency", 0)
+                _attribute(
+                    attribution,
+                    source="exploration_dampener",
+                    rule_id=f"exploration:{action_type}",
+                    description=(
+                        f"action '{action_type}' dominated "
+                        f"{freq:.0%} of recent cycles — "
+                        f"dampening to force diversity"
+                    ),
+                    impact=base_score * weight * experience_mult * mistake_mult * (exploration_mult - 1.0),
                 )
 
             d["attribution"] = attribution
