@@ -822,6 +822,7 @@ class DecisionBrain:
                 "reason": p["detail"],
                 "confidence": 0.9,
                 "worldview": self._relevant_belief(p["action"]),
+                "_priority_source": "critical_problem",
             })
 
         # Priority 2: Fix high severity problems
@@ -833,6 +834,7 @@ class DecisionBrain:
                 "reason": p["detail"],
                 "confidence": 0.8,
                 "worldview": self._relevant_belief(p["action"]),
+                "_priority_source": "high_severity_problem",
             })
 
         # Priority 3: Pursue high-impact opportunities
@@ -843,6 +845,7 @@ class DecisionBrain:
                     "type": opp["type"],
                     "reason": opp["detail"],
                     "confidence": 0.7,
+                    "_priority_source": "high_impact_opportunity",
                 })
 
         # Priority 4: Medium improvements
@@ -853,6 +856,7 @@ class DecisionBrain:
                 "type": p["action"],
                 "reason": p["detail"],
                 "confidence": 0.6,
+                "_priority_source": "medium_improvement",
             })
 
         # Compute a continuous score derived from priority
@@ -863,6 +867,25 @@ class DecisionBrain:
         # GoalManager.
         weight_table = _GOAL_ACTION_WEIGHTS.get(goal or "", {}) if goal else {}
 
+        # Human-readable descriptions for the priority source
+        # attribution entries. Keys match the
+        # ``_priority_source`` marker above.
+        _priority_descriptions = {
+            "critical_problem": (
+                "critical-severity problem requires immediate action "
+                "(priority 1)"
+            ),
+            "high_severity_problem": (
+                "high-severity problem (priority 2)"
+            ),
+            "high_impact_opportunity": (
+                "high-impact opportunity (priority 3)"
+            ),
+            "medium_improvement": (
+                "medium-severity improvement (priority 4)"
+            ),
+        }
+
         for d in decisions:
             base_score = 5.0 - float(d.get("priority", 5))  # 4.0..1.0
             weight = float(weight_table.get(d.get("type", ""), 1.0))
@@ -870,6 +893,39 @@ class DecisionBrain:
             d["goal_weight"] = weight
             if goal:
                 d["goal"] = goal
+
+            # Fix H: build a structured attribution trail so
+            # operators can explain WHY the brain ranked this
+            # decision where it did. Every entry follows the
+            # same (source, rule_id, description, impact)
+            # schema used by ``DecisionEngine``.
+            attribution: list[dict[str, Any]] = []
+
+            priority_source = d.pop("_priority_source", "")
+            if priority_source:
+                attribution.append({
+                    "source": "priority_rule",
+                    "rule_id": f"priority:{priority_source}",
+                    "description": _priority_descriptions.get(
+                        priority_source, priority_source,
+                    ),
+                    "impact": round(base_score, 3),
+                })
+
+            if goal and abs(weight - 1.0) > 1e-9:
+                delta = base_score * (weight - 1.0)
+                direction = "boosts" if weight > 1.0 else "suppresses"
+                attribution.append({
+                    "source": "goal_weight",
+                    "rule_id": f"goal:{goal}:{d.get('type', '')}",
+                    "description": (
+                        f"goal '{goal}' {direction} "
+                        f"{d.get('type', '')} by {weight:.2f}x"
+                    ),
+                    "impact": round(delta, 3),
+                })
+
+            d["attribution"] = attribution
 
         # Sort by score DESC (tiebreak by original priority
         # ascending for deterministic order when goals don't

@@ -29,18 +29,48 @@ _MAX_FINAL_SCORE = 2.0
 
 
 class Decision:
-    """A single structured decision."""
+    """A single structured decision.
+
+    Fix H adds the ``attribution`` field: a structured audit
+    trail of every rule, memory case, learned weight, and
+    goal weight that influenced the WINNING option's score.
+    Each entry follows the schema::
+
+        {
+            "source": str,        # e.g. "rules_L5", "learned_weight",
+                                  #      "memory_best_case", "intel_rules",
+                                  #      "memory_failure"
+            "rule_id": str,       # stable id so dashboards can
+                                  # group / dedupe
+            "description": str,   # human-readable one-liner
+            "impact": float,      # how much this entry shifted
+                                  # the option's score
+        }
+
+    ``rules_applied`` is kept as a flat list of rule_ids for
+    backwards compat with the data architecture feature
+    extraction, but it is now DERIVED from the attribution
+    list so every rule_id traces back to a structured entry.
+    """
 
     def __init__(self, choice: str, reason: str, score: float,
                  category: str = "", options_considered: int = 0,
-                 memory_used: bool = False, rules_applied: list | None = None) -> None:
+                 memory_used: bool = False, rules_applied: list | None = None,
+                 attribution: list[dict[str, Any]] | None = None) -> None:
         self.choice = choice
         self.reason = reason
         self.score = score  # 0-1 confidence
         self.category = category
         self.options_considered = options_considered
         self.memory_used = memory_used
-        self.rules_applied = rules_applied or []
+        self.attribution = list(attribution or [])
+        # rules_applied is derived from attribution when not
+        # explicitly provided, so every rule_id traces back
+        # to a structured entry.
+        if rules_applied is None:
+            self.rules_applied = [a.get("rule_id", "") for a in self.attribution]
+        else:
+            self.rules_applied = list(rules_applied)
         self.timestamp = time.time()
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,6 +80,7 @@ class Decision:
             "options_considered": self.options_considered,
             "memory_used": self.memory_used,
             "rules_applied": self.rules_applied,
+            "attribution": self.attribution,
         }
 
 
@@ -190,8 +221,16 @@ class DecisionEngine:
         # Step 4: SELECT best option
         best = max(scored, key=lambda x: x["final_score"])
 
-        # Step 5: Build decision
-        rules_applied = [r.get("rule", "")[:60] for r in context.get("rules", [])[:3]]
+        # Step 5: Build decision.
+        #
+        # Fix H: ``rules_applied`` is now DERIVED from the
+        # winning option's attribution trail, not from
+        # unrelated context rules. Pre-fix the engine
+        # serialised the top 3 rules from ``context.rules``
+        # regardless of whether the winning action matched
+        # them, giving operators a false audit trail.
+        winner_attribution = list(best.get("attribution", []))
+        rules_applied = [a.get("rule_id", "") for a in winner_attribution]
         decision = Decision(
             choice=best["action"],
             reason=best["reason"],
@@ -200,6 +239,7 @@ class DecisionEngine:
             options_considered=len(options),
             memory_used=context["total_memories"] > 0,
             rules_applied=rules_applied,
+            attribution=winner_attribution,
         )
 
         # Step 6: Record in memory (both systems)
@@ -346,28 +386,72 @@ class DecisionEngine:
         for opt in options:
             profit = float(opt.get("profit_score", 0.5))
             risk = float(opt.get("risk_score", 0.3))
+            action_name = str(opt.get("action", ""))
+
+            # Fix H: build an attribution trail per option.
+            # Every entry captures (source, rule_id,
+            # description, impact) so operators can explain
+            # WHY the option won.
+            attribution: list[dict[str, Any]] = []
 
             # Memory boost: if similar action was successful before
             memory_boost = 0
             for case in best_cases:
-                if case.get("action") == opt.get("action"):
+                if case.get("action") == action_name:
                     memory_boost += 0.1
+                    attribution.append({
+                        "source": "memory_best_case",
+                        "rule_id": f"best_case:{action_name}",
+                        "description": (
+                            f"similar action succeeded before "
+                            f"(score={case.get('score', 'n/a')})"
+                        ),
+                        "impact": 0.1,
+                    })
                     break
 
             # Memory penalty: if similar action failed before
             memory_penalty = 0
             for case in failures:
-                if case.get("action") == opt.get("action"):
+                if case.get("action") == action_name:
                     memory_penalty += 0.15
+                    attribution.append({
+                        "source": "memory_failure",
+                        "rule_id": f"failure:{action_name}",
+                        "description": (
+                            f"similar action failed before "
+                            f"(score={case.get('score', 'n/a')})"
+                        ),
+                        "impact": -0.15,
+                    })
                     break
 
             # Rule application (from IntelligentMemory L5)
             rule_boost = 0
             for rule in rules:
-                if rule.get("action") == "prefer" and opt.get("action") in rule.get("condition", ""):
-                    rule_boost += rule.get("confidence", 0) * 0.1
-                elif rule.get("action") == "avoid" and opt.get("action") in rule.get("condition", ""):
-                    rule_boost -= rule.get("confidence", 0) * 0.1
+                condition = str(rule.get("condition", ""))
+                if not action_name or action_name not in condition:
+                    continue
+                confidence = float(rule.get("confidence", 0) or 0)
+                rule_action = rule.get("action", "")
+                if rule_action == "prefer":
+                    delta = confidence * 0.1
+                    rule_boost += delta
+                    attribution.append({
+                        "source": "rules_L5",
+                        "rule_id": str(rule.get("id", f"L5:prefer:{action_name}")),
+                        "description": str(rule.get("rule", condition))[:80],
+                        "impact": round(delta, 4),
+                    })
+                elif rule_action == "avoid":
+                    delta = -confidence * 0.1
+                    rule_boost += delta
+                    attribution.append({
+                        "source": "rules_L5",
+                        "rule_id": str(rule.get("id", f"L5:avoid:{action_name}")),
+                        "description": str(rule.get("rule", condition))[:80],
+                        "impact": round(delta, 4),
+                    })
 
             # Intelligence rules (from MemoryIntelligence L2)
             for irule in context.get("intel_rules", []):
@@ -375,10 +459,33 @@ class DecisionEngine:
                 if not isinstance(rc, dict):
                     continue
                 recommended = rc.get("recommended_action", irule.get("action", ""))
+                confidence = float(irule.get("confidence", 0.5) or 0.5)
                 if recommended == "prefer":
-                    rule_boost += irule.get("confidence", 0.5) * 0.15
+                    delta = confidence * 0.15
+                    rule_boost += delta
+                    attribution.append({
+                        "source": "intel_rules",
+                        "rule_id": str(irule.get("id", f"L2:prefer:{action_name}")),
+                        "description": str(
+                            irule.get("description")
+                            or rc.get("description", "")
+                            or f"L2 prefer {action_name}",
+                        )[:80],
+                        "impact": round(delta, 4),
+                    })
                 elif recommended == "avoid":
-                    rule_boost -= irule.get("confidence", 0.5) * 0.15
+                    delta = -confidence * 0.15
+                    rule_boost += delta
+                    attribution.append({
+                        "source": "intel_rules",
+                        "rule_id": str(irule.get("id", f"L2:avoid:{action_name}")),
+                        "description": str(
+                            irule.get("description")
+                            or rc.get("description", "")
+                            or f"L2 avoid {action_name}",
+                        )[:80],
+                        "impact": round(delta, 4),
+                    })
 
             # Final score: base 0.3 + profit-weighted + risk penalty + memory + rules
             base_score = 0.3 + profit * 0.4 - risk * 0.2 + memory_boost - memory_penalty + rule_boost
@@ -392,7 +499,7 @@ class DecisionEngine:
             if weight_store is not None:
                 try:
                     learned_weight = float(
-                        weight_store.get(category, str(opt.get("action", ""))),
+                        weight_store.get(category, action_name),
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("weight lookup failed: %s", exc)
@@ -407,6 +514,21 @@ class DecisionEngine:
             # nothing silently becomes exactly 0.
             final = max(0.05, min(_MAX_FINAL_SCORE, final))
 
+            # Fix H: record the learned weight's contribution
+            # only when it's meaningfully different from the
+            # neutral 1.0 — otherwise every unknown-weight
+            # option would carry a zero-impact noise entry.
+            if abs(learned_weight - 1.0) > 0.05:
+                attribution.append({
+                    "source": "learned_weight",
+                    "rule_id": f"history:{category}:{action_name}",
+                    "description": (
+                        f"EMA of {category}/{action_name} past "
+                        f"outcomes = {learned_weight:.3f}"
+                    ),
+                    "impact": round(base_score * (learned_weight - 1.0), 4),
+                })
+
             scored.append({
                 **opt,
                 "final_score": round(final, 3),
@@ -415,6 +537,7 @@ class DecisionEngine:
                 "memory_boost": memory_boost,
                 "memory_penalty": memory_penalty,
                 "rule_boost": round(rule_boost, 3),
+                "attribution": attribution,
             })
 
         return scored
