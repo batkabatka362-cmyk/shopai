@@ -96,8 +96,8 @@ class ChainOfThought:
     def _find_rules(question: str, context: dict) -> list[str]:
         rules = []
         try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
             learned = mi.get_rules()
             for r in learned[:5]:
                 rc = r.get("content", {})

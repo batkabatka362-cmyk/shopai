@@ -294,8 +294,8 @@ class AutonomousController:
 
         # Clear working memory from previous cycle
         try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
             mi.clear_working()
         except Exception:
             pass
@@ -1052,9 +1052,9 @@ class AutonomousController:
         # Phase 6c: MAINTENANCE — prune old data, cleanup
         if self._cycle_count % 10 == 0:  # Every 10 cycles
             try:
-                from core.memory.intelligence import get_memory_intelligence
+                from core.memory.unified_memory import get_unified_memory
                 from core.data.architecture import get_data_architecture
-                mi = get_memory_intelligence()
+                mi = get_unified_memory().get_memory_intelligence()
                 da = get_data_architecture()
                 pruned = mi.prune_unused(days=30)
                 expired = da.cleanup_expired()
@@ -1841,8 +1841,8 @@ class AutonomousController:
 
         # 4. KNOWLEDGE domain — learned rules and strategies
         try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
             rules = mi.get_rules()
             for r in rules[:5]:
                 rc = r.get("content", {})
@@ -2257,8 +2257,8 @@ class LearningPipeline:
     def _update_weights_from_rules() -> int:
         """Fallback weight update using MemoryIntelligence rules."""
         try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
             rules = mi.get_rules()
             updates = 0
             for r in rules:

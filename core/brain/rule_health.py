@@ -28,8 +28,8 @@ class RuleHealthChecker:
     def check(self) -> dict[str, Any]:
         """Run full rule health check. Returns report only — no mutations."""
         try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
         except Exception:
             return {"status": "unavailable"}
 
@@ -112,8 +112,8 @@ class RuleHealthChecker:
         # Auto-deprioritize zero-success rules (lower their score)
         if zero_success:
             try:
-                from core.memory.intelligence import get_memory_intelligence
-                mi = get_memory_intelligence()
+                from core.memory.unified_memory import get_unified_memory
+                mi = get_unified_memory().get_memory_intelligence()
                 for zs in zero_success:
                     rid = zs.get("id", 0)
                     if rid:

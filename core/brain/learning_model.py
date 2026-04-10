@@ -29,8 +29,8 @@ class LearningModel:
 
     def _init(self) -> None:
         if not self._memory:
-            from core.brain.memory import get_brain_memory
-            self._memory = get_brain_memory()
+            from core.memory.unified_memory import get_unified_memory
+            self._memory = get_unified_memory().get_brain_memory()
         if not self._llm:
             try:
                 from core.system.llm_adapter import get_llm
