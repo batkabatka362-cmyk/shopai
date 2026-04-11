@@ -1547,6 +1547,13 @@ class AutonomousController:
 
         return cycle_result
 
+    # Wave 6 #1: default rolling-window size for the cross-cycle
+    # error buffer. Set as a class attribute so tests can shrink it
+    # by assigning ``controller._reflection_buffer_max = N`` before
+    # running ticks. 256 is comfortably larger than typical
+    # phase-error fan-out but still flat in memory.
+    _REFLECTION_BUFFER_MAX = 256
+
     def _run_reflection_hook(
         self,
         cycle_result: dict[str, Any],
@@ -1554,12 +1561,18 @@ class AutonomousController:
     ) -> None:
         """Feed this cycle's errors to the reflection synthesizer.
 
-        Wave 2 #5. Converts each phase-error entry into a synthetic
-        :class:`MemoryRecord` tagged ``error`` and hands the list to
-        :class:`ReflectionSynthesizer`. Over enough cycles the same
-        failure signature accumulates occurrences until it crosses
-        the confidence threshold and gets promoted to a SOFT policy
-        rule via :meth:`PolicyStore.promote_soft_rule`.
+        Wave 2 #5 created this hook; Wave 6 #1 closes a real
+        learning gap inside it: the original implementation only
+        handed the synthesizer the CURRENT cycle's ``phase_errors``
+        dict (typically 0-3 records), so patterns rarely crossed
+        the ``min_occurrences`` floor. Any recurring failure that
+        hit one phase per tick would never accumulate.
+
+        This version keeps a bounded rolling buffer of all recent
+        error records across cycles and mines the full buffer on
+        every tick. The synthesizer's internal ``_promoted``
+        ledger keeps duplicate promotions out, so running over a
+        growing buffer is cheap and idempotent.
 
         The hook is a no-op when:
 
@@ -1574,14 +1587,20 @@ class AutonomousController:
         # the synthesizer package if the controller runs in a
         # stripped-down deployment that doesn't care about
         # reflection.
+        from collections import deque
         from core.memory.quality_engine import MemoryRecord
         from core.reflection.synthesizer import ReflectionSynthesizer
 
         if not hasattr(self, "_reflection_synth") or self._reflection_synth is None:
             self._reflection_synth = ReflectionSynthesizer()
+        if not hasattr(self, "_error_buffer") or self._error_buffer is None:
+            maxlen = getattr(
+                self, "_reflection_buffer_max", self._REFLECTION_BUFFER_MAX,
+            )
+            self._error_buffer = deque(maxlen=maxlen)
 
         now = time.time()
-        records = [
+        new_records = [
             MemoryRecord(
                 kind="error",
                 quality=0.6,
@@ -1593,13 +1612,18 @@ class AutonomousController:
             )
             for phase, message in phase_errors.items()
         ]
-        report = self._reflection_synth.run(records)
+        self._error_buffer.extend(new_records)
+        # Mine over the full rolling window, not just this tick's
+        # slice — that's the whole point of Wave 6 #1.
+        report = self._reflection_synth.run(list(self._error_buffer))
         if report.patterns_promoted:
             cycle_result.setdefault("reflection", {})
             cycle_result["reflection"] = report.as_dict()
             logger.info(
-                "Reflection hook promoted %d SOFT rules from cycle %s",
+                "Reflection hook promoted %d SOFT rules from cycle %s "
+                "(buffer=%d records)",
                 report.patterns_promoted, cycle_result.get("cycle_id"),
+                len(self._error_buffer),
             )
 
     def _run_cognitive_phase(
