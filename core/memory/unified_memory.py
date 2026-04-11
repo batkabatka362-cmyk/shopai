@@ -248,12 +248,81 @@ class UnifiedMemory:
     def retrieve(self, category: str, context: dict | None = None) -> dict[str, Any]:
         """Retrieve relevant memories for making a decision.
 
-        Returns: best_cases, failures, rules, patterns, total_memories
+        Returns: best_cases, failures, rules, patterns, total_memories,
+        and (Wave 4 #2) ``vector_matches`` — semantically-similar
+        records pulled from the satellite vector layer that the
+        legacy brain retrieval can't see. ``vector_matches`` is
+        always a list (possibly empty) so callers don't have to
+        branch on presence.
         """
         self._ensure_init()
         if self._brain:
-            return self._brain.retrieve_for_decision(category, context or {})
-        return {"best_cases": [], "failures": [], "rules": [], "patterns": [], "total_memories": 0}
+            result = self._brain.retrieve_for_decision(category, context or {})
+        else:
+            result = {
+                "best_cases": [], "failures": [], "rules": [],
+                "patterns": [], "total_memories": 0,
+            }
+
+        # Wave 4 #2: augment the legacy result with a vector-layer
+        # lookup so decisions get semantically-similar past records
+        # even when they weren't tagged with the same category. The
+        # merge is additive — the legacy structure is never touched
+        # so existing consumers keep working unchanged.
+        result["vector_matches"] = self._vector_lookup(category, context or {})
+        return result
+
+    def _vector_lookup(
+        self,
+        category: str,
+        context: dict[str, Any],
+        *,
+        k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Run a best-effort semantic query on the satellite vector
+        layer. Fails soft: returns ``[]`` when the router is absent,
+        the backend is disabled, or any exception bubbles up — a
+        bad satellite must never break the legacy retrieve path.
+        """
+        router = getattr(self, "_satellites", None)
+        if router is None:
+            return []
+        vector = getattr(router, "vector", None)
+        if vector is None or not getattr(vector, "enabled", False):
+            return []
+        try:
+            query = self._build_vector_query(category, context)
+            if not query:
+                return []
+            hits = vector.search(query, k=k)
+            return [
+                {"record_id": rid, "score": round(float(score), 4),
+                 "payload": dict(payload or {})}
+                for rid, score, payload in hits
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "UnifiedMemory: vector lookup failed for %s: %s",
+                category, exc,
+            )
+            return []
+
+    @staticmethod
+    def _build_vector_query(category: str, context: dict[str, Any]) -> str:
+        """Flatten ``category`` + context values into a single query
+        string for cosine-similarity lookup. Keys are included so
+        value-less context still contributes discriminators."""
+        parts: list[str] = []
+        if category:
+            parts.append(str(category))
+        for key, val in (context or {}).items():
+            if val is None:
+                continue
+            if isinstance(val, (str, int, float, bool)):
+                parts.append(f"{key} {val}")
+            elif isinstance(val, (list, tuple)):
+                parts.append(f"{key} " + " ".join(str(v) for v in val))
+        return " ".join(parts).strip()
 
     def get_context(self, task_type: str) -> dict[str, Any]:
         """Build context for a task from SharedMemory."""
