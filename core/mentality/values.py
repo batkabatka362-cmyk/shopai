@@ -38,9 +38,13 @@ scoring) together without creating two advisor files.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
+import tempfile
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from utils.logger import get_logger
@@ -273,12 +277,23 @@ class BeliefStore:
     Keys are free-form strings (conventionally ``"<category>::<id>"``)
     so callers can track as many beliefs as they want without
     pre-declaring them.
+
+    Wave 6 #4: optional disk persistence
+    ------------------------------------
+    Supply ``persist_path`` to enable JSON snapshot persistence.
+    On construction the store loads any existing snapshot from
+    that path; on every :meth:`observe` call it atomically rewrites
+    the snapshot so a crash can lose at most one observation. The
+    file format is a flat JSON dict ``{key: {alpha, beta}}`` — the
+    derived fields (``mean``, ``n``) are not stored since they
+    recompute trivially from the two parameters.
     """
 
     def __init__(
         self,
         prior_alpha: float = 1.0,
         prior_beta: float = 1.0,
+        persist_path: str | os.PathLike | None = None,
     ) -> None:
         if prior_alpha <= 0 or prior_beta <= 0:
             raise ValueError(
@@ -287,6 +302,11 @@ class BeliefStore:
         self._lock = threading.RLock()
         self._beliefs: dict[str, Belief] = {}
         self._prior = (float(prior_alpha), float(prior_beta))
+        self._persist_path: Path | None = (
+            Path(persist_path) if persist_path is not None else None
+        )
+        if self._persist_path is not None:
+            self._load_from_disk()
 
     def observe(
         self,
@@ -321,6 +341,18 @@ class BeliefStore:
                 key, success, weight, belief.alpha, belief.beta,
                 belief.mean,
             )
+            # Wave 6 #4: persist-on-observe so a crash between
+            # ticks loses at most the current update. Failure to
+            # write is logged but never propagated — an unhealthy
+            # disk must not take down the decision gate.
+            if self._persist_path is not None:
+                try:
+                    self._save_to_disk_locked()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "belief store: persist failed for %r: %s",
+                        self._persist_path, exc,
+                    )
             return belief
 
     def get(self, key: str) -> Belief | None:
@@ -352,6 +384,14 @@ class BeliefStore:
                 self._beliefs.clear()
             else:
                 self._beliefs.pop(key, None)
+            # Wave 6 #4: keep disk in sync with in-memory state.
+            if self._persist_path is not None:
+                try:
+                    self._save_to_disk_locked()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "belief store: persist failed on reset: %s", exc,
+                    )
 
     def snapshot(self) -> dict[str, dict[str, float]]:
         """Return a serialisable view of all beliefs (e.g. for
@@ -366,3 +406,105 @@ class BeliefStore:
                 }
                 for key, belief in self._beliefs.items()
             }
+
+    # -- Wave 6 #4: disk persistence ----------------------------------
+
+    @property
+    def persist_path(self) -> Path | None:
+        return self._persist_path
+
+    def save(self) -> None:
+        """Explicit snapshot write. Useful for graceful shutdown
+        paths that want to persist on demand without waiting for
+        the next observation. No-op when no persist path is set."""
+        if self._persist_path is None:
+            return
+        with self._lock:
+            self._save_to_disk_locked()
+
+    def _save_to_disk_locked(self) -> None:
+        """Atomically rewrite the snapshot file.
+
+        Writes to a sibling ``*.tmp`` file first, then renames over
+        the target. That matches what PolicyStore does and keeps
+        readers from ever seeing a half-written file.
+        Must be called under ``self._lock``.
+        """
+        assert self._persist_path is not None
+        target = self._persist_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            key: {"alpha": b.alpha, "beta": b.beta}
+            for key, b in self._beliefs.items()
+        }
+        # Use NamedTemporaryFile in the same directory so the final
+        # rename is an atomic rename on the same filesystem.
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=target.name + ".",
+            suffix=".tmp",
+            dir=str(target.parent),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    # Some filesystems (tmpfs) don't support fsync.
+                    pass
+            os.replace(tmp_name, target)
+        except Exception:
+            # Best effort cleanup — the tmp file may still exist.
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+    def _load_from_disk(self) -> None:
+        """Populate the in-memory dict from an existing snapshot.
+
+        A missing or unreadable file is treated as an empty store —
+        we never crash the advisor because the belief file is bad.
+        Malformed JSON, wrong shapes, and non-positive parameters
+        are skipped with a warning; valid rows still load.
+        """
+        assert self._persist_path is not None
+        path = self._persist_path
+        if not path.exists():
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "belief store: could not read %r (%s) — starting empty",
+                str(path), exc,
+            )
+            return
+        if not isinstance(raw, dict):
+            logger.warning(
+                "belief store: snapshot at %r is not a dict — ignoring",
+                str(path),
+            )
+            return
+        loaded = 0
+        for key, row in raw.items():
+            if not isinstance(key, str) or not isinstance(row, dict):
+                continue
+            alpha = row.get("alpha")
+            beta = row.get("beta")
+            try:
+                a = float(alpha)
+                b = float(beta)
+            except (TypeError, ValueError):
+                continue
+            if a <= 0 or b <= 0:
+                continue
+            self._beliefs[key] = Belief(key=key, alpha=a, beta=b)
+            loaded += 1
+        logger.info(
+            "belief store: loaded %d belief(s) from %r",
+            loaded, str(path),
+        )
