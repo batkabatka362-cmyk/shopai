@@ -74,6 +74,12 @@ ENV_ALIASES: dict[str, str] = {
     "imagekit_pub":  "IMAGEKIT_PUBLIC_KEY",
     "imagekit_priv": "IMAGEKIT_PRIVATE_KEY",
 
+    # ── Translation ───────────────────────────
+    # DeepL free-tier keys end in ":fx"; paid-tier keys do not.
+    # The adapter auto-selects the correct host based on that
+    # suffix so operators never have to set a separate env var.
+    "deepl":         "DEEPL_API_KEY",
+
     # ── Payment processors ────────────────────
     # PayPal uses OAuth2 client credentials: both id + secret are
     # required, ``paypal_env`` is "live" or "sandbox" (default
