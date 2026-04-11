@@ -35,6 +35,11 @@ from utils.logger import get_logger
 
 from core.cognitive.consolidation import Consolidation
 from core.cognitive.curiosity import Curiosity, CuriosityRecommendation
+from core.cognitive.functions import (
+    CognitiveDispatcher,
+    CognitiveFunction,
+    DispatchResult,
+)
 from core.cognitive.goals import GoalManager
 from core.cognitive.imagination import Imagination, ImaginedPlan
 from core.cognitive.planner import Plan, Planner
@@ -46,6 +51,7 @@ from core.cognitive.skill_registry import (
     SkillRegistry,
 )
 from core.cognitive.theory_of_mind import Prediction, TheoryOfMind
+from core.mentality import Values
 
 logger = get_logger("cognitive.mind")
 
@@ -150,6 +156,7 @@ class Mind:
         skill_registry: Optional[SkillRegistry] = None,
         theory_of_mind: Optional[TheoryOfMind] = None,
         memory: Any = None,
+        values: Optional[Values] = None,
         consolidate_every_n: int = 10,
         cycle_history_size: Optional[int] = None,
     ) -> None:
@@ -163,6 +170,7 @@ class Mind:
         self.skill_registry = skill_registry
         self.theory_of_mind = theory_of_mind
         self.memory = memory
+        self.values = values
 
         self._cycle_count = 0
         self._consolidate_every_n = max(1, int(consolidate_every_n))
@@ -176,6 +184,11 @@ class Mind:
         # decide when to progress, complete, fail, or abandon a goal.
         # Shape: {goal_id: {"abstain": n, "skill_fail": n, "successes": n}}
         self._goal_strikes: dict[str, dict[str, int]] = {}
+
+        # Wave 2 #7: cognitive function dispatch over the subsystems
+        # wired above. Built lazily on first access so tests that
+        # swap subsystems post-construction still see a live map.
+        self._cognitive_dispatcher: Optional[CognitiveDispatcher] = None
 
     # ── Public API ─────────────────────────────────────────────
 
@@ -220,6 +233,133 @@ class Mind:
         self._cycle_history.append(report)
         logger.info("Mind cycle %d: %s", ctx.cycle_number, report.headline())
         return report
+
+    # ── Cognitive function dispatch (Wave 2 #7 integration) ──
+
+    def cognitive_dispatcher(self) -> CognitiveDispatcher:
+        """Return (building on first call) the cognitive function dispatcher.
+
+        Rather than using :meth:`CognitiveDispatcher.default_for_mind`
+        — which assumes generic ``analyse``/``plan``/``predict``
+        method names — we wire handlers directly against the real
+        subsystem APIs attached to this Mind. Missing subsystems are
+        silently skipped so a stripped-down Mind still gets a usable
+        dispatcher for whichever tools it has.
+
+        The mapping:
+
+        * ``Ti`` (Introverted Thinking) → :meth:`Reflection.reflect`
+          in dry-run mode (``apply=False``) so a Ti dispatch is a
+          pure inspection call with no side effects
+        * ``Te`` (Extroverted Thinking) → :meth:`Planner.plan` with
+          the context passed straight through
+        * ``Ne`` (Extroverted Intuition) → :meth:`Curiosity.recommend`
+          (ignores the context — curiosity reads its own state)
+        * ``Ni`` (Introverted Intuition) → :meth:`Consolidation.run`
+          in dry-run mode so Ni is idempotent and safe to call for
+          "what would consolidate say?" queries
+        * ``Si`` (Introverted Sensing) → :meth:`SelfModel.snapshot`
+        * ``Se`` (Extroverted Sensing) → the Mind's own perceive
+          hook (``self.perceive(context)``) if one is attached by a
+          subclass, otherwise skipped
+        * ``Fi`` (Introverted Feeling) → :meth:`Values.score` when
+          an operator Values object was injected, otherwise skipped
+        * ``Fe`` (Extroverted Feeling) → :meth:`TheoryOfMind.predict_response`
+          bridged onto the dispatcher's (ctx) signature by reading
+          ``agent`` and ``action`` out of the context dict
+        """
+        if self._cognitive_dispatcher is None:
+            self._cognitive_dispatcher = self._build_cognitive_dispatcher()
+        return self._cognitive_dispatcher
+
+    def _build_cognitive_dispatcher(self) -> CognitiveDispatcher:
+        disp = CognitiveDispatcher()
+
+        ref = self.reflection
+        if ref is not None and hasattr(ref, "reflect"):
+            def _ti(ctx: dict[str, Any]) -> Any:
+                limit = int(ctx.get("episode_limit", 100))
+                category = str(ctx.get("category", ""))
+                return ref.reflect(
+                    episode_limit=limit,
+                    category=category,
+                    apply=False,
+                )
+            disp.register(CognitiveFunction.Ti, _ti)
+
+        plan = self.planner
+        if plan is not None and hasattr(plan, "plan"):
+            def _te(ctx: dict[str, Any]) -> Any:
+                goal = ctx.get("goal")
+                if goal is None:
+                    return None
+                return plan.plan(goal, context=ctx)
+            disp.register(CognitiveFunction.Te, _te)
+
+        cur = self.curiosity
+        if cur is not None and hasattr(cur, "recommend"):
+            disp.register(
+                CognitiveFunction.Ne,
+                lambda ctx: cur.recommend(),
+            )
+
+        con = self.consolidation
+        if con is not None and hasattr(con, "run"):
+            def _ni(ctx: dict[str, Any]) -> Any:
+                return con.run(dry_run=bool(ctx.get("dry_run", True)))
+            disp.register(CognitiveFunction.Ni, _ni)
+
+        sm = self.self_model
+        if sm is not None and hasattr(sm, "snapshot"):
+            disp.register(
+                CognitiveFunction.Si,
+                lambda ctx: sm.snapshot(),
+            )
+
+        # Se: Mind doesn't expose a public perceive() by default. A
+        # subclass (or tests) can attach one to pick up Se dispatch.
+        if hasattr(self, "perceive") and callable(getattr(self, "perceive")):
+            disp.register(
+                CognitiveFunction.Se,
+                lambda ctx: self.perceive(ctx),  # type: ignore[attr-defined]
+            )
+
+        values = self.values
+        if values is not None and hasattr(values, "score"):
+            disp.register(
+                CognitiveFunction.Fi,
+                lambda ctx: values.score(ctx),
+            )
+
+        tom = self.theory_of_mind
+        if tom is not None and hasattr(tom, "predict_response"):
+            def _fe(ctx: dict[str, Any]) -> Any:
+                agent = ctx.get("agent") or ctx.get("agent_id")
+                action = ctx.get("action")
+                if not agent or not action:
+                    return None
+                return tom.predict_response(str(agent), str(action))
+            disp.register(CognitiveFunction.Fe, _fe)
+
+        return disp
+
+    def dispatch_cognitive(
+        self,
+        function: CognitiveFunction,
+        context: Optional[dict[str, Any]] = None,
+    ) -> DispatchResult:
+        """Run a single cognitive function through the dispatcher.
+
+        Thin convenience: call ``dispatch_cognitive(Ti, {...})``
+        instead of ``cognitive_dispatcher().dispatch(Ti, {...})``.
+        Returns the full :class:`DispatchResult` so callers can
+        distinguish ``ok``/``skipped``/``error``.
+        """
+        return self.cognitive_dispatcher().dispatch(function, context)
+
+    def active_cognitive_functions(self) -> list[CognitiveFunction]:
+        """Return the subset of cognitive functions currently wired."""
+        return self.cognitive_dispatcher().registered()
 
     def cycle_count(self) -> int:
         return self._cycle_count
