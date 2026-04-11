@@ -314,6 +314,15 @@ class CoreOrchestrator:
         if not results.get("blocked") and not results.get("delayed"):
             execution = self._phase_execution(intel, data)
             results["phases"]["execution"] = execution
+            # Wave 6 #2: feed execution outcomes into the advisor's
+            # Bayesian belief store so future decisions can query the
+            # posterior success rate. update_belief was added in
+            # Wave 2 #2 but nothing in production ever called it —
+            # the belief store stayed flat. This closes the loop.
+            try:
+                self._update_beliefs_from_execution(execution)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("belief update failed: %s", exc)
         else:
             results["phases"]["execution"] = {
                 "status": "skipped",
@@ -812,6 +821,52 @@ class CoreOrchestrator:
         except Exception as exc:
             logger.warning("Judgment failed: %s", exc)
             return {"verdict": "proceed", "reason": f"Judgment error: {exc}"}
+
+    def _update_beliefs_from_execution(
+        self, execution: dict[str, Any],
+    ) -> int:
+        """Feed executed action outcomes into the advisor's belief store.
+
+        Wave 6 #2: walks ``execution["details"]`` and calls
+        :meth:`JudgmentAdvisor.update_belief` once per executed
+        action. The key is ``"<target>::<action_type>"`` so each
+        decision category (e.g. ``shopify::pricing.update``) gets
+        its own Bayesian posterior. Success is the result dict's
+        ``success`` boolean — this matches the
+        :class:`ExecutionBridge` contract, not the legacy ``status
+        == 'executed'`` check that never matched.
+
+        Returns the number of beliefs updated so callers can
+        assert in tests. A missing advisor, a missing belief store,
+        or an empty details list all return ``0`` — the method is
+        a no-op rather than an error in degraded deployments.
+        """
+        if not isinstance(execution, dict):
+            return 0
+        details = execution.get("details") or []
+        if not details:
+            return 0
+        advisor = self._modules.get("judgment_advisor")
+        if advisor is None or not hasattr(advisor, "update_belief"):
+            return 0
+        updated = 0
+        for result in details:
+            if not isinstance(result, dict):
+                continue
+            action_type = result.get("action_type") or "unknown"
+            target = result.get("target") or "unknown"
+            key = f"{target}::{action_type}"
+            success = bool(result.get("success"))
+            try:
+                snap = advisor.update_belief(key, success)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "update_belief failed for %s: %s", key, exc,
+                )
+                continue
+            if snap is not None:
+                updated += 1
+        return updated
 
     def _recall_episodes(self) -> list[dict[str, Any]]:
         """Recall similar past episodes BEFORE making decisions."""
