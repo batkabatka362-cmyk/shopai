@@ -201,7 +201,13 @@ class UnifiedMemory:
 
     def ingest(self, category: str, data: Any, source: str = "",
                store_id: str = "", ttl: int = 600) -> None:
-        """Data enters system → SharedMemory (live) + BrainMemory L0-L2."""
+        """Data enters system → SharedMemory (live) + BrainMemory L0-L2.
+
+        Wave 3 #3: also mirrors the record through the satellite
+        router so vector/graph/signal layers pick it up in addition
+        to the legacy primary backends. Routing is best-effort —
+        a satellite failure never blocks the legacy writes above.
+        """
         self._ensure_init()
 
         # SharedMemory — live access, TTL-based
@@ -213,6 +219,11 @@ class UnifiedMemory:
         if self._brain:
             self._brain.ingest(category, data if isinstance(data, dict) else {"value": data},
                               source=source, store_id=store_id)
+
+        # Satellite mirror — quality-classified, routed by class
+        self._auto_route_to_satellites(
+            kind=category, data=data, source=source, store_id=store_id,
+        )
 
     def ingest_store_data(self, products: list, orders: list, customers: list,
                           store_id: str = "") -> None:
@@ -310,6 +321,25 @@ class UnifiedMemory:
                     "UnifiedMemory: shared.record_decision failed: %s", exc,
                 )
 
+        # Satellite mirror: decisions land as KNOWLEDGE / ERROR
+        # depending on score; the router's classify() handles that.
+        self._auto_route_to_satellites(
+            kind="decision",
+            data={
+                "category": category,
+                "input": input_data,
+                "action": action,
+                "result": result,
+                "score": score,
+                "tags": list(tags or []),
+                "store_id": store_id,
+            },
+            quality=min(1.0, max(0.0, score / 5.0)),
+            confidence=min(1.0, max(0.0, score / 5.0)),
+            success_rate=1.0 if score >= 3.0 else 0.0,
+            tags=tuple(tags or ()),
+        )
+
     def record_mistake(self, mistake_type: str, description: str,
                        cause: str = "", prevention: str = "",
                        store_id: str = "") -> None:
@@ -322,6 +352,25 @@ class UnifiedMemory:
             self._brain._store_bad_data(mistake_type, {
                 "description": description, "cause": cause,
             }, f"mistake: {mistake_type}")
+
+        # Satellite mirror: mistakes classify as ERROR via the
+        # quality engine rules, so the vector layer picks them up
+        # and reflection can mine them later. The ``error`` tag
+        # forces classify() onto the ERROR branch regardless of
+        # the composite kind string (which isn't in _ERROR_KINDS).
+        self._auto_route_to_satellites(
+            kind=f"mistake:{mistake_type}",
+            data={
+                "description": description,
+                "cause": cause,
+                "prevention": prevention,
+                "store_id": store_id,
+            },
+            quality=0.4,
+            confidence=0.6,
+            success_rate=0.0,
+            tags=("error",),
+        )
 
     # ── LEARN — store learned knowledge ──────────────────────
 
@@ -457,9 +506,30 @@ class UnifiedMemory:
         """Record a failure for learning. Failures are gold."""
         self._ensure_init()
         if self._memory_intel:
-            return self._memory_intel.record_failure(category, failure_data,
+            ret = self._memory_intel.record_failure(category, failure_data,
                                                      root_cause, severity)
-        return 0
+        else:
+            ret = 0
+
+        # Satellite mirror: failures are the primary signal for
+        # Wave #5 reflection to mine, so route them into the
+        # vector layer even if no legacy backend is available.
+        # Force the ERROR class via an explicit tag so the
+        # composite ``failure:<category>`` kind doesn't get
+        # misclassified as SIGNAL.
+        self._auto_route_to_satellites(
+            kind=f"failure:{category}",
+            data={
+                "failure": failure_data,
+                "root_cause": root_cause,
+                "severity": severity,
+            },
+            quality=0.4 if severity in ("low", "medium") else 0.6,
+            confidence=0.7,
+            success_rate=0.0,
+            tags=("error",),
+        )
+        return ret
 
     # ── SATELLITE LAYERS (Wave 2 #4) ─────────────────────────
     #
@@ -469,6 +539,69 @@ class UnifiedMemory:
     # only the right satellites receive it — NOISE records are
     # dropped from semantic search so low-signal debug lines
     # don't poison retrieval.
+
+    def _auto_route_to_satellites(
+        self,
+        *,
+        kind: str,
+        data: Any,
+        quality: float = 0.5,
+        confidence: float = 0.5,
+        success_rate: float = 0.5,
+        tags: tuple[str, ...] = (),
+        source: str = "",
+        store_id: str = "",
+    ) -> None:
+        """Best-effort auto-mirror of a legacy write into the satellites.
+
+        Wave 3 #3 plumbing: every time a legacy ingest / record
+        method runs, the same data also gets classified and
+        dispatched through the satellite router. This is strictly
+        additive — a failure here logs a warning and returns; the
+        legacy backends already received the write.
+
+        Payload shaping:
+
+        * Non-dict ``data`` is wrapped in a ``{"value": ...}`` dict
+          so signature extraction and vector tokenisation can find
+          something textual
+        * ``source``/``store_id`` are merged into the payload when
+          non-empty so downstream reflection / search can filter
+          by origin without needing a separate tagging pass
+        * ``record_id`` is generated as ``kind:created_at`` via the
+          router's default when not supplied explicitly
+        """
+        router = getattr(self, "_satellites", None)
+        if router is None:
+            return
+        try:
+            payload = dict(data) if isinstance(data, dict) else {"value": data}
+            if source:
+                payload.setdefault("source", source)
+            if store_id:
+                payload.setdefault("store_id", store_id)
+            record = MemoryRecord(
+                kind=kind,
+                quality=float(quality),
+                confidence=float(confidence),
+                success_rate=float(success_rate),
+                usage=0,
+                tags=tuple(tags),
+                payload=payload,
+                created_at=time.time(),
+            )
+            cls = classify(record)
+            router.route_record(
+                record,
+                record_id=None,
+                memory_class=cls,
+                content=payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "UnifiedMemory: satellite auto-route failed (%s): %s",
+                kind, exc,
+            )
 
     def get_satellites(self) -> SatelliteRouter:
         """Return the router wrapping the three satellite layers.
