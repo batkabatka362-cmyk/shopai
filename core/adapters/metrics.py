@@ -176,6 +176,65 @@ class MetricsCollector:
         except Exception as exc:  # noqa: BLE001
             logger.debug("metrics.record failed for %s: %s", adapter, exc)
 
+        # Wave 3 #4: mirror the sample into the telemetry SLA
+        # tracker so operators get per-adapter rolling health
+        # ("ok" / "degraded" / "breached") without having to run
+        # a second instrumentation pass. Fail-soft — an SLA
+        # tracker import/record failure must not bubble up into
+        # the real call path.
+        try:
+            self._feed_sla_tracker(
+                adapter=adapter,
+                success=bool(success),
+                latency_ms=float(latency_ms or 0.0),
+                cost=float(cost_usd or 0.0),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("metrics.record → SLA feed failed: %s", exc)
+
+    def _feed_sla_tracker(
+        self,
+        *,
+        adapter: str,
+        success: bool,
+        latency_ms: float,
+        cost: float,
+    ) -> None:
+        """Forward one call sample into the shared SLATracker.
+
+        Lazy-imports the telemetry collector so a teardown that
+        drops the telemetry module (deployment variants without
+        SLA) still leaves this metrics collector functional.
+        Isolated in its own method so the caller can catch any
+        failure cleanly regardless of whether the import or the
+        record() call blew up.
+        """
+        from core.telemetry.metrics_collector import MetricsCollector as _TM
+        tracker = _TM().get_sla_tracker()
+        tracker.record(
+            adapter,
+            success=success,
+            latency_ms=latency_ms,
+            cost=cost,
+        )
+
+    def get_sla_report(
+        self, adapter: str | None = None,
+    ) -> dict[str, Any]:
+        """Return the SLA report for *adapter* or every adapter.
+
+        Convenience forwarder to the shared SLATracker. Returns
+        an empty dict if the telemetry module isn't importable
+        so production callers can always invoke this without
+        branching on deployment variant.
+        """
+        try:
+            from core.telemetry.metrics_collector import MetricsCollector as _TM
+            return _TM().get_sla_tracker().get_report(adapter)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("metrics.get_sla_report failed: %s", exc)
+            return {}
+
     def _refresh_quota_windows(self, m: AdapterMetrics) -> None:
         """Reset daily/monthly counters when the wall clock
         rolls over. Called inside the lock by ``record()`` and
