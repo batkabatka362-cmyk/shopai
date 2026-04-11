@@ -11,12 +11,30 @@ Checks 6 factors before allowing a decision to proceed:
 6. Cooldown: too soon since similar action → delay
 
 Verdict: proceed | delay | modify | escalate_to_human
+
+Wave 2 #2 extension
+-------------------
+``JudgmentAdvisor`` now accepts an optional :class:`core.mentality.Values`
+instance. When provided, each check's base weight is multiplied by the
+principle multiplier for that check (see ``Values.check_multiplier``)
+so tenants with different operator values (safety-first vs.
+speed-first) get a gate that reflects their priorities without
+touching the check implementations themselves.
+
+A lightweight :class:`core.mentality.BeliefStore` is also attached for
+Bayesian belief updates. ``update_belief`` lets callers feed binary
+outcomes (``"price_cut::product_123"`` → success/failure) into the
+gate and ``get_belief_mean`` exposes the current posterior mean for
+any decision path that wants to consult it.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from core.mentality import BeliefStore, Values
 
 logger = get_logger("judgment.advisor")
 
@@ -46,10 +64,24 @@ class JudgmentAdvisor:
         episodic_memory: Any = None,
         failure_prevention: Any = None,
         action_coordinator: Any = None,
+        values: "Values | None" = None,
+        belief_store: "BeliefStore | None" = None,
     ) -> None:
         self._memory = episodic_memory
         self._failure_prevention = failure_prevention
         self._action_coordinator = action_coordinator
+        self._values = values
+
+        # Lazy-construct an empty BeliefStore when not supplied so
+        # callers can always call ``update_belief`` without an
+        # extra wiring step.
+        if belief_store is None:
+            try:
+                from core.mentality import BeliefStore as _BS
+                belief_store = _BS()
+            except Exception:  # pragma: no cover - defensive
+                belief_store = None
+        self._beliefs = belief_store
 
     # Default check weights — kept in sync with what each
     # `_check_*` method returns. Used as the fail-safe weight when
@@ -138,6 +170,18 @@ class JudgmentAdvisor:
             self._safe_check("financial_constraint", self._check_financial_constraint, decision, situation),
             self._safe_check("cooldown", self._check_cooldown, decision),
         ]
+
+        # Wave 2 #2: re-weight each check by the operator's
+        # :class:`Values` multiplier so mentality propagates into
+        # the risk score. No-op when values is None.
+        if self._values is not None:
+            for c in checks:
+                base = c.get("weight", 0.0)
+                effective = self._values.effective_check_weight(
+                    c.get("check", ""), float(base),
+                )
+                c["base_weight"] = base
+                c["weight"] = effective
 
         # Compute weighted risk score
         total_weight = sum(c["weight"] for c in checks)
@@ -387,3 +431,50 @@ class JudgmentAdvisor:
             }
 
         return {"check": "cooldown", "risk": 0, "weight": 0.10, "reason": "No cooldown issues"}
+
+    # -- Wave 2 #2: belief accessors ----------------------------------
+
+    def update_belief(
+        self,
+        key: str,
+        success: bool,
+        weight: float = 1.0,
+    ) -> dict[str, Any] | None:
+        """Record a success/failure observation for *key*.
+
+        Returns the updated belief snapshot (alpha, beta, mean, n)
+        or ``None`` if the advisor has no belief store attached.
+
+        This is the hook the learning loop and reflection synthesizer
+        use to feed outcomes into the gate's Bayesian posterior. The
+        advisor itself doesn't consult the posterior during
+        ``evaluate`` — that's the caller's job — but it does provide
+        a single thread-safe home for the beliefs so they can be
+        snapshotted, persisted, or debugged from one place.
+        """
+        if self._beliefs is None:
+            return None
+        belief = self._beliefs.observe(key, success, weight=weight)
+        return {
+            "key":   belief.key,
+            "alpha": belief.alpha,
+            "beta":  belief.beta,
+            "mean":  belief.mean,
+            "n":     belief.n,
+        }
+
+    def get_belief_mean(
+        self, key: str, default: float = 0.5,
+    ) -> float:
+        """Return the posterior mean for *key* (or *default*)."""
+        if self._beliefs is None:
+            return default
+        return self._beliefs.mean(key, default=default)
+
+    def get_belief_interval(
+        self, key: str,
+    ) -> tuple[float, float]:
+        """Return the 95% credible interval for *key*."""
+        if self._beliefs is None:
+            return (0.0, 1.0)
+        return self._beliefs.credible_interval_95(key)
