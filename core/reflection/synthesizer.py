@@ -501,6 +501,136 @@ class ReflectionSynthesizer:
                 # tmpfs / ramdisks / network fs may not support fsync
                 pass
 
+    # -- Wave 6 #9: learned-rule decay --------------------------------
+
+    def decay_stale_rules(
+        self,
+        max_idle_seconds: float,
+        *,
+        now: float | None = None,
+    ) -> list[str]:
+        """Drop learned rules that have been idle for too long.
+
+        A rule is *stale* when its last meaningful activity is
+        older than ``now - max_idle_seconds``. "Last activity" is
+        the policy-store ``last_matched_at`` counter (Wave 6 #8)
+        if present, else the pattern's own ``last_seen`` timestamp
+        — so a rule that never fires but was learned recently is
+        still kept until its own learning window lapses.
+
+        For each stale signature the rule is removed from the
+        attached policy store, the signature is dropped from
+        ``_promoted`` and ``_pattern_cache``, and (if persistence
+        is enabled) the ledger file is atomically rewritten with
+        the surviving patterns. Exceptions from any single step
+        are logged and swallowed — decay must never crash the
+        reflection loop.
+
+        Returns the list of removed signatures.
+        """
+        if max_idle_seconds < 0:
+            raise ValueError("max_idle_seconds must be non-negative")
+        now = now if now is not None else time.time()
+        threshold = now - max_idle_seconds
+
+        removed: list[str] = []
+        with self._lock:
+            # Work off a copy so we can mutate _pattern_cache safely.
+            for signature, pattern in list(self._pattern_cache.items()):
+                rule_id = f"learned::{signature}"
+                last_active = self._last_activity_for(rule_id, pattern)
+                if last_active >= threshold:
+                    continue
+                try:
+                    self._store.remove(rule_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "decay: store.remove failed for %s: %s",
+                        rule_id, exc,
+                    )
+                self._promoted.discard(signature)
+                self._pattern_cache.pop(signature, None)
+                removed.append(signature)
+            if removed and self._persist_path is not None:
+                try:
+                    self._rewrite_ledger_locked()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "reflection ledger rewrite after decay failed: %s",
+                        exc,
+                    )
+        if removed:
+            logger.info(
+                "reflection decay: retired %d stale learned rule(s) "
+                "(max_idle=%.0fs)",
+                len(removed), max_idle_seconds,
+            )
+        return removed
+
+    def _last_activity_for(
+        self, rule_id: str, pattern: ErrorPattern,
+    ) -> float:
+        """Resolve the best-available "last activity" timestamp
+        for a learned rule, falling back to the pattern's own
+        ``last_seen`` when the store has no stats for it."""
+        try:
+            get_stats = getattr(self._store, "get_rule_stats", None)
+            if get_stats is not None:
+                stats = get_stats(rule_id)
+                if stats and stats.get("last_matched_at") is not None:
+                    return float(stats["last_matched_at"])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("decay: stats lookup failed for %s: %s", rule_id, exc)
+        # No store stats → rule has never matched. Use the
+        # learning-time recency of the pattern itself.
+        return float(pattern.last_seen or pattern.first_seen or 0.0)
+
+    def _rewrite_ledger_locked(self) -> None:
+        """Atomically rewrite the persistent ledger to reflect the
+        current ``_pattern_cache``.
+
+        Called only after :meth:`decay_stale_rules` shrinks the
+        cache. The append-only file is replaced by a fresh one
+        containing exactly the surviving patterns — this is the
+        only operation that shrinks the ledger, so the invariant
+        "ledger = latest snapshot of _pattern_cache" holds.
+        Written via ``tempfile.mkstemp`` + ``os.replace`` so a
+        crash mid-rewrite leaves the previous ledger intact.
+        """
+        assert self._persist_path is not None
+        target = self._persist_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=target.name + ".",
+            suffix=".tmp",
+            dir=str(target.parent),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                for pattern in self._pattern_cache.values():
+                    row = {
+                        "signature":   pattern.signature,
+                        "kind":        pattern.kind,
+                        "sample_text": pattern.sample_text,
+                        "occurrences": pattern.occurrences,
+                        "first_seen":  pattern.first_seen,
+                        "last_seen":   pattern.last_seen,
+                        "confidence":  pattern.confidence,
+                    }
+                    fh.write(json.dumps(row) + "\n")
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp_name, str(target))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+            raise
+
     def _rehydrate_from_disk(self) -> None:
         """Replay the promoted-patterns ledger at startup.
 
