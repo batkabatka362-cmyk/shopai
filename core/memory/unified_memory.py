@@ -20,6 +20,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from core.memory.quality_engine import (
+    MemoryClass,
+    MemoryRecord,
+    classify,
+)
+from core.memory.satellite_layers import SatelliteRouter
 from utils.logger import get_logger
 
 logger = get_logger("unified_memory")
@@ -43,6 +49,12 @@ class UnifiedMemory:
         # introspect this to see which subsystems are missing instead
         # of trying to read between the lines of the status dict.
         self._init_errors: dict[str, str] = {}
+        # Wave 2 #4 satellite layers (vector / graph / signal).
+        # Always present — pure-Python fallbacks mean they work
+        # even without sqlite-vec / networkx / duckdb installed.
+        # Callers that want to opt out can pass ``enabled=False``
+        # on the individual layers via ``set_satellites``.
+        self._satellites = SatelliteRouter()
 
     def _try_init(
         self, name: str, loader,
@@ -449,6 +461,89 @@ class UnifiedMemory:
                                                      root_cause, severity)
         return 0
 
+    # ── SATELLITE LAYERS (Wave 2 #4) ─────────────────────────
+    #
+    # Vector / graph / signal stores that sit alongside the
+    # legacy backends. Writes go through ``ingest_quality`` so
+    # the quality engine (Wave 2 #3) classifies the record and
+    # only the right satellites receive it — NOISE records are
+    # dropped from semantic search so low-signal debug lines
+    # don't poison retrieval.
+
+    def get_satellites(self) -> SatelliteRouter:
+        """Return the router wrapping the three satellite layers.
+
+        Exposed so callers that want raw search / graph /
+        time-series access don't have to go through the
+        decision-oriented ``retrieve`` path.
+        """
+        return self._satellites
+
+    def set_satellites(self, router: SatelliteRouter) -> None:
+        """Replace the satellite router wholesale.
+
+        Mainly for tests that want to pin a disabled or
+        pre-populated router; production code uses the default
+        router created in ``__init__``.
+        """
+        self._satellites = router
+
+    def ingest_quality(
+        self,
+        kind: str,
+        content: Any,
+        *,
+        quality: float = 0.5,
+        confidence: float = 0.5,
+        success_rate: float = 0.5,
+        usage: int = 0,
+        tags: tuple[str, ...] = (),
+        payload: dict[str, Any] | None = None,
+        record_id: str | None = None,
+        entities: list[str] | None = None,
+        signal_name: str | None = None,
+        signal_value: float | None = None,
+    ) -> dict[str, Any]:
+        """Classify + route a record through the satellite layers.
+
+        This is the Wave 2 #4 entry point. It builds a
+        :class:`MemoryRecord`, runs :func:`classify` to decide
+        the class, then asks :class:`SatelliteRouter` to
+        dispatch to the matching satellites (vector/graph for
+        KNOWLEDGE+ERROR, signal for SIGNAL, nothing for NOISE).
+
+        Returns the router's dispatch report augmented with the
+        decided class so callers can see *why* a record landed
+        where it did without repeating the classification.
+
+        This method DOES NOT touch the legacy backends — it
+        strictly feeds the satellites. The legacy ``ingest``
+        path stays authoritative for primary-store writes so
+        no existing test/behaviour changes.
+        """
+        self._ensure_init()
+        record = MemoryRecord(
+            kind=kind,
+            quality=quality,
+            confidence=confidence,
+            success_rate=success_rate,
+            usage=usage,
+            tags=tuple(tags),
+            payload=dict(payload or {}),
+        )
+        cls = classify(record)
+        report = self._satellites.route_record(
+            record,
+            record_id=record_id,
+            memory_class=cls,
+            content=content,
+            entities=entities,
+            signal_name=signal_name,
+            signal_value=signal_value,
+        )
+        report["class"] = cls.value
+        return report
+
     # ── STATS ────────────────────────────────────────────────
 
     def get_stats(self) -> dict[str, Any]:
@@ -468,6 +563,8 @@ class UnifiedMemory:
             stats["memory_intelligence"] = self._memory_intel.get_stats()
         if self._intel_cycle:
             stats["intelligence_cycle"] = self._intel_cycle.get_stats()
+        # Satellite layers (Wave 2 #4) — always present
+        stats["satellites"] = self._satellites.stats()
 
         total = 0
         for v in stats.values():
