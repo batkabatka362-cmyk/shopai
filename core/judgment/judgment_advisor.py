@@ -246,6 +246,104 @@ class JudgmentAdvisor:
             "degraded_checks": degraded_count,
         }
 
+    # ── Wave 3 #2: advisor + debate integration ────────────────────
+
+    def deliberate(
+        self,
+        decision: dict[str, Any],
+        situation: dict[str, Any],
+        *,
+        memories: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate, then optionally run multi-agent debate.
+
+        When :meth:`evaluate` lands a decision cleanly in the
+        proceed/escalate regions (``risk_score`` outside
+        ``[PROCEED_THRESHOLD, DELAY_THRESHOLD]``), the verdict is
+        unambiguous and debate adds nothing — ``deliberate`` just
+        returns the advisor payload with ``debate=None``.
+
+        Inside the uncertainty band the 5-persona debate (Wave 2
+        #8) runs, scoring each proposal against the advisor's
+        :class:`~core.mentality.Values` so the operator's
+        priorities carry the tiebreak. The chosen proposal and
+        full scoring breakdown are attached to the return payload
+        under a ``debate`` key.
+
+        The debate layer is imported lazily and any failure in it
+        is captured so a broken persona can't take down the gate.
+
+        Args:
+            decision: Same as :meth:`evaluate`.
+            situation: Same as :meth:`evaluate`.
+            memories: Optional list of prior case dicts for the
+                ``MemoryManager`` persona. Each entry should at
+                minimum carry a ``success: bool`` field so the
+                precedent ratio is computable.
+
+        Returns:
+            The full :meth:`evaluate` payload extended with a
+            ``debate`` key. ``debate`` is either ``None`` (outside
+            the band, debate disabled, or debate crashed) or a
+            :meth:`DebateOutcome.as_dict` dict carrying the winning
+            persona, summary, scored breakdown, and trigger flag.
+        """
+        result = self.evaluate(decision, situation)
+
+        # Lazy imports so a deployment without the brain layer
+        # still uses the plain advisor path without import errors.
+        try:
+            from core.brain.debate import (
+                DebateArbiter,
+                DebateContext,
+                should_debate,
+            )
+        except Exception as exc:  # pragma: no cover - import guard
+            logger.debug("deliberate: debate module unavailable: %s", exc)
+            result["debate"] = None
+            return result
+
+        risk = float(result.get("risk_score") or 0.0)
+        if not should_debate(risk):
+            result["debate"] = None
+            return result
+
+        # Always give the arbiter concrete Values — either the
+        # advisor's (which already shaped the risk score) or a
+        # neutral default so safety-oriented tie-breaks still work.
+        values = self._values
+        if values is None:
+            try:
+                from core.mentality import Values as _V
+                values = _V()
+            except Exception:  # pragma: no cover - defensive
+                result["debate"] = None
+                return result
+
+        try:
+            arbiter = DebateArbiter(values=values)
+            outcome = arbiter.run(
+                DebateContext(
+                    decision=dict(decision),
+                    situation=dict(situation),
+                    advisor_result=result,
+                    memories=list(memories or []),
+                ),
+            )
+            result["debate"] = outcome.as_dict()
+            logger.info(
+                "Judgment deliberate: risk=%.2f in band → debate winner=%s",
+                risk, outcome.winner.persona,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "JudgmentAdvisor.deliberate: debate failed %s: %s",
+                type(exc).__name__, exc,
+            )
+            result["debate"] = None
+
+        return result
+
     def _check_magnitude(self, decision: dict[str, Any]) -> dict[str, Any]:
         """Big change + low confidence → high risk."""
         confidence = decision.get("confidence_score", 50)
