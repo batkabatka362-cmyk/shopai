@@ -1,12 +1,13 @@
 """Dashboard API — HTTP endpoints for monitoring and control.
 
 Endpoints:
-  GET  /api/status     — system status
-  GET  /api/dashboard  — full dashboard data
-  GET  /api/cycle      — run a cycle and return results
-  GET  /api/alerts     — recent alerts
-  GET  /api/report     — human-readable report
-  POST /api/webhook    — Shopify webhook receiver
+  GET  /api/status           — system status (+ adapter SLA summary)
+  GET  /api/dashboard        — full dashboard data
+  GET  /api/cycle            — run a cycle and return results
+  GET  /api/alerts           — recent alerts
+  GET  /api/report           — human-readable report
+  GET  /api/metrics/adapters — per-adapter SLA rollup (Wave 4 #3)
+  POST /api/webhook          — Shopify webhook receiver
 """
 from __future__ import annotations
 import json
@@ -50,10 +51,13 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             self._text_response(self._get_report())
         elif path == "/api/memory":
             self._json_response(self._get_memory())
+        elif path == "/api/metrics/adapters":
+            self._json_response(self._get_adapter_metrics())
         else:
             self._json_response({"error": "not_found", "endpoints": [
                 "/api/status", "/api/dashboard", "/api/cycle",
                 "/api/alerts", "/api/report", "/api/memory",
+                "/api/metrics/adapters",
             ]}, 404)
 
     def do_POST(self):
@@ -126,7 +130,70 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             result["data"] = da.get_stats()
         except Exception:
             pass
+        # Wave 4 #3: surface an adapter SLA rollup so operators hitting
+        # /api/status can see which adapters are breaching their SLO
+        # without a separate call to /api/metrics/adapters.
+        try:
+            from core.adapters.metrics import get_metrics
+            sla = get_metrics().get_sla_report()
+            result["adapters_sla"] = DashboardAPIHandler._summarise_sla(sla)
+        except Exception:
+            pass
         return result
+
+    @staticmethod
+    def _summarise_sla(sla: dict) -> dict:
+        """Compact an SLA report into a lightweight status summary.
+
+        Keeps the per-adapter detail out of /api/status (that's what
+        /api/metrics/adapters is for) and surfaces only the count
+        of breached / degraded / ok adapters plus the list of any
+        that are currently breaching.
+        """
+        if not isinstance(sla, dict):
+            return {"total": 0, "ok": 0, "degraded": 0, "breached": 0, "breaching": []}
+        subs = sla.get("subsystems", {}) if "subsystems" in sla else sla
+        if not isinstance(subs, dict):
+            return {"total": 0, "ok": 0, "degraded": 0, "breached": 0, "breaching": []}
+        ok = deg = brk = 0
+        breaching: list[str] = []
+        for name, row in subs.items():
+            status = (row or {}).get("status", "ok") if isinstance(row, dict) else "ok"
+            if status == "breached":
+                brk += 1
+                breaching.append(name)
+            elif status == "degraded":
+                deg += 1
+            else:
+                ok += 1
+        return {
+            "total":     ok + deg + brk,
+            "ok":        ok,
+            "degraded":  deg,
+            "breached":  brk,
+            "breaching": breaching,
+        }
+
+    @staticmethod
+    def _get_adapter_metrics() -> dict:
+        """Return the full per-adapter SLA report.
+
+        Wave 4 #3: operator endpoint for the Wave 2 #6 SLATracker
+        feed that was fully wired through the metrics layer in
+        Wave 3 #4. Always returns a dict — any failure inside the
+        telemetry module degrades to ``{"error": "..."}`` so the
+        endpoint never crashes the dashboard server.
+        """
+        try:
+            from core.adapters.metrics import get_metrics
+            report = get_metrics().get_sla_report()
+            return {
+                "report":    report,
+                "summary":   DashboardAPIHandler._summarise_sla(report),
+                "timestamp": time.time(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:200]}
 
     @staticmethod
     def _get_dashboard() -> dict:
