@@ -79,3 +79,31 @@ def _isolate_default_belief_store(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("SHOPAI_BELIEFS_PATH", str(tmp / "beliefs.json"))
     yield
     reset_default_belief_store()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_reflection_synth(tmp_path_factory, monkeypatch):
+    """Wave 6 #6: keep the process-wide default ReflectionSynthesizer
+    out of the repo.
+
+    Wave 6 #6 made the synthesizer persist promoted patterns to a
+    JSONL ledger and added a process-wide default. Without this
+    fixture, any test that runs a cycle with a reflection-promoted
+    pattern would write a real ``core/reflection/.state/reflection_ledger.jsonl``
+    file into the repo and leak state into later tests.
+
+    Resets the singleton before and after each test, and points
+    the default path at a per-test tmp dir via env var.
+    """
+    try:
+        from core.reflection.synthesizer import reset_default_synthesizer
+    except Exception:
+        yield
+        return
+    reset_default_synthesizer()
+    tmp = tmp_path_factory.mktemp("reflection")
+    monkeypatch.setenv(
+        "SHOPAI_REFLECTION_PATH", str(tmp / "reflection_ledger.jsonl"),
+    )
+    yield
+    reset_default_synthesizer()

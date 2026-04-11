@@ -1589,10 +1589,20 @@ class AutonomousController:
         # reflection.
         from collections import deque
         from core.memory.quality_engine import MemoryRecord
-        from core.reflection.synthesizer import ReflectionSynthesizer
+        from core.reflection.synthesizer import (
+            ReflectionSynthesizer,
+            get_default_synthesizer,
+        )
 
         if not hasattr(self, "_reflection_synth") or self._reflection_synth is None:
-            self._reflection_synth = ReflectionSynthesizer()
+            # Wave 6 #6: default to the shared persistent synthesizer
+            # so learned SOFT rules survive restart. Tests override
+            # this attribute (or the conftest env var) to stay in
+            # isolated temp directories.
+            try:
+                self._reflection_synth = get_default_synthesizer()
+            except Exception:  # noqa: BLE001
+                self._reflection_synth = ReflectionSynthesizer()
         if not hasattr(self, "_error_buffer") or self._error_buffer is None:
             maxlen = getattr(
                 self, "_reflection_buffer_max", self._REFLECTION_BUFFER_MAX,

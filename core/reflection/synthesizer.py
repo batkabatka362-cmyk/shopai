@@ -43,10 +43,14 @@ post-cycle hook.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from core.memory.quality_engine import (
@@ -250,6 +254,12 @@ class ReflectionSynthesizer:
         Callable that turns a promoted :class:`ErrorPattern` into
         a :class:`PolicyRule`. Defaults to
         :func:`_default_rule_builder`.
+    persist_path :
+        Optional path to a JSONL file used to checkpoint every
+        promoted :class:`ErrorPattern`. On construction the file
+        is replayed so learned rules survive process restarts.
+        Wave 6 #6. When ``None``, the synthesizer stays purely
+        in-memory and behaves exactly like pre-Wave-6 instances.
     """
 
     def __init__(
@@ -260,6 +270,7 @@ class ReflectionSynthesizer:
         min_confidence: float = 0.75,
         smoothing: float = 1.0,
         rule_builder: RuleBuilder | None = None,
+        persist_path: str | os.PathLike | None = None,
     ) -> None:
         if min_occurrences < 1:
             raise ValueError("min_occurrences must be >= 1")
@@ -275,6 +286,11 @@ class ReflectionSynthesizer:
         self._lock = threading.RLock()
         self._promoted: set[str] = set()
         self._last_run_at: float | None = None
+        self._persist_path: Path | None = (
+            Path(persist_path) if persist_path is not None else None
+        )
+        if self._persist_path is not None:
+            self._rehydrate_from_disk()
 
     # -- introspection ----------------------------------------------
 
@@ -407,12 +423,200 @@ class ReflectionSynthesizer:
                     pattern.signature, rule_id,
                     pattern.occurrences, pattern.confidence,
                 )
+                # Wave 6 #6: append to the promoted-patterns ledger
+                # so the rule survives a restart. Failure is logged
+                # and swallowed — a broken disk must not take down
+                # the reflection pipeline.
+                if self._persist_path is not None:
+                    try:
+                        self._append_to_ledger(pattern)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "reflection ledger append failed for %s: %s",
+                            pattern.signature, exc,
+                        )
             self._last_run_at = time.time()
         return report
+
+    # -- Wave 6 #6: ledger persistence --------------------------------
+
+    @property
+    def persist_path(self) -> Path | None:
+        return self._persist_path
+
+    def _append_to_ledger(self, pattern: ErrorPattern) -> None:
+        """Append one promoted pattern to the JSONL ledger.
+
+        The file is plain append-only JSONL — one pattern per
+        line. Rehydration replays the whole file, so a corrupt
+        trailing line just loses the latest entry and the earlier
+        state is still intact.
+        """
+        assert self._persist_path is not None
+        target = self._persist_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "signature":   pattern.signature,
+            "kind":        pattern.kind,
+            "sample_text": pattern.sample_text,
+            "occurrences": pattern.occurrences,
+            "first_seen":  pattern.first_seen,
+            "last_seen":   pattern.last_seen,
+            "confidence":  pattern.confidence,
+        }
+        line = json.dumps(row) + "\n"
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                # tmpfs / ramdisks / network fs may not support fsync
+                pass
+
+    def _rehydrate_from_disk(self) -> None:
+        """Replay the promoted-patterns ledger at startup.
+
+        Each line is a JSON dict matching :class:`ErrorPattern`.
+        For every row we reconstruct the ErrorPattern, rebuild
+        the rule via ``self._rule_builder``, re-register it on the
+        policy store, and mark the signature as promoted so a
+        subsequent mine over recent records won't re-emit the
+        same promotion. Malformed rows are skipped with a warning
+        and the rest of the ledger still loads.
+
+        A missing file is a no-op — fresh deploy.
+        """
+        assert self._persist_path is not None
+        path = self._persist_path
+        if not path.exists():
+            return
+        loaded = 0
+        skipped = 0
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "reflection ledger: could not read %r (%s) — "
+                "starting fresh",
+                str(path), exc,
+            )
+            return
+        for raw_line in lines:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                row = json.loads(raw_line)
+            except Exception:
+                skipped += 1
+                continue
+            if not isinstance(row, dict):
+                skipped += 1
+                continue
+            try:
+                pattern = ErrorPattern(
+                    signature=str(row["signature"]),
+                    kind=str(row["kind"]),
+                    sample_text=str(row["sample_text"]),
+                    occurrences=int(row["occurrences"]),
+                    first_seen=float(row.get("first_seen", 0.0)),
+                    last_seen=float(row.get("last_seen", 0.0)),
+                    confidence=float(row.get("confidence", self._min_conf)),
+                )
+            except (KeyError, TypeError, ValueError):
+                skipped += 1
+                continue
+            if pattern.signature in self._promoted:
+                # Duplicate — the ledger grew past this row earlier
+                # but the signature is already marked. Skip.
+                continue
+            try:
+                rule = self._rule_builder(pattern)
+                if rule is not None:
+                    self._store.promote_soft_rule(rule)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "reflection ledger: replay failed for %s: %s",
+                    pattern.signature, exc,
+                )
+                skipped += 1
+                continue
+            self._promoted.add(pattern.signature)
+            loaded += 1
+        logger.info(
+            "reflection ledger: rehydrated %d pattern(s) from %r (%d skipped)",
+            loaded, str(path), skipped,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Wave 6 #6: process-wide default synthesizer
+# ---------------------------------------------------------------------------
+#
+# The autonomous controller was constructing a throwaway synthesizer
+# per run_cycle() call, so the in-memory ``_promoted`` ledger was
+# reset on every boot. Combined with an in-memory-only policy store,
+# learned rules vanished on restart. Wave 6 #6 adds persistence to
+# the synthesizer and a module-level default that reads its path
+# from the environment so the controller — and anyone else who wants
+# to participate in the same learning loop — can share one store.
+
+
+_DEFAULT_REFLECTION_PATH = os.path.join(
+    os.path.dirname(__file__), ".state", "reflection_ledger.jsonl",
+)
+
+_default_synth: "ReflectionSynthesizer | None" = None
+_default_synth_lock = threading.Lock()
+
+
+def get_default_synthesizer() -> "ReflectionSynthesizer":
+    """Return the process-wide :class:`ReflectionSynthesizer`.
+
+    Path resolution:
+      1. earlier :func:`set_default_synthesizer` always wins
+      2. ``SHOPAI_REFLECTION_PATH`` env var
+      3. module default at ``core/reflection/.state/reflection_ledger.jsonl``
+    """
+    global _default_synth
+    with _default_synth_lock:
+        if _default_synth is None:
+            path = os.environ.get(
+                "SHOPAI_REFLECTION_PATH", _DEFAULT_REFLECTION_PATH,
+            )
+            try:
+                _default_synth = ReflectionSynthesizer(persist_path=path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "get_default_synthesizer: persistent init failed "
+                    "(%s) — falling back to in-memory",
+                    exc,
+                )
+                _default_synth = ReflectionSynthesizer()
+        return _default_synth
+
+
+def set_default_synthesizer(synth: "ReflectionSynthesizer") -> None:
+    """Override the process-wide synthesizer (used by tests)."""
+    global _default_synth
+    with _default_synth_lock:
+        _default_synth = synth
+
+
+def reset_default_synthesizer() -> None:
+    """Clear the cached singleton so the next access rebuilds it."""
+    global _default_synth
+    with _default_synth_lock:
+        _default_synth = None
 
 
 __all__ = [
     "ErrorPattern",
     "SynthesisReport",
     "ReflectionSynthesizer",
+    "get_default_synthesizer",
+    "set_default_synthesizer",
+    "reset_default_synthesizer",
 ]
