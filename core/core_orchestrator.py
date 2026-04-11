@@ -293,7 +293,10 @@ class CoreOrchestrator:
         results["phases"]["causal"] = causal
 
         # ── Phase 12: JUDGMENT ──
-        judgment = self._phase_judgment(intel, data)
+        # Wave 4 #1: pass recalled episodes as memories so deliberate()
+        # can feed them to the MemoryManager persona when the risk
+        # score lands in the uncertainty band.
+        judgment = self._phase_judgment(intel, data, memories=past_episodes)
         results["phases"]["judgment"] = judgment
 
         # ── ENFORCE JUDGMENT VERDICT ──
@@ -778,14 +781,33 @@ class CoreOrchestrator:
             logger.warning("Compliance check failed: %s", exc)
             return {"status": "error", "error": str(exc)}
 
-    def _phase_judgment(self, intel: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
-        """Run JudgmentAdvisor — check if decision should proceed."""
+    def _phase_judgment(
+        self,
+        intel: dict[str, Any],
+        data: dict[str, Any],
+        *,
+        memories: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Run JudgmentAdvisor — check if decision should proceed.
+
+        Wave 4 #1: prefer ``deliberate()`` over raw ``evaluate()`` so
+        risk scores in the uncertainty band automatically trigger
+        the 5-persona debate arbiter (Wave 2 #8 + Wave 3 #2). The
+        recalled episodes are forwarded as ``memories`` so the
+        MemoryManager persona can vote with real past outcomes.
+        Falls back to ``evaluate()`` if the advisor instance
+        predates the deliberate API.
+        """
         advisor = self._modules.get("judgment_advisor")
         if advisor is None:
             return {"verdict": "proceed", "reason": "No judgment advisor"}
         try:
             decision = intel.get("decision", {})
             situation = self.snapshot.get_situation()
+            if hasattr(advisor, "deliberate"):
+                return advisor.deliberate(
+                    decision, situation, memories=memories or [],
+                )
             return advisor.evaluate(decision, situation)
         except Exception as exc:
             logger.warning("Judgment failed: %s", exc)
