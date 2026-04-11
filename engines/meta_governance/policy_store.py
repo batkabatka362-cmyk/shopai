@@ -198,6 +198,9 @@ class PolicyStore:
             PolicyTier.SOFT:   [],
         }
         self._audit_path = audit_path or _DEFAULT_AUDIT_PATH
+        # Wave 6 #8: per-rule activation counters so operators can
+        # tell dead learned rules from useful ones.
+        self._rule_stats: dict[str, dict[str, Any]] = {}
 
     # -- registration --------------------------------------------------
 
@@ -367,12 +370,19 @@ class PolicyStore:
                 if not matched:
                     continue
 
+                # Wave 6 #8: record the match. BLOCK / MODIFY
+                # outcomes are recorded later inside their own
+                # branches so we can distinguish them from bare
+                # ALLOW matches.
+                self._record_match(rule, "matches")
+
                 entry: dict[str, Any] = {
                     **rule.to_audit_dict(),
                     "matched": True,
                 }
 
                 if rule.verdict == PolicyVerdict.BLOCK:
+                    self._record_match(rule, "blocks")
                     trace.append(entry)
                     final_verdict = PolicyVerdict.BLOCK
                     final_rule_id = rule.rule_id
@@ -401,6 +411,7 @@ class PolicyStore:
                             modifications.update(patch)
                             entry["modifications"] = dict(patch)
                             patch_applied = True
+                            self._record_match(rule, "modifications")
                     except Exception as exc:  # noqa: BLE001
                         entry["modify_error"] = (
                             f"{type(exc).__name__}: {exc}"
@@ -435,6 +446,82 @@ class PolicyStore:
             hard_passed=True,
             failed_count=0,
         )
+
+    # -- Wave 6 #8: rule activation stats -----------------------------
+
+    def _record_match(
+        self, rule: PolicyRule, bucket: str,
+    ) -> None:
+        """Bump the per-rule counter *bucket* and refresh timestamps.
+
+        Called from :meth:`evaluate_tiered` every time a MEDIUM or
+        SOFT rule's matcher returns True. Buckets are:
+
+        * ``matches``       — any positive matcher hit
+        * ``blocks``        — match that produced a BLOCK verdict
+        * ``modifications`` — match that produced a successful MODIFY
+
+        Failures inside this helper are swallowed — stat recording
+        must never take down the evaluation pipeline.
+        """
+        try:
+            now = time.time()
+            with self._lock:
+                row = self._rule_stats.get(rule.rule_id)
+                if row is None:
+                    row = {
+                        "rule_id":         rule.rule_id,
+                        "tier":            rule.tier.value,
+                        "source":          rule.source,
+                        "matches":         0,
+                        "blocks":          0,
+                        "modifications":   0,
+                        "first_matched_at": now,
+                        "last_matched_at":  now,
+                    }
+                    self._rule_stats[rule.rule_id] = row
+                row[bucket] = int(row.get(bucket, 0)) + 1
+                row["last_matched_at"] = now
+                # Keep tier/source in sync if the rule was re-registered
+                # (promote_soft_rule bumps version and can change tier).
+                row["tier"] = rule.tier.value
+                row["source"] = rule.source
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("rule stats record failed: %s", exc)
+
+    def get_rule_stats(self, rule_id: str) -> dict[str, Any] | None:
+        """Return a copy of the stats for one rule, or ``None`` if
+        the rule has never matched."""
+        with self._lock:
+            row = self._rule_stats.get(rule_id)
+            return dict(row) if row is not None else None
+
+    def get_all_rule_stats(self) -> list[dict[str, Any]]:
+        """Return every stats row as a list of dicts sorted by
+        ``matches`` descending.
+
+        Rules that have never fired do not appear — callers can
+        cross-reference with :meth:`list_rules` to find dead rules.
+        """
+        with self._lock:
+            rows = [dict(r) for r in self._rule_stats.values()]
+        rows.sort(
+            key=lambda r: (-int(r.get("matches", 0)), r.get("rule_id", "")),
+        )
+        return rows
+
+    def reset_rule_stats(self, rule_id: str | None = None) -> None:
+        """Clear per-rule activation stats.
+
+        With a ``rule_id`` only that entry is cleared; without one
+        the entire stats table is wiped. Useful after operators
+        retune a rule set and want a clean rolling window.
+        """
+        with self._lock:
+            if rule_id is None:
+                self._rule_stats.clear()
+            else:
+                self._rule_stats.pop(rule_id, None)
 
     # -- internals -----------------------------------------------------
 

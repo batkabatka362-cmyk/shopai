@@ -564,6 +564,95 @@ class TestReflectionEndpoint:
         out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
         assert "error" in out
 
+    def test_enriches_rows_with_policy_store_stats(self, monkeypatch):
+        """Wave 6 #8: the endpoint augments each pattern with the
+        matches/blocks/last_matched_at from the default policy store
+        so operators can tell a useful learned rule from a dead one."""
+        rows = [
+            {
+                "signature":   "error:abc",
+                "rule_id":     "learned::error:abc",
+                "kind":        "error",
+                "sample_text": "something",
+                "occurrences": 3,
+                "first_seen":  0.0,
+                "last_seen":   1.0,
+                "confidence":  0.8,
+            },
+            {
+                "signature":   "error:def",
+                "rule_id":     "learned::error:def",
+                "kind":        "error",
+                "sample_text": "other",
+                "occurrences": 3,
+                "first_seen":  0.0,
+                "last_seen":   0.5,
+                "confidence":  0.8,
+            },
+        ]
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth(rows),
+        )
+
+        class _FakeStatsStore:
+            def get_all_rule_stats(self):
+                return [
+                    {
+                        "rule_id":         "learned::error:abc",
+                        "tier":            "soft",
+                        "source":          "learned",
+                        "matches":         7,
+                        "blocks":          5,
+                        "modifications":   0,
+                        "first_matched_at": 1.0,
+                        "last_matched_at":  9.0,
+                    },
+                ]
+
+        monkeypatch.setattr(
+            "engines.meta_governance.policy_store.get_default_store",
+            lambda: _FakeStatsStore(),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert out["count"] == 2
+        abc = next(r for r in out["patterns"] if r["signature"] == "error:abc")
+        assert abc["matches"] == 7
+        assert abc["blocks"] == 5
+        assert abc["last_matched_at"] == 9.0
+        # def has no stats so fields default to 0/None.
+        defr = next(r for r in out["patterns"] if r["signature"] == "error:def")
+        assert defr["matches"] == 0
+        assert defr["blocks"] == 0
+        assert defr["last_matched_at"] is None
+
+    def test_stats_store_raise_does_not_break_endpoint(self, monkeypatch):
+        rows = [
+            {
+                "signature":   "error:abc",
+                "rule_id":     "learned::error:abc",
+                "kind":        "error",
+                "sample_text": "m",
+                "occurrences": 3,
+                "first_seen":  0.0,
+                "last_seen":   1.0,
+                "confidence":  0.8,
+            },
+        ]
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth(rows),
+        )
+
+        def _boom():
+            raise RuntimeError("store offline")
+        monkeypatch.setattr(
+            "engines.meta_governance.policy_store.get_default_store", _boom,
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert out["count"] == 1
+        assert out["patterns"][0]["matches"] == 0
+
     def test_end_to_end_with_real_synth(self, tmp_path):
         """Feed the real synthesizer three matching errors via a
         real PolicyStore and read the learned rule back through

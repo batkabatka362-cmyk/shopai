@@ -356,6 +356,26 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)[:200]}
 
+        # Wave 6 #8: enrich each pattern with activation stats from
+        # the default policy store so operators can tell a useful
+        # learned rule from a dead one in the same view. Fails
+        # soft — a missing stats table just leaves the counters at
+        # zero.
+        stats_by_rule: dict[str, dict[str, Any]] = {}
+        try:
+            from engines.meta_governance.policy_store import get_default_store
+            store = get_default_store()
+            for row in store.get_all_rule_stats():
+                stats_by_rule[row["rule_id"]] = row
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reflection: policy stats unavailable (%s)", exc)
+
+        for row in rows:
+            stat = stats_by_rule.get(row.get("rule_id", ""))
+            row["matches"] = int(stat["matches"]) if stat else 0
+            row["blocks"] = int(stat["blocks"]) if stat else 0
+            row["last_matched_at"] = stat["last_matched_at"] if stat else None
+
         total = len(rows)
         rows = rows[:limit]
         return {

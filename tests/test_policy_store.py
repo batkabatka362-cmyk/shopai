@@ -624,3 +624,171 @@ def test_reset_default_store_gives_fresh_instance(monkeypatch, tmp_path):
     reset_default_store()
     second = get_default_store()
     assert first is not second
+
+
+# ---------------------------------------------------------------------------
+# Wave 6 #8: per-rule activation stats
+# ---------------------------------------------------------------------------
+
+
+def _block_platform_rule(rule_id: str, platform: str) -> PolicyRule:
+    return PolicyRule(
+        rule_id=rule_id,
+        name=f"block_{platform}",
+        tier=PolicyTier.MEDIUM,
+        source="operator",
+        description=f"Block {platform}",
+        matcher=_match_platform(platform),
+        verdict=PolicyVerdict.BLOCK,
+    )
+
+
+def test_rule_stats_empty_before_any_match(store: PolicyStore):
+    store.register(_block_platform_rule("MED-STATS-0", "facebook"))
+    assert store.get_all_rule_stats() == []
+    assert store.get_rule_stats("MED-STATS-0") is None
+
+
+def test_rule_stats_record_block_match(store: PolicyStore):
+    store.register(_block_platform_rule("MED-STATS-1", "facebook"))
+    decision = store.evaluate_tiered(
+        {"action_type": "launch_ad", "platform": "facebook", "budget": 20},
+        {},
+    )
+    assert decision.verdict == PolicyVerdict.BLOCK
+    stats = store.get_rule_stats("MED-STATS-1")
+    assert stats is not None
+    assert stats["matches"] == 1
+    assert stats["blocks"] == 1
+    assert stats["modifications"] == 0
+    assert stats["tier"] == "medium"
+    assert stats["source"] == "operator"
+    assert stats["first_matched_at"] <= stats["last_matched_at"]
+
+
+def test_rule_stats_dont_record_on_non_match(store: PolicyStore):
+    store.register(_block_platform_rule("MED-STATS-2", "facebook"))
+    # Non-matching platform
+    store.evaluate_tiered(
+        {"action_type": "launch_ad", "platform": "tiktok", "budget": 20},
+        {},
+    )
+    assert store.get_rule_stats("MED-STATS-2") is None
+
+
+def test_rule_stats_record_modify_match(store: PolicyStore):
+    def cap_budget(action, context):
+        return {"budget": min(float(action.get("budget", 0)), 50.0)}
+
+    rule = PolicyRule(
+        rule_id="MED-STATS-3",
+        name="cap_budget",
+        tier=PolicyTier.MEDIUM,
+        source="operator",
+        description="cap",
+        matcher=lambda a, c: a.get("action_type") == "launch_ad",
+        verdict=PolicyVerdict.MODIFY,
+        modify_fn=cap_budget,
+    )
+    store.register(rule)
+    store.evaluate_tiered(
+        {"action_type": "launch_ad", "platform": "facebook", "budget": 100},
+        {},
+    )
+    stats = store.get_rule_stats("MED-STATS-3")
+    assert stats is not None
+    assert stats["matches"] == 1
+    assert stats["modifications"] == 1
+    assert stats["blocks"] == 0
+
+
+def test_rule_stats_modify_no_patch_still_counts_match(store: PolicyStore):
+    """A MODIFY rule whose modify_fn returns an empty dict still
+    matched — matches counter bumps, modifications counter does not."""
+    rule = PolicyRule(
+        rule_id="MED-STATS-4",
+        name="noop_modify",
+        tier=PolicyTier.MEDIUM,
+        source="operator",
+        description="no-op",
+        matcher=lambda a, c: True,
+        verdict=PolicyVerdict.MODIFY,
+        modify_fn=lambda a, c: {},
+    )
+    store.register(rule)
+    store.evaluate_tiered({"action_type": "launch_ad"}, {})
+    stats = store.get_rule_stats("MED-STATS-4")
+    assert stats["matches"] == 1
+    assert stats["modifications"] == 0
+
+
+def test_rule_stats_accumulate_across_multiple_evals(store: PolicyStore):
+    store.register(_block_platform_rule("MED-STATS-5", "facebook"))
+    for _ in range(4):
+        store.evaluate_tiered(
+            {"action_type": "launch_ad", "platform": "facebook", "budget": 20},
+            {},
+        )
+    stats = store.get_rule_stats("MED-STATS-5")
+    assert stats["matches"] == 4
+    assert stats["blocks"] == 4
+
+
+def test_get_all_rule_stats_sorted_by_matches_desc(store: PolicyStore):
+    store.register(_block_platform_rule("A", "facebook"))
+    store.register(_block_platform_rule("B", "tiktok"))
+    # Trigger A twice, B once
+    for plat in ("facebook", "facebook", "tiktok"):
+        store.evaluate_tiered(
+            {"action_type": "launch_ad", "platform": plat, "budget": 20},
+            {},
+        )
+    rows = store.get_all_rule_stats()
+    assert [r["rule_id"] for r in rows] == ["A", "B"]
+    assert rows[0]["matches"] == 2
+    assert rows[1]["matches"] == 1
+
+
+def test_reset_rule_stats_all(store: PolicyStore):
+    store.register(_block_platform_rule("MED-STATS-6", "facebook"))
+    store.evaluate_tiered(
+        {"action_type": "launch_ad", "platform": "facebook"},
+        {},
+    )
+    assert store.get_rule_stats("MED-STATS-6") is not None
+    store.reset_rule_stats()
+    assert store.get_all_rule_stats() == []
+
+
+def test_reset_rule_stats_single(store: PolicyStore):
+    store.register(_block_platform_rule("A", "facebook"))
+    store.register(_block_platform_rule("B", "tiktok"))
+    for plat in ("facebook", "tiktok"):
+        store.evaluate_tiered(
+            {"action_type": "launch_ad", "platform": plat, "budget": 20},
+            {},
+        )
+    store.reset_rule_stats("A")
+    assert store.get_rule_stats("A") is None
+    assert store.get_rule_stats("B") is not None
+
+
+def test_rule_stats_soft_tier_tracked(store: PolicyStore):
+    rule = PolicyRule(
+        rule_id="SOFT-STATS-1",
+        name="learned_block",
+        tier=PolicyTier.SOFT,
+        source="learned",
+        description="learned",
+        matcher=_match_platform("facebook"),
+        verdict=PolicyVerdict.BLOCK,
+    )
+    store.register(rule)
+    store.evaluate_tiered(
+        {"action_type": "launch_ad", "platform": "facebook"},
+        {},
+    )
+    stats = store.get_rule_stats("SOFT-STATS-1")
+    assert stats is not None
+    assert stats["tier"] == "soft"
+    assert stats["source"] == "learned"
