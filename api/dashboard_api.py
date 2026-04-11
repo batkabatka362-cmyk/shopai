@@ -12,6 +12,7 @@ Endpoints:
   GET  /api/memory/satellites  — SatelliteRouter layer stats (Wave 5 #B)
   GET  /api/policy/audit       — recent policy audit entries (Wave 5 #B)
   GET  /api/beliefs            — Bayesian belief posterior snapshot (Wave 6 #5)
+  GET  /api/reflection         — Learned reflection-rule snapshot (Wave 6 #7)
   POST /api/webhook            — Shopify webhook receiver
 """
 from __future__ import annotations
@@ -70,13 +71,17 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
             limit = self._parse_limit(limit_raw, default=50, maximum=500)
             self._json_response(self._get_belief_snapshot(limit=limit))
+        elif path == "/api/reflection":
+            limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
+            limit = self._parse_limit(limit_raw, default=50, maximum=500)
+            self._json_response(self._get_reflection_snapshot(limit=limit))
         else:
             self._json_response({"error": "not_found", "endpoints": [
                 "/api/status", "/api/dashboard", "/api/cycle",
                 "/api/alerts", "/api/report", "/api/memory",
                 "/api/metrics/adapters", "/api/cognitive",
                 "/api/memory/satellites", "/api/policy/audit",
-                "/api/beliefs",
+                "/api/beliefs", "/api/reflection",
             ]}, 404)
 
     def do_POST(self):
@@ -325,6 +330,41 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "count":     len(rows),
             "total":     total,
             "timestamp": time.time(),
+        }
+
+    @staticmethod
+    def _get_reflection_snapshot(limit: int = 50) -> dict:
+        """Return the learned-reflection-rule snapshot.
+
+        Wave 6 #7: exposes the process-wide ReflectionSynthesizer
+        pattern cache written by Wave 6 #6. Operators can now
+        inspect what error patterns the synthesizer has mined and
+        promoted — the same data the autonomous controller feeds
+        back into the policy store as SOFT rules — without
+        scraping the JSONL ledger.
+
+        Rows are already sorted by ``last_seen`` descending inside
+        :meth:`ReflectionSynthesizer.snapshot`. Querystring
+        ``?limit=N`` caps the response size (default 50, max 500).
+        Fails soft: a missing or unhealthy synthesizer returns an
+        error envelope.
+        """
+        try:
+            from core.reflection.synthesizer import get_default_synthesizer
+            synth = get_default_synthesizer()
+            rows = synth.snapshot()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:200]}
+
+        total = len(rows)
+        rows = rows[:limit]
+        return {
+            "patterns":     rows,
+            "count":        len(rows),
+            "total":        total,
+            "last_run_at":  getattr(synth, "last_run_at", None),
+            "persist_path": str(getattr(synth, "persist_path", "") or ""),
+            "timestamp":    time.time(),
         }
 
     @staticmethod

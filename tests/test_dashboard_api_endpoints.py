@@ -450,3 +450,164 @@ class TestBeliefEndpoint:
             assert keys[1] == "shop::x"
         finally:
             reset_default_belief_store()
+
+
+# ---------------------------------------------------------------------------
+# Wave 6 #7: /api/reflection — learned rule snapshot
+# ---------------------------------------------------------------------------
+
+
+class _FakeSynth:
+    """Stub matching the surface the reflection endpoint uses."""
+
+    def __init__(self, rows: list[dict[str, Any]],
+                 last_run_at: float | None = None,
+                 persist_path: str = ""):
+        self._rows = rows
+        self.last_run_at = last_run_at
+        self.persist_path = persist_path
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return list(self._rows)
+
+
+class TestReflectionEndpoint:
+    def test_empty_synth_returns_empty_list(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth([]),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert out["patterns"] == []
+        assert out["count"] == 0
+        assert out["total"] == 0
+        assert "timestamp" in out
+
+    def test_returns_rows_and_metadata(self, monkeypatch):
+        rows = [
+            {
+                "signature":   "error:abc",
+                "rule_id":     "learned::error:abc",
+                "kind":        "error",
+                "sample_text": "redis timeout on key 1",
+                "occurrences": 4,
+                "first_seen":  1.0,
+                "last_seen":   9.0,
+                "confidence":  0.8,
+            },
+            {
+                "signature":   "error:def",
+                "rule_id":     "learned::error:def",
+                "kind":        "error",
+                "sample_text": "ssl handshake failed",
+                "occurrences": 3,
+                "first_seen":  2.0,
+                "last_seen":   5.0,
+                "confidence":  0.75,
+            },
+        ]
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth(rows, last_run_at=42.0, persist_path="/x/l.jsonl"),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert out["count"] == 2
+        assert out["total"] == 2
+        assert out["last_run_at"] == 42.0
+        assert out["persist_path"] == "/x/l.jsonl"
+        assert out["patterns"][0]["signature"] == "error:abc"
+        assert out["patterns"][0]["rule_id"] == "learned::error:abc"
+
+    def test_limit_truncates_result_and_preserves_total(self, monkeypatch):
+        rows = [
+            {
+                "signature":   f"error:{i}",
+                "rule_id":     f"learned::error:{i}",
+                "kind":        "error",
+                "sample_text": f"msg {i}",
+                "occurrences": 3,
+                "first_seen":  0.0,
+                "last_seen":   float(i),
+                "confidence":  0.8,
+            }
+            for i in range(10)
+        ]
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth(rows),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=3)
+        assert out["count"] == 3
+        assert out["total"] == 10
+        assert len(out["patterns"]) == 3
+
+    def test_fails_soft_when_synth_access_raises(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("synth offline")
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer", _boom,
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert "error" in out
+        assert "synth offline" in out["error"]
+
+    def test_fails_soft_when_snapshot_raises(self, monkeypatch):
+        class _CrashySynth:
+            last_run_at = None
+            persist_path = ""
+            def snapshot(self):
+                raise RuntimeError("snapshot broken")
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _CrashySynth(),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert "error" in out
+
+    def test_end_to_end_with_real_synth(self, tmp_path):
+        """Feed the real synthesizer three matching errors via a
+        real PolicyStore and read the learned rule back through
+        the endpoint."""
+        from core.reflection.synthesizer import (
+            ReflectionSynthesizer,
+            reset_default_synthesizer,
+            set_default_synthesizer,
+        )
+        from core.memory.quality_engine import MemoryRecord
+        from engines.meta_governance.policy_store import PolicyStore
+
+        ledger = tmp_path / "ledger.jsonl"
+        store = PolicyStore(audit_path=str(tmp_path / "a.jsonl"))
+        synth = ReflectionSynthesizer(
+            policy_store=store, persist_path=ledger,
+        )
+
+        def _err(msg: str) -> MemoryRecord:
+            return MemoryRecord(
+                kind="error",
+                quality=0.6,
+                confidence=0.7,
+                success_rate=0.0,
+                usage=1,
+                created_at=1.0,
+                payload={"message": msg},
+            )
+
+        synth.run([
+            _err("payment gateway timeout on order 1"),
+            _err("payment gateway timeout on order 2"),
+            _err("payment gateway timeout on order 3"),
+        ])
+        set_default_synthesizer(synth)
+        try:
+            out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+            assert out["total"] == 1
+            assert out["count"] == 1
+            row = out["patterns"][0]
+            assert row["kind"] == "error"
+            assert row["occurrences"] == 3
+            assert row["rule_id"].startswith("learned::")
+            assert row["persist_path"] if "persist_path" in row else True
+            assert out["persist_path"] == str(ledger)
+        finally:
+            reset_default_synthesizer()

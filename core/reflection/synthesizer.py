@@ -285,6 +285,10 @@ class ReflectionSynthesizer:
         self._rule_builder = rule_builder or _default_rule_builder
         self._lock = threading.RLock()
         self._promoted: set[str] = set()
+        # Wave 6 #7: keep the full ErrorPattern alongside the
+        # signature so operators can inspect what the gate has
+        # learned without scraping the JSONL ledger.
+        self._pattern_cache: dict[str, ErrorPattern] = {}
         self._last_run_at: float | None = None
         self._persist_path: Path | None = (
             Path(persist_path) if persist_path is not None else None
@@ -303,6 +307,26 @@ class ReflectionSynthesizer:
     def last_run_at(self) -> float | None:
         return self._last_run_at
 
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Return every learned pattern as a list of dicts.
+
+        Wave 6 #7: exposes the in-memory pattern cache so the
+        dashboard (and any ad-hoc caller) can render the learned
+        rules without parsing the JSONL ledger. Each row is the
+        same shape :class:`ErrorPattern.as_dict` produces, plus a
+        ``rule_id`` derived from the signature so operators can
+        cross-reference with the policy store audit log.
+
+        The list is sorted by ``last_seen`` descending so the most
+        recently-matched patterns surface first.
+        """
+        with self._lock:
+            rows = [p.as_dict() for p in self._pattern_cache.values()]
+        for row in rows:
+            row["rule_id"] = f"learned::{row['signature']}"
+        rows.sort(key=lambda r: r.get("last_seen", 0.0), reverse=True)
+        return rows
+
     def forget(self, signature: str | None = None) -> None:
         """Drop a signature (or all of them) from the "already promoted"
         ledger so the next run re-promotes it.
@@ -313,8 +337,10 @@ class ReflectionSynthesizer:
         with self._lock:
             if signature is None:
                 self._promoted.clear()
+                self._pattern_cache.clear()
             else:
                 self._promoted.discard(signature)
+                self._pattern_cache.pop(signature, None)
 
     # -- mining -----------------------------------------------------
 
@@ -415,6 +441,7 @@ class ReflectionSynthesizer:
                     )
                     continue
                 self._promoted.add(pattern.signature)
+                self._pattern_cache[pattern.signature] = pattern
                 report.rule_ids.append(rule_id)
                 report.patterns_promoted += 1
                 logger.info(
@@ -544,6 +571,7 @@ class ReflectionSynthesizer:
                 skipped += 1
                 continue
             self._promoted.add(pattern.signature)
+            self._pattern_cache[pattern.signature] = pattern
             loaded += 1
         logger.info(
             "reflection ledger: rehydrated %d pattern(s) from %r (%d skipped)",
