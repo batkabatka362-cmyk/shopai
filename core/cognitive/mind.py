@@ -229,10 +229,47 @@ class Mind:
             report.error = f"{type(exc).__name__}: {exc}"
             logger.exception("Mind cycle %d failed", ctx.cycle_number)
 
+        # Wave 4 #4: post-cycle cognitive audit — dispatch the
+        # side-effect-free introspection functions so every cycle
+        # leaves an observability trace on the dispatcher. Si
+        # snapshots the self-model and Ni asks consolidation what
+        # it would do in dry-run mode. Both are cheap and
+        # idempotent; failures are captured on the DispatchResult,
+        # never raised.
+        self._emit_cognitive_audit(ctx)
+
         report.finished_at = time.time()
         self._cycle_history.append(report)
         logger.info("Mind cycle %d: %s", ctx.cycle_number, report.headline())
         return report
+
+    def _emit_cognitive_audit(self, ctx: CycleContext) -> None:
+        """Run the post-cycle observability dispatch pass.
+
+        Separated from :meth:`run_cycle` so tests / subclasses can
+        skip or override it. Wraps the two introspection calls in
+        a single try/except — an exception here must never
+        propagate into the cycle result.
+        """
+        try:
+            disp = self.cognitive_dispatcher()
+            audit_ctx = {"dry_run": True, "cycle": ctx.cycle_number}
+            disp.dispatch(CognitiveFunction.Si, audit_ctx)
+            disp.dispatch(CognitiveFunction.Ni, audit_ctx)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cognitive audit emit failed: %s", exc)
+
+    def cognitive_report(self) -> dict[str, Any]:
+        """Return the dispatcher's observability snapshot.
+
+        Convenience wrapper over
+        :meth:`CognitiveDispatcher.stats` that also includes the
+        list of registered functions and the total cycle count
+        for correlation (""N dispatches across M cycles"").
+        """
+        stats = self.cognitive_dispatcher().stats()
+        stats["cycles_run"] = self._cycle_count
+        return stats
 
     # ── Cognitive function dispatch (Wave 2 #7 integration) ──
 

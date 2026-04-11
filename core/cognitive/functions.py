@@ -67,9 +67,11 @@ Design notes
 from __future__ import annotations
 
 import threading
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Deque
 
 from utils.logger import get_logger
 
@@ -170,9 +172,15 @@ class CognitiveDispatcher:
     failures.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, history_size: int = 64) -> None:
         self._lock = threading.RLock()
         self._handlers: dict[CognitiveFunction, HandlerFn] = {}
+        # Wave 4 #4: observability — per-function call / error counts
+        # and a bounded history so operators can see which cognitive
+        # functions have been exercised recently.
+        self._call_counts:  dict[CognitiveFunction, int] = {}
+        self._error_counts: dict[CognitiveFunction, int] = {}
+        self._recent: Deque[dict[str, Any]] = deque(maxlen=max(1, history_size))
 
     # -- registration -----------------------------------------------
 
@@ -213,17 +221,23 @@ class CognitiveDispatcher:
         Exceptions from the handler are captured on the
         :class:`DispatchResult`'s ``error`` field so one
         flaky subsystem doesn't take down the Mind cycle.
+
+        Every dispatch — including skipped and errored ones —
+        is logged to the bounded history and reflected in
+        :meth:`stats` (Wave 4 #4 observability).
         """
         module = _FUNCTION_TO_MODULE[function]
         with self._lock:
             handler = self._handlers.get(function)
         if handler is None:
-            return DispatchResult(
+            result = DispatchResult(
                 function=function, module=module, skipped=True,
             )
+            self._record_trace(result)
+            return result
         try:
             value = handler(context or {})
-            return DispatchResult(
+            result = DispatchResult(
                 function=function, module=module, value=value,
             )
         except Exception as exc:  # noqa: BLE001
@@ -231,10 +245,76 @@ class CognitiveDispatcher:
                 "CognitiveDispatcher: handler for %s raised %s: %s",
                 function.value, type(exc).__name__, exc,
             )
-            return DispatchResult(
+            result = DispatchResult(
                 function=function, module=module,
                 error=f"{type(exc).__name__}: {exc}",
             )
+        self._record_trace(result)
+        return result
+
+    def _record_trace(self, result: DispatchResult) -> None:
+        """Append *result* to the observability ring buffer and
+        bump the per-function call/error counters. Internal use.
+        """
+        status = (
+            "error" if result.error
+            else "skipped" if result.skipped
+            else "ok"
+        )
+        with self._lock:
+            self._call_counts[result.function] = (
+                self._call_counts.get(result.function, 0) + 1
+            )
+            if status == "error":
+                self._error_counts[result.function] = (
+                    self._error_counts.get(result.function, 0) + 1
+                )
+            self._recent.append({
+                "ts":       time.time(),
+                "function": result.function.value,
+                "module":   result.module,
+                "status":   status,
+            })
+
+    # -- observability ---------------------------------------------
+
+    def stats(self) -> dict[str, Any]:
+        """Return observability counters for every function.
+
+        Shape::
+
+            {
+              "registered": ["Ti", "Te", ...],
+              "counts":     {"Ti": 3, "Te": 2, ...},
+              "errors":     {"Ti": 0, ...},
+              "recent":     [{"ts": ..., "function": ..., "status": ...}, ...],
+              "total":      5,
+            }
+
+        Safe to call from any thread.
+        """
+        with self._lock:
+            counts = {
+                fn.value: n for fn, n in self._call_counts.items()
+            }
+            errors = {
+                fn.value: n for fn, n in self._error_counts.items()
+            }
+            recent = list(self._recent)
+            return {
+                "registered": [fn.value for fn in self._handlers.keys()],
+                "counts":     counts,
+                "errors":     errors,
+                "recent":     recent,
+                "total":      sum(self._call_counts.values()),
+            }
+
+    def reset_stats(self) -> None:
+        """Clear counters + history. Handlers are left intact."""
+        with self._lock:
+            self._call_counts.clear()
+            self._error_counts.clear()
+            self._recent.clear()
 
     # -- batch ------------------------------------------------------
 
