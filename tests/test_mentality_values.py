@@ -268,7 +268,10 @@ def test_belief_store_snapshot_structure():
     store.observe("x", False)
     snap = store.snapshot()
     assert "x" in snap
-    assert set(snap["x"].keys()) == {"alpha", "beta", "mean", "n"}
+    # Wave 6 #12 added ``last_updated_at`` to every snapshot row.
+    assert set(snap["x"].keys()) == {
+        "alpha", "beta", "mean", "n", "last_updated_at",
+    }
 
 
 def test_belief_store_weighted_observations():

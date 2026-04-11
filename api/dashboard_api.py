@@ -290,6 +290,15 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         debugger — which keys have enough evidence, which are
         trending toward failure, which still look healthy.
 
+        Wave 6 #12: surfaces decay telemetry on top of the Wave 6
+        #11 ``half_life_seconds`` option. Each row carries
+        ``last_updated_at`` (wall-clock of the last observe) and a
+        derived ``age_seconds`` so operators can see how fresh the
+        posterior is — critical once decay is active and stale
+        beliefs silently drift back toward the prior. The response
+        envelope gains ``half_life_seconds`` at top level so the
+        dashboard can display the active decay configuration.
+
         Keys are sorted by the lower bound of the 95% credible
         interval (ascending) so the most at-risk actions float to
         the top. Querystring ``?limit=N`` caps the response size
@@ -303,20 +312,34 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)[:200]}
 
+        now = time.time()
         rows: list[dict[str, Any]] = []
         for key, row in snap.items():
             try:
                 lo, hi = store.credible_interval_95(key)
             except Exception:
                 lo, hi = 0.0, 1.0
+            last_updated_at = row.get("last_updated_at")
+            age_seconds: float | None = None
+            if last_updated_at is not None:
+                try:
+                    age_seconds = max(0.0, now - float(last_updated_at))
+                except (TypeError, ValueError):
+                    age_seconds = None
             rows.append({
-                "key":       key,
-                "alpha":     row["alpha"],
-                "beta":      row["beta"],
-                "mean":      round(float(row["mean"]), 4),
-                "n":         row["n"],
-                "ci_low":    round(float(lo), 4),
-                "ci_high":   round(float(hi), 4),
+                "key":             key,
+                "alpha":           row["alpha"],
+                "beta":            row["beta"],
+                "mean":            round(float(row["mean"]), 4),
+                "n":               row["n"],
+                "ci_low":          round(float(lo), 4),
+                "ci_high":         round(float(hi), 4),
+                "last_updated_at": last_updated_at,
+                "age_seconds": (
+                    round(age_seconds, 3)
+                    if age_seconds is not None
+                    else None
+                ),
             })
         # Sort by ci_low ascending — worst-case first — with ties
         # broken by mean ascending and then by n descending so
@@ -325,11 +348,23 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         total = len(rows)
         rows = rows[:limit]
 
+        # Wave 6 #12: surface the store's half-life so operators
+        # can see whether decay is active without shelling into
+        # the process. Missing attribute (older store objects
+        # injected by tests) falls back to None.
+        try:
+            half_life_seconds = getattr(
+                store, "half_life_seconds", None,
+            )
+        except Exception:
+            half_life_seconds = None
+
         return {
-            "beliefs":   rows,
-            "count":     len(rows),
-            "total":     total,
-            "timestamp": time.time(),
+            "beliefs":           rows,
+            "count":             len(rows),
+            "total":             total,
+            "half_life_seconds": half_life_seconds,
+            "timestamp":         now,
         }
 
     @staticmethod

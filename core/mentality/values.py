@@ -465,16 +465,25 @@ class BeliefStore:
                         "belief store: persist failed on reset: %s", exc,
                     )
 
-    def snapshot(self) -> dict[str, dict[str, float]]:
+    def snapshot(self) -> dict[str, dict[str, float | None]]:
         """Return a serialisable view of all beliefs (e.g. for
-        the reflection synthesizer or debug endpoints)."""
+        the reflection synthesizer or debug endpoints).
+
+        Wave 6 #12: rows now carry ``last_updated_at`` so callers
+        can see how fresh each posterior is — useful once Wave 6
+        #11 decay is active and a row's mean depends as much on
+        when it was last touched as on its (alpha, beta) counts.
+        Legacy callers that only read ``alpha``/``beta``/``mean``/
+        ``n`` are unaffected by the extra key.
+        """
         with self._lock:
             return {
                 key: {
-                    "alpha": belief.alpha,
-                    "beta":  belief.beta,
-                    "mean":  belief.mean,
-                    "n":     belief.n,
+                    "alpha":           belief.alpha,
+                    "beta":            belief.beta,
+                    "mean":            belief.mean,
+                    "n":               belief.n,
+                    "last_updated_at": belief.last_updated_at,
                 }
                 for key, belief in self._beliefs.items()
             }

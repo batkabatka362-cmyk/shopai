@@ -423,6 +423,128 @@ class TestBeliefEndpoint:
         assert out["beliefs"][0]["ci_low"] == 0.0
         assert out["beliefs"][0]["ci_high"] == 1.0
 
+    # -- Wave 6 #12: decay telemetry ---------------------------------
+
+    def test_envelope_surfaces_half_life_when_store_has_none(
+        self, monkeypatch,
+    ):
+        """Decay disabled → ``half_life_seconds`` is ``None`` at
+        the envelope level so the dashboard can render "decay
+        off" explicitly."""
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore({}),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        assert "half_life_seconds" in out
+        assert out["half_life_seconds"] is None
+
+    def test_envelope_surfaces_half_life_when_store_has_it(
+        self, monkeypatch,
+    ):
+        class _DecayStore(_FakeBeliefStore):
+            half_life_seconds = 3600.0
+
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _DecayStore({}),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        assert out["half_life_seconds"] == 3600.0
+
+    def test_rows_include_last_updated_at_and_age_seconds(
+        self, monkeypatch,
+    ):
+        """Snapshot rows carry ``last_updated_at`` — the endpoint
+        forwards it and adds a derived ``age_seconds``."""
+        import time as _time
+
+        now = _time.time()
+        rows = {
+            "fresh": {
+                "alpha": 5.0, "beta": 1.0, "mean": 5 / 6, "n": 4,
+                "last_updated_at": now - 10.0,
+            },
+            "stale": {
+                "alpha": 2.0, "beta": 8.0, "mean": 0.2, "n": 8,
+                "last_updated_at": now - 10_000.0,
+            },
+        }
+        intervals = {
+            "fresh": (0.50, 0.95),
+            "stale": (0.05, 0.40),
+        }
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore(rows, intervals),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        by_key = {r["key"]: r for r in out["beliefs"]}
+        assert by_key["fresh"]["last_updated_at"] == rows["fresh"][
+            "last_updated_at"
+        ]
+        # Age is clock-sensitive — compare with a generous window.
+        assert 9.0 <= by_key["fresh"]["age_seconds"] <= 30.0
+        assert 9_995.0 <= by_key["stale"]["age_seconds"] <= 10_030.0
+
+    def test_row_missing_last_updated_at_falls_back_to_none(
+        self, monkeypatch,
+    ):
+        """Legacy rows without ``last_updated_at`` must still work
+        — the endpoint reports ``None`` for both the timestamp and
+        the derived age."""
+        rows = {
+            "legacy": {"alpha": 3.0, "beta": 3.0, "mean": 0.5, "n": 4},
+        }
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore(rows),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        row = out["beliefs"][0]
+        assert row["last_updated_at"] is None
+        assert row["age_seconds"] is None
+
+    def test_age_seconds_never_negative_on_clock_skew(
+        self, monkeypatch,
+    ):
+        """If ``last_updated_at`` is in the future (clock skew or
+        a paused test clock), age should clamp to zero rather than
+        leak a negative into the dashboard."""
+        import time as _time
+
+        rows = {
+            "future": {
+                "alpha": 2.0, "beta": 2.0, "mean": 0.5, "n": 2,
+                "last_updated_at": _time.time() + 1_000.0,
+            },
+        }
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore(rows),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        assert out["beliefs"][0]["age_seconds"] == 0.0
+
+    def test_malformed_last_updated_at_falls_back_to_none(
+        self, monkeypatch,
+    ):
+        rows = {
+            "bad": {
+                "alpha": 2.0, "beta": 2.0, "mean": 0.5, "n": 2,
+                "last_updated_at": "not-a-timestamp",
+            },
+        }
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore(rows),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        # The raw field round-trips even if invalid, but the
+        # derived age drops to None so the dashboard doesn't
+        # render bogus seconds.
+        assert out["beliefs"][0]["age_seconds"] is None
+
     def test_end_to_end_with_real_store(self, monkeypatch, tmp_path):
         """Smoke test: feed the real BeliefStore some outcomes
         via the singleton and read them back through the endpoint."""

@@ -432,3 +432,34 @@ def test_snapshot_reflects_decayed_values():
     assert snap["k"]["alpha"] == pytest.approx(7.0)
     assert snap["k"]["beta"] == pytest.approx(1.0)
     assert snap["k"]["mean"] == pytest.approx(7.0 / 8.0)
+
+
+# ---------------------------------------------------------------------------
+# Wave 6 #12: snapshot telemetry
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_row_carries_last_updated_at():
+    store = BeliefStore(half_life_seconds=10.0)
+    store.observe("k", True, now=1234.5)
+    snap = store.snapshot()
+    assert "last_updated_at" in snap["k"]
+    assert snap["k"]["last_updated_at"] == 1234.5
+
+
+def test_snapshot_row_last_updated_at_is_none_when_unset():
+    """Snapshots rehydrated from a pre-Wave 6 #11 ledger have no
+    timestamp — the field round-trips as None."""
+    store = BeliefStore()  # decay disabled
+    # Reach in and construct a legacy-shaped Belief without the field.
+    b = Belief(key="legacy", alpha=3.0, beta=2.0, last_updated_at=None)
+    store._beliefs["legacy"] = b  # noqa: SLF001 - test helper
+    snap = store.snapshot()
+    assert snap["legacy"]["last_updated_at"] is None
+
+
+def test_snapshot_row_tracks_subsequent_updates():
+    store = BeliefStore(half_life_seconds=100.0)
+    store.observe("k", True, now=10.0)
+    store.observe("k", False, now=50.0)
+    assert store.snapshot()["k"]["last_updated_at"] == 50.0
