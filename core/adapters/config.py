@@ -67,6 +67,14 @@ ENV_ALIASES: dict[str, str] = {
     "imagekit_pub":  "IMAGEKIT_PUBLIC_KEY",
     "imagekit_priv": "IMAGEKIT_PRIVATE_KEY",
 
+    # ── Payment processors ────────────────────
+    # PayPal uses OAuth2 client credentials: both id + secret are
+    # required, ``paypal_env`` is "live" or "sandbox" (default
+    # sandbox so accidental misconfiguration never hits real money).
+    "paypal_client_id":     "PAYPAL_CLIENT_ID",
+    "paypal_client_secret": "PAYPAL_CLIENT_SECRET",
+    "paypal_env":           "PAYPAL_ENV",
+
     # ── Shopify (already handled by core/auth/shopify_auth) ──
     "shopify_url":   "SHOPAI_SHOPIFY_URL",
     "shopify_key":   "SHOPAI_SHOPIFY_KEY",

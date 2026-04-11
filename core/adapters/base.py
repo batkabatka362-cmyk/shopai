@@ -120,6 +120,11 @@ class Capability(str, Enum):
     SHIPPING_RATE_QUOTE = "shipping_rate_quote"
     SHIPPING_LABEL_BUY = "shipping_label_buy"
 
+    # ── Payment processing ────────────────────
+    PAYMENT_REFUND = "payment_refund"
+    PAYMENT_CAPTURE = "payment_capture"
+    PAYMENT_LIST_DISPUTES = "payment_list_disputes"
+
 
 # ── Result envelope ────────────────────────────────────────────
 
