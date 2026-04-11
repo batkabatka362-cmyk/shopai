@@ -1,13 +1,17 @@
 """Dashboard API — HTTP endpoints for monitoring and control.
 
 Endpoints:
-  GET  /api/status           — system status (+ adapter SLA summary)
-  GET  /api/dashboard        — full dashboard data
-  GET  /api/cycle            — run a cycle and return results
-  GET  /api/alerts           — recent alerts
-  GET  /api/report           — human-readable report
-  GET  /api/metrics/adapters — per-adapter SLA rollup (Wave 4 #3)
-  POST /api/webhook          — Shopify webhook receiver
+  GET  /api/status             — system status (+ adapter SLA summary)
+  GET  /api/dashboard          — full dashboard data
+  GET  /api/cycle              — run a cycle and return results
+  GET  /api/alerts             — recent alerts
+  GET  /api/report             — human-readable report
+  GET  /api/memory             — memory intelligence stats
+  GET  /api/metrics/adapters   — per-adapter SLA rollup (Wave 4 #3)
+  GET  /api/cognitive          — Mind cognitive dispatcher stats (Wave 5 #B)
+  GET  /api/memory/satellites  — SatelliteRouter layer stats (Wave 5 #B)
+  GET  /api/policy/audit       — recent policy audit entries (Wave 5 #B)
+  POST /api/webhook            — Shopify webhook receiver
 """
 from __future__ import annotations
 import json
@@ -53,11 +57,20 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             self._json_response(self._get_memory())
         elif path == "/api/metrics/adapters":
             self._json_response(self._get_adapter_metrics())
+        elif path == "/api/cognitive":
+            self._json_response(self._get_cognitive_report())
+        elif path == "/api/memory/satellites":
+            self._json_response(self._get_satellite_stats())
+        elif path == "/api/policy/audit":
+            limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
+            limit = self._parse_limit(limit_raw, default=20, maximum=500)
+            self._json_response(self._get_policy_audit(limit=limit))
         else:
             self._json_response({"error": "not_found", "endpoints": [
                 "/api/status", "/api/dashboard", "/api/cycle",
                 "/api/alerts", "/api/report", "/api/memory",
-                "/api/metrics/adapters",
+                "/api/metrics/adapters", "/api/cognitive",
+                "/api/memory/satellites", "/api/policy/audit",
             ]}, 404)
 
     def do_POST(self):
@@ -173,6 +186,87 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "breached":  brk,
             "breaching": breaching,
         }
+
+    @staticmethod
+    def _parse_limit(query: str, *, default: int, maximum: int) -> int:
+        """Extract ``limit=<n>`` from a raw querystring, clamped to
+        [1, maximum]. Returns *default* on any parse failure so the
+        endpoint never 500s on bad input.
+        """
+        if not query:
+            return default
+        try:
+            for part in query.split("&"):
+                if "=" not in part:
+                    continue
+                key, val = part.split("=", 1)
+                if key == "limit":
+                    n = int(val)
+                    return max(1, min(maximum, n))
+        except Exception:
+            pass
+        return default
+
+    @staticmethod
+    def _get_cognitive_report() -> dict:
+        """Return the Mind cognitive dispatcher observability snapshot.
+
+        Wave 5 #B: exposes Wave 4 #4's in-memory counters (call counts,
+        error counts, recent ring buffer, cycles_run) over HTTP so
+        operators can watch MBTI function activity without attaching
+        a debugger. Fails soft — a missing Mind singleton returns an
+        error envelope, never a 500.
+        """
+        try:
+            from core.cognitive.mind import get_mind
+            mind = get_mind()
+            report = mind.cognitive_report()
+            report["timestamp"] = time.time()
+            return report
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:200]}
+
+    @staticmethod
+    def _get_satellite_stats() -> dict:
+        """Return SatelliteRouter layer stats (vector / graph / signal).
+
+        Wave 5 #B: the satellite layers (Wave 2 #4, integrated Wave 3
+        #3, reads exposed Wave 4 #2) track per-layer totals; this
+        endpoint surfaces them so operators can see the memory
+        augmentation is alive without opening a REPL.
+        """
+        try:
+            from core.memory.unified_memory import get_unified_memory
+            mem = get_unified_memory()
+            router = mem.get_satellites()
+            return {
+                "layers":    router.stats(),
+                "timestamp": time.time(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:200]}
+
+    @staticmethod
+    def _get_policy_audit(limit: int = 20) -> dict:
+        """Return recent policy audit entries (newest first).
+
+        Wave 5 #B: the policy store writes every HARD / MEDIUM /
+        SOFT decision to JSONL (Wave 2 #1); without an HTTP surface
+        operators had to tail the file by hand. This endpoint
+        bridges the gap. Querystring ``?limit=N`` caps the response
+        size (default 20, max 500).
+        """
+        try:
+            from engines.meta_governance.policy_store import get_default_store
+            store = get_default_store()
+            entries = store.read_audit(limit=limit)
+            return {
+                "entries":   entries,
+                "count":     len(entries),
+                "timestamp": time.time(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:200]}
 
     @staticmethod
     def _get_adapter_metrics() -> dict:
