@@ -80,6 +80,13 @@ ENV_ALIASES: dict[str, str] = {
     # suffix so operators never have to set a separate env var.
     "deepl":         "DEEPL_API_KEY",
 
+    # ── Reviews / UGC ─────────────────────────
+    # Judge.me uses an API token that's passed as a query
+    # parameter (not a header). Keep the shop domain in the
+    # per-call params rather than config so one ShopAI deployment
+    # can fetch reviews for multiple shops.
+    "judgeme":       "JUDGEME_API_TOKEN",
+
     # ── Payment processors ────────────────────
     # PayPal uses OAuth2 client credentials: both id + secret are
     # required, ``paypal_env`` is "live" or "sandbox" (default
