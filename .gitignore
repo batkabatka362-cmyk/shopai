@@ -11,6 +11,8 @@ build/
 /data/
 !core/data/
 *.db
+*.db-shm
+*.db-wal
 .pytest_cache/
 .env
 
