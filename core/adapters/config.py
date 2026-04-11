@@ -61,6 +61,13 @@ ENV_ALIASES: dict[str, str] = {
     "klaviyo":       "KLAVIYO_API_KEY",
     "omnisend":      "OMNISEND_API_KEY",
     "postscript":    "POSTSCRIPT_API_KEY",
+    # Twilio uses HTTP Basic auth: the Account SID is the
+    # username and the Auth Token is the password. The "from"
+    # number is tenant-wide so we keep it in config rather than
+    # the per-call params.
+    "twilio_account_sid": "TWILIO_ACCOUNT_SID",
+    "twilio_auth_token":  "TWILIO_AUTH_TOKEN",
+    "twilio_from_number": "TWILIO_FROM_NUMBER",
 
     # ── Media / scraping ──────────────────────
     "firecrawl":     "FIRECRAWL_API_KEY",
