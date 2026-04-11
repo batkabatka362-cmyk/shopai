@@ -1,0 +1,56 @@
+# Git / VCS
+.git
+.gitignore
+.gitattributes
+
+# Python caches / virtualenvs
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+env
+.Python
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Test + coverage artifacts
+.coverage
+htmlcov
+coverage.xml
+.tox
+.nox
+
+# Local data / logs (bind-mounted in production instead of baked in)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/.shopify_tokens.json
+logs/
+*.log
+
+# Editor / OS junk
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Node / frontend (if any)
+node_modules
+dist
+build
+
+# Docker + CI (don't bake into the image)
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+.dockerignore
+.github
+
+# Documentation (the README is copied via the regular COPY — it's small)
+docs/

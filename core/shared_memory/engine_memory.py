@@ -21,7 +21,11 @@ from utils.logger import get_logger
 
 logger = get_logger("shared_memory.engine")
 
-_MEMORY_DIR = "/tmp/shopai_engine_memory"
+try:
+    from core.memory.storage_config import engine_memory_dir
+    _MEMORY_DIR = engine_memory_dir()
+except Exception:
+    _MEMORY_DIR = "/tmp/shopai_engine_memory"
 
 
 class EngineMemory:

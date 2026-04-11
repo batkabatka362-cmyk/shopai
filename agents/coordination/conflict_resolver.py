@@ -152,7 +152,7 @@ class ConflictResolver:
         """Attempt to merge non-conflicting parts of the values.
 
         If both values are dicts, combine their keys (agent B overrides A on overlap).
-        If both are lists, concatenate and deduplicate.
+        If both are lists, concatenate and deduplicate by content.
         Otherwise fall back to the first agent's value.
         """
         agents = conflict.get("agents", [])
@@ -164,10 +164,24 @@ class ConflictResolver:
         elif isinstance(val_list[0], dict) and isinstance(val_list[1], dict):
             merged = {**val_list[0], **val_list[1]}
         elif isinstance(val_list[0], list) and isinstance(val_list[1], list):
-            seen: set = set()
+            # Dedupe by CONTENT, not id(). The previous version used
+            # `id(item)` for unhashable types, which only matched if
+            # the SAME object reference appeared in both lists — two
+            # equivalent dicts in the two source lists would NOT
+            # dedupe because they had different ids. Now we serialize
+            # via repr() as a stable content key.
+            seen: set[str] = set()
             merged = []
             for item in val_list[0] + val_list[1]:
-                key = id(item) if not isinstance(item, (str, int, float, bool)) else item
+                if isinstance(item, (str, int, float, bool, type(None))):
+                    key = f"primitive:{type(item).__name__}:{item!r}"
+                else:
+                    try:
+                        key = f"hashable:{hash(item)}"
+                    except TypeError:
+                        # Unhashable (dict, list, set) — fall back to
+                        # repr() which gives a stable content key.
+                        key = f"repr:{repr(item)}"
                 if key not in seen:
                     seen.add(key)
                     merged.append(item)
@@ -176,7 +190,7 @@ class ConflictResolver:
             merged = val_list[0]
 
         return {
-            "field": conflict["field"],
+            "field": conflict.get("field"),
             "resolved_value": merged,
             "method": "merge",
         }

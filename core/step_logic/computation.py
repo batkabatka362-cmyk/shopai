@@ -16,10 +16,9 @@ class Computation:
 
     @staticmethod
     def margin(price: float, cost: float) -> float:
-        """Compute margin percentage."""
-        if price <= 0:
-            return 0.0
-        return round((price - cost) / price * 100, 2)
+        """Compute margin percentage. Treats missing cost as zero (100% margin)."""
+        from utils.finance import margin_pct
+        return margin_pct(price, cost, require_cost=False)
 
     @staticmethod
     def markup(price: float, cost: float) -> float:

@@ -1,0 +1,22 @@
+{
+  "record_id": "c1666023a089",
+  "timestamp": "2026-04-02T11:34:02Z",
+  "input_hash": "5766239d3ce6e706",
+  "task_types": [
+    "launch_ad",
+    "send_email"
+  ],
+  "task_count": 1,
+  "scheduled_count": 0,
+  "blocked_count": 1,
+  "delayed_count": 0,
+  "execution_order": [],
+  "timing_plan": {
+    "total_estimated_duration": "0.0s",
+    "next_execution": "2026-04-02T12:00:00Z",
+    "slots_used": 0,
+    "capacity_remaining": 50
+  },
+  "elapsed_seconds": 0.0006,
+  "executions": []
+}

@@ -1,0 +1,61 @@
+{
+  "record_id": "37464a90b9c9",
+  "timestamp": "2026-04-02T11:45:08Z",
+  "source_engine": "decision_intelligence",
+  "action_type": "launch_ad",
+  "activity_id": "906b0772f64c",
+  "decision": "rejected",
+  "issues": [
+    "[critical] daily_budget_headroom: Action would exceed daily budget: used=$400.00 + action=$500.00 > limit=$600.00",
+    "[policy] spending_policy: Single action budget $500.00 is 83% of daily limit (max 50% allowed)",
+    "[constraint] max_daily_budget: Would exceed daily budget: $400.00 + $500.00 = $900.00 > limit $600.00"
+  ],
+  "risks": [
+    {
+      "risk_type": "financial",
+      "level": "high",
+      "score": 0.7,
+      "detail": "Financial risk score 0.70; action budget=$500.00; daily remaining=$200.00/600.00"
+    },
+    {
+      "risk_type": "reputation",
+      "level": "low",
+      "score": 0.2,
+      "detail": "Reputation risk score 0.20 for 'launch_ad'"
+    },
+    {
+      "risk_type": "operational",
+      "level": "low",
+      "score": 0.05,
+      "detail": "Operational risk score 0.05 for 'launch_ad'"
+    },
+    {
+      "risk_type": "compliance",
+      "level": "medium",
+      "score": 0.35,
+      "detail": "Compliance risk score 0.35 \u2014 1 violations, 1 policy failures"
+    }
+  ],
+  "risk_score": 0.375,
+  "violations": [
+    {
+      "rule_id": "BUD-002",
+      "rule_name": "daily_budget_headroom",
+      "severity": "critical",
+      "detail": "Action would exceed daily budget: used=$400.00 + action=$500.00 > limit=$600.00",
+      "field": "budget"
+    }
+  ],
+  "override_applied": true,
+  "modifications": {},
+  "validation_score": 0.7374,
+  "feedback_summary": {
+    "recommendations": [
+      "Action was rejected \u2014 address violations before retrying",
+      "Suggested fix: Reduce budget to stay within daily limit",
+      "Address financial risk (high): Financial risk score 0.70; action budget=$500.00; daily remaining=$200.00/600.00"
+    ],
+    "governance_confidence": 0.6775
+  },
+  "elapsed_seconds": 0.0
+}

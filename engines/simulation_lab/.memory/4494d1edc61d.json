@@ -1,0 +1,122 @@
+{
+  "record_id": "4494d1edc61d",
+  "timestamp": "2026-04-02T11:23:38Z",
+  "strategy_type": "pricing",
+  "input_hash": "0643963f1132c620",
+  "best_option": {
+    "scenario_id": "c059497919",
+    "label": "Edge Case",
+    "parameters": {
+      "price": 60.0,
+      "units": 500,
+      "cost": 18.0,
+      "ad_spend": 2000.0,
+      "conversion_rate": 0.06
+    },
+    "total_score": 1.0,
+    "predicted_revenue": 32250.1,
+    "predicted_profit": 20373.62,
+    "risk_level": "low",
+    "confidence": 0.9165,
+    "reasoning": [
+      "'Edge Case' ranked #1 with total score 1.00",
+      "Expected profit 20373.62 on revenue 32250.10",
+      "Risk level: low (loss probability 0.0%)",
+      "Key advantages: Strong margin (64%) provides cost buffer; Profitable even in worst-case (p5) scenarios"
+    ],
+    "model_note": "LLaMA would synthesize richer justification narratives"
+  },
+  "all_scenarios": [
+    {
+      "scenario_id": "a525884ec4",
+      "label": "Baseline",
+      "description": "Unmodified base parameters \u2014 the control scenario.",
+      "parameters": {
+        "price": 29.99,
+        "units": 150,
+        "cost": 12.0,
+        "ad_spend": 500.0,
+        "conversion_rate": 0.04
+      },
+      "variation_type": "baseline",
+      "tags": [
+        "pricing",
+        "control"
+      ]
+    },
+    {
+      "scenario_id": "a3702dec9e",
+      "label": "Aggressive",
+      "description": "Parameters pushed 30% above baseline to test upside potential.",
+      "parameters": {
+        "price": 38.987,
+        "units": 195,
+        "cost": 15.6,
+        "ad_spend": 650.0,
+        "conversion_rate": 0.052
+      },
+      "variation_type": "aggressive",
+      "tags": [
+        "pricing",
+        "high-risk",
+        "high-reward"
+      ]
+    },
+    {
+      "scenario_id": "3ff66db597",
+      "label": "Conservative",
+      "description": "Parameters reduced 20% below baseline for risk-averse stance.",
+      "parameters": {
+        "price": 23.992,
+        "units": 120,
+        "cost": 9.6,
+        "ad_spend": 400.0,
+        "conversion_rate": 0.032
+      },
+      "variation_type": "conservative",
+      "tags": [
+        "pricing",
+        "low-risk",
+        "stable"
+      ]
+    },
+    {
+      "scenario_id": "c059497919",
+      "label": "Edge Case",
+      "description": "Parameters at constraint boundaries to test extremes.",
+      "parameters": {
+        "price": 60.0,
+        "units": 500,
+        "cost": 18.0,
+        "ad_spend": 2000.0,
+        "conversion_rate": 0.06
+      },
+      "variation_type": "edge_case",
+      "tags": [
+        "pricing",
+        "boundary",
+        "stress-test"
+      ]
+    },
+    {
+      "scenario_id": "37a15708e2",
+      "label": "Alternative Balance",
+      "description": "Rebalanced parameters \u2014 boost underweighted, dampen overweighted.",
+      "parameters": {
+        "price": 34.4885,
+        "units": 128,
+        "cost": 13.8,
+        "ad_spend": 425.0,
+        "conversion_rate": 0.046
+      },
+      "variation_type": "alternative",
+      "tags": [
+        "pricing",
+        "balanced",
+        "creative"
+      ]
+    }
+  ],
+  "confidence": 0.9165,
+  "outcome_actual": null
+}

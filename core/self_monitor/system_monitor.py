@@ -5,6 +5,7 @@ Only safe recovery actions (cache clear, restart) are automated.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -29,6 +30,9 @@ class SystemMonitor:
         self._anomaly = AnomalyDetector()
         self._recovery = AutoRecovery()
         self._snapshots: list[dict[str, Any]] = []
+        # Protect ``_snapshots`` from concurrent full_check
+        # calls. Audit pass 51.
+        self._lock = threading.Lock()
 
     @property
     def health(self) -> HealthChecker:
@@ -47,6 +51,8 @@ class SystemMonitor:
         start = time.monotonic()
 
         health = self._health.check_all()
+        if not isinstance(health, dict):
+            health = {"status": "unknown", "checks": {}}
         snapshot = {
             "timestamp": time.time(),
             "health": health,
@@ -54,23 +60,36 @@ class SystemMonitor:
             "recovery_actions": [],
         }
 
-        # Auto-recover known issues
-        if not health["checks"]["modules"]["healthy"]:
+        # Defensive: health["checks"]["modules"]["healthy"]
+        # chained .get crashed if any sub-key was missing.
+        # Use ``(x or {})`` pattern. Audit pass 51.
+        checks = health.get("checks") or {}
+        if not isinstance(checks, dict):
+            checks = {}
+        modules_check = checks.get("modules") or {}
+        if not isinstance(modules_check, dict):
+            modules_check = {}
+        if not modules_check.get("healthy", True):
             recovery = self._recovery.attempt_recovery("engine_cache_stale")
             snapshot["recovery_actions"].append(recovery)
 
-        if not health["checks"].get("memory", {}).get("healthy", True):
+        memory_check = checks.get("memory") or {}
+        if not isinstance(memory_check, dict):
+            memory_check = {}
+        if not memory_check.get("healthy", True):
             recovery = self._recovery.attempt_recovery("memory_pressure")
             snapshot["recovery_actions"].append(recovery)
 
         elapsed = time.monotonic() - start
         snapshot["elapsed_seconds"] = round(elapsed, 3)
-        snapshot["status"] = health["status"]
+        snapshot["status"] = health.get("status", "unknown")
 
-        self._snapshots.append(snapshot)
-        # Keep last 1000 snapshots
-        if len(self._snapshots) > 1000:
-            self._snapshots = self._snapshots[-1000:]
+        with self._lock:
+            self._snapshots.append(snapshot)
+            # Keep last 1000 snapshots. In-place trim so any
+            # external reference to ``_snapshots`` stays valid.
+            if len(self._snapshots) > 1000:
+                del self._snapshots[:len(self._snapshots) - 1000]
 
         logger.info("System check: status=%s elapsed=%.3fs", snapshot["status"], elapsed)
         return snapshot
@@ -78,7 +97,9 @@ class SystemMonitor:
     def get_dashboard(self) -> dict[str, Any]:
         """Get dashboard data: current status + trends."""
         current = self.full_check()
-        recent = self._snapshots[-100:] if self._snapshots else []
+        with self._lock:
+            recent = list(self._snapshots[-100:]) if self._snapshots else []
+            total_snapshots = len(self._snapshots)
 
         healthy_count = sum(1 for s in recent if s.get("status") == "healthy")
         total = len(recent) if recent else 1
@@ -86,11 +107,14 @@ class SystemMonitor:
         return {
             "current": current,
             "uptime_rate": round(healthy_count / total, 4),
-            "total_checks": len(self._snapshots),
+            "total_checks": total_snapshots,
             "recent_recoveries": self._recovery.get_action_log(limit=10),
             "baselines": self._anomaly.get_baselines(),
         }
 
     def get_history(self, limit: int = 50) -> list[dict[str, Any]]:
         """Get recent monitoring snapshots."""
-        return list(self._snapshots[-limit:])
+        if not isinstance(limit, int) or limit <= 0:
+            limit = 50
+        with self._lock:
+            return [dict(s) for s in self._snapshots[-limit:]]

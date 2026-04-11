@@ -10,7 +10,14 @@ import logging
 import os
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
+
 logger = logging.getLogger("data_pipeline.csv_loader")
+
+# UTF-8 Byte-Order-Mark. Excel / Google Sheets often export
+# CSVs with this prefix on the first cell, which silently
+# corrupts the first column header. Audit pass 45.
+_BOM = "\ufeff"
 
 
 class CSVLoaderError(Exception):
@@ -26,8 +33,8 @@ class CSVLoader:
     """
 
     def __init__(self, delimiter: str = ",", encoding: str = "utf-8") -> None:
-        self._delimiter = delimiter
-        self._encoding = encoding
+        self._delimiter = delimiter if isinstance(delimiter, str) and delimiter else ","
+        self._encoding = encoding if isinstance(encoding, str) and encoding else "utf-8"
 
     # ------------------------------------------------------------------
     # Public API
@@ -45,14 +52,25 @@ class CSVLoader:
             List of row dicts; empty list if the file is empty or missing.
 
         Raises:
-            CSVLoaderError: If the file cannot be opened.
+            CSVLoaderError: If the file cannot be opened or the path is
+                invalid.
         """
+        if not isinstance(filepath, str) or not filepath:
+            raise CSVLoaderError("filepath must be a non-empty string")
         filepath = os.path.expanduser(filepath)
         if not os.path.isfile(filepath):
             raise CSVLoaderError(f"File not found: {filepath}")
 
         try:
-            with open(filepath, newline="", encoding=self._encoding) as fh:
+            # ``encoding="utf-8-sig"`` automatically strips the
+            # UTF-8 BOM when present, so ``csv.DictReader``
+            # doesn't see ``\ufeff`` glued to the first column
+            # name. Pre-audit ``self._encoding`` (usually
+            # ``"utf-8"``) left the BOM in the header, silently
+            # corrupting the first column name on every Excel
+            # export. Audit pass 45.
+            open_encoding = "utf-8-sig" if self._encoding.lower() == "utf-8" else self._encoding
+            with open(filepath, newline="", encoding=open_encoding) as fh:
                 reader = csv.DictReader(fh, delimiter=self._delimiter)
                 rows = [self._cast_row(dict(row)) for row in reader]
         except OSError as exc:
@@ -79,6 +97,8 @@ class CSVLoader:
             List of successfully cast row dicts.
         """
         rows = self.load(filepath)
+        if not isinstance(schema, dict):
+            return rows
         result: list[dict[str, Any]] = []
         skipped = 0
 
@@ -108,10 +128,12 @@ class CSVLoader:
         Returns:
             List of missing column names (empty list if all present).
         """
+        if not isinstance(required_columns, list):
+            return []
         if not rows:
             return list(required_columns)
-
-        present = set(rows[0].keys())
+        first = rows[0] if isinstance(rows[0], dict) else {}
+        present = set(first.keys())
         missing = [col for col in required_columns if col not in present]
         if missing:
             logger.warning("Missing columns: %s", missing)
@@ -123,6 +145,12 @@ class CSVLoader:
 
     def load_string(self, csv_text: str) -> list[dict[str, Any]]:
         """Parse *csv_text* as CSV content and return a list of row dicts."""
+        if not isinstance(csv_text, str):
+            return []
+        # Strip BOM if present (mirrors the file-path load
+        # path's utf-8-sig handling).
+        if csv_text.startswith(_BOM):
+            csv_text = csv_text[len(_BOM):]
         reader = csv.DictReader(
             io.StringIO(csv_text), delimiter=self._delimiter
         )
@@ -135,9 +163,30 @@ class CSVLoader:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _cast_row(row: dict[str, str]) -> dict[str, Any]:
-        """Strip whitespace from all string values."""
-        return {k.strip(): (v.strip() if isinstance(v, str) else v) for k, v in row.items()}
+    def _cast_row(row: dict[str, Any]) -> dict[str, Any]:
+        """Strip whitespace from all string keys/values.
+
+        ``csv.DictReader`` places EXTRA fields (rows with more
+        columns than the header) under the ``None`` key as a
+        list. Pre-audit ``k.strip()`` crashed with
+        AttributeError on that ``None`` key. Now non-string
+        keys are dropped entirely and non-string values are
+        passed through unchanged. Audit pass 45.
+        """
+        if not isinstance(row, dict):
+            return {}
+        result: dict[str, Any] = {}
+        for k, v in row.items():
+            if not isinstance(k, str):
+                # Skip the ``None``-key extras bucket and any
+                # other non-string key.
+                continue
+            key = k.strip().lstrip(_BOM)
+            if isinstance(v, str):
+                result[key] = v.strip()
+            else:
+                result[key] = v
+        return result
 
     @staticmethod
     def _apply_schema(
@@ -146,22 +195,34 @@ class CSVLoader:
     ) -> dict[str, Any]:
         """Cast *row* values according to *schema*.
 
-        Raises:
-            ValueError / TypeError: propagated from type constructors.
+        Uses ``safe_float`` / ``safe_int`` from utils.helpers
+        which already handle ``"$1,234.56"`` / ``"1.234,56"``
+        / None / empty / garbage without crashing. Pre-audit
+        reimplemented the parser inline and got European
+        number format wrong (``"1.234,56"`` silently became
+        ``1.23456``). Audit pass 45.
         """
+        if not isinstance(row, dict) or not isinstance(schema, dict):
+            return dict(row) if isinstance(row, dict) else {}
         result: dict[str, Any] = dict(row)
         for col, dtype in schema.items():
-            if col in result and result[col] is not None:
-                raw = result[col]
-                if dtype is float:
-                    # Handle currency strings like "$1,234.56"
-                    import re
-                    cleaned = re.sub(r"[^\d.\-]", "", str(raw).replace(",", ""))
-                    result[col] = float(cleaned) if cleaned else 0.0
-                elif dtype is int:
-                    import re
-                    cleaned = re.sub(r"[^\d\-]", "", str(raw).replace(",", ""))
-                    result[col] = int(cleaned) if cleaned else 0
+            if col not in result or result[col] is None:
+                continue
+            raw = result[col]
+            if dtype is float:
+                result[col] = safe_float(raw)
+            elif dtype is int:
+                result[col] = safe_int(raw)
+            elif dtype is str:
+                result[col] = str(raw) if raw is not None else ""
+            elif dtype is bool:
+                # Accept common bool-ish strings from CSVs.
+                if isinstance(raw, str):
+                    result[col] = raw.strip().lower() in ("true", "1", "yes", "y", "t")
                 else:
-                    result[col] = dtype(raw)
+                    result[col] = bool(raw)
+            else:
+                # Fall through to the caller-supplied type
+                # constructor for any other dtype.
+                result[col] = dtype(raw)
         return result

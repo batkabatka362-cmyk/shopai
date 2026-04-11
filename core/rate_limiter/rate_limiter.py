@@ -5,6 +5,7 @@ import threading
 import time
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("rate_limiter")
@@ -19,7 +20,16 @@ class RateLimiter:
         self._stats = {"allowed": 0, "denied": 0}
 
     def configure(self, key: str, rate: float, burst: int = 10) -> None:
-        """Configure rate limit: rate=tokens/second, burst=max tokens."""
+        """Configure rate limit: rate=tokens/second, burst=max tokens.
+
+        Defensive coercion: non-numeric rate/burst crashed
+        pre-audit. Negative / zero values are rejected. Audit
+        pass 53.
+        """
+        if not isinstance(key, str) or not key:
+            return
+        rate = max(0.0, safe_float(rate))
+        burst = max(1, safe_int(burst, default=10))
         with self._lock:
             self._buckets[key] = {
                 "rate": rate,

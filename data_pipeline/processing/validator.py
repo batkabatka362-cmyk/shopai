@@ -55,10 +55,28 @@ class DataValidator:
             ``(valid_records, invalid_records)`` where invalid records have
             a ``"_validation_errors"`` key listing failure reasons.
         """
+        # Defensive coercion of the public entry point.
+        # Audit pass 41.
+        if not isinstance(data, list):
+            return [], []
+        if not isinstance(schema, dict):
+            # No schema → everything is "valid" (pass-through).
+            return [r for r in data if isinstance(r, dict)], []
+
         valid: list[dict[str, Any]] = []
         invalid: list[dict[str, Any]] = []
 
         for record in data:
+            if not isinstance(record, dict):
+                # Non-dict items can't be validated and can't
+                # be annotated with errors. Report them as
+                # invalid with a synthetic marker.
+                invalid.append({
+                    "_validation_errors": [
+                        f"Record is not a dict (got {type(record).__name__})"
+                    ],
+                })
+                continue
             is_valid, errors = self.validate_record(record, schema)
             if is_valid:
                 valid.append(record)
@@ -89,16 +107,24 @@ class DataValidator:
         Returns:
             ``(is_valid, error_messages)``
         """
+        if not isinstance(record, dict):
+            return False, [f"Record is not a dict (got {type(record).__name__})"]
+        if not isinstance(schema, dict):
+            return True, []
+
         errors: list[str] = []
 
-        required = schema.get("required", [])
-        errors.extend(self.check_required_fields(record, required))
+        required = schema.get("required") or []
+        if isinstance(required, list):
+            errors.extend(self.check_required_fields(record, required))
 
-        type_map = schema.get("types", {})
-        errors.extend(self.check_field_types(record, type_map))
+        type_map = schema.get("types") or {}
+        if isinstance(type_map, dict):
+            errors.extend(self.check_field_types(record, type_map))
 
-        range_map = schema.get("ranges", {})
-        errors.extend(self.check_value_ranges(record, range_map))
+        range_map = schema.get("ranges") or {}
+        if isinstance(range_map, dict):
+            errors.extend(self.check_value_ranges(record, range_map))
 
         return (len(errors) == 0, errors)
 
@@ -122,7 +148,11 @@ class DataValidator:
             List of error strings; empty if all required fields are present.
         """
         errors: list[str] = []
+        if not isinstance(record, dict) or not isinstance(required_fields, list):
+            return errors
         for field in required_fields:
+            if not isinstance(field, str):
+                continue
             val = record.get(field)
             if val is None or val == "":
                 errors.append(f"Required field missing or empty: '{field}'")
@@ -145,7 +175,11 @@ class DataValidator:
             List of type-mismatch error strings.
         """
         errors: list[str] = []
+        if not isinstance(record, dict) or not isinstance(type_map, dict):
+            return errors
         for field, type_name in type_map.items():
+            if not isinstance(field, str) or not isinstance(type_name, str):
+                continue
             if field not in record or record[field] is None:
                 continue  # absence checked by check_required_fields
             expected = _PYTHON_TYPES.get(type_name)
@@ -153,9 +187,26 @@ class DataValidator:
                 errors.append(f"Unknown type '{type_name}' for field '{field}'")
                 continue
             value = record[field]
-            # Allow int where float is expected
-            if expected is float and isinstance(value, int):
+            # ``bool`` is a subclass of ``int`` in Python, so
+            # ``isinstance(True, int)`` is True. When the
+            # schema says ``"qty": "int"`` we do NOT want
+            # ``True`` to validate as a valid integer. Audit
+            # pass 41 bug fix.
+            if expected is int and isinstance(value, bool):
+                errors.append(
+                    f"Field '{field}': expected int, got bool"
+                )
                 continue
+            # Similarly, allow int where float is expected, but
+            # reject bool-masquerading-as-int.
+            if expected is float:
+                if isinstance(value, bool):
+                    errors.append(
+                        f"Field '{field}': expected float, got bool"
+                    )
+                    continue
+                if isinstance(value, int):
+                    continue
             if not isinstance(value, expected):
                 errors.append(
                     f"Field '{field}': expected {type_name}, got {type(value).__name__}"
@@ -180,19 +231,25 @@ class DataValidator:
             List of range-violation error strings.
         """
         errors: list[str] = []
+        if not isinstance(record, dict) or not isinstance(range_map, dict):
+            return errors
         for field, bounds in range_map.items():
+            if not isinstance(field, str) or not isinstance(bounds, dict):
+                continue
             if field not in record or record[field] is None:
                 continue
             value = record[field]
-            if not isinstance(value, (int, float)):
+            # Reject bool masquerading as numeric — same rule
+            # as check_field_types.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
                 continue
             lo = bounds.get("min")
             hi = bounds.get("max")
-            if lo is not None and value < lo:
+            if lo is not None and isinstance(lo, (int, float)) and value < lo:
                 errors.append(
                     f"Field '{field}': value {value} is below minimum {lo}"
                 )
-            if hi is not None and value > hi:
+            if hi is not None and isinstance(hi, (int, float)) and value > hi:
                 errors.append(
                     f"Field '{field}': value {value} exceeds maximum {hi}"
                 )

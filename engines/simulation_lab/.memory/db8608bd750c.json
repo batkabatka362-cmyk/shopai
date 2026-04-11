@@ -1,0 +1,79 @@
+{
+  "record_id": "db8608bd750c",
+  "timestamp": "2026-04-02T11:23:45Z",
+  "strategy_type": "general",
+  "input_hash": "ceafdc8ecd6fd3da",
+  "best_option": {
+    "scenario_id": "228cd4da8e",
+    "label": "Aggressive",
+    "parameters": {
+      "price": 13,
+      "units": 65,
+      "cost": 6
+    },
+    "total_score": 0.8167,
+    "predicted_revenue": 670.45,
+    "predicted_profit": 353.89,
+    "risk_level": "low",
+    "confidence": 0.8983,
+    "reasoning": [
+      "'Aggressive' ranked #1 with total score 0.82",
+      "Expected profit 353.89 on revenue 670.45",
+      "Risk level: low (loss probability 0.0%)",
+      "Key advantages: Strong margin (54%) provides cost buffer; Profitable even in worst-case (p5) scenarios",
+      "Aggressive variation selected \u2014 higher risk, higher potential reward"
+    ],
+    "model_note": "LLaMA would synthesize richer justification narratives"
+  },
+  "all_scenarios": [
+    {
+      "scenario_id": "12c6d29404",
+      "label": "Baseline",
+      "description": "Unmodified base parameters \u2014 the control scenario.",
+      "parameters": {
+        "price": 10,
+        "units": 50,
+        "cost": 5
+      },
+      "variation_type": "baseline",
+      "tags": [
+        "general",
+        "control"
+      ]
+    },
+    {
+      "scenario_id": "228cd4da8e",
+      "label": "Aggressive",
+      "description": "Parameters pushed 30% above baseline to test upside potential.",
+      "parameters": {
+        "price": 13,
+        "units": 65,
+        "cost": 6
+      },
+      "variation_type": "aggressive",
+      "tags": [
+        "general",
+        "high-risk",
+        "high-reward"
+      ]
+    },
+    {
+      "scenario_id": "dd05a79afe",
+      "label": "Conservative",
+      "description": "Parameters reduced 20% below baseline for risk-averse stance.",
+      "parameters": {
+        "price": 8,
+        "units": 40,
+        "cost": 4
+      },
+      "variation_type": "conservative",
+      "tags": [
+        "general",
+        "low-risk",
+        "stable"
+      ]
+    }
+  ],
+  "confidence": 0.8983,
+  "outcome_actual": null
+}

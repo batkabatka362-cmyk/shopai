@@ -1,0 +1,118 @@
+{
+  "record_id": "e253195aaabf",
+  "timestamp": "2026-04-02T11:55:31Z",
+  "profit_metrics": {
+    "gross_revenue": 15000.0,
+    "refund_loss": 166.65,
+    "net_revenue": 14833.35,
+    "cogs": 7500.0,
+    "gross_profit": 7333.35,
+    "gross_margin": 0.4944,
+    "ad_spend": 3000.0,
+    "shipping": 1500.0,
+    "platform_fees": 750.0,
+    "tools": 200.0,
+    "labor": 500.0,
+    "total_operating_costs": 2950.0,
+    "total_cost": 13450.0,
+    "net_profit": 1383.35,
+    "net_margin": 0.0933,
+    "revenue_per_unit": 29.67,
+    "cost_per_unit": 26.9,
+    "profit_per_unit": 2.77,
+    "break_even_units": 168,
+    "break_even_revenue": 4984.01
+  },
+  "kpis": {
+    "roas": 5.0,
+    "cpa": 6.67,
+    "clv_estimate": 7.78,
+    "aov": 33.33,
+    "conversion_rate": 0.045,
+    "cart_abandonment": 0.65,
+    "return_rate": 0.01,
+    "cost_per_click": 0.6,
+    "click_through_rate": 0.05,
+    "ad_conversion_rate": 0.09,
+    "margin_health": "thin",
+    "roas_health": "strong",
+    "cpa_health": "acceptable",
+    "conversion_health": "good",
+    "abandonment_health": "acceptable",
+    "overall_health": "good",
+    "health_score": 0.615
+  },
+  "selected_strategy": {
+    "strategy_id": "797aa30136",
+    "name": "Maximize Margin",
+    "description": "Focus on improving profit margins through pricing and cost control.",
+    "optimization_ids": [
+      "87214bdc1b",
+      "3f729c67a9",
+      "c9347a4820"
+    ],
+    "expected_total_profit_change": 696.72,
+    "expected_total_revenue_change": 4119.17,
+    "risk_level": "low",
+    "confidence": 0.56,
+    "reasoning": [
+      "Net margin is thin at 9.3%",
+      "2 margin-focused optimizations available"
+    ]
+  },
+  "recommended_actions": [
+    {
+      "action_id": "eef9694810",
+      "title": "Implement Strategic Price Increase",
+      "description": "Increase prices by 5% ($29.67 \u2192 $31.15/unit). Implement gradually and monitor conversion rate impact. Use A/B testing to validate.",
+      "priority": "critical",
+      "expected_impact": 519.17,
+      "category": "pricing",
+      "steps": [
+        "Identify products with inelastic demand (high repeat purchase)",
+        "Test 3-5% price increase on those products first",
+        "Monitor conversion rate daily for 2 weeks",
+        "If conversion holds, expand to more products",
+        "Use value-add bundling to justify higher prices"
+      ],
+      "timeframe": "1-2 weeks",
+      "model_note": "LLaMA: creative optimization recommendations"
+    },
+    {
+      "action_id": "c35e176c6a",
+      "title": "Improve Profit Margins",
+      "description": "Improve net margin by 5pp (from 9.3% to 14.3%) through combined cost reduction and selective price increases.",
+      "priority": "high",
+      "expected_impact": 741.67,
+      "category": "margin",
+      "steps": [
+        "Analyze margin by product to identify low-margin items",
+        "Test 3-5% price increase on top-selling products",
+        "Negotiate bulk discounts with suppliers",
+        "Optimize shipping by comparing carrier rates",
+        "Monitor customer response to pricing changes"
+      ],
+      "timeframe": "2-6 weeks",
+      "model_note": "LLaMA: creative optimization recommendations"
+    },
+    {
+      "action_id": "8d93f3c96b",
+      "title": "Scale Advertising Budget",
+      "description": "Increase ad budget by 30% ($900.00). At 80% of current ROAS (5.0x), expect $3600.00 additional revenue.",
+      "priority": "medium",
+      "expected_impact": -564.12,
+      "category": "growth",
+      "steps": [
+        "Identify top-performing ad sets by ROAS",
+        "Increase budget by 20-30% on proven campaigns",
+        "Launch lookalike audiences based on best converters",
+        "Set up daily ROAS monitoring with kill switch at 1.5x",
+        "Review results after 7 days and adjust"
+      ],
+      "timeframe": "1-2 weeks",
+      "model_note": "LLaMA: creative optimization recommendations"
+    }
+  ],
+  "confidence": 0.56,
+  "outcome_actual": null
+}
