@@ -291,3 +291,162 @@ class TestPolicyAuditEndpoint:
         assert out["count"] == 0
         assert out["entries"] == []
         assert "timestamp" in out
+
+
+# ---------------------------------------------------------------------------
+# Wave 6 #5: /api/beliefs — Bayesian posterior snapshot
+# ---------------------------------------------------------------------------
+
+
+class _FakeBeliefStore:
+    """In-memory stub for the belief store that matches the surface
+    the endpoint uses: ``snapshot()`` + ``credible_interval_95``.
+    """
+
+    def __init__(self, rows: dict[str, dict[str, float]],
+                 intervals: dict[str, tuple[float, float]] | None = None):
+        self._rows = rows
+        self._intervals = intervals or {}
+
+    def snapshot(self) -> dict[str, dict[str, float]]:
+        return dict(self._rows)
+
+    def credible_interval_95(self, key: str) -> tuple[float, float]:
+        return self._intervals.get(key, (0.0, 1.0))
+
+
+class TestBeliefEndpoint:
+    def test_empty_store_returns_empty_list(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore({}),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        assert out["beliefs"] == []
+        assert out["count"] == 0
+        assert out["total"] == 0
+        assert "timestamp" in out
+
+    def test_returns_rows_with_enriched_fields(self, monkeypatch):
+        rows = {
+            "shopify::pricing.update": {
+                "alpha": 8.0, "beta": 4.0, "mean": 8 / 12, "n": 10,
+            },
+            "shopify::product.create_listing": {
+                "alpha": 15.0, "beta": 1.0, "mean": 15 / 16, "n": 14,
+            },
+        }
+        intervals = {
+            "shopify::pricing.update":            (0.40, 0.85),
+            "shopify::product.create_listing":    (0.78, 0.99),
+        }
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore(rows, intervals),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        assert out["count"] == 2
+        assert out["total"] == 2
+        # Sorted by ci_low ascending — pricing.update (0.40)
+        # must come before product.create_listing (0.78)
+        assert out["beliefs"][0]["key"] == "shopify::pricing.update"
+        assert out["beliefs"][0]["ci_low"] == 0.40
+        assert out["beliefs"][0]["ci_high"] == 0.85
+        assert out["beliefs"][0]["n"] == 10
+        assert out["beliefs"][1]["key"] == "shopify::product.create_listing"
+
+    def test_limit_truncates_result_and_preserves_total(self, monkeypatch):
+        rows = {
+            f"t::k{i}": {"alpha": 2.0, "beta": float(i + 1),
+                         "mean": 2.0 / (2.0 + i + 1), "n": i + 1}
+            for i in range(10)
+        }
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore(rows),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=3)
+        assert out["count"] == 3
+        assert out["total"] == 10
+        assert len(out["beliefs"]) == 3
+
+    def test_sort_breaks_ties_by_mean_then_n_descending(self, monkeypatch):
+        rows = {
+            "small_n": {"alpha": 1.0, "beta": 3.0, "mean": 0.25, "n": 2},
+            "big_n":   {"alpha": 5.0, "beta": 15.0, "mean": 0.25, "n": 18},
+        }
+        intervals = {"small_n": (0.0, 0.7), "big_n": (0.0, 0.7)}
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _FakeBeliefStore(rows, intervals),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        # Same ci_low, same mean — higher n wins the tiebreak
+        # (better-evidenced bad keys rank above thinly-evidenced ones).
+        assert out["beliefs"][0]["key"] == "big_n"
+        assert out["beliefs"][1]["key"] == "small_n"
+
+    def test_fails_soft_when_store_access_raises(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("belief store offline")
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store", _boom,
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        assert "error" in out
+        assert "belief store offline" in out["error"]
+
+    def test_fails_soft_when_snapshot_raises(self, monkeypatch):
+        class _CrashyStore:
+            def snapshot(self):
+                raise RuntimeError("snapshot broken")
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _CrashyStore(),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        assert "error" in out
+
+    def test_interval_raise_falls_back_to_wide_band(self, monkeypatch):
+        class _PartialStore:
+            def snapshot(self):
+                return {"k": {"alpha": 2.0, "beta": 3.0,
+                              "mean": 0.4, "n": 3}}
+            def credible_interval_95(self, key):
+                raise RuntimeError("interval math broken")
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store",
+            lambda: _PartialStore(),
+        )
+        out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+        assert out["count"] == 1
+        assert out["beliefs"][0]["ci_low"] == 0.0
+        assert out["beliefs"][0]["ci_high"] == 1.0
+
+    def test_end_to_end_with_real_store(self, monkeypatch, tmp_path):
+        """Smoke test: feed the real BeliefStore some outcomes
+        via the singleton and read them back through the endpoint."""
+        from core.mentality import (
+            BeliefStore,
+            reset_default_belief_store,
+            set_default_belief_store,
+        )
+
+        set_default_belief_store(
+            BeliefStore(persist_path=tmp_path / "b.json"),
+        )
+        try:
+            from core.mentality import get_default_belief_store
+            store = get_default_belief_store()
+            for _ in range(5):
+                store.observe("shop::x", True)
+            for _ in range(5):
+                store.observe("shop::y", False)
+            out = DashboardAPIHandler._get_belief_snapshot(limit=50)
+            assert out["total"] == 2
+            keys = [row["key"] for row in out["beliefs"]]
+            # shop::y has the worse posterior so it floats up.
+            assert keys[0] == "shop::y"
+            assert keys[1] == "shop::x"
+        finally:
+            reset_default_belief_store()

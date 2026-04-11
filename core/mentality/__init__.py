@@ -33,6 +33,18 @@ it runs in Wave 2 #5).
 """
 from __future__ import annotations
 
-from .values import BeliefStore, Values
+from .values import (
+    BeliefStore,
+    Values,
+    get_default_belief_store,
+    reset_default_belief_store,
+    set_default_belief_store,
+)
 
-__all__ = ["Values", "BeliefStore"]
+__all__ = [
+    "Values",
+    "BeliefStore",
+    "get_default_belief_store",
+    "set_default_belief_store",
+    "reset_default_belief_store",
+]

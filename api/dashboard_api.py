@@ -11,6 +11,7 @@ Endpoints:
   GET  /api/cognitive          — Mind cognitive dispatcher stats (Wave 5 #B)
   GET  /api/memory/satellites  — SatelliteRouter layer stats (Wave 5 #B)
   GET  /api/policy/audit       — recent policy audit entries (Wave 5 #B)
+  GET  /api/beliefs            — Bayesian belief posterior snapshot (Wave 6 #5)
   POST /api/webhook            — Shopify webhook receiver
 """
 from __future__ import annotations
@@ -65,12 +66,17 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
             limit = self._parse_limit(limit_raw, default=20, maximum=500)
             self._json_response(self._get_policy_audit(limit=limit))
+        elif path == "/api/beliefs":
+            limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
+            limit = self._parse_limit(limit_raw, default=50, maximum=500)
+            self._json_response(self._get_belief_snapshot(limit=limit))
         else:
             self._json_response({"error": "not_found", "endpoints": [
                 "/api/status", "/api/dashboard", "/api/cycle",
                 "/api/alerts", "/api/report", "/api/memory",
                 "/api/metrics/adapters", "/api/cognitive",
                 "/api/memory/satellites", "/api/policy/audit",
+                "/api/beliefs",
             ]}, 404)
 
     def do_POST(self):
@@ -267,6 +273,59 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             }
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)[:200]}
+
+    @staticmethod
+    def _get_belief_snapshot(limit: int = 50) -> dict:
+        """Return the Bayesian belief posterior snapshot.
+
+        Wave 6 #5: exposes the process-wide belief store written by
+        Wave 6 #2 (``_update_beliefs_from_execution``) and read by
+        Wave 6 #3 (``_check_belief_posterior``). Operators can now
+        see exactly what the gate has learned without attaching a
+        debugger — which keys have enough evidence, which are
+        trending toward failure, which still look healthy.
+
+        Keys are sorted by the lower bound of the 95% credible
+        interval (ascending) so the most at-risk actions float to
+        the top. Querystring ``?limit=N`` caps the response size
+        (default 50, max 500). Fails soft: a missing or unhealthy
+        belief store returns an error envelope.
+        """
+        try:
+            from core.mentality import get_default_belief_store
+            store = get_default_belief_store()
+            snap = store.snapshot()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:200]}
+
+        rows: list[dict[str, Any]] = []
+        for key, row in snap.items():
+            try:
+                lo, hi = store.credible_interval_95(key)
+            except Exception:
+                lo, hi = 0.0, 1.0
+            rows.append({
+                "key":       key,
+                "alpha":     row["alpha"],
+                "beta":      row["beta"],
+                "mean":      round(float(row["mean"]), 4),
+                "n":         row["n"],
+                "ci_low":    round(float(lo), 4),
+                "ci_high":   round(float(hi), 4),
+            })
+        # Sort by ci_low ascending — worst-case first — with ties
+        # broken by mean ascending and then by n descending so
+        # well-evidenced bad keys rank above thinly-evidenced ones.
+        rows.sort(key=lambda r: (r["ci_low"], r["mean"], -r["n"]))
+        total = len(rows)
+        rows = rows[:limit]
+
+        return {
+            "beliefs":   rows,
+            "count":     len(rows),
+            "total":     total,
+            "timestamp": time.time(),
+        }
 
     @staticmethod
     def _get_adapter_metrics() -> dict:

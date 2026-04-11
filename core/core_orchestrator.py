@@ -133,10 +133,21 @@ class CoreOrchestrator:
             self._modules["failure_prevention"] = FailureContextPrevention(
                 episodic_memory=self._modules.get("episodic_memory"),
             )
+            # Wave 6 #5: feed the advisor the process-wide persistent
+            # belief store so outcomes survive restarts and every
+            # advisor instance (plus the /api/beliefs endpoint)
+            # shares the same posterior.
+            try:
+                from core.mentality import get_default_belief_store
+                _belief_store = get_default_belief_store()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("belief store init failed: %s", exc)
+                _belief_store = None
             self._modules["judgment_advisor"] = JudgmentAdvisor(
                 episodic_memory=self._modules.get("episodic_memory"),
                 failure_prevention=self._modules.get("failure_prevention"),
                 action_coordinator=self.action_coordinator,
+                belief_store=_belief_store,
             )
             # Wire cross-references for modules that need episodic memory
             rca = self._modules.get("root_cause_analyzer")

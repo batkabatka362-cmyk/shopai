@@ -508,3 +508,76 @@ class BeliefStore:
             "belief store: loaded %d belief(s) from %r",
             loaded, str(path),
         )
+
+
+# ---------------------------------------------------------------------------
+# Wave 6 #5: process-wide default belief store
+# ---------------------------------------------------------------------------
+#
+# JudgmentAdvisor instantiates its own BeliefStore when callers don't
+# supply one. Historically that store was in-memory only, so each
+# advisor had its own isolated belief state. Wave 6 #4 made the store
+# persist-capable; Wave 6 #5 wires a single shared store into the
+# production code path so every advisor (and the HTTP endpoint) sees
+# the same persisted beliefs.
+#
+# Kept at module level so tests can:
+#   - read/replace the singleton via ``get_default_belief_store`` /
+#     ``set_default_belief_store``
+#   - clear it with ``reset_default_belief_store`` between isolated runs
+
+
+_DEFAULT_BELIEFS_PATH = os.path.join(
+    os.path.dirname(__file__), ".state", "beliefs.json",
+)
+
+_default_belief_store: BeliefStore | None = None
+_default_belief_store_lock = threading.Lock()
+
+
+def get_default_belief_store() -> BeliefStore:
+    """Return (constructing on first call) the process-wide belief store.
+
+    The persist path is resolved in order:
+
+    1. An earlier :func:`set_default_belief_store` call always wins
+    2. Environment variable ``SHOPAI_BELIEFS_PATH``
+    3. Module default ``core/mentality/.state/beliefs.json``
+
+    Thread-safe. Falls back to an in-memory store if disk
+    construction raises.
+    """
+    global _default_belief_store
+    with _default_belief_store_lock:
+        if _default_belief_store is None:
+            path = os.environ.get(
+                "SHOPAI_BELIEFS_PATH", _DEFAULT_BELIEFS_PATH,
+            )
+            try:
+                _default_belief_store = BeliefStore(persist_path=path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "get_default_belief_store: persistent init failed "
+                    "(%s) — falling back to in-memory",
+                    exc,
+                )
+                _default_belief_store = BeliefStore()
+        return _default_belief_store
+
+
+def set_default_belief_store(store: BeliefStore) -> None:
+    """Override the process-wide belief store (used by tests and
+    by boot code that wants a non-default persist path)."""
+    global _default_belief_store
+    with _default_belief_store_lock:
+        _default_belief_store = store
+
+
+def reset_default_belief_store() -> None:
+    """Drop the cached singleton so the next access re-creates it.
+
+    Used by tests so one test run's persisted beliefs can't leak
+    into another."""
+    global _default_belief_store
+    with _default_belief_store_lock:
+        _default_belief_store = None
