@@ -1554,6 +1554,17 @@ class AutonomousController:
     # phase-error fan-out but still flat in memory.
     _REFLECTION_BUFFER_MAX = 256
 
+    # Wave 6 #10: throttled auto-decay of stale learned SOFT rules.
+    # The reflection hook calls ``decay_stale_rules`` at most once
+    # per ``_REFLECTION_DECAY_INTERVAL_SEC`` and retires any learned
+    # rule whose last activity is older than
+    # ``_REFLECTION_DECAY_MAX_IDLE_SEC``. Defaults: every 1h check,
+    # 30-day idle window. Both can be overridden per-instance by
+    # tests or by the env vars ``SHOPAI_REFLECTION_DECAY_INTERVAL_SEC``
+    # and ``SHOPAI_REFLECTION_DECAY_MAX_IDLE_SEC``.
+    _REFLECTION_DECAY_INTERVAL_SEC = 3600.0
+    _REFLECTION_DECAY_MAX_IDLE_SEC = 30.0 * 24.0 * 3600.0
+
     def _run_reflection_hook(
         self,
         cycle_result: dict[str, Any],
@@ -1635,6 +1646,53 @@ class AutonomousController:
                 report.patterns_promoted, cycle_result.get("cycle_id"),
                 len(self._error_buffer),
             )
+
+        # Wave 6 #10: throttled auto-decay of stale learned rules.
+        # We call decay at most once per ``_REFLECTION_DECAY_INTERVAL_SEC``
+        # so the cost stays flat even on high-frequency cycles.
+        retired = self._maybe_run_reflection_decay(now)
+        if retired:
+            cycle_result.setdefault("reflection", {})
+            cycle_result["reflection"].setdefault("retired_rules", retired)
+            logger.info(
+                "Reflection: retired %d stale learned rule(s) in cycle %s",
+                len(retired), cycle_result.get("cycle_id"),
+            )
+
+    def _maybe_run_reflection_decay(self, now: float) -> list[str]:
+        """Call ``synth.decay_stale_rules`` if the throttle interval
+        has elapsed.
+
+        Returns the list of retired signatures (empty if the call
+        was skipped or no rules were stale). Fails soft — any
+        exception in the decay path degrades to an empty list so
+        the reflection hook stays healthy.
+        """
+        import os
+        interval = float(os.environ.get(
+            "SHOPAI_REFLECTION_DECAY_INTERVAL_SEC",
+            self._REFLECTION_DECAY_INTERVAL_SEC,
+        ))
+        max_idle = float(os.environ.get(
+            "SHOPAI_REFLECTION_DECAY_MAX_IDLE_SEC",
+            self._REFLECTION_DECAY_MAX_IDLE_SEC,
+        ))
+        last = getattr(self, "_last_reflection_decay_at", 0.0)
+        # last == 0.0 means "never decayed before" — run once on
+        # the first tick so operators see the counter move at
+        # startup, then respect the throttle interval thereafter.
+        if last > 0.0 and (now - last) < interval:
+            return []
+        self._last_reflection_decay_at = now
+        try:
+            return list(
+                self._reflection_synth.decay_stale_rules(
+                    max_idle, now=now,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reflection decay failed: %s", exc)
+            return []
 
     def _run_cognitive_phase(
         self, legacy_cycle_result: dict[str, Any],
