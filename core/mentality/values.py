@@ -232,11 +232,18 @@ class Belief:
     * failure → ``beta  += 1``
 
     The posterior mean is ``alpha / (alpha + beta)``.
+
+    Wave 6 #11 adds ``last_updated_at`` so the :class:`BeliefStore`
+    can apply exponential forgetting between observations when
+    configured with a ``half_life_seconds``. When decay is disabled
+    the field is still updated but never read, so existing callers
+    are unaffected.
     """
 
     key: str
     alpha: float = 1.0
     beta: float = 1.0
+    last_updated_at: float | None = None
 
     @property
     def mean(self) -> float:
@@ -287,6 +294,19 @@ class BeliefStore:
     file format is a flat JSON dict ``{key: {alpha, beta}}`` — the
     derived fields (``mean``, ``n``) are not stored since they
     recompute trivially from the two parameters.
+
+    Wave 6 #11: exponential forgetting
+    ----------------------------------
+    Supply ``half_life_seconds`` to make evidence fade over time.
+    Without decay, a belief that accrued 500 observations under
+    regime A will drown out a new regime B for a very long time.
+    With decay, each new observation first shrinks the existing
+    ``(alpha - prior, beta - prior)`` excess by a factor of
+    ``0.5 ** (elapsed / half_life)`` — so after one half-life the
+    store "remembers" only half as much of the old evidence. The
+    prior is never decayed, so a belief can never drop below its
+    starting uncertainty. Decay is disabled by default (``None``)
+    for backward compatibility with Waves 6 #4 and #5.
     """
 
     def __init__(
@@ -294,34 +314,63 @@ class BeliefStore:
         prior_alpha: float = 1.0,
         prior_beta: float = 1.0,
         persist_path: str | os.PathLike | None = None,
+        half_life_seconds: float | None = None,
     ) -> None:
         if prior_alpha <= 0 or prior_beta <= 0:
             raise ValueError(
                 "Prior alpha and beta must be positive",
             )
+        if half_life_seconds is not None:
+            if not isinstance(half_life_seconds, (int, float)):
+                raise ValueError(
+                    "half_life_seconds must be numeric or None",
+                )
+            if half_life_seconds <= 0:
+                raise ValueError(
+                    "half_life_seconds must be positive when set",
+                )
         self._lock = threading.RLock()
         self._beliefs: dict[str, Belief] = {}
         self._prior = (float(prior_alpha), float(prior_beta))
+        self._half_life: float | None = (
+            float(half_life_seconds)
+            if half_life_seconds is not None
+            else None
+        )
         self._persist_path: Path | None = (
             Path(persist_path) if persist_path is not None else None
         )
         if self._persist_path is not None:
             self._load_from_disk()
 
+    @property
+    def half_life_seconds(self) -> float | None:
+        return self._half_life
+
     def observe(
         self,
         key: str,
         success: bool,
         weight: float = 1.0,
+        *,
+        now: float | None = None,
     ) -> Belief:
         """Record an observation and return the updated belief.
 
         ``weight`` lets callers record partial-credit observations
         (e.g. an A/B test with a 0.7 confidence in the label). The
         default 1.0 matches classic beta-binomial updates.
+
+        ``now`` is the wall-clock timestamp of the observation, used
+        by the Wave 6 #11 decay path when the store is constructed
+        with ``half_life_seconds``. It defaults to ``time.time()``
+        and is exposed mostly for tests that want to drive the clock
+        deterministically.
         """
         if weight < 0:
             raise ValueError("weight must be non-negative")
+        import time as _time
+        ts = float(now) if now is not None else _time.time()
         with self._lock:
             belief = self._beliefs.get(key)
             if belief is None:
@@ -329,8 +378,31 @@ class BeliefStore:
                     key=key,
                     alpha=self._prior[0],
                     beta=self._prior[1],
+                    last_updated_at=ts,
                 )
                 self._beliefs[key] = belief
+            else:
+                # Wave 6 #11: exponentially forget the pre-existing
+                # excess over the prior before adding the new
+                # observation. Only applies when decay is enabled
+                # AND the belief carries a timestamp from a prior
+                # update — brand-new beliefs and pre-decay snapshots
+                # simply start their clock here.
+                if (
+                    self._half_life is not None
+                    and belief.last_updated_at is not None
+                ):
+                    elapsed = ts - float(belief.last_updated_at)
+                    if elapsed > 0:
+                        factor = 0.5 ** (elapsed / self._half_life)
+                        prior_a, prior_b = self._prior
+                        belief.alpha = prior_a + (
+                            belief.alpha - prior_a
+                        ) * factor
+                        belief.beta = prior_b + (
+                            belief.beta - prior_b
+                        ) * factor
+                belief.last_updated_at = ts
             if success:
                 belief.alpha += weight
             else:
@@ -434,7 +506,20 @@ class BeliefStore:
         target = self._persist_path
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            key: {"alpha": b.alpha, "beta": b.beta}
+            key: {
+                "alpha": b.alpha,
+                "beta":  b.beta,
+                # Wave 6 #11: round-trip the decay timestamp so a
+                # restart doesn't reset the forgetting clock.
+                # Older snapshots without this field load fine — we
+                # just treat them as "no clock yet" and start fresh
+                # on the next observe.
+                **(
+                    {"last_updated_at": b.last_updated_at}
+                    if b.last_updated_at is not None
+                    else {}
+                ),
+            }
             for key, b in self._beliefs.items()
         }
         # Use NamedTemporaryFile in the same directory so the final
@@ -502,7 +587,14 @@ class BeliefStore:
                 continue
             if a <= 0 or b <= 0:
                 continue
-            self._beliefs[key] = Belief(key=key, alpha=a, beta=b)
+            ts = row.get("last_updated_at")
+            try:
+                ts_f = float(ts) if ts is not None else None
+            except (TypeError, ValueError):
+                ts_f = None
+            self._beliefs[key] = Belief(
+                key=key, alpha=a, beta=b, last_updated_at=ts_f,
+            )
             loaded += 1
         logger.info(
             "belief store: loaded %d belief(s) from %r",
@@ -544,6 +636,10 @@ def get_default_belief_store() -> BeliefStore:
     2. Environment variable ``SHOPAI_BELIEFS_PATH``
     3. Module default ``core/mentality/.state/beliefs.json``
 
+    The optional half-life (Wave 6 #11) is taken from
+    ``SHOPAI_BELIEF_HALF_LIFE_SEC`` when set to a positive number;
+    otherwise decay is disabled.
+
     Thread-safe. Falls back to an in-memory store if disk
     construction raises.
     """
@@ -553,15 +649,35 @@ def get_default_belief_store() -> BeliefStore:
             path = os.environ.get(
                 "SHOPAI_BELIEFS_PATH", _DEFAULT_BELIEFS_PATH,
             )
+            half_life_env = os.environ.get(
+                "SHOPAI_BELIEF_HALF_LIFE_SEC",
+            )
+            half_life: float | None = None
+            if half_life_env is not None and half_life_env.strip():
+                try:
+                    parsed = float(half_life_env)
+                    if parsed > 0:
+                        half_life = parsed
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "get_default_belief_store: ignoring invalid "
+                        "SHOPAI_BELIEF_HALF_LIFE_SEC=%r",
+                        half_life_env,
+                    )
             try:
-                _default_belief_store = BeliefStore(persist_path=path)
+                _default_belief_store = BeliefStore(
+                    persist_path=path,
+                    half_life_seconds=half_life,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "get_default_belief_store: persistent init failed "
                     "(%s) — falling back to in-memory",
                     exc,
                 )
-                _default_belief_store = BeliefStore()
+                _default_belief_store = BeliefStore(
+                    half_life_seconds=half_life,
+                )
         return _default_belief_store
 
 
