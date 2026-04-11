@@ -1535,7 +1535,72 @@ class AutonomousController:
                      cycle_result["phases"]["analysis"]["insights"],
                      cycle_result["phases"]["decisions"]["proposed"])
 
+        # Wave 2 #5: post-tick reflection hook. Mines the cycle's
+        # error ledger for recurring patterns and, when confidence
+        # is high enough, promotes them to SOFT rules on the
+        # policy store. Guarded so a missing optional dep or a
+        # synthesizer exception never breaks the cycle loop.
+        try:
+            self._run_reflection_hook(cycle_result, phase_errors)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("reflection hook failed: %s", exc)
+
         return cycle_result
+
+    def _run_reflection_hook(
+        self,
+        cycle_result: dict[str, Any],
+        phase_errors: dict[str, str],
+    ) -> None:
+        """Feed this cycle's errors to the reflection synthesizer.
+
+        Wave 2 #5. Converts each phase-error entry into a synthetic
+        :class:`MemoryRecord` tagged ``error`` and hands the list to
+        :class:`ReflectionSynthesizer`. Over enough cycles the same
+        failure signature accumulates occurrences until it crosses
+        the confidence threshold and gets promoted to a SOFT policy
+        rule via :meth:`PolicyStore.promote_soft_rule`.
+
+        The hook is a no-op when:
+
+        * the cycle had no phase errors (nothing to learn from), or
+        * ``core.reflection`` cannot be imported (optional package),
+          or
+        * the synthesizer run raises — caught and logged upstream.
+        """
+        if not phase_errors:
+            return
+        # Defer import so controller startup doesn't eagerly load
+        # the synthesizer package if the controller runs in a
+        # stripped-down deployment that doesn't care about
+        # reflection.
+        from core.memory.quality_engine import MemoryRecord
+        from core.reflection.synthesizer import ReflectionSynthesizer
+
+        if not hasattr(self, "_reflection_synth") or self._reflection_synth is None:
+            self._reflection_synth = ReflectionSynthesizer()
+
+        now = time.time()
+        records = [
+            MemoryRecord(
+                kind="error",
+                quality=0.6,
+                confidence=0.7,
+                success_rate=0.0,
+                usage=1,
+                created_at=now,
+                payload={"phase": phase, "message": message},
+            )
+            for phase, message in phase_errors.items()
+        ]
+        report = self._reflection_synth.run(records)
+        if report.patterns_promoted:
+            cycle_result.setdefault("reflection", {})
+            cycle_result["reflection"] = report.as_dict()
+            logger.info(
+                "Reflection hook promoted %d SOFT rules from cycle %s",
+                report.patterns_promoted, cycle_result.get("cycle_id"),
+            )
 
     def _run_cognitive_phase(
         self, legacy_cycle_result: dict[str, Any],
