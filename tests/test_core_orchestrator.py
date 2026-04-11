@@ -900,7 +900,7 @@ class TestJudgmentAdvisor:
         advisor = JudgmentAdvisor()
         decision = {"action": "test", "confidence_score": 50}
         result = advisor.evaluate(decision, {})
-        assert len(result["checks"]) == 6
+        assert len(result["checks"]) == 7
         check_names = [c["check"] for c in result["checks"]]
         assert "magnitude" in check_names
         assert "system_stability" in check_names

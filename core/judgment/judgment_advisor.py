@@ -93,6 +93,11 @@ class JudgmentAdvisor:
         "system_stability":     0.15,
         "financial_constraint": 0.15,
         "cooldown":             0.10,
+        # Wave 6 #3: belief-informed past-success check. Fail-safe
+        # weight is 0.0 — a crashing check must not suddenly start
+        # penalising actions that have no prior evidence, since the
+        # posterior is still silent on them.
+        "belief_posterior":     0.00,
     }
 
     def _safe_check(
@@ -169,6 +174,10 @@ class JudgmentAdvisor:
             self._safe_check("system_stability", self._check_system_stability, situation),
             self._safe_check("financial_constraint", self._check_financial_constraint, decision, situation),
             self._safe_check("cooldown", self._check_cooldown, decision),
+            # Wave 6 #3: read the Bayesian posterior fed by
+            # _update_beliefs_from_execution so historical
+            # success rates bend the gate.
+            self._safe_check("belief_posterior", self._check_belief_posterior, decision),
         ]
 
         # Wave 2 #2: re-weight each check by the operator's
@@ -529,6 +538,85 @@ class JudgmentAdvisor:
             }
 
         return {"check": "cooldown", "risk": 0, "weight": 0.10, "reason": "No cooldown issues"}
+
+    # -- Wave 6 #3: belief-informed past-success check ----------------
+
+    # Minimum number of observations before the posterior is allowed
+    # to influence the gate. Smaller samples are too noisy — they'd
+    # let a single lucky/unlucky run swing the verdict.
+    _BELIEF_MIN_OBSERVATIONS = 3
+
+    # Active weight applied once the posterior has enough evidence.
+    # Mirrors the other "soft signal" checks (competitor, financial).
+    _BELIEF_ACTIVE_WEIGHT = 0.15
+
+    def _check_belief_posterior(self, decision: dict[str, Any]) -> dict[str, Any]:
+        """Query the Bayesian posterior for this decision's key.
+
+        Wave 6 #2 wired :meth:`update_belief` into the orchestrator's
+        execution phase so every cycle feeds success/failure outcomes
+        into the belief store with key ``"<target>::<action_type>"``.
+        Wave 6 #3 closes that loop: this check reads the posterior
+        for the same key and raises risk when the historical success
+        rate is low.
+
+        The check is silent (``weight=0``) until at least
+        :attr:`_BELIEF_MIN_OBSERVATIONS` outcomes have been recorded
+        — under that threshold the posterior is too noisy to trust
+        and contributing to the weighted risk score would just add
+        jitter. This also means decisions without any prior history
+        see exactly zero delta versus the pre-Wave-6 gate, so
+        existing behaviour is preserved end-to-end.
+        """
+        silent = {
+            "check":  "belief_posterior",
+            "risk":   0.0,
+            "weight": 0.0,
+        }
+
+        if self._beliefs is None:
+            return {**silent, "reason": "No belief store attached"}
+
+        target = decision.get("target") or "unknown"
+        action_type = decision.get("action_type") or "unknown"
+        key = f"{target}::{action_type}"
+
+        belief = self._beliefs.get(key)
+        if belief is None:
+            return {**silent, "reason": f"No prior outcomes for {key}"}
+
+        n = belief.n
+        mean = belief.mean
+        if n < self._BELIEF_MIN_OBSERVATIONS:
+            return {
+                **silent,
+                "reason": (
+                    f"Insufficient history for {key} "
+                    f"(n={n}, mean={mean:.2f})"
+                ),
+            }
+
+        # Linear mapping: mean=1.0 → risk=0, mean=0.0 → risk=1.0
+        risk = max(0.0, min(1.0, 1.0 - mean))
+
+        recommendation = ""
+        if risk >= 0.5:
+            recommendation = (
+                f"Historical success for {key} is "
+                f"{int(round(mean * 100))}% over {n} run(s) — "
+                f"consider a safer alternative or more evidence"
+            )
+
+        return {
+            "check":          "belief_posterior",
+            "risk":           round(risk, 3),
+            "weight":         self._BELIEF_ACTIVE_WEIGHT,
+            "reason":         (
+                f"Posterior success rate for {key}: "
+                f"{mean:.2f} (n={n})"
+            ),
+            "recommendation": recommendation,
+        }
 
     # -- Wave 2 #2: belief accessors ----------------------------------
 
