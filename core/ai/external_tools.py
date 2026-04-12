@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading as _threading
 import time
 import urllib.error
 import urllib.parse
@@ -284,10 +285,13 @@ class ExternalTools:
 
 # Singleton
 _tools: ExternalTools | None = None
+_tools_lock = _threading.Lock()
 
 
 def get_tools() -> ExternalTools:
     global _tools
     if _tools is None:
-        _tools = ExternalTools()
+        with _tools_lock:
+            if _tools is None:
+                _tools = ExternalTools()
     return _tools

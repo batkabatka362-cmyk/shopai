@@ -1,5 +1,6 @@
 """Inventory Predictor — predict stockouts and reorder timing."""
 from __future__ import annotations
+import threading as _threading
 
 
 class InventoryPredictor:
@@ -48,8 +49,12 @@ class InventoryPredictor:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_inventory_predictor():
     global _instance
     if _instance is None:
-        _instance = InventoryPredictor()
+        with _instance_lock:
+            if _instance is None:
+                _instance = InventoryPredictor()
     return _instance

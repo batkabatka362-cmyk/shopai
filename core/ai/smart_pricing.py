@@ -1,5 +1,6 @@
 """Smart Pricing Engine — dynamic pricing with competitor awareness."""
 from __future__ import annotations
+import threading as _threading
 from typing import Any
 from utils.logger import get_logger
 logger = get_logger("pricing.smart")
@@ -71,8 +72,12 @@ class SmartPricingEngine:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_smart_pricing():
     global _instance
     if _instance is None:
-        _instance = SmartPricingEngine()
+        with _instance_lock:
+            if _instance is None:
+                _instance = SmartPricingEngine()
     return _instance

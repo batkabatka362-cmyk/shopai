@@ -8,6 +8,7 @@ Problems solved:
 """
 from __future__ import annotations
 import math
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -171,30 +172,42 @@ class CompetitorCacheManager:
 
 # Singletons
 _rotation = None
+_rotation_lock = _threading.Lock()
 _time = None
+_time_lock = _threading.Lock()
 _explore = None
+_explore_lock = _threading.Lock()
 _comp_cache = None
+_comp_cache_lock = _threading.Lock()
 
 def get_product_rotation():
     global _rotation
     if _rotation is None:
-        _rotation = ProductRotation()
+        with _rotation_lock:
+            if _rotation is None:
+                _rotation = ProductRotation()
     return _rotation
 
 def get_time_awareness():
     global _time
     if _time is None:
-        _time = TimeAwareness()
+        with _time_lock:
+            if _time is None:
+                _time = TimeAwareness()
     return _time
 
 def get_exploration_boost():
     global _explore
     if _explore is None:
-        _explore = ExplorationBoost()
+        with _explore_lock:
+            if _explore is None:
+                _explore = ExplorationBoost()
     return _explore
 
 def get_competitor_cache():
     global _comp_cache
     if _comp_cache is None:
-        _comp_cache = CompetitorCacheManager()
+        with _comp_cache_lock:
+            if _comp_cache is None:
+                _comp_cache = CompetitorCacheManager()
     return _comp_cache

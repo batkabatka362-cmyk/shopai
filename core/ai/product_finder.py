@@ -4,6 +4,7 @@ Uses web search + a niche suggestion database to propose products.
 Scores each candidate by margin potential and price sweet spot.
 """
 from __future__ import annotations
+import threading as _threading
 from utils.logger import get_logger
 logger = get_logger("product.finder")
 
@@ -211,8 +212,12 @@ class AIProductFinder:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_product_finder():
     global _instance
     if _instance is None:
-        _instance = AIProductFinder()
+        with _instance_lock:
+            if _instance is None:
+                _instance = AIProductFinder()
     return _instance

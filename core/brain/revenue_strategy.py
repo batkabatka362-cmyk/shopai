@@ -20,6 +20,7 @@ Analyzes store state and creates actionable revenue plan:
   5. Product positioning recommendations
 """
 from __future__ import annotations
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -169,8 +170,12 @@ class RevenueStrategy:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_revenue_strategy():
     global _instance
     if _instance is None:
-        _instance = RevenueStrategy()
+        with _instance_lock:
+            if _instance is None:
+                _instance = RevenueStrategy()
     return _instance

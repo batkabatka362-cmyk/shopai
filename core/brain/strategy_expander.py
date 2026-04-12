@@ -21,6 +21,7 @@ access is owned in one place.
 """
 from __future__ import annotations
 
+import threading as _threading
 import time
 from typing import Any
 
@@ -129,9 +130,12 @@ class StrategyExpander:
 
 
 _instance: StrategyExpander | None = None
+_instance_lock = _threading.Lock()
 
 def get_strategy_expander() -> StrategyExpander:
     global _instance
     if _instance is None:
-        _instance = StrategyExpander()
+        with _instance_lock:
+            if _instance is None:
+                _instance = StrategyExpander()
     return _instance

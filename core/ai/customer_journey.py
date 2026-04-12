@@ -1,5 +1,6 @@
 """Customer Journey AI — track and predict customer behavior."""
 from __future__ import annotations
+import threading as _threading
 from utils.logger import get_logger
 logger = get_logger("customer.journey")
 
@@ -66,8 +67,12 @@ class CustomerJourneyAI:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_customer_journey():
     global _instance
     if _instance is None:
-        _instance = CustomerJourneyAI()
+        with _instance_lock:
+            if _instance is None:
+                _instance = CustomerJourneyAI()
     return _instance

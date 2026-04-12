@@ -12,6 +12,7 @@ Now every share/apply call goes through the single memory
 owner.
 """
 from __future__ import annotations
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -125,8 +126,12 @@ class MultiStoreIntelligence:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_multi_store():
     global _instance
     if _instance is None:
-        _instance = MultiStoreIntelligence()
+        with _instance_lock:
+            if _instance is None:
+                _instance = MultiStoreIntelligence()
     return _instance

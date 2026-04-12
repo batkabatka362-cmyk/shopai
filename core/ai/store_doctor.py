@@ -1,5 +1,6 @@
 """AI Store Doctor — weekly health diagnosis with auto-fix."""
 from __future__ import annotations
+import threading as _threading
 import time
 from utils.logger import get_logger
 logger = get_logger("store.doctor")
@@ -82,8 +83,12 @@ class AIStoreDoctor:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_store_doctor():
     global _instance
     if _instance is None:
-        _instance = AIStoreDoctor()
+        with _instance_lock:
+            if _instance is None:
+                _instance = AIStoreDoctor()
     return _instance

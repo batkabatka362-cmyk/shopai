@@ -4,6 +4,7 @@ Makes AI thinking transparent and debuggable.
 Each decision shows the full reasoning chain.
 """
 from __future__ import annotations
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -145,8 +146,12 @@ class ChainOfThought:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_chain_of_thought():
     global _instance
     if _instance is None:
-        _instance = ChainOfThought()
+        with _instance_lock:
+            if _instance is None:
+                _instance = ChainOfThought()
     return _instance

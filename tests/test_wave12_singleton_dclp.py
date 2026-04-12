@@ -1,6 +1,6 @@
 """Wave 12 tests — DCLP (Double-Checked Locking Pattern) for remaining singletons.
 
-Verifies that 11 additional singleton getters across core/ and engines/
+Verifies that 28 additional singleton getters across core/ and engines/
 now use thread-safe DCLP to prevent duplicate instantiation under
 concurrent access.
 
@@ -196,3 +196,182 @@ class TestPolicyStoreDCLP:
         objs = _race_getter(get_default_store)
         assert all(o is objs[0] for o in objs)
         reset_default_store()
+
+
+# ---------------------------------------------------------------------------
+# Wave 12b — 14 more files, 17 more singletons
+# ---------------------------------------------------------------------------
+
+
+class TestCustomerJourneyDCLP:
+    def test_has_lock(self):
+        import core.ai.customer_journey as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.ai.customer_journey import get_customer_journey
+        objs = _race_getter(get_customer_journey)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestExternalToolsDCLP:
+    def test_has_lock(self):
+        import core.ai.external_tools as mod
+        assert hasattr(mod, "_tools_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.ai.external_tools import get_tools
+        objs = _race_getter(get_tools)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestInventoryPredictorDCLP:
+    def test_has_lock(self):
+        import core.ai.inventory_predictor as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.ai.inventory_predictor import get_inventory_predictor
+        objs = _race_getter(get_inventory_predictor)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestProductFinderDCLP:
+    def test_has_lock(self):
+        import core.ai.product_finder as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.ai.product_finder import get_product_finder
+        objs = _race_getter(get_product_finder)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestSmartPricingDCLP:
+    def test_has_lock(self):
+        import core.ai.smart_pricing as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.ai.smart_pricing import get_smart_pricing
+        objs = _race_getter(get_smart_pricing)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestStoreDoctorDCLP:
+    def test_has_lock(self):
+        import core.ai.store_doctor as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.ai.store_doctor import get_store_doctor
+        objs = _race_getter(get_store_doctor)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestCompetitiveIntelDCLP:
+    def test_has_lock(self):
+        import core.brain.competitive_intel as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.brain.competitive_intel import get_competitive_intelligence
+        objs = _race_getter(get_competitive_intelligence)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestMultiStoreBrainDCLP:
+    def test_has_lock(self):
+        import core.brain.multi_store_brain as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.brain.multi_store_brain import get_multi_store
+        objs = _race_getter(get_multi_store)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestRevenueStrategyDCLP:
+    def test_has_lock(self):
+        import core.brain.revenue_strategy as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.brain.revenue_strategy import get_revenue_strategy
+        objs = _race_getter(get_revenue_strategy)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestRuleHealthDCLP:
+    def test_has_lock(self):
+        import core.brain.rule_health as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.brain.rule_health import get_rule_health_checker
+        objs = _race_getter(get_rule_health_checker)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestSmartRotationDCLP:
+    """smart_rotation.py has 4 separate singletons."""
+
+    LOCKS = ["_rotation_lock", "_time_lock", "_explore_lock", "_comp_cache_lock"]
+
+    def test_has_locks(self):
+        import core.brain.smart_rotation as mod
+        for lock_name in self.LOCKS:
+            assert hasattr(mod, lock_name), f"Missing {lock_name}"
+
+    def test_product_rotation_singleton(self):
+        from core.brain.smart_rotation import get_product_rotation
+        objs = _race_getter(get_product_rotation)
+        assert all(o is objs[0] for o in objs)
+
+    def test_time_awareness_singleton(self):
+        from core.brain.smart_rotation import get_time_awareness
+        objs = _race_getter(get_time_awareness)
+        assert all(o is objs[0] for o in objs)
+
+    def test_exploration_boost_singleton(self):
+        from core.brain.smart_rotation import get_exploration_boost
+        objs = _race_getter(get_exploration_boost)
+        assert all(o is objs[0] for o in objs)
+
+    def test_competitor_cache_singleton(self):
+        from core.brain.smart_rotation import get_competitor_cache
+        objs = _race_getter(get_competitor_cache)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestStrategyExpanderDCLP:
+    def test_has_lock(self):
+        import core.brain.strategy_expander as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.brain.strategy_expander import get_strategy_expander
+        objs = _race_getter(get_strategy_expander)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestReasoningChainDCLP:
+    def test_has_lock(self):
+        import core.brain.reasoning_chain as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.brain.reasoning_chain import get_chain_of_thought
+        objs = _race_getter(get_chain_of_thought)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestTimeseriesDCLP:
+    def test_has_lock(self):
+        import core.data.timeseries as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.data.timeseries import get_timeseries
+        objs = _race_getter(get_timeseries)
+        assert all(o is objs[0] for o in objs)

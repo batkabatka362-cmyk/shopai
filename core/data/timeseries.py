@@ -1,5 +1,6 @@
 """Time Series Analyzer — trend analysis per data domain over time."""
 from __future__ import annotations
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -75,8 +76,12 @@ class TimeSeriesAnalyzer:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_timeseries():
     global _instance
     if _instance is None:
-        _instance = TimeSeriesAnalyzer()
+        with _instance_lock:
+            if _instance is None:
+                _instance = TimeSeriesAnalyzer()
     return _instance

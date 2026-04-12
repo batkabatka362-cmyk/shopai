@@ -4,6 +4,7 @@ Goes beyond price comparison: analyzes positioning, market gaps,
 competitive advantages, and strategic recommendations.
 """
 from __future__ import annotations
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -118,8 +119,12 @@ class CompetitiveIntelligence:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 def get_competitive_intelligence():
     global _instance
     if _instance is None:
-        _instance = CompetitiveIntelligence()
+        with _instance_lock:
+            if _instance is None:
+                _instance = CompetitiveIntelligence()
     return _instance
