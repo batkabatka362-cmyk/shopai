@@ -24,6 +24,7 @@ Gold Rules:
 """
 from __future__ import annotations
 
+import threading as _threading
 import time
 from typing import Any
 
@@ -457,10 +458,13 @@ class IntelligenceCycle:
 
 # Singleton
 _instance: IntelligenceCycle | None = None
+_instance_lock = _threading.Lock()
 
 
 def get_intelligence_cycle() -> IntelligenceCycle:
     global _instance
     if _instance is None:
-        _instance = IntelligenceCycle()
+        with _instance_lock:
+            if _instance is None:
+                _instance = IntelligenceCycle()
     return _instance

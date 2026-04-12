@@ -1,6 +1,7 @@
 """Similarity Search — find memories by feature similarity, not just category."""
 from __future__ import annotations
 import math
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -96,8 +97,13 @@ def _to_num(val) -> float:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
+
 def get_similarity_search():
     global _instance
     if _instance is None:
-        _instance = SimilaritySearch()
+        with _instance_lock:
+            if _instance is None:
+                _instance = SimilaritySearch()
     return _instance

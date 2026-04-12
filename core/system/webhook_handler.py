@@ -4,10 +4,11 @@ Events: orders/create, products/update, customers/create, etc.
 Each event triggers appropriate system response.
 """
 from __future__ import annotations
-import time
-import json
 import hashlib
 import hmac
+import json
+import threading as _threading
+import time
 from typing import Any
 from utils.logger import get_logger
 logger = get_logger("webhook.handler")
@@ -151,8 +152,13 @@ class WebhookHandler:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
+
 def get_webhook_handler():
     global _instance
     if _instance is None:
-        _instance = WebhookHandler()
+        with _instance_lock:
+            if _instance is None:
+                _instance = WebhookHandler()
     return _instance

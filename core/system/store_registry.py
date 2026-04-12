@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading as _threading
 import time
 import urllib.request
 from pathlib import Path
@@ -391,8 +392,13 @@ class StoreRegistry:
 
 # Singleton
 _instance = None
+_instance_lock = _threading.Lock()
+
+
 def get_store_registry():
     global _instance
     if _instance is None:
-        _instance = StoreRegistry()
+        with _instance_lock:
+            if _instance is None:
+                _instance = StoreRegistry()
     return _instance

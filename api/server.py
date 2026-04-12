@@ -124,6 +124,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
                 "outputs": engine.required_output_fields,
             })
         except Exception as exc:
+            logger.warning("engine info failed: %s", exc)
             self._json_response(500, {"error": str(exc)})
 
     def _get_experience(self) -> None:
@@ -132,6 +133,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             exp = get_experience()
             self._json_response(200, exp.get_knowledge_summary())
         except Exception as exc:
+            logger.warning("experience summary failed: %s", exc)
             self._json_response(500, {"error": str(exc)})
 
     def _list_webhooks(self) -> None:
@@ -150,6 +152,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             stats = [sm.get_stats(s["store_id"]) for s in stores]
             self._json_response(200, {"stores": stores, "stats": stats})
         except Exception as exc:
+            logger.warning("store listing failed: %s", exc)
             self._json_response(200, {"stores": [], "error": str(exc)})
 
     # --- POST handlers ---
@@ -267,6 +270,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             result = controller.run_cycle(store_id)
             self._json_response(200, result)
         except Exception as exc:
+            logger.warning("cycle run failed for %s: %s", body.get("store_id"), exc)
             self._json_response(500, {"error": str(exc)})
 
     def _store_sync(self, body: dict) -> None:
@@ -280,6 +284,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             result = sync.sync_store(store_id)
             self._json_response(200, result)
         except Exception as exc:
+            logger.warning("store sync failed for %s: %s", body.get("store_id"), exc)
             self._json_response(500, {"error": str(exc)})
 
     def _agent_run(self, body: dict) -> None:

@@ -147,14 +147,16 @@ def get_all_schema_info() -> list[dict[str, Any]]:
             try:
                 conn = sqlite3.connect(str(path), timeout=5)
                 try:
-                    row = conn.execute(
-                        "SELECT MAX(version) FROM _schema_version"
-                    ).fetchone()
-                    current = int(row[0]) if row and row[0] is not None else 0
-                except sqlite3.OperationalError:
-                    # table doesn't exist — legacy DB
-                    current = 0
-                conn.close()
+                    try:
+                        row = conn.execute(
+                            "SELECT MAX(version) FROM _schema_version"
+                        ).fetchone()
+                        current = int(row[0]) if row and row[0] is not None else 0
+                    except sqlite3.OperationalError:
+                        # table doesn't exist — legacy DB
+                        current = 0
+                finally:
+                    conn.close()
                 info["current_version"] = current
                 info["pending"] = max(0, target - current)
                 info["status"] = "up_to_date" if current >= target else "pending"

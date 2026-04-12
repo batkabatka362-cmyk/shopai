@@ -715,10 +715,13 @@ class DataArchitecture:
 
 # Singleton
 _instance: DataArchitecture | None = None
+_instance_lock = threading.Lock()
 
 
 def get_data_architecture() -> DataArchitecture:
     global _instance
     if _instance is None:
-        _instance = DataArchitecture()
+        with _instance_lock:
+            if _instance is None:
+                _instance = DataArchitecture()
     return _instance

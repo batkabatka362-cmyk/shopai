@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading as _threading
 import time
 from typing import Any
 
@@ -508,6 +509,7 @@ Focus on actionable, specific recommendations. Consider margins, competition, an
 # ── Module-level convenience function ────────────────────────
 
 _instance: AIReasoning | None = None
+_instance_lock = _threading.Lock()
 
 
 def ai_reason(task: str, role: str = "analyzer", **data: Any) -> dict[str, Any]:
@@ -519,7 +521,9 @@ def ai_reason(task: str, role: str = "analyzer", **data: Any) -> dict[str, Any]:
     """
     global _instance
     if _instance is None:
-        _instance = AIReasoning()
+        with _instance_lock:
+            if _instance is None:
+                _instance = AIReasoning()
     return _instance.reason(task, role, **data)
 
 
@@ -527,5 +531,7 @@ def is_llm_available() -> bool:
     """Check if LLM is available."""
     global _instance
     if _instance is None:
-        _instance = AIReasoning()
+        with _instance_lock:
+            if _instance is None:
+                _instance = AIReasoning()
     return _instance.is_llm_available()

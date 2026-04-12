@@ -40,8 +40,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "severity": "info",
                 "endpoint": path,
             }, source="api", score=3.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("data-architecture capture failed: %s", exc)
 
         if path == "/api/status":
             self._json_response(self._get_status())
@@ -98,6 +98,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 result = wh.process(topic, payload, hmac_header)
                 self._json_response(result)
             except Exception as exc:
+                logger.warning("webhook processing failed: %s", exc)
                 self._json_response({"error": str(exc)[:100]}, 500)
         elif path == "/api/stores":
             # POST /api/stores — register new store
@@ -113,6 +114,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 )
                 self._json_response(result)
             except Exception as exc:
+                logger.warning("store registration failed: %s", exc)
                 self._json_response({"error": str(exc)[:100]}, 500)
         else:
             self._json_response({"error": "not_found"}, 404)
@@ -146,14 +148,14 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             from core.memory.intelligence import get_memory_intelligence
             mi = get_memory_intelligence()
             result["memory"] = mi.get_stats()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("memory stats unavailable: %s", exc)
         try:
             from core.data.architecture import get_data_architecture
             da = get_data_architecture()
             result["data"] = da.get_stats()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("data-architecture stats unavailable: %s", exc)
         # Wave 4 #3: surface an adapter SLA rollup so operators hitting
         # /api/status can see which adapters are breaching their SLO
         # without a separate call to /api/metrics/adapters.
@@ -161,8 +163,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             from core.adapters.metrics import get_metrics
             sla = get_metrics().get_sla_report()
             result["adapters_sla"] = DashboardAPIHandler._summarise_sla(sla)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("adapter SLA rollup unavailable: %s", exc)
         # Wave 6 #15: compact learning-pipeline health snapshot so
         # /api/status tells operators at a glance whether the
         # learning feedback loop is working (patterns firing, rules
@@ -172,8 +174,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             result["learning"] = (
                 DashboardAPIHandler._summarise_learning()
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("learning summary unavailable: %s", exc)
         return result
 
     @staticmethod
@@ -232,8 +234,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             snap = get_default_synthesizer().snapshot()
             active = len(snap)
             summary["active_patterns"] = active
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("active patterns unavailable: %s", exc)
         try:
             from engines.meta_governance.policy_store import (
                 PolicyTier,
@@ -250,17 +252,17 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                         and stat.get("matches", 0) > 0
                     ):
                         firing += 1
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as exc:
+                logger.debug("firing-count stat walk failed: %s", exc)
+        except Exception as exc:
+            logger.debug("policy store soft-rule count failed: %s", exc)
         try:
             from core.mentality import get_default_belief_store
             bs = get_default_belief_store()
             summary["beliefs"] = len(bs.keys())
             summary["half_life"] = getattr(bs, "half_life_seconds", None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("belief store unavailable: %s", exc)
         # Derive a compact status string.
         if summary["active_patterns"] is not None:
             if active == 0:
@@ -287,8 +289,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 if key == "limit":
                     n = int(val)
                     return max(1, min(maximum, n))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("query-string parse failed: %s", exc)
         return default
 
     @staticmethod
@@ -390,7 +392,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         for key, row in snap.items():
             try:
                 lo, hi = store.credible_interval_95(key)
-            except Exception:
+            except Exception as exc:
+                logger.debug("credible interval fallback for %s: %s", key, exc)
                 lo, hi = 0.0, 1.0
             last_updated_at = row.get("last_updated_at")
             age_seconds: float | None = None
@@ -429,7 +432,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             half_life_seconds = getattr(
                 store, "half_life_seconds", None,
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("half_life_seconds attr read failed: %s", exc)
             half_life_seconds = None
 
         return {
@@ -509,8 +513,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 soft_in_store = len(
                     get_default_store().list_rules(tier=PolicyTier.SOFT),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("soft-rule count unavailable: %s", exc)
             # Count RETIREMENT events from the audit log to derive
             # total-ever-promoted (active + retired).
             retired_count = 0
@@ -521,8 +525,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 for entry in get_default_store().read_audit(limit=500):
                     if entry.get("event") == "RETIREMENT":
                         retired_count += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("retirement audit count failed: %s", exc)
             total_ever = active + retired_count
             learning_stats = {
                 "active_patterns":   active,
@@ -551,8 +555,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         config: dict[str, Any] = {}
         try:
             config = synth.config()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("synthesizer config unavailable: %s", exc)
 
         # Wave 6 #18: surface near-miss (pending) patterns from the
         # most recent run so operators get early warning of emerging
@@ -562,8 +566,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             report = getattr(synth, "last_report", None)
             if report is not None:
                 pending = [p.as_dict() for p in report.pending_patterns]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("pending patterns unavailable: %s", exc)
 
         return {
             "patterns":         rows,
@@ -621,7 +625,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             from core.system.alerts import get_alert_system
             alerts = get_alert_system()
             return {"alerts": alerts.get_recent(20), "stats": alerts.get_stats()}
-        except Exception:
+        except Exception as exc:
+            logger.debug("alert system unavailable: %s", exc)
             return {"alerts": []}
 
     @staticmethod

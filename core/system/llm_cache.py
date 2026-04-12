@@ -49,6 +49,10 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from utils.logger import get_logger
+
+logger = get_logger("llm.cache")
+
 
 # ── Tunables ──────────────────────────────────────────────────
 
@@ -277,8 +281,8 @@ def cached_ask(
             import json as _json
             ctx_str = _json.dumps(context, sort_keys=True, default=str)[:2000]
             key_prompt = prompt + "\n#ctx:" + ctx_str
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cache key context serialisation failed: %s", exc)
 
     cached = cache.get(role, key_prompt, system_prompt)
     if cached is not None:
@@ -293,13 +297,16 @@ def cached_ask(
 
 
 _instance: Optional[LLMCache] = None
+_instance_lock = threading.Lock()
 
 
 def get_llm_cache() -> LLMCache:
     """Process-wide LLMCache singleton."""
     global _instance
     if _instance is None:
-        _instance = LLMCache()
+        with _instance_lock:
+            if _instance is None:
+                _instance = LLMCache()
     return _instance
 
 

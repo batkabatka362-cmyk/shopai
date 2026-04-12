@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading as _threading
 import time
 import urllib.error
 import urllib.request
@@ -660,10 +661,13 @@ class LLMAdapter:
 
 
 _instance: Optional[LLMAdapter] = None
+_instance_lock = _threading.Lock()
 
 
 def get_llm() -> LLMAdapter:
     global _instance
     if _instance is None:
-        _instance = LLMAdapter()
+        with _instance_lock:
+            if _instance is None:
+                _instance = LLMAdapter()
     return _instance
