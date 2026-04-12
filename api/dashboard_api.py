@@ -412,14 +412,74 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             row["last_matched_at"] = stat["last_matched_at"] if stat else None
 
         total = len(rows)
+
+        # Wave 6 #14: aggregate learning-effectiveness metrics so
+        # operators get a single "is the learning pipeline healthy?"
+        # view without eyeballing every row. Built from in-memory
+        # data already loaded (active patterns + enriched stats),
+        # plus a lightweight SOFT-rule count from the store.
+        learning_stats: dict[str, Any] = {}
+        try:
+            active = total  # active patterns in the synthesizer
+            total_matches = sum(r.get("matches", 0) for r in rows)
+            total_blocks = sum(r.get("blocks", 0) for r in rows)
+            firing = sum(1 for r in rows if r.get("matches", 0) > 0)
+            # SOFT rule count from the policy store (may differ from
+            # synthesizer count if rules were added manually or if
+            # the store drifted — the delta is itself diagnostic).
+            soft_in_store = 0
+            try:
+                from engines.meta_governance.policy_store import (
+                    PolicyTier,
+                    get_default_store,
+                )
+                soft_in_store = len(
+                    get_default_store().list_rules(tier=PolicyTier.SOFT),
+                )
+            except Exception:
+                pass
+            # Count RETIREMENT events from the audit log to derive
+            # total-ever-promoted (active + retired).
+            retired_count = 0
+            try:
+                from engines.meta_governance.policy_store import (
+                    get_default_store,
+                )
+                for entry in get_default_store().read_audit(limit=500):
+                    if entry.get("event") == "RETIREMENT":
+                        retired_count += 1
+            except Exception:
+                pass
+            total_ever = active + retired_count
+            learning_stats = {
+                "active_patterns":   active,
+                "firing_patterns":   firing,
+                "retired_count":     retired_count,
+                "total_promoted":    total_ever,
+                "soft_in_store":     soft_in_store,
+                "total_matches":     total_matches,
+                "total_blocks":      total_blocks,
+                "effectiveness": (
+                    round(firing / active, 4) if active > 0 else None
+                ),
+                "retention_rate": (
+                    round(active / total_ever, 4)
+                    if total_ever > 0
+                    else None
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reflection: learning_stats failed (%s)", exc)
+
         rows = rows[:limit]
         return {
-            "patterns":     rows,
-            "count":        len(rows),
-            "total":        total,
-            "last_run_at":  getattr(synth, "last_run_at", None),
-            "persist_path": str(getattr(synth, "persist_path", "") or ""),
-            "timestamp":    time.time(),
+            "patterns":       rows,
+            "count":          len(rows),
+            "total":          total,
+            "learning_stats": learning_stats,
+            "last_run_at":    getattr(synth, "last_run_at", None),
+            "persist_path":   str(getattr(synth, "persist_path", "") or ""),
+            "timestamp":      time.time(),
         }
 
     @staticmethod

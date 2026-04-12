@@ -822,3 +822,112 @@ class TestReflectionEndpoint:
             assert out["persist_path"] == str(ledger)
         finally:
             reset_default_synthesizer()
+
+    # -- Wave 6 #14: learning stats -----------------------------------
+
+    def test_learning_stats_present_in_response(self, monkeypatch):
+        """The endpoint always returns a ``learning_stats`` dict,
+        even when no patterns exist."""
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth([]),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert "learning_stats" in out
+        stats = out["learning_stats"]
+        assert stats["active_patterns"] == 0
+        assert stats["firing_patterns"] == 0
+        assert stats["total_matches"] == 0
+        assert stats["total_blocks"] == 0
+        assert stats["effectiveness"] is None  # 0 active → None
+        assert stats["retention_rate"] is None
+
+    def test_learning_stats_counts_firing_patterns(self, monkeypatch):
+        rows = [
+            {
+                "signature":   f"error:{i}",
+                "rule_id":     f"learned::error:{i}",
+                "kind":        "error",
+                "sample_text": f"msg {i}",
+                "occurrences": 3,
+                "first_seen":  0.0,
+                "last_seen":   1.0,
+                "confidence":  0.8,
+            }
+            for i in range(4)
+        ]
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth(rows),
+        )
+
+        class _StatsStore:
+            def get_all_rule_stats(self):
+                return [
+                    {"rule_id": "learned::error:0",
+                     "matches": 3, "blocks": 2,
+                     "modifications": 0,
+                     "first_matched_at": 1.0,
+                     "last_matched_at": 5.0},
+                    {"rule_id": "learned::error:2",
+                     "matches": 1, "blocks": 0,
+                     "modifications": 0,
+                     "first_matched_at": 2.0,
+                     "last_matched_at": 3.0},
+                ]
+            def list_rules(self, tier=None):
+                return [object()] * 3  # 3 soft rules
+            def read_audit(self, limit=500):
+                return [
+                    {"event": "RETIREMENT", "rule_id": "learned::error:old"},
+                    {"event": "RETIREMENT", "rule_id": "learned::error:old2"},
+                    {"event": "PROMOTION",  "rule_id": "learned::error:0"},
+                ]
+
+        monkeypatch.setattr(
+            "engines.meta_governance.policy_store.get_default_store",
+            lambda: _StatsStore(),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        stats = out["learning_stats"]
+        assert stats["active_patterns"] == 4
+        assert stats["firing_patterns"] == 2  # error:0 and error:2
+        assert stats["total_matches"] == 4    # 3 + 1
+        assert stats["total_blocks"] == 2     # 2 + 0
+        assert stats["retired_count"] == 2
+        assert stats["total_promoted"] == 6   # 4 active + 2 retired
+        assert stats["soft_in_store"] == 3
+        assert stats["effectiveness"] == round(2 / 4, 4)
+        assert stats["retention_rate"] == round(4 / 6, 4)
+
+    def test_learning_stats_degrades_when_store_offline(self, monkeypatch):
+        """When the policy store is unavailable, learning_stats
+        still populates — just with zero store-side counters."""
+        rows = [
+            {
+                "signature":   "error:a",
+                "rule_id":     "learned::error:a",
+                "kind":        "error",
+                "sample_text": "m",
+                "occurrences": 3,
+                "first_seen":  0.0,
+                "last_seen":   1.0,
+                "confidence":  0.8,
+            },
+        ]
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth(rows),
+        )
+
+        def _boom():
+            raise RuntimeError("store offline")
+        monkeypatch.setattr(
+            "engines.meta_governance.policy_store.get_default_store", _boom,
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        stats = out["learning_stats"]
+        assert stats["active_patterns"] == 1
+        assert stats["soft_in_store"] == 0
+        assert stats["retired_count"] == 0
+
