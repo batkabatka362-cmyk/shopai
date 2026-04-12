@@ -133,9 +133,11 @@ def test_interval_env_var_shortens_throttle(controller, monkeypatch):
 
 
 def test_max_idle_env_var_is_forwarded(controller, monkeypatch):
-    monkeypatch.setenv("SHOPAI_REFLECTION_DECAY_MAX_IDLE_SEC", "17")
+    # Wave 7b (GAP-18): values below 60s are clamped, so use a
+    # value above the floor to test env-var forwarding.
+    monkeypatch.setenv("SHOPAI_REFLECTION_DECAY_MAX_IDLE_SEC", "120")
     _tick(controller, now=5.0)
-    assert controller._reflection_synth.decay_calls[0][0] == 17.0
+    assert controller._reflection_synth.decay_calls[0][0] == 120.0
 
 
 def test_max_idle_default_is_thirty_days(controller):

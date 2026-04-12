@@ -1517,12 +1517,31 @@ class AutonomousController:
             if cognitive_report is not None:
                 cycle_result["cognitive"] = cognitive_report
 
+        # Wave 7b (NEW-A): inject synthetic error sources into
+        # phase_errors *before* snapshotting into cycle_result so
+        # the history and observability reflect the full picture.
+        # Previously these blocks ran after the snapshot, leaving
+        # cycle_result["phase_errors"] stale.
+
+        # Wave 7 #2: inject cognitive Mind errors into phase_errors
+        # so the reflection synthesizer can mine them alongside
+        # regular phase failures. Without this, recurring Mind
+        # crashes accumulate zero learning signal.
+        cog = cycle_result.get("cognitive")
+        if isinstance(cog, dict) and cog.get("error"):
+            phase_errors["cognitive_mind"] = str(cog["error"])
+
+        # Wave 7 #2: inject SLA breaches into phase_errors so
+        # recurring adapter degradation feeds the reflection
+        # synthesizer and can eventually promote SOFT block rules.
+        self._inject_sla_breaches(phase_errors)
+
         # Surface the per-cycle error ledger. ``phase_errors``
         # was populated by every phase's ``_record`` call-site
-        # so operators can see which subsystems failed even
-        # when the cycle overall completed. Empty dict means
-        # every phase ran clean; presence of keys means
-        # something degraded.
+        # (plus Mind + SLA injections above) so operators can see
+        # which subsystems failed even when the cycle overall
+        # completed. Empty dict means every phase ran clean;
+        # presence of keys means something degraded.
         if phase_errors:
             cycle_result["phase_errors"] = dict(phase_errors)
             cycle_result["phase_error_count"] = len(phase_errors)
@@ -1545,19 +1564,6 @@ class AutonomousController:
                      cycle_result["phases"]["analysis"]["insights"],
                      cycle_result["phases"]["decisions"]["proposed"])
 
-        # Wave 7 #2: inject cognitive Mind errors into phase_errors
-        # so the reflection synthesizer can mine them alongside
-        # regular phase failures. Without this, recurring Mind
-        # crashes accumulate zero learning signal.
-        cog = cycle_result.get("cognitive")
-        if isinstance(cog, dict) and cog.get("error"):
-            phase_errors["cognitive_mind"] = str(cog["error"])
-
-        # Wave 7 #2: inject SLA breaches into phase_errors so
-        # recurring adapter degradation feeds the reflection
-        # synthesizer and can eventually promote SOFT block rules.
-        self._inject_sla_breaches(phase_errors)
-
         # Wave 2 #5: post-tick reflection hook. Mines the cycle's
         # error ledger for recurring patterns and, when confidence
         # is high enough, promotes them to SOFT rules on the
@@ -1568,9 +1574,17 @@ class AutonomousController:
         except Exception as exc:  # noqa: BLE001
             # Wave 7 #4: the hook's own failures are recorded in
             # phase_errors so they show up in observability and
-            # can be mined by future reflection runs.
+            # can be mined by future reflection runs. Also patch
+            # the already-snapshotted cycle_result so history is
+            # consistent.
             phase_errors["reflection_hook"] = (
                 f"{type(exc).__name__}: {exc}"
+            )
+            cycle_result["phase_errors"]["reflection_hook"] = (
+                phase_errors["reflection_hook"]
+            )
+            cycle_result["phase_error_count"] = len(
+                cycle_result["phase_errors"]
             )
             logger.warning("reflection hook failed: %s", exc)
 
@@ -1707,7 +1721,6 @@ class AutonomousController:
         exception in the decay path degrades to an empty list so
         the reflection hook stays healthy.
         """
-        import os
         interval = float(os.environ.get(
             "SHOPAI_REFLECTION_DECAY_INTERVAL_SEC",
             self._REFLECTION_DECAY_INTERVAL_SEC,
@@ -1716,6 +1729,16 @@ class AutonomousController:
             "SHOPAI_REFLECTION_DECAY_MAX_IDLE_SEC",
             self._REFLECTION_DECAY_MAX_IDLE_SEC,
         ))
+        # Wave 7 (GAP-18): validate against operator typos. A
+        # max_idle < 60s would retire every rule on every pass;
+        # clamp to a 60s floor and warn loudly.
+        if max_idle < 60.0:
+            logger.warning(
+                "SHOPAI_REFLECTION_DECAY_MAX_IDLE_SEC=%.1f is below "
+                "60s floor — clamping to 60s to prevent mass retirement",
+                max_idle,
+            )
+            max_idle = 60.0
         synth = getattr(self, "_reflection_synth", None)
         if synth is None:
             return []
@@ -1726,6 +1749,10 @@ class AutonomousController:
         if last > 0.0 and (now - last) < interval:
             return []
         self._last_reflection_decay_at = now
+        logger.debug(
+            "reflection decay running: max_idle=%.0fs, interval=%.0fs",
+            max_idle, interval,
+        )
         try:
             return list(
                 synth.decay_stale_rules(

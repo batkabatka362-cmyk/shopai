@@ -705,6 +705,16 @@ class ReflectionSynthesizer:
                 str(path), exc,
             )
             return
+        # Wave 7b (NEW-B): pre-build the set of existing SOFT rule
+        # IDs so the inner loop doesn't call list_rules() on every
+        # iteration (was O(N*M) where M = number of SOFT rules).
+        try:
+            existing_soft_ids: set[str] = {
+                r.rule_id for r in self._store.list_rules(tier=PolicyTier.SOFT)
+            }
+        except Exception:  # noqa: BLE001
+            existing_soft_ids = set()
+
         for raw_line in lines:
             raw_line = raw_line.strip()
             if not raw_line:
@@ -740,15 +750,12 @@ class ReflectionSynthesizer:
             # If so, skip the promote call to avoid emitting a
             # spurious PROMOTION audit entry on every restart.
             rule_id = f"learned::{pattern.signature}"
-            already_registered = any(
-                r.rule_id == rule_id
-                for r in self._store.list_rules(tier=PolicyTier.SOFT)
-            )
-            if not already_registered:
+            if rule_id not in existing_soft_ids:
                 try:
                     rule = self._rule_builder(pattern)
                     if rule is not None:
                         self._store.promote_soft_rule(rule)
+                        existing_soft_ids.add(rule_id)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "reflection ledger: replay failed for %s: %s",

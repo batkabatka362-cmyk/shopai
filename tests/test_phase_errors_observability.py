@@ -167,7 +167,17 @@ class TestPhaseErrorsSurface:
 
         result = ac.run_cycle("test")
         errors = result.get("phase_errors", {})
-        for key in errors:
+        # Wave 7 added synthetic injection keys that use "::" as
+        # a namespace separator (e.g. "sla_breach::adapter_name",
+        # "cognitive_mind"). Those are NOT produced by ``_record``
+        # and follow their own naming convention. Filter them out
+        # so we only test the slugification contract of ``_record``.
+        _INJECTED_PREFIXES = ("sla_breach", "cognitive_mind", "reflection_hook")
+        phase_keys = [
+            k for k in errors
+            if not any(k.startswith(p) for p in _INJECTED_PREFIXES)
+        ]
+        for key in phase_keys:
             # Lowercase, underscores only, no spaces/colons
             assert key == key.lower()
             assert " " not in key

@@ -43,6 +43,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -315,6 +316,7 @@ class BeliefStore:
         prior_beta: float = 1.0,
         persist_path: str | os.PathLike | None = None,
         half_life_seconds: float | None = None,
+        persist_debounce: float = 0.0,
     ) -> None:
         if prior_alpha <= 0 or prior_beta <= 0:
             raise ValueError(
@@ -340,6 +342,16 @@ class BeliefStore:
         self._persist_path: Path | None = (
             Path(persist_path) if persist_path is not None else None
         )
+        # Wave 7 (GAP-16): debounce disk writes so high-frequency
+        # observe() calls batch into at most one write per interval.
+        # The _dirty flag ensures save() / flush() writes the final
+        # state even if the debounce timer hasn't fired. Defaults
+        # to 0.0 (every observe writes immediately) for backward
+        # compat; callers in tight loops should set persist_debounce
+        # to e.g. 1.0 to avoid hammering the disk.
+        self._persist_dirty = False
+        self._last_persisted_at = 0.0
+        self._min_persist_interval = float(persist_debounce)
         if self._persist_path is not None:
             self._load_from_disk()
 
@@ -413,18 +425,24 @@ class BeliefStore:
                 key, success, weight, belief.alpha, belief.beta,
                 belief.mean,
             )
-            # Wave 6 #4: persist-on-observe so a crash between
-            # ticks loses at most the current update. Failure to
-            # write is logged but never propagated — an unhealthy
-            # disk must not take down the decision gate.
+            # Wave 6 #4 + Wave 7 (GAP-16): persist after observe,
+            # but debounce to at most once per _min_persist_interval
+            # to avoid hammering the disk when many beliefs update
+            # in a tight loop. The _dirty flag ensures the final
+            # state is eventually flushed via save().
             if self._persist_path is not None:
-                try:
-                    self._save_to_disk_locked()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "belief store: persist failed for %r: %s",
-                        self._persist_path, exc,
-                    )
+                self._persist_dirty = True
+                now_mono = time.monotonic()
+                if (now_mono - self._last_persisted_at) >= self._min_persist_interval:
+                    try:
+                        self._save_to_disk_locked()
+                        self._persist_dirty = False
+                        self._last_persisted_at = now_mono
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "belief store: persist failed for %r: %s",
+                            self._persist_path, exc,
+                        )
             return belief
 
     def get(self, key: str) -> Belief | None:
@@ -497,11 +515,15 @@ class BeliefStore:
     def save(self) -> None:
         """Explicit snapshot write. Useful for graceful shutdown
         paths that want to persist on demand without waiting for
-        the next observation. No-op when no persist path is set."""
+        the next observation. No-op when no persist path is set.
+        Wave 7 (GAP-16): also clears the dirty flag so callers
+        can use this as a "flush all pending writes" barrier."""
         if self._persist_path is None:
             return
         with self._lock:
             self._save_to_disk_locked()
+            self._persist_dirty = False
+            self._last_persisted_at = time.monotonic()
 
     def _save_to_disk_locked(self) -> None:
         """Atomically rewrite the snapshot file.

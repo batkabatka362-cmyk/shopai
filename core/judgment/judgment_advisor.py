@@ -607,10 +607,19 @@ class JudgmentAdvisor:
             return {**silent, "reason": "No belief store attached"}
 
         target = decision.get("target") or "unknown"
-        action_type = decision.get("action_type") or "unknown"
+        action_type = decision.get("action_type") or decision.get("type") or "unknown"
         key = f"{target}::{action_type}"
 
         belief = self._beliefs.get(key)
+        # Wave 7b (NEW-C): also check the debate-level aggregate
+        # key. The debate→belief feedback (Wave 7 #5) writes under
+        # "debate::<action_type>" which is a complementary signal
+        # to the per-target execution key.
+        if belief is None:
+            debate_key = f"debate::{action_type}"
+            belief = self._beliefs.get(debate_key)
+            if belief is not None:
+                key = debate_key
         if belief is None:
             return {**silent, "reason": f"No prior outcomes for {key}"}
 
