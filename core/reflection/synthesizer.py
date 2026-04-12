@@ -734,17 +734,28 @@ class ReflectionSynthesizer:
                 # Duplicate — the ledger grew past this row earlier
                 # but the signature is already marked. Skip.
                 continue
-            try:
-                rule = self._rule_builder(pattern)
-                if rule is not None:
-                    self._store.promote_soft_rule(rule)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "reflection ledger: replay failed for %s: %s",
-                    pattern.signature, exc,
-                )
-                skipped += 1
-                continue
+            # Wave 7 #7 (GAP-17): check whether the store already
+            # has this rule (e.g. shared store from a still-running
+            # process, or a previous rehydration on the same store).
+            # If so, skip the promote call to avoid emitting a
+            # spurious PROMOTION audit entry on every restart.
+            rule_id = f"learned::{pattern.signature}"
+            already_registered = any(
+                r.rule_id == rule_id
+                for r in self._store.list_rules(tier=PolicyTier.SOFT)
+            )
+            if not already_registered:
+                try:
+                    rule = self._rule_builder(pattern)
+                    if rule is not None:
+                        self._store.promote_soft_rule(rule)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "reflection ledger: replay failed for %s: %s",
+                        pattern.signature, exc,
+                    )
+                    skipped += 1
+                    continue
             self._promoted.add(pattern.signature)
             self._pattern_cache[pattern.signature] = pattern
             loaded += 1

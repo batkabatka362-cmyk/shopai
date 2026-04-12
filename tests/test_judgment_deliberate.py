@@ -227,3 +227,59 @@ def test_deliberate_preserves_advisor_fields():
     assert "checks" in out
     assert "reason" in out
     assert "debate" in out
+
+
+# ---------------------------------------------------------------------------
+# Wave 7 #5: debate outcome feeds belief store (GAP-3)
+# ---------------------------------------------------------------------------
+
+
+def test_deliberate_updates_belief_on_debate():
+    """When a debate triggers and wins, the advisor should call
+    update_belief with a debate::<action_type> key."""
+    from core.mentality import BeliefStore
+
+    store = BeliefStore()
+    advisor = _advisor_with_forced_risk(0.78)
+    advisor._beliefs = store  # wire the real store
+
+    decision = {"action": "launch", "type": "lower_price", "confidence_score": 60}
+    advisor.deliberate(decision, _situation())
+
+    # The debate key should now have an observation
+    snap = store.snapshot()
+    debate_keys = [k for k in snap if k.startswith("debate::")]
+    assert len(debate_keys) == 1
+    assert debate_keys[0] == "debate::lower_price"
+    entry = snap["debate::lower_price"]
+    assert entry["n"] == 1  # one observation
+
+
+def test_deliberate_belief_uses_action_type_fallback():
+    """When decision has no 'type' key, falls back to 'action_type'."""
+    from core.mentality import BeliefStore
+
+    store = BeliefStore()
+    advisor = _advisor_with_forced_risk(0.78)
+    advisor._beliefs = store
+
+    decision = {"action_type": "raise_price", "confidence_score": 60}
+    advisor.deliberate(decision, _situation())
+
+    snap = store.snapshot()
+    assert "debate::raise_price" in snap
+
+
+def test_deliberate_no_belief_when_no_debate():
+    """When the debate doesn't trigger, no belief update occurs."""
+    from core.mentality import BeliefStore
+
+    store = BeliefStore()
+    advisor = _advisor_with_forced_risk(0.40)  # below band
+    advisor._beliefs = store
+
+    advisor.deliberate(_decision(), _situation())
+
+    snap = store.snapshot()
+    debate_keys = [k for k in snap if k.startswith("debate::")]
+    assert debate_keys == []

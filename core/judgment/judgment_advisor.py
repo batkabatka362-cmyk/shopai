@@ -29,6 +29,7 @@ any decision path that wants to consult it.
 """
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 from utils.logger import get_logger
@@ -39,9 +40,11 @@ if TYPE_CHECKING:
 logger = get_logger("judgment.advisor")
 
 
-# Verdict thresholds
-PROCEED_THRESHOLD = 0.70    # Risk score below this → proceed
-DELAY_THRESHOLD = 0.85      # Between proceed and delay → delay
+# Verdict thresholds — configurable via env vars so operators can
+# widen or narrow the debate band for their deployment profile
+# without code changes (Wave 7 #8, GAP-7).
+PROCEED_THRESHOLD = float(os.environ.get("SHOPAI_PROCEED_THRESHOLD", "0.70"))
+DELAY_THRESHOLD = float(os.environ.get("SHOPAI_DELAY_THRESHOLD", "0.85"))
 # Above delay → escalate
 
 
@@ -344,6 +347,26 @@ class JudgmentAdvisor:
                 "Judgment deliberate: risk=%.2f in band → debate winner=%s",
                 risk, outcome.winner.persona,
             )
+            # Wave 7 #5 (GAP-3): feed the debate outcome into the
+            # belief store so repeated debates on the same action
+            # type accumulate a posterior. A high-confidence winner
+            # (≥ 0.6) counts as success; below that, failure.
+            # The key includes the action_type so beliefs stay
+            # per-domain, not a single global "debate" bucket.
+            action_type = decision.get("action_type") or decision.get("type", "unknown")
+            debate_key = f"debate::{action_type}"
+            winner_conf = float(outcome.winner.confidence or 0.0)
+            try:
+                self.update_belief(
+                    debate_key,
+                    success=winner_conf >= 0.6,
+                    weight=winner_conf,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "deliberate: belief update for debate outcome failed: %s",
+                    exc,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "JudgmentAdvisor.deliberate: debate failed %s: %s",
@@ -544,11 +567,17 @@ class JudgmentAdvisor:
     # Minimum number of observations before the posterior is allowed
     # to influence the gate. Smaller samples are too noisy — they'd
     # let a single lucky/unlucky run swing the verdict.
-    _BELIEF_MIN_OBSERVATIONS = 3
+    # Wave 7 #8 (GAP-6): env-var configurable.
+    _BELIEF_MIN_OBSERVATIONS = int(os.environ.get(
+        "SHOPAI_BELIEF_MIN_OBSERVATIONS", "3",
+    ))
 
     # Active weight applied once the posterior has enough evidence.
     # Mirrors the other "soft signal" checks (competitor, financial).
-    _BELIEF_ACTIVE_WEIGHT = 0.15
+    # Wave 7 #8 (GAP-6): env-var configurable.
+    _BELIEF_ACTIVE_WEIGHT = float(os.environ.get(
+        "SHOPAI_BELIEF_ACTIVE_WEIGHT", "0.15",
+    ))
 
     def _check_belief_posterior(self, decision: dict[str, Any]) -> dict[str, Any]:
         """Query the Bayesian posterior for this decision's key.

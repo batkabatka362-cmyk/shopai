@@ -92,8 +92,8 @@ def test_critic_uses_advisor_concern():
     p = critic(_ctx(advisor_result={
         "risk_score": 0.82,
         "checks": [
-            {"name": "magnitude", "score": 0.9},
-            {"name": "past_failures", "score": 0.3},
+            {"name": "magnitude", "risk": 0.9},
+            {"name": "past_failures", "risk": 0.3},
         ],
     }))
     assert p.persona == "Critic"

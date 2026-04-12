@@ -14,6 +14,7 @@ Each cycle:
 """
 from __future__ import annotations
 
+import os
 import time
 import threading
 from typing import Any
@@ -1544,6 +1545,19 @@ class AutonomousController:
                      cycle_result["phases"]["analysis"]["insights"],
                      cycle_result["phases"]["decisions"]["proposed"])
 
+        # Wave 7 #2: inject cognitive Mind errors into phase_errors
+        # so the reflection synthesizer can mine them alongside
+        # regular phase failures. Without this, recurring Mind
+        # crashes accumulate zero learning signal.
+        cog = cycle_result.get("cognitive")
+        if isinstance(cog, dict) and cog.get("error"):
+            phase_errors["cognitive_mind"] = str(cog["error"])
+
+        # Wave 7 #2: inject SLA breaches into phase_errors so
+        # recurring adapter degradation feeds the reflection
+        # synthesizer and can eventually promote SOFT block rules.
+        self._inject_sla_breaches(phase_errors)
+
         # Wave 2 #5: post-tick reflection hook. Mines the cycle's
         # error ledger for recurring patterns and, when confidence
         # is high enough, promotes them to SOFT rules on the
@@ -1552,6 +1566,12 @@ class AutonomousController:
         try:
             self._run_reflection_hook(cycle_result, phase_errors)
         except Exception as exc:  # noqa: BLE001
+            # Wave 7 #4: the hook's own failures are recorded in
+            # phase_errors so they show up in observability and
+            # can be mined by future reflection runs.
+            phase_errors["reflection_hook"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
             logger.warning("reflection hook failed: %s", exc)
 
         return cycle_result
@@ -1561,7 +1581,10 @@ class AutonomousController:
     # by assigning ``controller._reflection_buffer_max = N`` before
     # running ticks. 256 is comfortably larger than typical
     # phase-error fan-out but still flat in memory.
-    _REFLECTION_BUFFER_MAX = 256
+    # Wave 7 #8 (GAP-12): env-var configurable.
+    _REFLECTION_BUFFER_MAX = int(
+        os.environ.get("SHOPAI_REFLECTION_BUFFER_MAX", "256"),
+    )
 
     # Wave 6 #10: throttled auto-decay of stale learned SOFT rules.
     # The reflection hook calls ``decay_stale_rules`` at most once
@@ -1712,6 +1735,41 @@ class AutonomousController:
         except Exception as exc:  # noqa: BLE001
             logger.debug("reflection decay failed: %s", exc)
             return []
+
+    def _inject_sla_breaches(
+        self,
+        phase_errors: dict[str, str],
+    ) -> None:
+        """Poll the SLA tracker and inject breached subsystems into
+        *phase_errors* so the reflection synthesizer can mine
+        recurring adapter degradation.
+
+        Wave 7 #2 (GAP-1): before this fix, SLA breaches were
+        surfaced on ``/api/status`` but never entered the error
+        mining pipeline, so a chronically-failing adapter could
+        never promote a SOFT block rule.
+
+        Fail-soft — any import or reporting failure is swallowed
+        so this helper never breaks the cycle.
+        """
+        try:
+            from core.telemetry.metrics_collector import (
+                MetricsCollector as _TM,
+            )
+            tracker = _TM().get_sla_tracker()
+            report = tracker.get_report()  # all-subsystems report
+            subsystems = report.get("subsystems") or {}
+            for subsys, data in subsystems.items():
+                if not isinstance(data, dict):
+                    continue
+                if data.get("status") != "breached":
+                    continue
+                breaches = data.get("breaches") or []
+                phase_errors[f"sla_breach::{subsys}"] = (
+                    f"SLA breached on {subsys}: {', '.join(breaches)}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("SLA breach injection failed: %s", exc)
 
     def _run_cognitive_phase(
         self, legacy_cycle_result: dict[str, Any],

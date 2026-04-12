@@ -224,8 +224,8 @@ def critic(ctx: DebateContext) -> Proposal:
     top_concern = "general risk"
     checks = ctx.advisor_result.get("checks") or []
     if checks:
-        # The highest-score check is the biggest concern.
-        worst = max(checks, key=lambda c: c.get("score", 0))
+        # The highest-risk check is the biggest concern.
+        worst = max(checks, key=lambda c: c.get("risk", 0))
         top_concern = worst.get("name", top_concern)
     return Proposal(
         persona="Critic",

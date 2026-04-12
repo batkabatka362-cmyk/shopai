@@ -664,25 +664,67 @@ class PolicyStore:
             logger.warning("Policy lifecycle audit write failed: %s", exc)
 
     def read_audit(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Return the most recent audit entries (newest first)."""
+        """Return the most recent audit entries (newest first).
+
+        Wave 7 #6 (GAP-11): reads from the tail of the file
+        instead of loading the entire JSONL into memory. The
+        previous ``fh.readlines()`` approach would OOM on a busy
+        production deployment where the audit file grows to
+        hundreds of MB. The new approach seeks to the end and
+        reads backwards in fixed-size chunks until enough lines
+        are collected.
+        """
         if not os.path.isfile(self._audit_path):
             return []
         try:
-            with open(self._audit_path, "r", encoding="utf-8") as fh:
-                lines = fh.readlines()
+            return self._read_tail_lines(self._audit_path, limit)
         except OSError:
             return []
+
+    @staticmethod
+    def _read_tail_lines(
+        path: str, limit: int, chunk_size: int = 8192,
+    ) -> list[dict[str, Any]]:
+        """Read the last *limit* parseable JSONL entries from *path*
+        without loading the entire file.
+
+        Seeks to the end, reads backwards in *chunk_size* byte
+        chunks, splits on newlines, and parses from the tail until
+        we have enough entries. Malformed lines are skipped.
+        """
         entries: list[dict[str, Any]] = []
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-            if len(entries) >= limit:
-                break
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)  # seek to EOF
+            remaining = fh.tell()
+            if remaining == 0:
+                return []
+            buf = b""
+            while remaining > 0 and len(entries) < limit:
+                read_size = min(chunk_size, remaining)
+                remaining -= read_size
+                fh.seek(remaining)
+                buf = fh.read(read_size) + buf
+                # Split and process complete lines from the tail
+                lines = buf.split(b"\n")
+                # First element may be a partial line — keep it in buf
+                buf = lines[0]
+                # Process complete lines from newest (end) to oldest
+                for raw in reversed(lines[1:]):
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        entries.append(json.loads(raw.decode("utf-8")))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    if len(entries) >= limit:
+                        break
+            # The leftover buf might be the very first line of the file
+            if len(entries) < limit and buf.strip():
+                try:
+                    entries.append(json.loads(buf.strip().decode("utf-8")))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
         return entries
 
 
