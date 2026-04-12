@@ -163,6 +163,17 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             result["adapters_sla"] = DashboardAPIHandler._summarise_sla(sla)
         except Exception:
             pass
+        # Wave 6 #15: compact learning-pipeline health snapshot so
+        # /api/status tells operators at a glance whether the
+        # learning feedback loop is working (patterns firing, rules
+        # retained, beliefs fresh) without a separate call to
+        # /api/reflection or /api/beliefs.
+        try:
+            result["learning"] = (
+                DashboardAPIHandler._summarise_learning()
+            )
+        except Exception:
+            pass
         return result
 
     @staticmethod
@@ -197,6 +208,68 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "breached":  brk,
             "breaching": breaching,
         }
+
+    @staticmethod
+    def _summarise_learning() -> dict[str, Any]:
+        """Compact learning-pipeline health for /api/status.
+
+        Wave 6 #15. Lightweight: reads active-pattern count from the
+        synthesizer, SOFT-rule count from the policy store, and
+        belief count from the belief store. Any failure degrades the
+        field to ``None`` rather than blocking the response.
+        """
+        summary: dict[str, Any] = {
+            "active_patterns": None,
+            "soft_rules":      None,
+            "beliefs":         None,
+            "half_life":       None,
+            "status":          "unknown",
+        }
+        active = 0
+        firing = 0
+        try:
+            from core.reflection.synthesizer import get_default_synthesizer
+            snap = get_default_synthesizer().snapshot()
+            active = len(snap)
+            summary["active_patterns"] = active
+        except Exception:
+            pass
+        try:
+            from engines.meta_governance.policy_store import (
+                PolicyTier,
+                get_default_store,
+            )
+            store = get_default_store()
+            soft = store.list_rules(tier=PolicyTier.SOFT)
+            summary["soft_rules"] = len(soft)
+            # Count firing from stats.
+            try:
+                for stat in store.get_all_rule_stats():
+                    if (
+                        stat.get("source") == "learned"
+                        and stat.get("matches", 0) > 0
+                    ):
+                        firing += 1
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            from core.mentality import get_default_belief_store
+            bs = get_default_belief_store()
+            summary["beliefs"] = len(bs.keys())
+            summary["half_life"] = getattr(bs, "half_life_seconds", None)
+        except Exception:
+            pass
+        # Derive a compact status string.
+        if summary["active_patterns"] is not None:
+            if active == 0:
+                summary["status"] = "idle"
+            elif firing > 0:
+                summary["status"] = "healthy"
+            else:
+                summary["status"] = "learning"
+        return summary
 
     @staticmethod
     def _parse_limit(query: str, *, default: int, maximum: int) -> int:

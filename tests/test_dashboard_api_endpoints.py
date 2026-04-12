@@ -931,3 +931,116 @@ class TestReflectionEndpoint:
         assert stats["soft_in_store"] == 0
         assert stats["retired_count"] == 0
 
+
+# ---------------------------------------------------------------------------
+# Wave 6 #15: learning summary on _summarise_learning
+# ---------------------------------------------------------------------------
+
+
+class TestLearningStatusSummary:
+    """Unit tests for ``_summarise_learning()`` in isolation."""
+
+    def test_all_subsystems_offline_returns_unknown(self, monkeypatch):
+        """When every subsystem raises, the summary degrades
+        gracefully to None fields + ``status=unknown``."""
+        def _boom():
+            raise RuntimeError("offline")
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer", _boom,
+        )
+        monkeypatch.setattr(
+            "engines.meta_governance.policy_store.get_default_store", _boom,
+        )
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store", _boom,
+        )
+        out = DashboardAPIHandler._summarise_learning()
+        assert out["active_patterns"] is None
+        assert out["soft_rules"] is None
+        assert out["beliefs"] is None
+        assert out["status"] == "unknown"
+
+    def test_idle_when_no_patterns(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth([]),
+        )
+        out = DashboardAPIHandler._summarise_learning()
+        assert out["active_patterns"] == 0
+        assert out["status"] == "idle"
+
+    def test_learning_when_patterns_but_none_firing(self, monkeypatch):
+        rows = [
+            {"signature": "error:x", "rule_id": "learned::error:x",
+             "kind": "error", "sample_text": "m", "occurrences": 3,
+             "first_seen": 0.0, "last_seen": 1.0, "confidence": 0.8},
+        ]
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth(rows),
+        )
+
+        class _EmptyStore:
+            def list_rules(self, tier=None):
+                return [object()]
+            def get_all_rule_stats(self):
+                return []  # no matches
+            def read_audit(self, limit=500):
+                return []
+
+        monkeypatch.setattr(
+            "engines.meta_governance.policy_store.get_default_store",
+            lambda: _EmptyStore(),
+        )
+        out = DashboardAPIHandler._summarise_learning()
+        assert out["active_patterns"] == 1
+        assert out["status"] == "learning"
+
+    def test_healthy_when_patterns_are_firing(self, monkeypatch):
+        rows = [
+            {"signature": "error:x", "rule_id": "learned::error:x",
+             "kind": "error", "sample_text": "m", "occurrences": 3,
+             "first_seen": 0.0, "last_seen": 1.0, "confidence": 0.8},
+        ]
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth(rows),
+        )
+
+        class _FiringStore:
+            def list_rules(self, tier=None):
+                return [object()]
+            def get_all_rule_stats(self):
+                return [
+                    {"rule_id": "learned::error:x",
+                     "source": "learned", "matches": 5},
+                ]
+            def read_audit(self, limit=500):
+                return []
+
+        monkeypatch.setattr(
+            "engines.meta_governance.policy_store.get_default_store",
+            lambda: _FiringStore(),
+        )
+        out = DashboardAPIHandler._summarise_learning()
+        assert out["status"] == "healthy"
+        assert out["soft_rules"] == 1
+
+    def test_belief_count_and_half_life_surfaced(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth([]),
+        )
+
+        class _BS:
+            half_life_seconds = 3600.0
+            def keys(self):
+                return ["a", "b", "c"]
+
+        monkeypatch.setattr(
+            "core.mentality.get_default_belief_store", lambda: _BS(),
+        )
+        out = DashboardAPIHandler._summarise_learning()
+        assert out["beliefs"] == 3
+        assert out["half_life"] == 3600.0
+
