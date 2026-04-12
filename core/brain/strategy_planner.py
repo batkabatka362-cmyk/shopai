@@ -28,6 +28,7 @@ Fix D pattern for brain + engine).
 """
 from __future__ import annotations
 
+import threading as _threading
 import time
 from typing import Any
 
@@ -214,9 +215,13 @@ class StrategyPlanner:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
 
 def get_strategy_planner():
     global _instance
     if _instance is None:
-        _instance = StrategyPlanner()
+        with _instance_lock:
+            if _instance is None:
+                _instance = StrategyPlanner()
     return _instance

@@ -8,6 +8,7 @@ Channels:
 """
 from __future__ import annotations
 import json
+import threading as _threading
 import time
 from pathlib import Path
 from typing import Any
@@ -157,8 +158,13 @@ class NotificationSystem:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
+
 def get_notifications():
     global _instance
     if _instance is None:
-        _instance = NotificationSystem()
+        with _instance_lock:
+            if _instance is None:
+                _instance = NotificationSystem()
     return _instance

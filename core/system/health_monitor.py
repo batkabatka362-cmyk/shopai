@@ -4,6 +4,7 @@ Monitors: product availability, price consistency, SEO health,
 inventory levels, page status, discount validity.
 """
 from __future__ import annotations
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -133,8 +134,13 @@ class StoreHealthMonitor:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
+
 def get_health_monitor():
     global _instance
     if _instance is None:
-        _instance = StoreHealthMonitor()
+        with _instance_lock:
+            if _instance is None:
+                _instance = StoreHealthMonitor()
     return _instance

@@ -3,6 +3,7 @@
 Monitors cycle results and generates actionable alerts.
 """
 from __future__ import annotations
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -87,8 +88,13 @@ class AlertSystem:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
+
 def get_alert_system():
     global _instance
     if _instance is None:
-        _instance = AlertSystem()
+        with _instance_lock:
+            if _instance is None:
+                _instance = AlertSystem()
     return _instance

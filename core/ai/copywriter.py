@@ -1,6 +1,8 @@
 """AI Copywriter — generates selling copy, not just descriptions."""
 from __future__ import annotations
 
+import threading as _threading
+
 
 class AICopywriter:
     """Generates marketing copy that sells."""
@@ -61,8 +63,13 @@ class AICopywriter:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
+
 def get_copywriter():
     global _instance
     if _instance is None:
-        _instance = AICopywriter()
+        with _instance_lock:
+            if _instance is None:
+                _instance = AICopywriter()
     return _instance

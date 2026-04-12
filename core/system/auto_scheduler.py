@@ -110,8 +110,13 @@ class AutoScheduler:
 
 
 _instance = None
+_instance_lock = threading.Lock()
+
+
 def get_scheduler():
     global _instance
     if _instance is None:
-        _instance = AutoScheduler()
+        with _instance_lock:
+            if _instance is None:
+                _instance = AutoScheduler()
     return _instance

@@ -242,33 +242,53 @@ _rate_limiter = None
 _recovery = None
 _backup = None
 _audit = None
+_config_lock = threading.Lock()
+_rate_limiter_lock = threading.Lock()
+_recovery_lock = threading.Lock()
+_backup_lock = threading.Lock()
+_audit_lock = threading.Lock()
+
 
 def get_config():
     global _config
     if _config is None:
-        _config = ConfigManager()
+        with _config_lock:
+            if _config is None:
+                _config = ConfigManager()
     return _config
+
 
 def get_rate_limiter():
     global _rate_limiter
     if _rate_limiter is None:
-        _rate_limiter = RateLimiter()
+        with _rate_limiter_lock:
+            if _rate_limiter is None:
+                _rate_limiter = RateLimiter()
     return _rate_limiter
+
 
 def get_error_recovery():
     global _recovery
     if _recovery is None:
-        _recovery = ErrorRecovery()
+        with _recovery_lock:
+            if _recovery is None:
+                _recovery = ErrorRecovery()
     return _recovery
+
 
 def get_backup():
     global _backup
     if _backup is None:
-        _backup = BackupSystem()
+        with _backup_lock:
+            if _backup is None:
+                _backup = BackupSystem()
     return _backup
+
 
 def get_audit():
     global _audit
     if _audit is None:
-        _audit = AuditTrail()
+        with _audit_lock:
+            if _audit is None:
+                _audit = AuditTrail()
     return _audit

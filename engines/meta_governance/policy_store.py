@@ -44,7 +44,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from threading import RLock
+from threading import Lock as _Lock, RLock
 from typing import Any, Callable
 
 from utils.logger import get_logger
@@ -907,13 +907,16 @@ def _hash_inputs(
 
 
 _default_store: PolicyStore | None = None
+_default_store_lock = _Lock()
 
 
 def get_default_store() -> PolicyStore:
     """Return the process-wide default :class:`PolicyStore`."""
     global _default_store
     if _default_store is None:
-        _default_store = PolicyStore()
+        with _default_store_lock:
+            if _default_store is None:
+                _default_store = PolicyStore()
     return _default_store
 
 

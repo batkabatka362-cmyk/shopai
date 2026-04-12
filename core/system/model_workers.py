@@ -17,6 +17,7 @@ Every task:
   5. Learn from outcome
 """
 from __future__ import annotations
+import threading as _threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -314,8 +315,13 @@ class ModelWorkerSystem:
 
 
 _instance = None
+_instance_lock = _threading.Lock()
+
+
 def get_model_workers():
     global _instance
     if _instance is None:
-        _instance = ModelWorkerSystem()
+        with _instance_lock:
+            if _instance is None:
+                _instance = ModelWorkerSystem()
     return _instance

@@ -387,10 +387,13 @@ class ExperienceAccumulator:
 
 # Singleton
 _experience: ExperienceAccumulator | None = None
+_experience_lock = threading.Lock()
 
 
 def get_experience() -> ExperienceAccumulator:
     global _experience
     if _experience is None:
-        _experience = ExperienceAccumulator()
+        with _experience_lock:
+            if _experience is None:
+                _experience = ExperienceAccumulator()
     return _experience

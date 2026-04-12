@@ -324,8 +324,13 @@ class ModelRouter:
 
 
 _instance = None
+_instance_lock = threading.Lock()
+
+
 def get_model_router():
     global _instance
     if _instance is None:
-        _instance = ModelRouter()
+        with _instance_lock:
+            if _instance is None:
+                _instance = ModelRouter()
     return _instance
