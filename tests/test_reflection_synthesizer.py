@@ -335,6 +335,7 @@ def test_synthesis_report_as_dict():
     d = report.as_dict()
     assert set(d.keys()) == {
         "patterns_total", "patterns_promoted", "patterns", "rule_ids",
+        "pending_patterns",
     }
     assert d["patterns_promoted"] == 1
     assert isinstance(d["patterns"], list)
