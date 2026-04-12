@@ -3,6 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from utils.logger import get_logger
+
+logger = get_logger("intelligence.loop.track")
+
 
 def stage_track(loop_id: str, context: dict[str, Any]) -> None:
     """Record the decision in OutcomeTracker for future learning."""
@@ -23,5 +27,5 @@ def stage_track(loop_id: str, context: dict[str, Any]) -> None:
             "decision_type": decision.get("decision_type", ""),
             "options_evaluated": decision.get("options_evaluated", 0),
         })
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("outcome tracking failed: %s", exc)

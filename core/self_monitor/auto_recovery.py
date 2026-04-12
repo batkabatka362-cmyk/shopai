@@ -125,15 +125,15 @@ class AutoRecovery:
             from memory import ShortTermCache
             ShortTermCache().clear()
             actions.append("cleared_short_term_cache")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("short-term cache clear failed: %s", exc)
 
         try:
             from engines.registry import clear_cache
             clear_cache()
             actions.append("cleared_engine_cache")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("engine cache clear failed: %s", exc)
 
         return {
             "recovered": len(actions) > 0,

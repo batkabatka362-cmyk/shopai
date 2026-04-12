@@ -228,8 +228,8 @@ class ModelRouter:
                 rc = rules[0].get("content", {})
                 if isinstance(rc, dict):
                     context = "Past experience: {}. ".format(rc.get("rule", "")[:80])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("memory context retrieval failed: %s", exc)
 
         # Task-specific prompts
         if task_type == "analyze_product":
@@ -308,8 +308,8 @@ class ModelRouter:
                 "success": bool(result),
             }, source="model_router", store_id=store_id,
                 score=4.0 if source != "heuristic" else 3.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("data-architecture capture failed: %s", exc)
 
     # ── STATS ────────────────────────────────────
 

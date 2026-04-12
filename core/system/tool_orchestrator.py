@@ -193,8 +193,8 @@ class ToolOrchestrator:
                 "engine_name": action,
                 "success": success,
             }, source="tool_orchestrator", score=4.0 if success else 2.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("data-architecture capture failed: %s", exc)
 
     def get_stats(self) -> dict[str, Any]:
         return {

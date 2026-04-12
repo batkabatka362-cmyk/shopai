@@ -175,8 +175,8 @@ class ShopifyBridge:
                 sm.add_store(self._store_id, self._shop_url, api_key=self._api_key)
             provider = DataProvider(sm)
             return provider.get_data_for_engine(engine_name, self._store_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("data provider fallback failed: %s", exc)
 
         # Fallback to direct fetch
         product_engines = {"product_selection", "pricing", "product_description", "inventory",
@@ -258,8 +258,8 @@ class ShopifyBridge:
                 return self._db.get_orders(self._store_id, limit=limit)
             elif data_type == "customers":
                 return self._db.get_customers(self._store_id, limit=limit)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("DB data retrieval failed for %s: %s", data_type, exc)
         return []
 
     def _write_cache(self, data_type: str, records: list[dict[str, Any]]) -> None:

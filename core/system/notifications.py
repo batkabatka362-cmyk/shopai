@@ -110,8 +110,8 @@ class NotificationSystem:
             if len(existing) > 100:
                 existing = existing[-100:]
             _ALERTS_FILE.write_text(json.dumps(existing, indent=2))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("alert persistence failed: %s", exc)
 
     @staticmethod
     def _send_webhook(url: str, notification: dict) -> bool:
@@ -141,8 +141,8 @@ class NotificationSystem:
                 "sentiment": "negative" if notification["severity"] == "critical" else "neutral",
                 "urgency": notification["severity"],
             }, source="notifications", score=4.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("data-architecture capture failed: %s", exc)
 
     def get_history(self, limit: int = 20) -> list[dict]:
         return self._sent[-limit:]

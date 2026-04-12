@@ -970,8 +970,8 @@ class CoreOrchestrator:
                         }
                         rca_result = rca.analyze_failure(episode)
                         logger.info("Root cause analysis: %s", rca_result.get("lesson", "")[:100])
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("root cause analysis failed: %s", exc)
         except Exception as exc:
             logger.debug("Episode recording failed: %s", exc)
 

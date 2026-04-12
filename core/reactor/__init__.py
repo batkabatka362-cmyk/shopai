@@ -281,8 +281,8 @@ class EventReactor:
                     "diff_pct": diff_pct,
                     "recommendation": action,
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("price analysis failed: %s", exc)
         return {"action": "monitor", "note": "Insufficient data for price analysis"}
 
     def _handle_churn_risk(self, event_type: str, data: dict, event: dict) -> dict:

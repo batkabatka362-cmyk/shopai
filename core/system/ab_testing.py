@@ -351,8 +351,8 @@ class ABTestingFramework:
                 memory_type="semantic",
                 tags=["experiment", analysis.get("name", ""), winner],
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("experiment memory capture failed: %s", exc)
 
         logger.info("Experiment %s completed: winner=%s", experiment_id, winner)
         return analysis

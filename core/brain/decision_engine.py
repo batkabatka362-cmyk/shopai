@@ -152,8 +152,8 @@ class DecisionEngine:
             try:
                 from core.data.architecture import get_data_architecture
                 self._data_arch = get_data_architecture()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("data-architecture init failed: %s", exc)
         return self._memory_intel
 
     def _get_weights(self):

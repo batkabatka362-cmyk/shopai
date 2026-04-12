@@ -161,8 +161,8 @@ class RevenueStrategy:
                 "domain": "revenue",
                 "confidence": 0.7,
             }, source="revenue_strategy", score=4.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("data-architecture capture failed: %s", exc)
 
     def get_stats(self) -> dict[str, Any]:
         return {"plans_generated": 1}

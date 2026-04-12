@@ -477,8 +477,8 @@ class FullSystemLoop:
                 # Link execution outcomes to revenue tracking
                 if total_dispatched > 0:
                     rt.record_revenue(action_id, revenue=0, cost=0, orders=total_dispatched)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("revenue tracking link failed: %s", exc)
 
             # 4. Generate rules from patterns
             from knowledge.rules.rule_engine import RuleEngine

@@ -290,8 +290,8 @@ class StoreRegistry:
             )
             conn.commit()
             sm.set_credentials(store_id, shop_url, token)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("store manager save failed: %s", exc)
 
     # ── QUERIES ──────────────────────────────────
 

@@ -193,8 +193,8 @@ class StrategyOptimizer:
                     data = json.load(f)
                     if isinstance(data, dict):
                         self._adjustments = data
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("strategy adjustments load failed: %s", exc)
 
     def _save(self) -> None:
         try:

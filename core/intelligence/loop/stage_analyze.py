@@ -4,6 +4,9 @@ from __future__ import annotations
 from typing import Any
 
 from utils.helpers import safe_float, safe_int
+from utils.logger import get_logger
+
+logger = get_logger("intelligence.loop.analyze")
 from core.intelligence.loop.helpers import _calc_opportunity
 
 
@@ -80,8 +83,8 @@ def stage_analyze(data: dict[str, Any], goal: str) -> dict[str, Any]:
                     analysis["findings"].append(f"Revenue forecast: {growth:.1f}% decline — action needed")
                 else:
                     analysis["findings"].append(f"Revenue forecast: {growth:+.1f}% — stable")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("revenue forecast analysis failed: %s", exc)
 
     # ── Consume enriched context from CoreOrchestrator ──
     financial_ctx = data.get("_financial", {})

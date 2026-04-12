@@ -187,8 +187,8 @@ class AutomationLoop:
                 "decision_count": len(decisions),
                 "action_count": len(actions),
             })
-        except Exception:
-            pass  # Non-critical
+        except Exception as exc:
+            logger.debug("outcome tracker record failed: %s", exc)
 
     @staticmethod
     def _resolve_target(action: str) -> str:

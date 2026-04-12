@@ -52,8 +52,8 @@ class ConfigManager:
                 with open(_CONFIG_PATH) as f:
                     stored = json.load(f)
                     self._config.update(stored)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("config load failed: %s", exc)
 
     def save(self):
         _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -168,8 +168,8 @@ class BackupSystem:
                 backup_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(db, backup_dir / db.name)
                 backed_up += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("backup failed for %s: %s", db.name, exc)
 
         # Keep only last 10 backups
         backups = sorted(_BACKUP_DIR.iterdir())
@@ -222,8 +222,8 @@ class AuditTrail:
             if len(self._entries) > 1000:
                 self._entries = self._entries[-1000:]
             _AUDIT_PATH.write_text(json.dumps(self._entries, indent=2))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("audit write failed: %s", exc)
 
     def get_recent(self, limit: int = 50) -> list[dict]:
         return self._entries[-limit:]

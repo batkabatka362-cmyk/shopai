@@ -35,8 +35,8 @@ class LearningModel:
             try:
                 from core.system.llm_adapter import get_llm
                 self._llm = get_llm()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("LLM adapter init failed: %s", exc)
 
     # ── Phase 1: Data Analysis ───────────────────────────────
 

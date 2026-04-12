@@ -89,8 +89,8 @@ class RealtimeMonitor:
             try:
                 from data_pipeline.store.sync_service import SyncService
                 SyncService(self._sm).sync_store(sid)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("sync service failed for %s: %s", sid, exc)
 
             # Get current state
             products = self._sm.get_products(sid)
@@ -194,8 +194,8 @@ class RealtimeMonitor:
         for cb in self._callbacks:
             try:
                 cb(store_id, changes)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("realtime callback failed: %s", exc)
 
     def _log_event(self, store_id: str, event: dict) -> None:
         event["store_id"] = store_id

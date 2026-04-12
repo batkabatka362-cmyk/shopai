@@ -103,8 +103,8 @@ class ChainOfThought:
                 rc = r.get("content", {})
                 if isinstance(rc, dict):
                     rules.append(rc.get("rule", str(rc)[:60]))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("learned rules retrieval failed: %s", exc)
         return rules
 
     @staticmethod

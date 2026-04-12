@@ -118,8 +118,8 @@ class RuleHealthChecker:
                     rid = zs.get("id", 0)
                     if rid:
                         mi.update_score(rid, 2.0, "zero_success_deprioritized")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("zero-success deprioritisation failed: %s", exc)
 
         self._last_check = report
         return report

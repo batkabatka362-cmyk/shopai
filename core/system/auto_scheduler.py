@@ -84,8 +84,8 @@ class AutoScheduler:
                         if line and not line.startswith("#") and "=" in line:
                             k, v = line.split("=", 1)
                             os.environ[k] = v
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(".env load failed: %s", exc)
 
         from core.autonomous.controller import AutonomousController
         ac = AutonomousController(auto_approve=False)
