@@ -236,8 +236,8 @@ class Reflection:
             if category:
                 try:
                     return list(retrieve(category=category, limit=limit) or [])
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("memory retrieve by category failed: %s", exc)
             else:
                 # Without a category, collect a few domains commonly
                 # used by the autonomous controller

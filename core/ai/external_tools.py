@@ -244,8 +244,8 @@ class ExternalTools:
                 p = float(m)
                 if 1 < p < 10000:  # reasonable price range
                     prices.append(p)
-            except ValueError:
-                pass
+            except ValueError as exc:
+                logger.debug("price value parse failed: %s", exc)
         return prices
 
     # ── Call Logging & Stats ─────────────────────────────────

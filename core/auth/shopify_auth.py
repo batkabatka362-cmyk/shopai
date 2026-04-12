@@ -299,8 +299,8 @@ class ShopifyAuth:
                 # sensitive. 0600 = owner read/write only.
                 try:
                     os.chmod(str(_TOKEN_CACHE_FILE), 0o600)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.debug("credential file permission set failed: %s", exc)
             except OSError as exc:
                 logger.debug("Token cache save failed: %s", exc)
                 # Clean up half-written tmp.
@@ -308,8 +308,8 @@ class ShopifyAuth:
                     tmp_path = _TOKEN_CACHE_FILE.with_suffix(_TOKEN_CACHE_FILE.suffix + ".tmp")
                     if tmp_path.exists():
                         tmp_path.unlink()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.debug("credential tmp file cleanup failed: %s", exc)
 
     def _load_cached_token(self) -> None:
         """Load cached token from disk."""
@@ -329,8 +329,8 @@ class ShopifyAuth:
                     self._expires_at = expires
                     logger.info("Loaded cached token for %s (%.1fh remaining)",
                                self._shop_url, (expires - time.time()) / 3600)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cached token load failed: %s", exc)
 
     @staticmethod
     def _load_all_cached() -> dict[str, Any]:

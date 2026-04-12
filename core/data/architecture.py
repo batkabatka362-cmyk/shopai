@@ -505,8 +505,8 @@ class DataArchitecture:
                 try:
                     features["prediction_error"] = abs(float(predicted) - float(actual))
                     features["prediction_accurate"] = features["prediction_error"] < float(predicted) * 0.2
-                except (TypeError, ValueError, ZeroDivisionError):
-                    pass
+                except (TypeError, ValueError, ZeroDivisionError) as exc:
+                    logger.debug("data-architecture prediction error calc failed: %s", exc)
 
         return features
 
@@ -533,8 +533,8 @@ class DataArchitecture:
                 try:
                     if float(val) > 0:
                         score += 0.2
-                except (TypeError, ValueError):
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logger.debug("data-architecture score field cast failed: %s", exc)
 
         # Penalty for minimal data
         non_empty = sum(1 for v in data.values() if v)
@@ -703,8 +703,8 @@ class DataArchitecture:
             if k in d and isinstance(d[k], str):
                 try:
                     d[k] = json.loads(d[k])
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as exc:
+                    logger.debug("data-architecture row JSON decode failed: %s", exc)
         return d
 
     def close(self) -> None:

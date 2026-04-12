@@ -110,8 +110,8 @@ class Migrator:
             except Exception as exc:
                 try:
                     self._conn.rollback()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("migration rollback failed: %s", exc)
                 logger.error(
                     "[%s] migration v%d FAILED: %s — %s",
                     self._name, version, desc, exc,

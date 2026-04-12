@@ -132,8 +132,8 @@ class LLMResponse:
             end = text.rfind("}") + 1
             if 0 <= start < end:
                 return json.loads(text[start:end])
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as exc:
+            logger.debug("LLM response JSON parse failed: %s", exc)
         return {"raw": self.text}
 
 
@@ -326,8 +326,8 @@ class LLMAdapter:
             try:
                 ctx_str = json.dumps(context, default=str)[:2000]
                 full_prompt = f"{prompt}\n\nContext: {ctx_str}"
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("LLM context serialization failed: %s", exc)
 
         # Build the candidate model list: preferred → fallback chain
         preferred = self._role_map.get(role, self._role_map.get("general", ""))

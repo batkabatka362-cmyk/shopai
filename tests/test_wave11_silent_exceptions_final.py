@@ -19,44 +19,30 @@ import pytest
 _CORE_DIR = Path(__file__).resolve().parents[1] / "core"
 
 
-class TestNoBareExceptPassInWave11Targets:
-    """AST check: the 23 modules fixed in Wave 11 must not contain
-    any bare ``except Exception: pass`` handlers."""
+class TestNoBareExceptPassInCore:
+    """Codebase-wide AST check: no ``except Exception: pass`` anywhere
+    under ``core/``."""
 
-    # These are the modules explicitly fixed in Wave 11.
-    WAVE11_MODULES = [
-        _CORE_DIR / "full_system_loop.py",
-        _CORE_DIR / "automation" / "__init__.py",
-        _CORE_DIR / "brain" / "rule_health.py",
-        _CORE_DIR / "brain" / "revenue_strategy.py",
-        _CORE_DIR / "brain" / "reasoning_chain.py",
-        _CORE_DIR / "brain" / "learning_model.py",
-        _CORE_DIR / "brain" / "decision_engine.py",
-        _CORE_DIR / "reactor" / "__init__.py",
-        _CORE_DIR / "plugins" / "plugin_registry.py",
-        _CORE_DIR / "intelligence" / "strategy_optimizer.py",
-        _CORE_DIR / "system" / "tool_orchestrator.py",
-        _CORE_DIR / "system" / "store_registry.py",
-        _CORE_DIR / "system" / "realtime_monitor.py",
-        _CORE_DIR / "system" / "production.py",
-        _CORE_DIR / "system" / "ab_testing.py",
-        _CORE_DIR / "system" / "model_router.py",
-        _CORE_DIR / "system" / "auto_scheduler.py",
-        _CORE_DIR / "system" / "notifications.py",
-        _CORE_DIR / "self_monitor" / "auto_recovery.py",
-        _CORE_DIR / "bridge" / "shopify_bridge.py",
-        _CORE_DIR / "core_orchestrator.py",
-        _CORE_DIR / "intelligence" / "loop" / "stage_track.py",
-        _CORE_DIR / "intelligence" / "loop" / "stage_analyze.py",
-    ]
+    @staticmethod
+    def _collect_python_files() -> list[Path]:
+        results: list[Path] = []
+        for dirpath, _dirs, filenames in os.walk(_CORE_DIR):
+            for fn in filenames:
+                if fn.endswith(".py"):
+                    results.append(Path(dirpath) / fn)
+        return sorted(results)
 
-    def test_zero_bare_except_pass_in_wave11_targets(self):
-        """Every module fixed in Wave 11 must have zero bare
-        ``except Exception: pass`` blocks."""
+    def test_zero_bare_except_pass_in_core(self):
+        """Walk every .py under core/ and AST-parse for
+        ``except Exception: pass`` (unnamed handler with single Pass body).
+        """
         violations: list[str] = []
-        for path in self.WAVE11_MODULES:
-            src = path.read_text()
-            tree = ast.parse(src, filename=str(path))
+        for path in self._collect_python_files():
+            try:
+                src = path.read_text()
+                tree = ast.parse(src, filename=str(path))
+            except SyntaxError:
+                continue  # skip unparseable files
 
             for node in ast.walk(tree):
                 if not isinstance(node, ast.ExceptHandler):

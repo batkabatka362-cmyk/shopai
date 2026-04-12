@@ -300,8 +300,8 @@ class Curiosity:
                     continue
                 if goal.get("source") == target_source:
                     return None
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("goal dedup check failed: %s", exc)
 
         try:
             return self._goal_manager.propose(
@@ -422,9 +422,10 @@ class Curiosity:
                     strengths_json = json.dumps([
                         s.get("name") for s in strengths
                     ])
-                except Exception:  # noqa: BLE001
-                    pass
-        except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("self-model strengths fetch failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("curiosity prompt render failed: %s", exc)
             return None
 
         rendered = template.render(

@@ -80,13 +80,13 @@ class VersionManager:
         try:
             with open(_VERSION_PATH, "w") as f:
                 json.dump(self._versions, f)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug("version manager persist failed: %s", exc)
 
     def _load(self) -> None:
         if os.path.exists(_VERSION_PATH):
             try:
                 with open(_VERSION_PATH) as f:
                     self._versions = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.debug("version manager load failed: %s", exc)

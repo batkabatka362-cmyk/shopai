@@ -237,8 +237,8 @@ class FeedbackStore:
             # we don't leak it on the next attempt.
             try:
                 os.remove(tmp)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("feedback tmp file cleanup failed: %s", exc)
 
     def _load_engine(self, engine_name: str) -> list[dict[str, Any]]:
         """Load an engine's feedback log from disk.

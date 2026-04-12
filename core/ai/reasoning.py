@@ -177,8 +177,8 @@ class AIReasoning:
                         "reasoning": parsed.get("reasoning", parsed.get("decision", "")),
                         "raw": text,
                     }
-        except (json.JSONDecodeError, ValueError):
-            pass
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.debug("LLM response JSON parse failed: %s", exc)
 
         # Plain text response
         return {

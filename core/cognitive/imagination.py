@@ -575,8 +575,8 @@ def _imagination_llm_evaluate(self, step: Any) -> Optional[ImaginedOutcome]:
                 context_lines.append(
                     "Weaknesses: " + ", ".join(w["name"] for w in weaknesses)
                 )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("self-model context fetch failed: %s", exc)
     context_block = ("Self-model:\n" + "\n".join(context_lines) + "\n\n") if context_lines else ""
 
     rendered = template.render(

@@ -1095,8 +1095,8 @@ class MemoryIntelligence:
             if k in d and isinstance(d[k], str):
                 try:
                     d[k] = json.loads(d[k])
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as exc:
+                    logger.debug("memory intelligence row JSON decode failed: %s", exc)
         return d
 
     def close(self) -> None:

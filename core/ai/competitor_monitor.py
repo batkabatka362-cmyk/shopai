@@ -168,8 +168,8 @@ class CompetitorMonitor:
                     val = float(match.group(1).replace(",", ""))
                     if 0.5 < val < 100_000:
                         prices.append(val)
-                except (ValueError, IndexError):
-                    pass
+                except (ValueError, IndexError) as exc:
+                    logger.debug("competitor price extraction failed: %s", exc)
         return prices
 
     @staticmethod

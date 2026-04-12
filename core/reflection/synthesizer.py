@@ -542,9 +542,9 @@ class ReflectionSynthesizer:
             fh.flush()
             try:
                 os.fsync(fh.fileno())
-            except OSError:
+            except OSError as exc:
                 # tmpfs / ramdisks / network fs may not support fsync
-                pass
+                logger.debug("synthesizer pattern fsync failed: %s", exc)
 
     # -- Wave 6 #9: learned-rule decay --------------------------------
 
@@ -666,14 +666,14 @@ class ReflectionSynthesizer:
                 fh.flush()
                 try:
                     os.fsync(fh.fileno())
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.debug("synthesizer ledger fsync failed: %s", exc)
             os.replace(tmp_name, str(target))
         except Exception:
             try:
                 os.unlink(tmp_name)
-            except FileNotFoundError:
-                pass
+            except FileNotFoundError as exc:
+                logger.debug("synthesizer ledger tmp file cleanup failed: %s", exc)
             raise
 
     def _rehydrate_from_disk(self) -> None:

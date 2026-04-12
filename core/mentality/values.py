@@ -566,16 +566,16 @@ class BeliefStore:
                 fh.flush()
                 try:
                     os.fsync(fh.fileno())
-                except OSError:
+                except OSError as exc:
                     # Some filesystems (tmpfs) don't support fsync.
-                    pass
+                    logger.debug("values fsync failed: %s", exc)
             os.replace(tmp_name, target)
         except Exception:
             # Best effort cleanup — the tmp file may still exist.
             try:
                 os.unlink(tmp_name)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("values tmp file cleanup failed: %s", exc)
             raise
 
     def _load_from_disk(self) -> None:

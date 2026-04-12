@@ -152,8 +152,8 @@ class ResultHistory:
                 try:
                     with open(path) as f:
                         return json.load(f)
-                except (json.JSONDecodeError, OSError):
-                    pass
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.debug("history load failed: %s", exc)
         return []
 
     def _save(self, engine_name: str, history: list[dict]) -> None:
@@ -162,5 +162,5 @@ class ResultHistory:
             try:
                 with open(path, "w") as f:
                     json.dump(history, f)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("history save failed: %s", exc)

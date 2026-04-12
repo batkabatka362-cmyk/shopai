@@ -269,8 +269,8 @@ class TaskRouter:
             if chosen_model and hasattr(adapter, "_role_map"):
                 prev_model = adapter._role_map.get(role)
                 adapter._role_map[role] = chosen_model
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("task router model role override failed: %s", exc)
 
         start = time.monotonic()
         try:

@@ -162,8 +162,8 @@ class OrderWebhookHandler:
                     "reason": "cancelled",
                 })
                 return {"order_id": order_id, "outcome_tracked": True, "type": "cancellation"}
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("order cancellation outcome tracking failed: %s", exc)
 
         return {"order_id": order_id, "outcome_tracked": False, "type": "cancellation"}
 

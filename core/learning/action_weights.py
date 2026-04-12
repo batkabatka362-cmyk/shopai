@@ -249,8 +249,8 @@ class ActionWeightStore:
                     with sqlite3.connect(self._db_path) as conn:
                         conn.execute("DELETE FROM action_weights")
                         conn.commit()
-                except sqlite3.Error:
-                    pass
+                except sqlite3.Error as exc:
+                    logger.debug("action weights full reset failed: %s", exc)
                 return
             keys_to_drop = [k for k in self._cache if k[0] == category]
             for k in keys_to_drop:
@@ -263,8 +263,8 @@ class ActionWeightStore:
                         (category,),
                     )
                     conn.commit()
-            except sqlite3.Error:
-                pass
+            except sqlite3.Error as exc:
+                logger.debug("action weights category reset failed: %s", exc)
 
     def snapshot(self) -> dict[str, Any]:
         """Return a JSON-safe view of every weight + sample

@@ -320,8 +320,8 @@ class SmartRouter:
         if callable(custom):
             try:
                 return bool(custom())
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("adapter PII-safe check failed: %s", exc)
 
         if adapter.category.value == "shopify_native":
             return True

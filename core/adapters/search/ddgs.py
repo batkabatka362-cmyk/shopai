@@ -39,8 +39,12 @@ import re
 import urllib.parse
 from typing import Any
 
+from utils.logger import get_logger
+
 from ..base import Capability
 from ._base import SearchBaseAdapter, SearchHit
+
+logger = get_logger("adapters.search.ddgs")
 
 
 class DDGSAdapter(SearchBaseAdapter):
@@ -165,8 +169,8 @@ class DDGSAdapter(SearchBaseAdapter):
                 target = params.get("uddg", [""])[0]
                 if target:
                     return urllib.parse.unquote(target)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("DuckDuckGo redirect URL parse failed: %s", exc)
         return url
 
     @classmethod
@@ -181,8 +185,8 @@ class DDGSAdapter(SearchBaseAdapter):
         try:
             import html
             cleaned = html.unescape(cleaned)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("HTML entity unescape failed: %s", exc)
         return cls._WHITESPACE_RE.sub(" ", cleaned).strip()
 
     @staticmethod

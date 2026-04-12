@@ -376,5 +376,5 @@ class OutcomeTracker:
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("outcome tracker tmp file cleanup failed: %s", exc)

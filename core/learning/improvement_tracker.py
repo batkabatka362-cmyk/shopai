@@ -158,8 +158,8 @@ class ImprovementTracker:
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("improvement tracker tmp file cleanup failed: %s", exc)
 
     def _load(self) -> None:
         """Load with corrupted-file backup (same pattern as
