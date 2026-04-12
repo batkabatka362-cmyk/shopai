@@ -235,20 +235,50 @@ class PolicyStore:
                 "Policy rule registered: %s (tier=%s, version=%d, source=%s)",
                 rule.rule_id, rule.tier.value, rule.version, rule.source,
             )
+            # Wave 6 #13: audit the registration event.
+            event = "PROMOTION" if rule.source == "learned" else "REGISTRATION"
+            self._write_lifecycle_audit(event=event, rule=rule)
         return rule.rule_id
 
     def remove(self, rule_id: str) -> bool:
-        """Remove a non-HARD rule by id. Returns True if removed."""
+        """Remove a non-HARD rule by id. Returns True if removed.
+
+        Wave 6 #13: emits a ``RETIREMENT`` lifecycle audit entry so
+        that operator dashboards / the ``/api/policy/audit`` endpoint
+        can track when and why a rule was retired (typically by the
+        reflection auto-decay hook).
+        """
         with self._lock:
             for tier in (PolicyTier.MEDIUM, PolicyTier.SOFT):
                 before = len(self._rules[tier])
+                removed_rules = [
+                    r for r in self._rules[tier] if r.rule_id == rule_id
+                ]
+                if not removed_rules:
+                    continue
                 self._rules[tier] = [
                     r for r in self._rules[tier] if r.rule_id != rule_id
                 ]
                 if len(self._rules[tier]) < before:
+                    rule = removed_rules[0]
                     logger.info(
                         "Policy rule removed: %s (tier=%s)",
                         rule_id, tier.value,
+                    )
+                    # Wave 6 #13: audit the removal so the trail is
+                    # complete. Stats at time of removal are included
+                    # so operators can see how active the rule was.
+                    stats = self._rule_stats.get(rule_id) or {}
+                    self._write_lifecycle_audit(
+                        event="RETIREMENT",
+                        rule=rule,
+                        extra={
+                            "matches":  stats.get("matches", 0),
+                            "blocks":   stats.get("blocks", 0),
+                            "last_matched_at": stats.get(
+                                "last_matched_at",
+                            ),
+                        },
                     )
                     return True
         return False
@@ -599,6 +629,39 @@ class PolicyStore:
                 fh.write(json.dumps(entry, default=str) + "\n")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Policy audit write failed: %s", exc)
+
+    def _write_lifecycle_audit(
+        self,
+        event: str,
+        rule: PolicyRule,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Append a lightweight lifecycle audit record.
+
+        Wave 6 #13: ``_write_audit`` is shaped for evaluate_tiered
+        verdicts (action → verdict → trace). Rule lifecycle events
+        (registration, promotion, retirement) don't fit that shape
+        so they get their own one-liner method. Same file, same
+        fail-soft semantics.
+        """
+        try:
+            os.makedirs(
+                os.path.dirname(self._audit_path), exist_ok=True,
+            )
+            entry: dict[str, Any] = {
+                "entry_id":  uuid.uuid4().hex[:12],
+                "timestamp": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                ),
+                "event":     event,
+                **rule.to_audit_dict(),
+            }
+            if extra:
+                entry["extra"] = extra
+            with open(self._audit_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, default=str) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Policy lifecycle audit write failed: %s", exc)
 
     def read_audit(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return the most recent audit entries (newest first)."""
