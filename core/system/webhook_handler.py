@@ -88,8 +88,8 @@ class WebhookHandler:
                 "success": True,
                 "revenue": float(total),
             }, source="webhook", score=4.5)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("webhook order DA capture failed: %s", exc)
         # Record in memory
         try:
             from core.memory.intelligence import get_memory_intelligence
@@ -101,8 +101,8 @@ class WebhookHandler:
                 score=4.5,
                 tags=["order", "revenue", "webhook"],
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("webhook order memory write failed: %s", exc)
         logger.info("New order #%s: $%s", order_id, total)
         return {"action": "order_recorded", "order_id": order_id}
 
@@ -113,8 +113,8 @@ class WebhookHandler:
             from core.data.architecture import get_data_architecture
             da = get_data_architecture()
             da.capture("product", payload, source="webhook", score=3.5)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("webhook product DA capture failed: %s", exc)
         return {"action": "product_synced", "product_id": pid}
 
     def _handle_new_customer(self, payload: dict) -> dict:
@@ -130,8 +130,8 @@ class WebhookHandler:
                 score=3.5,
                 tags=["customer", "new", "webhook"],
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("webhook customer memory write failed: %s", exc)
         return {"action": "customer_recorded", "customer_id": cid}
 
     def _verify_hmac(self, body: str, header: str) -> bool:

@@ -200,8 +200,8 @@ class AIProductFinder:
                     "price": p.get("suggested_price", 0),
                     "source": "product_finder",
                 }, source="ai_finder", score=p.get("score", 50) / 20)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ProductFinder DA capture failed: %s", exc)
 
     def get_found(self):
         return list(self._found)

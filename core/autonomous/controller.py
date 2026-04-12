@@ -2183,7 +2183,8 @@ class AutonomousController:
                     }, source="memory_intelligence", store_id=store_id,
                         score=r.get("score", 3.0))
             captured["knowledge"] = len(rules[:5])
-        except Exception:
+        except Exception as exc:
+            logger.warning("learn_capture knowledge failed: %s", exc)
             captured["knowledge"] = 0
 
         # 5. SYSTEM domain — cycle performance metrics
@@ -2254,8 +2255,8 @@ class AutonomousController:
                             )
                             comp_count += 1
             captured["competitor_prices"] = comp_count
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("learn_capture competitor_prices failed: %s", exc)
 
         # 9. Auto-complete mature A/B experiments
         try:
@@ -2278,8 +2279,8 @@ class AutonomousController:
                     ab.complete(exp_id)
                     completed_count += 1
             captured["experiments_completed"] = completed_count
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("learn_capture experiments_completed failed: %s", exc)
 
         return captured
 
@@ -2442,14 +2443,14 @@ class LearningPipeline:
             try:
                 from core.learning.outcome_tracker import OutcomeTracker
                 self._outcome_tracker = OutcomeTracker()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("OutcomeTracker init failed: %s", exc)
         if not self._learning_engine:
             try:
                 from core.learning.learning_engine import LearningEngine
                 self._learning_engine = LearningEngine()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("LearningEngine init failed: %s", exc)
 
     def process_cycle(self, store_id: str, cycle_id: str,
                       analysis_results: dict[str, Any],
@@ -2510,8 +2511,8 @@ class LearningPipeline:
         # Step 4: Store in episodic memory
         try:
             self._store_episode(store_id, cycle_id, learning_result)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Episode storage failed: %s", exc)
 
         learning_result["status"] = "complete"
         return learning_result
@@ -2606,8 +2607,8 @@ class LearningPipeline:
                 namespace="learning_history",
                 metadata={"store_id": store_id, "cycle_id": cycle_id},
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("PersistentStore episode write failed: %s", exc)
 
     def get_learning_summary(self) -> dict[str, Any]:
         """Get summary of what the system has learned."""
@@ -2618,8 +2619,8 @@ class LearningPipeline:
             try:
                 system_analysis = self._learning_engine.analyze_system()
                 result["system"] = system_analysis
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Learning system analysis failed: %s", exc)
 
         # Get current weights
         try:

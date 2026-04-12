@@ -43,8 +43,8 @@ class LearningLoop:
             try:
                 from core.data.architecture import get_data_architecture
                 self._data_arch = get_data_architecture()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("LearningLoop data_arch init failed: %s", exc)
         return self._memory_intel
 
     def learn(self, category: str, input_data: dict, action: str,

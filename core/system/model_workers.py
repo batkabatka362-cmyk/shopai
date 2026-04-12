@@ -113,8 +113,8 @@ class ModelWorkerSystem:
             try:
                 from core.system.llm_adapter import get_llm
                 self._llm = get_llm()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("ModelWorkers LLM init failed: %s", exc)
         return self._llm
 
     def execute_task(self, task_name: str, data: dict,
@@ -237,8 +237,8 @@ class ModelWorkerSystem:
                 top = rules[0].get("content", {})
                 if isinstance(top, dict):
                     return top.get("rule", "")[:80]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ModelWorkers rule retrieval failed: %s", exc)
         return ""
 
     @staticmethod
@@ -302,8 +302,8 @@ class ModelWorkerSystem:
                 "output_size": len(str(result.get("response", ""))),
                 "success": result.get("success", False),
             }, source="model_worker", store_id=store_id, score=4.0 if result.get("success") else 2.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ModelWorkers DA capture failed: %s", exc)
 
     def get_stats(self) -> dict[str, Any]:
         return {

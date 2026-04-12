@@ -231,8 +231,8 @@ class DecisionBrain:
             try:
                 from core.system.llm_adapter import get_llm
                 self._llm = get_llm()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DecisionBrain LLM init failed: %s", exc)
 
         # ── Adapter layer SmartRouter ──
         # Lazily attach the singleton SmartRouter so brain calls
@@ -273,20 +273,20 @@ class DecisionBrain:
             try:
                 from core.ai.experience import get_experience
                 self._experience = get_experience()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DecisionBrain experience init failed: %s", exc)
         if not self._skills:
             try:
                 from core.system.adaptive_skills import get_adaptive_skills
                 self._skills = get_adaptive_skills()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DecisionBrain skills init failed: %s", exc)
         if not self._memory:
             try:
                 from core.system.shared_memory import get_shared_memory
                 self._memory = get_shared_memory()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DecisionBrain shared_memory init failed: %s", exc)
         # Connect brain memory + intelligence memory via the
         # UnifiedMemory entry point (Fix D). Pre-fix this code
         # imported ``core.brain.memory.get_brain_memory`` and

@@ -566,9 +566,13 @@ class IntelligentMemory:
 
 
 _instance: IntelligentMemory | None = None
+_instance_lock = threading.Lock()
+
 
 def get_brain_memory() -> IntelligentMemory:
     global _instance
     if _instance is None:
-        _instance = IntelligentMemory()
+        with _instance_lock:
+            if _instance is None:
+                _instance = IntelligentMemory()
     return _instance

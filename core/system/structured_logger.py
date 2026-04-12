@@ -56,16 +56,16 @@ class StructuredLogger:
                 existing = existing[-500:]
             _LOG_PATH.write_text(json.dumps(existing, indent=2))
             self._buffer.clear()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("structured_log flush failed: %s", exc)
 
     def get_recent(self, limit: int = 20) -> list[dict]:
         try:
             if _LOG_PATH.exists():
                 entries = json.loads(_LOG_PATH.read_text())
                 return entries[-limit:]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("structured_log get_recent failed: %s", exc)
         return self._buffer[-limit:]
 
     def get_stats(self) -> dict:
@@ -73,8 +73,8 @@ class StructuredLogger:
             if _LOG_PATH.exists():
                 entries = json.loads(_LOG_PATH.read_text())
                 return {"total": len(entries), "buffered": len(self._buffer)}
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("structured_log get_stats failed: %s", exc)
         return {"total": 0, "buffered": len(self._buffer)}
 
 

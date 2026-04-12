@@ -1107,10 +1107,13 @@ class MemoryIntelligence:
 
 # Singleton
 _instance: MemoryIntelligence | None = None
+_instance_lock = threading.Lock()
 
 
 def get_memory_intelligence() -> MemoryIntelligence:
     global _instance
     if _instance is None:
-        _instance = MemoryIntelligence()
+        with _instance_lock:
+            if _instance is None:
+                _instance = MemoryIntelligence()
     return _instance

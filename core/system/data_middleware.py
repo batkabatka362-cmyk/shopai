@@ -33,14 +33,14 @@ class DataFirstMiddleware:
             try:
                 from core.memory.intelligence import get_memory_intelligence
                 self._mi = get_memory_intelligence()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DataMiddleware: memory_intelligence init failed: %s", exc)
         if not self._da:
             try:
                 from core.data.architecture import get_data_architecture
                 self._da = get_data_architecture()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DataMiddleware: data_architecture init failed: %s", exc)
 
     def wrap(self, category: str, action: str,
              func: Callable, *args, **kwargs) -> dict[str, Any]:
@@ -89,8 +89,8 @@ class DataFirstMiddleware:
             try:
                 ctx = self._mi.retrieve_for_decision(category)
                 context.update(ctx)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DataMiddleware._before failed: %s", exc)
         return context
 
     def _after(self, category: str, action: str, context: dict,
@@ -113,8 +113,8 @@ class DataFirstMiddleware:
                         failure_data={"action": action, "error": error},
                         root_cause=error[:50],
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DataMiddleware._after memory write failed: %s", exc)
 
         # Data Architecture
         if self._da:
@@ -122,8 +122,8 @@ class DataFirstMiddleware:
                 action_id = "mw_{}_{:.0f}".format(action, time.time())
                 self._da.record_action(action_id, action, {"category": category})
                 self._da.attach_result(action_id, {"success": success}, score=score)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("DataMiddleware._after DA write failed: %s", exc)
 
     @staticmethod
     def _score(result: Any, success: bool, context: dict) -> float:

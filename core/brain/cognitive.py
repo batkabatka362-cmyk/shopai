@@ -775,10 +775,14 @@ def _to_float(val) -> float:
 
 
 # Singleton
+import threading as _threading
 _instance: CognitiveModule | None = None
+_instance_lock = _threading.Lock()
 
 def get_cognitive_module() -> CognitiveModule:
     global _instance
     if _instance is None:
-        _instance = CognitiveModule()
+        with _instance_lock:
+            if _instance is None:
+                _instance = CognitiveModule()
     return _instance

@@ -56,14 +56,14 @@ class StrategyPlanner:
             try:
                 from core.memory.unified_memory import get_unified_memory
                 self._memory_intel = get_unified_memory().get_memory_intelligence()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("StrategyPlanner memory_intel init failed: %s", exc)
         if not self._data_arch:
             try:
                 from core.data.architecture import get_data_architecture
                 self._data_arch = get_data_architecture()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("StrategyPlanner data_arch init failed: %s", exc)
 
     def plan(self, products: list[dict], orders: list[dict],
              customers: list[dict], store_id: str = "") -> dict[str, Any]:

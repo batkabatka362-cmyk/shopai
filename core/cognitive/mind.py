@@ -1243,12 +1243,16 @@ def build_default_mind(*, memory: Any = None) -> Mind:
 # ── Singleton accessor ────────────────────────────────────────
 
 
+import threading as _threading
 _instance: Optional[Mind] = None
+_instance_lock = _threading.Lock()
 
 
 def get_mind() -> Mind:
     """Lazily build and return the process-wide Mind instance."""
     global _instance
     if _instance is None:
-        _instance = build_default_mind()
+        with _instance_lock:
+            if _instance is None:
+                _instance = build_default_mind()
     return _instance

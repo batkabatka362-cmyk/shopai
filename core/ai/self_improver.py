@@ -145,8 +145,8 @@ class SelfImprover:
             if rules > 0:
                 improvements.append(f"Intelligence: {rules} rules, {strats} strategies learned")
                 strategies_reinforced += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("SelfImprover strategy stats read failed: %s", exc)
 
         # Duration analysis
         duration = cycle_result.get("duration_s", 0)
