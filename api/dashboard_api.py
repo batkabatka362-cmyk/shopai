@@ -545,11 +545,21 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             logger.debug("reflection: learning_stats failed (%s)", exc)
 
         rows = rows[:limit]
+
+        # Wave 6 #16: surface the synthesizer's tuning parameters
+        # so operators can see the promotion bar.
+        config: dict[str, Any] = {}
+        try:
+            config = synth.config()
+        except Exception:
+            pass
+
         return {
             "patterns":       rows,
             "count":          len(rows),
             "total":          total,
             "learning_stats": learning_stats,
+            "config":         config,
             "last_run_at":    getattr(synth, "last_run_at", None),
             "persist_path":   str(getattr(synth, "persist_path", "") or ""),
             "timestamp":      time.time(),

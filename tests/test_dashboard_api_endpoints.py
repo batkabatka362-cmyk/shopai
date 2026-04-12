@@ -823,6 +823,47 @@ class TestReflectionEndpoint:
         finally:
             reset_default_synthesizer()
 
+    # -- Wave 6 #16: synthesizer config telemetry ---------------------
+
+    def test_config_surfaces_tuning_parameters(self, monkeypatch):
+        """The endpoint returns the synthesizer's config so
+        operators can see the promotion bar."""
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth([]),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        # The fake synth lacks config(), so config should be empty
+        # (fail-soft). That itself is worth testing.
+        assert "config" in out
+
+    def test_config_from_real_synth(self, tmp_path):
+        from core.reflection.synthesizer import (
+            ReflectionSynthesizer,
+            reset_default_synthesizer,
+            set_default_synthesizer,
+        )
+        from engines.meta_governance.policy_store import PolicyStore
+
+        store = PolicyStore(audit_path=str(tmp_path / "a.jsonl"))
+        synth = ReflectionSynthesizer(
+            policy_store=store,
+            min_occurrences=5,
+            min_confidence=0.9,
+            smoothing=2.0,
+            persist_path=tmp_path / "l.jsonl",
+        )
+        set_default_synthesizer(synth)
+        try:
+            out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+            cfg = out["config"]
+            assert cfg["min_occurrences"] == 5
+            assert cfg["min_confidence"] == 0.9
+            assert cfg["smoothing"] == 2.0
+            assert str(tmp_path / "l.jsonl") in cfg["persist_path"]
+        finally:
+            reset_default_synthesizer()
+
     # -- Wave 6 #14: learning stats -----------------------------------
 
     def test_learning_stats_present_in_response(self, monkeypatch):

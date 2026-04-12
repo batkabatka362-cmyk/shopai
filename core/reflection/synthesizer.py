@@ -307,6 +307,26 @@ class ReflectionSynthesizer:
     def last_run_at(self) -> float | None:
         return self._last_run_at
 
+    @property
+    def persist_path(self) -> Path | None:
+        return self._persist_path
+
+    def config(self) -> dict[str, Any]:
+        """Return the synthesizer's tuning parameters.
+
+        Wave 6 #16: operators investigating "why didn't this
+        pattern promote?" need to see the bar — min_occurrences,
+        min_confidence, smoothing — without reading the source.
+        Surfaced through ``/api/reflection`` as a top-level
+        ``config`` key.
+        """
+        return {
+            "min_occurrences": self._min_occ,
+            "min_confidence":  self._min_conf,
+            "smoothing":       self._smoothing,
+            "persist_path":    str(self._persist_path or ""),
+        }
+
     def snapshot(self) -> list[dict[str, Any]]:
         """Return every learned pattern as a list of dicts.
 
