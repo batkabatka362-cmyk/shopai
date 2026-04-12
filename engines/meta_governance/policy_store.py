@@ -120,19 +120,32 @@ class PolicyRule:
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
         ),
     )
+    # Wave 7c (GAP-8): optional serialisable matcher spec for rules
+    # that need to survive a restart. When set, the rehydration
+    # logic can rebuild the matcher from these fields instead of
+    # requiring the caller to re-register with a live callable.
+    # ``match_field`` names the action dict key to inspect;
+    # ``match_pattern`` is a regex applied to its string value.
+    match_field: str | None = None
+    match_pattern: str | None = None
 
     def to_audit_dict(self) -> dict[str, Any]:
         """Serialise the rule metadata (not the callables) for
         the audit log."""
-        return {
-            "rule_id":     self.rule_id,
-            "name":        self.name,
-            "tier":        self.tier.value,
-            "version":     self.version,
-            "source":      self.source,
-            "verdict":     self.verdict.value,
-            "created_at":  self.created_at,
+        d: dict[str, Any] = {
+            "rule_id":       self.rule_id,
+            "name":          self.name,
+            "tier":          self.tier.value,
+            "version":       self.version,
+            "source":        self.source,
+            "verdict":       self.verdict.value,
+            "created_at":    self.created_at,
         }
+        if self.match_field is not None:
+            d["match_field"] = self.match_field
+        if self.match_pattern is not None:
+            d["match_pattern"] = self.match_pattern
+        return d
 
 
 @dataclass
@@ -182,15 +195,21 @@ _DEFAULT_AUDIT_PATH = os.path.join(
 class PolicyStore:
     """Thread-safe tiered rule registry with audit logging.
 
-    The store is intentionally lightweight — it holds MEDIUM and
-    SOFT rules in memory and provides ``evaluate_tiered`` which
-    combines them with the immutable HARD batch from
-    ``policy_checker.check_policies``. Persistence of MEDIUM
-    rules to disk is out of scope for Wave 2 #1; operators can
-    re-register rules at startup if they need persistence.
+    The store holds MEDIUM and SOFT rules in memory and provides
+    ``evaluate_tiered`` which combines them with the immutable
+    HARD batch from ``policy_checker.check_policies``.
+
+    Wave 7c (GAP-8): MEDIUM rules with serialisable matchers
+    (``match_field`` + ``match_pattern``) can now survive restarts
+    via a JSONL ledger file. Pass ``medium_ledger_path`` to enable.
+    Rules that use custom callables remain memory-only.
     """
 
-    def __init__(self, audit_path: str | None = None) -> None:
+    def __init__(
+        self,
+        audit_path: str | None = None,
+        medium_ledger_path: str | None = None,
+    ) -> None:
         self._lock = RLock()
         self._rules: dict[PolicyTier, list[PolicyRule]] = {
             PolicyTier.HARD:   [],   # reserved; HARD runs via check_policies
@@ -198,9 +217,17 @@ class PolicyStore:
             PolicyTier.SOFT:   [],
         }
         self._audit_path = audit_path or _DEFAULT_AUDIT_PATH
+        # Wave 7c (GAP-8): optional MEDIUM rules ledger. When set,
+        # operator MEDIUM rules with serialisable matchers survive
+        # restarts. Rules without match_field/match_pattern are
+        # kept in memory only (same as before).
+        self._medium_ledger_path: str | None = medium_ledger_path
         # Wave 6 #8: per-rule activation counters so operators can
         # tell dead learned rules from useful ones.
         self._rule_stats: dict[str, dict[str, Any]] = {}
+        # Rehydrate persisted MEDIUM rules
+        if self._medium_ledger_path is not None:
+            self._rehydrate_medium_rules()
 
     # -- registration --------------------------------------------------
 
@@ -238,6 +265,9 @@ class PolicyStore:
             # Wave 6 #13: audit the registration event.
             event = "PROMOTION" if rule.source == "learned" else "REGISTRATION"
             self._write_lifecycle_audit(event=event, rule=rule)
+            # Wave 7c (GAP-8): persist MEDIUM rules to disk.
+            if rule.tier == PolicyTier.MEDIUM:
+                self._persist_medium_rules()
         return rule.rule_id
 
     def remove(self, rule_id: str) -> bool:
@@ -280,6 +310,9 @@ class PolicyStore:
                             ),
                         },
                     )
+                    # Wave 7c (GAP-8): update ledger after removal.
+                    if tier == PolicyTier.MEDIUM:
+                        self._persist_medium_rules()
                     return True
         return False
 
@@ -629,6 +662,133 @@ class PolicyStore:
                 fh.write(json.dumps(entry, default=str) + "\n")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Policy audit write failed: %s", exc)
+
+    # ── Wave 7c (GAP-8): MEDIUM rule persistence ───────────────
+
+    def _persist_medium_rules(self) -> None:
+        """Atomically rewrite the MEDIUM rules ledger.
+
+        Only rules with ``match_field`` and ``match_pattern`` set
+        are persisted — custom-callable rules remain memory-only.
+        """
+        if self._medium_ledger_path is None:
+            return
+        try:
+            os.makedirs(
+                os.path.dirname(self._medium_ledger_path), exist_ok=True,
+            )
+            import tempfile
+            rules = self._rules[PolicyTier.MEDIUM]
+            serialisable = [
+                r for r in rules
+                if r.match_field is not None and r.match_pattern is not None
+            ]
+            dir_name = os.path.dirname(self._medium_ledger_path)
+            fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    for r in serialisable:
+                        fh.write(json.dumps(r.to_audit_dict(), default=str) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, self._medium_ledger_path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            logger.debug(
+                "MEDIUM ledger: persisted %d rule(s) to %s",
+                len(serialisable), self._medium_ledger_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MEDIUM ledger persist failed: %s", exc)
+
+    def _rehydrate_medium_rules(self) -> None:
+        """Reload MEDIUM rules from the ledger at startup.
+
+        Each line is a JSON dict with rule metadata plus
+        ``match_field`` / ``match_pattern``. The matcher is
+        rebuilt as a regex check on the named action field.
+        """
+        import re as _re
+
+        path = self._medium_ledger_path
+        if path is None or not os.path.exists(path):
+            return
+        loaded = 0
+        skipped = 0
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "MEDIUM ledger: could not read %r (%s) — starting fresh",
+                path, exc,
+            )
+            return
+        existing_ids = {r.rule_id for r in self._rules[PolicyTier.MEDIUM]}
+        for raw in lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                row = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                skipped += 1
+                continue
+            if not isinstance(row, dict):
+                skipped += 1
+                continue
+            rule_id = row.get("rule_id")
+            if not rule_id or rule_id in existing_ids:
+                skipped += 1
+                continue
+            match_field = row.get("match_field")
+            match_pattern = row.get("match_pattern")
+            if not match_field or not match_pattern:
+                skipped += 1
+                continue
+            try:
+                compiled = _re.compile(match_pattern)
+            except _re.error:
+                skipped += 1
+                continue
+            # Rebuild the matcher from the serialised spec
+            def _make_matcher(fld: str, pat: "_re.Pattern[str]"):
+                def _matcher(action: dict, _ctx: dict) -> bool:
+                    val = str(action.get(fld, ""))
+                    return bool(pat.search(val))
+                return _matcher
+
+            try:
+                rule = PolicyRule(
+                    rule_id=rule_id,
+                    name=row.get("name", rule_id),
+                    tier=PolicyTier.MEDIUM,
+                    source=row.get("source", "operator"),
+                    description=row.get("description", ""),
+                    matcher=_make_matcher(match_field, compiled),
+                    verdict=PolicyVerdict(
+                        row.get("verdict", PolicyVerdict.BLOCK.value),
+                    ),
+                    version=int(row.get("version", 1)),
+                    created_at=row.get("created_at", ""),
+                    match_field=match_field,
+                    match_pattern=match_pattern,
+                )
+            except (KeyError, TypeError, ValueError):
+                skipped += 1
+                continue
+            self._rules[PolicyTier.MEDIUM].append(rule)
+            existing_ids.add(rule_id)
+            loaded += 1
+        if loaded or skipped:
+            logger.info(
+                "MEDIUM ledger: rehydrated %d rule(s) from %r (%d skipped)",
+                loaded, path, skipped,
+            )
 
     def _write_lifecycle_audit(
         self,

@@ -1523,13 +1523,18 @@ class AutonomousController:
         # Previously these blocks ran after the snapshot, leaving
         # cycle_result["phase_errors"] stale.
 
-        # Wave 7 #2: inject cognitive Mind errors into phase_errors
-        # so the reflection synthesizer can mine them alongside
-        # regular phase failures. Without this, recurring Mind
-        # crashes accumulate zero learning signal.
+        # Wave 7c (GAP-15): inject cognitive Mind errors at
+        # per-phase granularity when available. Falls back to the
+        # old single-blob "cognitive_mind" key for pre-GAP-15 Mind
+        # instances that don't report phase_errors.
         cog = cycle_result.get("cognitive")
-        if isinstance(cog, dict) and cog.get("error"):
-            phase_errors["cognitive_mind"] = str(cog["error"])
+        if isinstance(cog, dict):
+            cog_phases = cog.get("phase_errors")
+            if isinstance(cog_phases, dict) and cog_phases:
+                for phase_key, err_msg in cog_phases.items():
+                    phase_errors[f"cognitive_{phase_key}"] = str(err_msg)
+            elif cog.get("error"):
+                phase_errors["cognitive_mind"] = str(cog["error"])
 
         # Wave 7 #2: inject SLA breaches into phase_errors so
         # recurring adapter degradation feeds the reflection
@@ -1711,6 +1716,67 @@ class AutonomousController:
                 "Reflection: retired %d stale learned rule(s) in cycle %s",
                 len(retired), cycle_result.get("cycle_id"),
             )
+
+    # ── Wave 7c (GAP-4): standalone error ingestion ────────────
+
+    def record_failure(
+        self,
+        subsystem: str,
+        message: str,
+        *,
+        quality: float = 0.6,
+        confidence: float = 0.7,
+    ) -> None:
+        """Record a standalone failure into the reflection buffer.
+
+        This allows subsystems outside the cycle loop to feed
+        errors into the reflection synthesizer's mining pipeline.
+        The next ``run_cycle`` call will pick them up automatically
+        because the synthesizer mines the full rolling buffer.
+
+        Fail-soft: a missing buffer or import error is logged and
+        silently swallowed — callers should never need to guard
+        against this method raising.
+        """
+        try:
+            from core.memory.quality_engine import MemoryRecord
+
+            # Ensure the buffer exists (same lazy init as the hook).
+            if self._error_buffer is None:
+                from collections import deque
+
+                init_lock = getattr(self, "_reflection_init_lock", None)
+                if init_lock is None:
+                    init_lock = threading.Lock()
+                    self._reflection_init_lock = init_lock
+                with init_lock:
+                    if self._error_buffer is None:
+                        maxlen = getattr(
+                            self, "_reflection_buffer_max",
+                            self._REFLECTION_BUFFER_MAX,
+                        )
+                        self._error_buffer = deque(maxlen=maxlen)
+
+            record = MemoryRecord(
+                kind="error",
+                quality=quality,
+                confidence=confidence,
+                success_rate=0.0,
+                usage=1,
+                created_at=time.time(),
+                payload={
+                    "phase": subsystem,
+                    "message": message,
+                    "source": "record_failure",
+                },
+            )
+            self._error_buffer.append(record)
+            logger.debug(
+                "record_failure: buffered error from %s (%d in buffer)",
+                subsystem, len(self._error_buffer),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("record_failure failed: %s", exc)
 
     def _maybe_run_reflection_decay(self, now: float) -> list[str]:
         """Call ``synth.decay_stale_rules`` if the throttle interval

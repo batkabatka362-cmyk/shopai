@@ -77,6 +77,10 @@ class CycleReport:
 
     notes: list[str] = field(default_factory=list)
     error: str = ""
+    # Wave 7c (GAP-15): per-phase error dict so the controller's
+    # reflection synthesizer can mine failures at phase granularity
+    # rather than treating the entire Mind cycle as one opaque blob.
+    phase_errors: dict[str, str] = field(default_factory=dict)
 
     def duration_s(self) -> float:
         return max(0.0, self.finished_at - self.started_at)
@@ -101,6 +105,7 @@ class CycleReport:
             "consolidation_ran": self.consolidation_ran,
             "notes": list(self.notes),
             "error": self.error,
+            "phase_errors": dict(self.phase_errors),
         }
 
     def headline(self) -> str:
@@ -213,21 +218,38 @@ class Mind:
             started_at=ctx.started_at,
         )
 
-        try:
-            self._phase_calibrate(ctx, report)
-            self._phase_perceive(ctx, report)
-            self._phase_reflect(ctx, report)
-            self._phase_set_goals(ctx, report)
-            self._phase_plan(ctx, report)
-            self._phase_imagine(ctx, report)
-            self._phase_predict(ctx, report)
-            self._phase_act(ctx, report)
-            self._phase_learn(ctx, report)
-            self._phase_goal_lifecycle(ctx, report)
-            self._phase_consolidate(ctx, report)
-        except Exception as exc:  # noqa: BLE001
-            report.error = f"{type(exc).__name__}: {exc}"
-            logger.exception("Mind cycle %d failed", ctx.cycle_number)
+        # Wave 7c (GAP-15): run each phase independently so a
+        # failure in one doesn't skip all subsequent phases and the
+        # per-phase error dict fills with granular failure info for
+        # the reflection synthesizer to mine.
+        _phases = [
+            ("calibrate",      self._phase_calibrate),
+            ("perceive",       self._phase_perceive),
+            ("reflect",        self._phase_reflect),
+            ("set_goals",      self._phase_set_goals),
+            ("plan",           self._phase_plan),
+            ("imagine",        self._phase_imagine),
+            ("predict",        self._phase_predict),
+            ("act",            self._phase_act),
+            ("learn",          self._phase_learn),
+            ("goal_lifecycle", self._phase_goal_lifecycle),
+            ("consolidate",    self._phase_consolidate),
+        ]
+        for phase_name, phase_fn in _phases:
+            try:
+                phase_fn(ctx, report)
+            except Exception as exc:  # noqa: BLE001
+                err_str = f"{type(exc).__name__}: {exc}"
+                report.phase_errors[phase_name] = err_str
+                logger.warning(
+                    "Mind cycle %d phase %s failed: %s",
+                    ctx.cycle_number, phase_name, err_str,
+                )
+        # Backward compat: set aggregate error if any phase failed
+        if report.phase_errors:
+            report.error = "; ".join(
+                f"{k}: {v}" for k, v in report.phase_errors.items()
+            )
 
         # Wave 4 #4: post-cycle cognitive audit — dispatch the
         # side-effect-free introspection functions so every cycle

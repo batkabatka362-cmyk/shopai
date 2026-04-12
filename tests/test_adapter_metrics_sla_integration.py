@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.adapters.metrics import MetricsCollector as AdapterMetricsCollector
+from core.adapters.metrics import AdapterMetricsCollector
 from core.telemetry.metrics_collector import (
     MetricsCollector as TelemetryMetricsCollector,
     SLAThresholds,

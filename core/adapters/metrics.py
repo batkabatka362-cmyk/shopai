@@ -38,7 +38,7 @@ logger = get_logger("adapters.metrics")
 class AdapterMetrics:
     """Mutable counter set for one adapter.
 
-    Stored inside ``MetricsCollector._stats`` keyed by adapter
+    Stored inside ``AdapterMetricsCollector._stats`` keyed by adapter
     name. Reads/writes happen under the collector lock — never
     touch this directly from outside the collector.
     """
@@ -70,7 +70,7 @@ class AdapterMetrics:
         """Return the *pct* percentile latency in milliseconds.
 
         Uses the in-memory rolling sample window
-        (``MetricsCollector._sample_cap`` last calls). Returns 0
+        (``AdapterMetricsCollector._sample_cap`` last calls). Returns 0
         for an empty window.
         """
         if not self.latency_samples:
@@ -107,7 +107,7 @@ _DAY_SECONDS = 24 * 60 * 60
 _MONTH_SECONDS = 30 * _DAY_SECONDS
 
 
-class MetricsCollector:
+class AdapterMetricsCollector:
     """Process-wide adapter metrics aggregator.
 
     Single ``RLock`` protects every counter. Reads (``stats_for``,
@@ -300,17 +300,24 @@ class MetricsCollector:
 # ── Module-level singleton ─────────────────────────────────────
 
 
-_collector: MetricsCollector | None = None
+_collector: AdapterMetricsCollector | None = None
 _collector_lock = threading.Lock()
 
 
-def get_metrics() -> MetricsCollector:
-    """Return the process-wide metrics collector singleton."""
+# Wave 7c (GAP-10): backward-compat alias so existing code that
+# imported ``from core.adapters.metrics import MetricsCollector``
+# still works. The canonical name is now AdapterMetricsCollector
+# to avoid confusion with core.telemetry.metrics_collector.MetricsCollector.
+MetricsCollector = AdapterMetricsCollector
+
+
+def get_metrics() -> AdapterMetricsCollector:
+    """Return the process-wide adapter metrics collector singleton."""
     global _collector
     if _collector is None:
         with _collector_lock:
             if _collector is None:
-                _collector = MetricsCollector()
+                _collector = AdapterMetricsCollector()
     return _collector
 
 
@@ -319,4 +326,4 @@ def reset_metrics() -> None:
     (test helper)."""
     global _collector
     with _collector_lock:
-        _collector = MetricsCollector()
+        _collector = AdapterMetricsCollector()
