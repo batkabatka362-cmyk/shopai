@@ -39,8 +39,8 @@ class AIReasoning:
             try:
                 from models.routing.model_router import ModelRouter
                 self._router = ModelRouter()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("ModelRouter init failed: %s", exc)
         return self._router
 
     def is_llm_available(self) -> bool:
@@ -59,8 +59,8 @@ class AIReasoning:
                 if self._available:
                     logger.info("LLM available via Ollama: %s", models)
                 return self._available
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Ollama availability check failed: %s", exc)
 
         self._available = False
         return False

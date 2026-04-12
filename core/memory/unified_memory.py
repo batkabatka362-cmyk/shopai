@@ -154,6 +154,35 @@ class UnifiedMemory:
         startup."""
         return dict(self._init_errors)
 
+    def get_init_status(self) -> dict[str, Any]:
+        """Return a structured init-health snapshot for the operator dashboard.
+
+        Provides overall status (``"ok"`` / ``"degraded"`` /
+        ``"not_initialized"``), the list of healthy and failed
+        backends, and the raw error messages for failed ones.
+        """
+        if not self._initialized:
+            return {
+                "status": "not_initialized",
+                "healthy": [],
+                "failed": [],
+                "errors": {},
+            }
+
+        all_backends = [
+            "shared_memory", "brain_memory", "experience",
+            "cross_cache", "persistent", "data_architecture",
+            "memory_intelligence", "intelligence_cycle",
+        ]
+        failed = sorted(self._init_errors.keys())
+        healthy = sorted(b for b in all_backends if b not in self._init_errors)
+        return {
+            "status": "degraded" if failed else "ok",
+            "healthy": healthy,
+            "failed": failed,
+            "errors": dict(self._init_errors),
+        }
+
     def _ensure_init(self) -> None:
         if not self._initialized:
             self.initialize()

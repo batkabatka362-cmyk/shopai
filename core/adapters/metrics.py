@@ -205,18 +205,22 @@ class AdapterMetricsCollector:
         Lazy-imports the telemetry collector so a teardown that
         drops the telemetry module (deployment variants without
         SLA) still leaves this metrics collector functional.
-        Isolated in its own method so the caller can catch any
-        failure cleanly regardless of whether the import or the
-        record() call blew up.
+
+        Wave 8: fail-soft internally so callers don't need their
+        own try/except. Import or record errors are logged at
+        DEBUG and silently absorbed.
         """
-        from core.telemetry.metrics_collector import MetricsCollector as _TM
-        tracker = _TM().get_sla_tracker()
-        tracker.record(
-            adapter,
-            success=success,
-            latency_ms=latency_ms,
-            cost=cost,
-        )
+        try:
+            from core.telemetry.metrics_collector import MetricsCollector as _TM
+            tracker = _TM().get_sla_tracker()
+            tracker.record(
+                adapter,
+                success=success,
+                latency_ms=latency_ms,
+                cost=cost,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("SLA tracker feed failed for %s: %s", adapter, exc)
 
     def get_sla_report(
         self, adapter: str | None = None,

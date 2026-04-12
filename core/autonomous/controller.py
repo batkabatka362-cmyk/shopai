@@ -302,21 +302,6 @@ class AutonomousController:
 
         logger.info("Starting cycle %s for store %s", cycle_id, sid)
 
-        # Clear working memory from previous cycle
-        try:
-            from core.memory.unified_memory import get_unified_memory
-            mi = get_unified_memory().get_memory_intelligence()
-            mi.clear_working()
-        except Exception:
-            pass
-
-        cycle_result: dict[str, Any] = {
-            "cycle_id": cycle_id,
-            "store_id": sid,
-            "cycle_number": self._cycle_count,
-            "phases": {},
-        }
-
         # Per-cycle error ledger. Pre-fix every phase caught its
         # own exception with ``except Exception: logger.debug(...)``
         # and the failure was invisible at the default INFO log
@@ -335,6 +320,21 @@ class AutonomousController:
             phase_errors[phase_name] = err
             logger.warning("cycle phase %r failed: %s", phase_name, err)
 
+        # Clear working memory from previous cycle
+        try:
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
+            mi.clear_working()
+        except Exception as exc:
+            _record("working_memory_clear", exc)
+
+        cycle_result: dict[str, Any] = {
+            "cycle_id": cycle_id,
+            "store_id": sid,
+            "cycle_number": self._cycle_count,
+            "phases": {},
+        }
+
         # Phase 0: TIME + CONTEXT awareness
         try:
             from core.brain.smart_rotation import get_time_awareness, get_exploration_boost
@@ -352,8 +352,8 @@ class AutonomousController:
             explore = eb.should_explore()
             if explore.get("explore"):
                 cycle_result["phases"]["exploration_alert"] = explore
-        except Exception:
-            pass
+        except Exception as exc:
+            _record("exploration_boost", exc)
 
         # Phase 1: DATA — Fetch current store state
         data = self._phase_data(sid)
@@ -497,8 +497,8 @@ class AutonomousController:
                 from core.brain.smart_rotation import get_exploration_boost
                 eb = get_exploration_boost()
                 eb.record(thought.get("action_plan", [{}])[0].get("action", "analyze") if thought.get("action_plan") else "analyze")
-            except Exception:
-                pass
+            except Exception as exc:
+                _record("exploration_record", exc)
 
             # Pre-fix the phase summary dropped every adapter-
             # layer signal the brain surfaced (``ai_reasoning``,
@@ -542,8 +542,8 @@ class AutonomousController:
             mi.set_working("health_score", thought.get("health_score", 0))
             mi.set_working("top_problems", thought.get("problems", [])[:3])
             mi.set_working("top_opportunities", thought.get("opportunities", [])[:3])
-        except Exception:
-            pass
+        except Exception as exc:
+            _record("working_memory_store", exc)
 
         # Phase 1d: COGNITIVE THINKING — deep understanding + reasoning
         try:
@@ -556,15 +556,15 @@ class AutonomousController:
                 try:
                     cog_memories = self._unified_memory._memory_intel.retrieve(
                         "pricing", limit=20) if self._unified_memory._memory_intel else []
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record("cognitive_memory_retrieve", exc)
 
             rules = []
             if hasattr(self, '_unified_memory') and self._unified_memory:
                 try:
                     rules = self._unified_memory.get_learned_rules()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record("cognitive_rules_retrieve", exc)
 
             # Deep analysis (limit products for speed)
             deep = cog.think_deep(data.get("products", [])[:5], cog_memories, rules)
@@ -819,8 +819,8 @@ class AutonomousController:
                             source="engine",
                             store_id=sid,
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                _record("engine_memory_mirror", exc)
 
         # Phase 5: LEARN — Track outcomes via all learning systems
         # Merge smart execution results into executions for learning
@@ -1070,8 +1070,8 @@ class AutonomousController:
                 expired = da.cleanup_expired()
                 if pruned or expired:
                     logger.info("Maintenance: pruned %d memories, %d expired records", pruned, expired)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record("memory_maintenance", exc)
 
         # Phase 7: RULE HEALTH CHECK — monitor rule effectiveness
         try:
@@ -1175,8 +1175,8 @@ class AutonomousController:
             pp = get_product_performance()
             pp.record(data.get("products", []),
                       product_scores if 'product_scores' in dir() else None)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record("product_performance", exc)
 
         # Phase 8e: TREND ANALYSIS — cross-cycle trends
         try:
@@ -1266,8 +1266,8 @@ class AutonomousController:
             from core.system.dashboard import get_dashboard
             dash = get_dashboard()
             cycle_result["_dashboard"] = dash.generate(cycle_result)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record("dashboard_generate", exc)
 
         # Phase 8j: LIVE EXECUTION — execute safe actions on Shopify
         try:
@@ -1488,24 +1488,24 @@ class AutonomousController:
             from core.system.structured_logger import get_structured_logger
             sl = get_structured_logger()
             sl.log_cycle(cycle_result)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record("structured_log", exc)
 
         # Phase 9b: CYCLE REPORT — human-readable summary
         try:
             from core.system.cycle_reporter import get_cycle_reporter
             reporter = get_cycle_reporter()
             cycle_result["_report"] = reporter.report(cycle_result)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record("cycle_reporter", exc)
 
         # Phase 9b: NOTIFICATIONS — deliver alerts
         try:
             from core.system.notifications import get_notifications
             notif = get_notifications()
             notif.send_cycle_summary(cycle_result)
-        except Exception:
-            pass
+        except Exception as exc:
+            _record("notifications", exc)
 
         # Track performance
         if self._performance_tracker:
