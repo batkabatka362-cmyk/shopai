@@ -14,6 +14,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
+# ── Health grade thresholds ──────────────────────────────────
+GRADE_A_THRESHOLD = 0.9       # success rate above this → grade A
+GRADE_B_THRESHOLD = 0.7       # success rate above this → grade B
+GRADE_C_THRESHOLD = 0.5       # success rate above this → grade C
+EXECUTION_CONCERN_THRESHOLD = 0.7  # below this → flag as issue
+
 from utils.logger import get_logger
 from utils.helpers import safe_float
 
@@ -92,10 +98,10 @@ class SystemHealthReport:
                 return {"status": "no_data", "grade": "N/A"}
 
             rate = stats.get("success_rate", 0)
-            grade = "A" if rate > 0.9 else "B" if rate > 0.7 else "C" if rate > 0.5 else "F"
+            grade = "A" if rate > GRADE_A_THRESHOLD else "B" if rate > GRADE_B_THRESHOLD else "C" if rate > GRADE_C_THRESHOLD else "F"
 
             issues = []
-            if rate < 0.7:
+            if rate < EXECUTION_CONCERN_THRESHOLD:
                 issues.append(f"Execution success rate {rate:.0%} — check failing executors")
 
             return {

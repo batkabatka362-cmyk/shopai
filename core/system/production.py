@@ -17,6 +17,12 @@ _CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "settings.json"
 _BACKUP_DIR = Path(__file__).resolve().parents[2] / "data" / "backups"
 _AUDIT_PATH = Path(__file__).resolve().parents[2] / "data" / "audit_log.json"
 
+# ── Named constants (previously inline magic numbers) ───────
+CIRCUIT_BREAKER_COOLDOWN_S = 300        # 5 minutes before half-open
+BACKOFF_BASE_S = 2                      # exponential backoff base
+MAX_BACKUP_RETENTION = 10               # keep last N backup directories
+AUDIT_LOG_MAX_ENTRIES = 1000            # prune audit trail beyond this
+
 
 # ═══════════════════════════════════════════════
 # CONFIG MANAGER
@@ -116,7 +122,7 @@ class ErrorRecovery:
         """Execute with automatic retry on failure."""
         # Check circuit breaker
         if name in self._circuit_open:
-            if time.time() - self._circuit_open[name] < 300:  # 5 min cooldown
+            if time.time() - self._circuit_open[name] < CIRCUIT_BREAKER_COOLDOWN_S:
                 return {"error": "circuit_open", "component": name}
             del self._circuit_open[name]
 
@@ -130,7 +136,7 @@ class ErrorRecovery:
                 logger.warning("Retry %d/%d for %s: %s",
                               attempt + 1, self._max_retries, name, exc)
                 if attempt < self._max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    time.sleep(BACKOFF_BASE_S ** attempt)
 
         # Open circuit after max failures
         if self._failures.get(name, 0) >= self._max_retries:
@@ -171,9 +177,9 @@ class BackupSystem:
             except Exception as exc:
                 logger.debug("backup failed for %s: %s", db.name, exc)
 
-        # Keep only last 10 backups
+        # Keep only last N backups
         backups = sorted(_BACKUP_DIR.iterdir())
-        while len(backups) > 10:
+        while len(backups) > MAX_BACKUP_RETENTION:
             shutil.rmtree(backups.pop(0), ignore_errors=True)
 
         return {"backed_up": backed_up, "path": str(backup_dir), "total_dbs": len(dbs)}
@@ -218,9 +224,8 @@ class AuditTrail:
     def _save(self):
         try:
             _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            # Keep last 1000
-            if len(self._entries) > 1000:
-                self._entries = self._entries[-1000:]
+            if len(self._entries) > AUDIT_LOG_MAX_ENTRIES:
+                self._entries = self._entries[-AUDIT_LOG_MAX_ENTRIES:]
             _AUDIT_PATH.write_text(json.dumps(self._entries, indent=2))
         except Exception as exc:
             logger.debug("audit write failed: %s", exc)

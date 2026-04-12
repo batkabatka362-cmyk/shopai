@@ -17,6 +17,20 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+# ── Statistical thresholds ───────────────────────────────────
+R_SQUARED_GOOD = 0.7          # regression fit quality thresholds
+R_SQUARED_MODERATE = 0.4
+Z_SCORE_001 = 3.29            # z-score → p-value lookup table
+Z_SCORE_01 = 2.58
+Z_SCORE_05 = 1.96
+Z_SCORE_10 = 1.65
+SIGNIFICANCE_LEVEL = 0.05     # default p-value threshold
+# ── Elasticity interpretation ranges ─────────────────────────
+ELASTICITY_VERY_INELASTIC = 0.5
+ELASTICITY_INELASTIC = 1.0
+ELASTICITY_UNIT = 1.5
+ELASTICITY_ELASTIC = 2.5
+
 
 class PricingIntelligence:
     """Real pricing algorithms for e-commerce."""
@@ -87,7 +101,7 @@ class PricingIntelligence:
             "elasticity_type": "elastic" if abs(elasticity) > 1 else "inelastic",
             "intercept": round(a, 4),
             "r_squared": round(r_squared, 4),
-            "model_fit": "good" if r_squared > 0.7 else "moderate" if r_squared > 0.4 else "poor",
+            "model_fit": "good" if r_squared > R_SQUARED_GOOD else "moderate" if r_squared > R_SQUARED_MODERATE else "poor",
             "optimal_price": round(best_price, 2),
             "max_revenue_observed": round(best_revenue, 2),
             "price_sensitivity_zones": zones,
@@ -197,13 +211,13 @@ class PricingIntelligence:
         # Approximate p-value (two-tailed)
         # Using normal approximation
         abs_z = abs(z_score)
-        if abs_z > 3.29: p_value = 0.001
-        elif abs_z > 2.58: p_value = 0.01
-        elif abs_z > 1.96: p_value = 0.05
-        elif abs_z > 1.65: p_value = 0.10
+        if abs_z > Z_SCORE_001: p_value = 0.001
+        elif abs_z > Z_SCORE_01: p_value = 0.01
+        elif abs_z > Z_SCORE_05: p_value = 0.05
+        elif abs_z > Z_SCORE_10: p_value = 0.10
         else: p_value = 0.20
 
-        significant = p_value < 0.05
+        significant = p_value < SIGNIFICANCE_LEVEL
         lift = ((rate_b - rate_a) / rate_a * 100) if rate_a > 0 else 0
 
         winner = "B" if rpv_b > rpv_a and significant else "A" if rpv_a > rpv_b and significant else "no_winner"
@@ -233,10 +247,10 @@ class PricingIntelligence:
 
     @staticmethod
     def _interpret_elasticity(e: float) -> str:
-        if abs(e) < 0.5: return "Very inelastic — large price changes cause small demand changes. Strong pricing power."
-        if abs(e) < 1.0: return "Inelastic — demand relatively insensitive to price. Can increase prices."
-        if abs(e) < 1.5: return "Unit elastic — price and demand change proportionally. Price carefully."
-        if abs(e) < 2.5: return "Elastic — customers are price sensitive. Compete on price or differentiate."
+        if abs(e) < ELASTICITY_VERY_INELASTIC: return "Very inelastic — large price changes cause small demand changes. Strong pricing power."
+        if abs(e) < ELASTICITY_INELASTIC: return "Inelastic — demand relatively insensitive to price. Can increase prices."
+        if abs(e) < ELASTICITY_UNIT: return "Unit elastic — price and demand change proportionally. Price carefully."
+        if abs(e) < ELASTICITY_ELASTIC: return "Elastic — customers are price sensitive. Compete on price or differentiate."
         return "Very elastic — small price changes cause large demand swings. Price-driven market."
 
     @staticmethod

@@ -16,6 +16,11 @@ from utils.helpers import generate_id
 
 logger = get_logger("intelligence.ab")
 
+# ── Named constants ──────────────────────────────────────────
+Z_SCORE_95_CONFIDENCE = 1.96           # two-tailed 95% significance
+MIN_SAMPLES_PER_VARIANT = 10           # minimum impressions before test
+MIN_LIFT_DENOMINATOR = 0.001           # floor to avoid division by zero
+
 
 class ABFramework:
     """Production A/B testing framework."""
@@ -141,7 +146,7 @@ class ABFramework:
         n_a, c_a = a["impressions"], a["conversions"]
         n_b, c_b = b["impressions"], b["conversions"]
 
-        if n_a < 10 or n_b < 10:
+        if n_a < MIN_SAMPLES_PER_VARIANT or n_b < MIN_SAMPLES_PER_VARIANT:
             return {"significant": False, "reason": "insufficient_samples"}
 
         rate_a = c_a / max(n_a, 1)
@@ -149,8 +154,8 @@ class ABFramework:
         pooled = (c_a + c_b) / max(n_a + n_b, 1)
         se = math.sqrt(pooled * (1 - pooled) * (1/max(n_a, 1) + 1/max(n_b, 1))) if pooled > 0 else 0
         z = (rate_b - rate_a) / se if se > 0 else 0
-        significant = abs(z) > 1.96
-        lift = ((rate_b - rate_a) / max(rate_a, 0.001)) * 100
+        significant = abs(z) > Z_SCORE_95_CONFIDENCE
+        lift = ((rate_b - rate_a) / max(rate_a, MIN_LIFT_DENOMINATOR)) * 100
 
         winner_idx = 1 if rate_b > rate_a else 0
 

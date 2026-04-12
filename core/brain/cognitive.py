@@ -13,6 +13,14 @@ import math
 import time
 from typing import Any
 
+# ── Named thresholds ─────────────────────────────────────────
+MARGIN_HIGH = 0.6             # above this → "high margin"
+MARGIN_MID = 0.3              # above this → "medium margin"
+SIMILARITY_DEFAULT_MIN = 0.3  # default min_similarity for retrieval
+CONSOLIDATION_THRESHOLD = 0.8 # merge memories above this similarity
+CONFIDENCE_CAP = 0.9          # max confidence for generated rules
+DECAY_LN2 = 0.693             # ln(2), used in exponential time decay
+
 from utils.logger import get_logger
 
 logger = get_logger("brain.cognitive")
@@ -100,9 +108,9 @@ class DeepUnderstanding:
 
         insights = []
         if margin is not None:
-            if margin > 0.6:
+            if margin > MARGIN_HIGH:
                 insights.append("High margin — good profit potential")
-            elif margin > 0.3:
+            elif margin > MARGIN_MID:
                 insights.append("Medium margin — standard")
             elif margin > 0:
                 insights.append("Low margin — consider raising price")
@@ -133,7 +141,7 @@ class DeepUnderstanding:
 
     @staticmethod
     def find_similar(target: dict, products: list[dict],
-                     min_similarity: float = 0.3, limit: int = 5) -> list[dict]:
+                     min_similarity: float = SIMILARITY_DEFAULT_MIN, limit: int = 5) -> list[dict]:
         """Find products similar to target."""
         results = []
         for p in products:
@@ -185,7 +193,7 @@ class AssociativeMemory:
         age_days = (time.time() - timestamp) / 86400
         if age_days <= 0:
             return 1.0
-        return math.exp(-0.693 * age_days / half_life_days)
+        return math.exp(-DECAY_LN2 * age_days / half_life_days)
 
     @staticmethod
     def search_similar(query_features: dict, memories: list[dict],
@@ -209,7 +217,7 @@ class AssociativeMemory:
         return scored[:top_k]
 
     @staticmethod
-    def consolidate(memories: list[dict], threshold: float = 0.8) -> list[dict]:
+    def consolidate(memories: list[dict], threshold: float = CONSOLIDATION_THRESHOLD) -> list[dict]:
         """Consolidate similar memories — strengthen strong ones, merge weak."""
         if len(memories) < 2:
             return memories
@@ -279,7 +287,7 @@ class ReasoningChain:
             "action": action,
             "matching_products": len(matching),
             "supported_by_rules": len(supporting_rules),
-            "confidence": min(0.9, 0.3 + len(supporting_rules) * 0.15 + min(len(matching), 5) * 0.05),
+            "confidence": min(CONFIDENCE_CAP, 0.3 + len(supporting_rules) * 0.15 + min(len(matching), 5) * 0.05),
             "therefore": "likely_positive" if supporting_rules else "uncertain",
         }
 
