@@ -61,15 +61,15 @@ class ConfigManager:
         except Exception as exc:
             logger.debug("config load failed: %s", exc)
 
-    def save(self):
+    def save(self) -> None:
         _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_CONFIG_PATH, "w") as f:
             json.dump(self._config, f, indent=2)
 
-    def get(self, key: str, default=None):
+    def get(self, key: str, default: Any = None) -> Any:
         return self._config.get(key, default)
 
-    def set(self, key: str, value):
+    def set(self, key: str, value: Any) -> None:
         self._config[key] = value
         self.save()
 

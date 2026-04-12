@@ -207,8 +207,8 @@ class StrategyPlanner:
                     "confidence": s["impact_score"]},
                     source="strategy_planner", store_id=store_id, score=3.0 + s["impact_score"])
 
-    def get_stats(self):
-        types = {}
+    def get_stats(self) -> dict[str, Any]:
+        types: dict[str, int] = {}
         for s in self._strategies:
             types[s["type"]] = types.get(s["type"], 0) + 1
         return {"total": len(self._strategies), "by_type": types}

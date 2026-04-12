@@ -204,10 +204,10 @@ class AIProductFinder:
         except Exception as exc:
             logger.debug("ProductFinder DA capture failed: %s", exc)
 
-    def get_found(self):
+    def get_found(self) -> list[dict[str, Any]]:
         return list(self._found)
 
-    def get_stats(self):
+    def get_stats(self) -> dict[str, Any]:
         return {"total_found": len(self._found)}
 
 
