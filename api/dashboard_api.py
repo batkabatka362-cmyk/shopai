@@ -554,15 +554,28 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # Wave 6 #18: surface near-miss (pending) patterns from the
+        # most recent run so operators get early warning of emerging
+        # error trends before they fully qualify for promotion.
+        pending: list[dict[str, Any]] = []
+        try:
+            report = getattr(synth, "last_report", None)
+            if report is not None:
+                pending = [p.as_dict() for p in report.pending_patterns]
+        except Exception:
+            pass
+
         return {
-            "patterns":       rows,
-            "count":          len(rows),
-            "total":          total,
-            "learning_stats": learning_stats,
-            "config":         config,
-            "last_run_at":    getattr(synth, "last_run_at", None),
-            "persist_path":   str(getattr(synth, "persist_path", "") or ""),
-            "timestamp":      time.time(),
+            "patterns":         rows,
+            "count":            len(rows),
+            "total":            total,
+            "pending_patterns": pending,
+            "pending_count":    len(pending),
+            "learning_stats":   learning_stats,
+            "config":           config,
+            "last_run_at":      getattr(synth, "last_run_at", None),
+            "persist_path":     str(getattr(synth, "persist_path", "") or ""),
+            "timestamp":        time.time(),
         }
 
     @staticmethod

@@ -584,10 +584,12 @@ class _FakeSynth:
 
     def __init__(self, rows: list[dict[str, Any]],
                  last_run_at: float | None = None,
-                 persist_path: str = ""):
+                 persist_path: str = "",
+                 last_report: Any = None):
         self._rows = rows
         self.last_run_at = last_run_at
         self.persist_path = persist_path
+        self.last_report = last_report
 
     def snapshot(self) -> list[dict[str, Any]]:
         return list(self._rows)
@@ -863,6 +865,61 @@ class TestReflectionEndpoint:
             assert str(tmp_path / "l.jsonl") in cfg["persist_path"]
         finally:
             reset_default_synthesizer()
+
+    # -- Wave 6 #18: pending patterns ---------------------------------
+
+    def test_pending_patterns_surfaced_from_last_report(self, monkeypatch):
+        from core.reflection.synthesizer import (
+            ErrorPattern,
+            SynthesisReport,
+        )
+        pending = [
+            ErrorPattern(
+                signature="error:near_miss",
+                kind="error",
+                sample_text="near miss pattern",
+                occurrences=2,
+                first_seen=0.0,
+                last_seen=1.0,
+                confidence=0.6,
+            ),
+        ]
+        report = SynthesisReport(
+            patterns_total=3,
+            patterns_promoted=1,
+            pending_patterns=pending,
+        )
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth([], last_report=report),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert out["pending_count"] == 1
+        assert out["pending_patterns"][0]["signature"] == "error:near_miss"
+        assert out["pending_patterns"][0]["occurrences"] == 2
+
+    def test_pending_empty_when_no_last_report(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _FakeSynth([]),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert out["pending_patterns"] == []
+        assert out["pending_count"] == 0
+
+    def test_pending_survives_missing_last_report_attr(self, monkeypatch):
+        """Older synth stubs without last_report must not crash."""
+        class _OldSynth:
+            last_run_at = None
+            persist_path = ""
+            def snapshot(self):
+                return []
+        monkeypatch.setattr(
+            "core.reflection.synthesizer.get_default_synthesizer",
+            lambda: _OldSynth(),
+        )
+        out = DashboardAPIHandler._get_reflection_snapshot(limit=50)
+        assert out["pending_patterns"] == []
 
     # -- Wave 6 #14: learning stats -----------------------------------
 

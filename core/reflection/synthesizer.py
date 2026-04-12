@@ -298,6 +298,10 @@ class ReflectionSynthesizer:
         # learned without scraping the JSONL ledger.
         self._pattern_cache: dict[str, ErrorPattern] = {}
         self._last_run_at: float | None = None
+        # Wave 6 #18: cache the most recent SynthesisReport so
+        # the /api/reflection endpoint can surface pending patterns
+        # from the last run without re-mining.
+        self._last_report: SynthesisReport | None = None
         self._persist_path: Path | None = (
             Path(persist_path) if persist_path is not None else None
         )
@@ -318,6 +322,13 @@ class ReflectionSynthesizer:
     @property
     def persist_path(self) -> Path | None:
         return self._persist_path
+
+    @property
+    def last_report(self) -> SynthesisReport | None:
+        """The most recent :meth:`run` result, or ``None`` before
+        the first run. Used by ``/api/reflection`` to surface
+        pending patterns without re-mining."""
+        return self._last_report
 
     def config(self) -> dict[str, Any]:
         """Return the synthesizer's tuning parameters.
@@ -500,6 +511,7 @@ class ReflectionSynthesizer:
                             pattern.signature, exc,
                         )
             self._last_run_at = time.time()
+            self._last_report = report
         return report
 
     # -- Wave 6 #6: ledger persistence --------------------------------
