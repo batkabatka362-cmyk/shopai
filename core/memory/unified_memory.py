@@ -17,6 +17,7 @@ Data flow:
 """
 from __future__ import annotations
 
+import threading as _threading
 import time
 from typing import Any
 
@@ -809,10 +810,13 @@ class UnifiedMemory:
 
 # Singleton
 _unified: UnifiedMemory | None = None
+_unified_lock = _threading.Lock()
 
 
 def get_unified_memory() -> UnifiedMemory:
     global _unified
     if _unified is None:
-        _unified = UnifiedMemory()
+        with _unified_lock:
+            if _unified is None:
+                _unified = UnifiedMemory()
     return _unified

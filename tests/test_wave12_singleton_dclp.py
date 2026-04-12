@@ -1,6 +1,6 @@
 """Wave 12 tests — DCLP (Double-Checked Locking Pattern) for remaining singletons.
 
-Verifies that 28 additional singleton getters across core/ and engines/
+Verifies that 39 additional singleton getters across core/ and engines/
 now use thread-safe DCLP to prevent duplicate instantiation under
 concurrent access.
 
@@ -374,4 +374,131 @@ class TestTimeseriesDCLP:
     def test_thread_safe_singleton(self):
         from core.data.timeseries import get_timeseries
         objs = _race_getter(get_timeseries)
+        assert all(o is objs[0] for o in objs)
+
+
+# ---------------------------------------------------------------------------
+# Wave 12c — cognitive modules, unified_memory, pre_processor
+# ---------------------------------------------------------------------------
+
+
+class TestConsolidationDCLP:
+    def test_has_lock(self):
+        import core.cognitive.consolidation as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.consolidation import get_consolidation
+        objs = _race_getter(get_consolidation)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestCuriosityDCLP:
+    def test_has_lock(self):
+        import core.cognitive.curiosity as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.curiosity import get_curiosity
+        objs = _race_getter(get_curiosity)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestGoalsDCLP:
+    def test_has_lock(self):
+        import core.cognitive.goals as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.goals import get_goal_manager
+        objs = _race_getter(get_goal_manager)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestImaginationDCLP:
+    def test_has_lock(self):
+        import core.cognitive.imagination as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.imagination import get_imagination
+        objs = _race_getter(get_imagination)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestPlannerDCLP:
+    def test_has_lock(self):
+        import core.cognitive.planner as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.planner import get_planner
+        objs = _race_getter(get_planner)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestReflectionCogDCLP:
+    def test_has_lock(self):
+        import core.cognitive.reflection as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.reflection import get_reflection
+        objs = _race_getter(get_reflection)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestSelfModelDCLP:
+    def test_has_lock(self):
+        import core.cognitive.self_model as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.self_model import get_self_model
+        objs = _race_getter(get_self_model)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestSkillRegistryDCLP:
+    def test_has_lock(self):
+        import core.cognitive.skill_registry as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.skill_registry import get_skill_registry
+        objs = _race_getter(get_skill_registry)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestTheoryOfMindDCLP:
+    def test_has_lock(self):
+        import core.cognitive.theory_of_mind as mod
+        assert hasattr(mod, "_instance_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.cognitive.theory_of_mind import get_theory_of_mind
+        objs = _race_getter(get_theory_of_mind)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestUnifiedMemoryDCLP:
+    def test_has_lock(self):
+        import core.memory.unified_memory as mod
+        assert hasattr(mod, "_unified_lock")
+
+    def test_thread_safe_singleton(self):
+        from core.memory.unified_memory import get_unified_memory
+        objs = _race_getter(get_unified_memory)
+        assert all(o is objs[0] for o in objs)
+
+
+class TestPreProcessorDCLP:
+    def test_has_lock(self):
+        import core.step_logic.pre_processor as mod
+        assert hasattr(mod, "_pricing_intel_lock")
+
+    def test_thread_safe_singleton(self):
+        # _get_pricing() is module-private; test via module attribute
+        import core.step_logic.pre_processor as mod
+        objs = _race_getter(mod._get_pricing)
         assert all(o is objs[0] for o in objs)

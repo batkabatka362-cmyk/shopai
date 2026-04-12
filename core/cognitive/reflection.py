@@ -46,6 +46,7 @@ averages) so they run deterministically.
 from __future__ import annotations
 
 import statistics
+import threading as _threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -823,6 +824,7 @@ class Reflection:
 # ── Singleton accessor (optional — callers may also instantiate directly) ──
 
 _instance: Optional[Reflection] = None
+_instance_lock = _threading.Lock()
 
 
 def get_reflection(
@@ -835,9 +837,11 @@ def get_reflection(
     call; later calls return the same instance regardless of args."""
     global _instance
     if _instance is None:
-        _instance = Reflection(
-            memory=memory,
-            self_model=self_model,
-            goal_manager=goal_manager,
-        )
+        with _instance_lock:
+            if _instance is None:
+                _instance = Reflection(
+                    memory=memory,
+                    self_model=self_model,
+                    goal_manager=goal_manager,
+                )
     return _instance

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -567,10 +568,13 @@ def _clamp01(value: Any, *, default: float = 0.5) -> float:
 
 
 _instance: Optional[Planner] = None
+_instance_lock = _threading.Lock()
 
 
 def get_planner() -> Planner:
     global _instance
     if _instance is None:
-        _instance = Planner()
+        with _instance_lock:
+            if _instance is None:
+                _instance = Planner()
     return _instance

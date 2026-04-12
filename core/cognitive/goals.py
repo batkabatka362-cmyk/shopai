@@ -599,10 +599,13 @@ class GoalManager:
 # ── Singleton accessor ─────────────────────────────────────────
 
 _instance: Optional[GoalManager] = None
+_instance_lock = threading.Lock()
 
 
 def get_goal_manager() -> GoalManager:
     global _instance
     if _instance is None:
-        _instance = GoalManager()
+        with _instance_lock:
+            if _instance is None:
+                _instance = GoalManager()
     return _instance

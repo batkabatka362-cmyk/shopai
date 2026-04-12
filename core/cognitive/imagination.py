@@ -37,6 +37,7 @@ to keep the AI from learning the hard way.
 from __future__ import annotations
 
 import re
+import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -645,10 +646,13 @@ Imagination._get_llm = _imagination_get_llm
 
 
 _instance: Optional[Imagination] = None
+_instance_lock = _threading.Lock()
 
 
 def get_imagination() -> Imagination:
     global _instance
     if _instance is None:
-        _instance = Imagination()
+        with _instance_lock:
+            if _instance is None:
+                _instance = Imagination()
     return _instance

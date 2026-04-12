@@ -513,6 +513,7 @@ class SelfModel:
 # ── Singleton accessor ─────────────────────────────────────────
 
 _instance: Optional[SelfModel] = None
+_instance_lock = threading.Lock()
 
 
 def get_self_model() -> SelfModel:
@@ -523,5 +524,7 @@ def get_self_model() -> SelfModel:
     """
     global _instance
     if _instance is None:
-        _instance = SelfModel()
+        with _instance_lock:
+            if _instance is None:
+                _instance = SelfModel()
     return _instance

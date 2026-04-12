@@ -633,10 +633,13 @@ _DEFAULT_BELIEF_RULES: dict[str, dict[str, str]] = {
 
 
 _instance: Optional[TheoryOfMind] = None
+_instance_lock = threading.Lock()
 
 
 def get_theory_of_mind() -> TheoryOfMind:
     global _instance
     if _instance is None:
-        _instance = TheoryOfMind()
+        with _instance_lock:
+            if _instance is None:
+                _instance = TheoryOfMind()
     return _instance

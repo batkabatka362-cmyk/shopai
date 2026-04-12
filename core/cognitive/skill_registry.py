@@ -422,10 +422,13 @@ def _default_success_predicate(result: dict[str, Any]) -> bool:
 
 
 _instance: Optional[SkillRegistry] = None
+_instance_lock = threading.Lock()
 
 
 def get_skill_registry() -> SkillRegistry:
     global _instance
     if _instance is None:
-        _instance = SkillRegistry()
+        with _instance_lock:
+            if _instance is None:
+                _instance = SkillRegistry()
     return _instance

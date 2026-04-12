@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import math
 import random
+import threading as _threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -467,10 +468,13 @@ class Curiosity:
 
 
 _instance: Optional[Curiosity] = None
+_instance_lock = _threading.Lock()
 
 
 def get_curiosity() -> Curiosity:
     global _instance
     if _instance is None:
-        _instance = Curiosity()
+        with _instance_lock:
+            if _instance is None:
+                _instance = Curiosity()
     return _instance

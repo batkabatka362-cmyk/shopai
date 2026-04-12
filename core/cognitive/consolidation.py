@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+import threading as _threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -446,14 +447,17 @@ class Consolidation:
 
 
 _instance: Optional[Consolidation] = None
+_instance_lock = _threading.Lock()
 
 
 def get_consolidation(memory: Any = None) -> Consolidation:
     """Return the lazy singleton. The first call sets the memory binding."""
     global _instance
     if _instance is None:
-        if memory is None:
-            from core.memory.intelligence import MemoryIntelligence
-            memory = MemoryIntelligence()
-        _instance = Consolidation(memory=memory)
+        with _instance_lock:
+            if _instance is None:
+                if memory is None:
+                    from core.memory.intelligence import MemoryIntelligence
+                    memory = MemoryIntelligence()
+                _instance = Consolidation(memory=memory)
     return _instance

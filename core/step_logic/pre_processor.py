@@ -9,6 +9,7 @@ Uses Intelligence modules to enrich ALL engine data with real algorithms:
 from __future__ import annotations
 
 import copy
+import threading as _threading
 from typing import Any
 
 from utils.logger import get_logger
@@ -18,6 +19,7 @@ logger = get_logger("step_logic.pre")
 
 # Lazy-load intelligence modules
 _pricing_intel = None
+_pricing_intel_lock = _threading.Lock()
 _rec_intel = None
 _email_intel = None
 _seo_intel = None
@@ -26,8 +28,10 @@ _seo_intel = None
 def _get_pricing():
     global _pricing_intel
     if _pricing_intel is None:
-        from core.intelligence.pricing_intelligence import PricingIntelligence
-        _pricing_intel = PricingIntelligence()
+        with _pricing_intel_lock:
+            if _pricing_intel is None:
+                from core.intelligence.pricing_intelligence import PricingIntelligence
+                _pricing_intel = PricingIntelligence()
     return _pricing_intel
 
 
