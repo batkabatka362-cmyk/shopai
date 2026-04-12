@@ -76,7 +76,12 @@ def _run_three(synth: ReflectionSynthesizer, base: str) -> None:
 def test_no_persist_path_stays_memory_only(tmp_path: Path, store):
     synth = ReflectionSynthesizer(policy_store=store)
     _run_three(synth, "db connection refused on shard")
-    assert list(tmp_path.iterdir()) == []  # no ledger file
+    # No ledger file — the policy store may create its own audit
+    # file (Wave 6 #13) but the synthesizer must not persist.
+    ledger_files = [
+        p for p in tmp_path.iterdir() if "ledger" in p.name
+    ]
+    assert ledger_files == []
     assert synth.persist_path is None
 
 

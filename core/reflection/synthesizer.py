@@ -107,12 +107,19 @@ class SynthesisReport:
     counts only those that both crossed the confidence threshold AND
     hadn't been promoted previously. ``rule_ids`` holds the ids of the
     new SOFT rules so callers can surface them in cycle reports.
+
+    Wave 6 #17 adds ``pending_patterns`` — patterns that cleared at
+    least one of the two promotion gates (min_occurrences OR
+    min_confidence) but not both. These are "near miss" patterns
+    that give operators early warning of emerging error trends
+    before they fully qualify.
     """
 
     patterns_total:     int
     patterns_promoted:  int
     patterns:           list[ErrorPattern] = field(default_factory=list)
     rule_ids:           list[str] = field(default_factory=list)
+    pending_patterns:   list[ErrorPattern] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +127,7 @@ class SynthesisReport:
             "patterns_promoted": self.patterns_promoted,
             "patterns":          [p.as_dict() for p in self.patterns],
             "rule_ids":          self.rule_ids,
+            "pending_patterns":  [p.as_dict() for p in self.pending_patterns],
         }
 
 
@@ -436,9 +444,18 @@ class ReflectionSynthesizer:
         )
         with self._lock:
             for pattern in patterns:
-                if pattern.occurrences < self._min_occ:
-                    continue
-                if pattern.confidence < self._min_conf:
+                meets_occ = pattern.occurrences >= self._min_occ
+                meets_conf = pattern.confidence >= self._min_conf
+                if not meets_occ or not meets_conf:
+                    # Wave 6 #17: track near-miss patterns that
+                    # cleared one gate but not both. Already-
+                    # promoted patterns are not pending (they
+                    # graduated).
+                    if (
+                        (meets_occ or meets_conf)
+                        and pattern.signature not in self._promoted
+                    ):
+                        report.pending_patterns.append(pattern)
                     continue
                 if pattern.signature in self._promoted:
                     continue
