@@ -516,10 +516,6 @@ class ReflectionSynthesizer:
 
     # -- Wave 6 #6: ledger persistence --------------------------------
 
-    @property
-    def persist_path(self) -> Path | None:
-        return self._persist_path
-
     def _append_to_ledger(self, pattern: ErrorPattern) -> None:
         """Append one promoted pattern to the JSONL ledger.
 

@@ -594,6 +594,14 @@ class _FakeSynth:
     def snapshot(self) -> list[dict[str, Any]]:
         return list(self._rows)
 
+    def config(self) -> dict[str, Any]:
+        return {
+            "min_occurrences": 3,
+            "min_confidence": 0.75,
+            "smoothing": 1.0,
+            "persist_path": self.persist_path,
+        }
+
 
 class TestReflectionEndpoint:
     def test_empty_synth_returns_empty_list(self, monkeypatch):

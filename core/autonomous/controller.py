@@ -146,6 +146,15 @@ class AutonomousController:
             "off", "shadow", "primary",
         ) else "off"
 
+        # Wave 6 #19d: lock for lazy-init of _reflection_synth and
+        # _error_buffer so concurrent cycle threads don't race on the
+        # check-and-set. The synthesizer and buffer are initialised
+        # on first use (in _run_reflection_hook) — not here — to
+        # avoid eagerly importing the reflection package.
+        self._reflection_init_lock = threading.Lock()
+        self._reflection_synth = None
+        self._error_buffer = None
+
     def initialize(self, store_manager: Any = None) -> dict[str, Any]:
         """Initialize all components."""
         if store_manager:
@@ -1605,20 +1614,27 @@ class AutonomousController:
             get_default_synthesizer,
         )
 
-        if not hasattr(self, "_reflection_synth") or self._reflection_synth is None:
-            # Wave 6 #6: default to the shared persistent synthesizer
-            # so learned SOFT rules survive restart. Tests override
-            # this attribute (or the conftest env var) to stay in
-            # isolated temp directories.
-            try:
-                self._reflection_synth = get_default_synthesizer()
-            except Exception:  # noqa: BLE001
-                self._reflection_synth = ReflectionSynthesizer()
-        if not hasattr(self, "_error_buffer") or self._error_buffer is None:
-            maxlen = getattr(
-                self, "_reflection_buffer_max", self._REFLECTION_BUFFER_MAX,
-            )
-            self._error_buffer = deque(maxlen=maxlen)
+        # Wave 6 #19d: double-checked locking — the fast path
+        # (already initialised) skips the lock entirely. getattr
+        # guards the lock lookup for bare instances created via
+        # __new__ in test harnesses that bypass __init__.
+        if self._reflection_synth is None or self._error_buffer is None:
+            init_lock = getattr(self, "_reflection_init_lock", None)
+            if init_lock is None:
+                init_lock = threading.Lock()
+                self._reflection_init_lock = init_lock
+            with init_lock:
+                if self._reflection_synth is None:
+                    try:
+                        self._reflection_synth = get_default_synthesizer()
+                    except Exception:  # noqa: BLE001
+                        self._reflection_synth = ReflectionSynthesizer()
+                if self._error_buffer is None:
+                    maxlen = getattr(
+                        self, "_reflection_buffer_max",
+                        self._REFLECTION_BUFFER_MAX,
+                    )
+                    self._error_buffer = deque(maxlen=maxlen)
 
         now = time.time()
         new_records = [
@@ -1677,6 +1693,9 @@ class AutonomousController:
             "SHOPAI_REFLECTION_DECAY_MAX_IDLE_SEC",
             self._REFLECTION_DECAY_MAX_IDLE_SEC,
         ))
+        synth = getattr(self, "_reflection_synth", None)
+        if synth is None:
+            return []
         last = getattr(self, "_last_reflection_decay_at", 0.0)
         # last == 0.0 means "never decayed before" — run once on
         # the first tick so operators see the counter move at
@@ -1686,7 +1705,7 @@ class AutonomousController:
         self._last_reflection_decay_at = now
         try:
             return list(
-                self._reflection_synth.decay_stale_rules(
+                synth.decay_stale_rules(
                     max_idle, now=now,
                 )
             )
