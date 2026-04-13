@@ -55,7 +55,7 @@ jobs:
           errors = []
           for n in list_engines():
               try:
-                  importlib.import_module(f'engines.{n}.engine')
+                  importlib.import_module(f'engines.{n}')
               except Exception as e:
                   errors.append(f'{n}: {e}')
           print(f'Engines: {engine_count()}, Import errors: {len(errors)}')
