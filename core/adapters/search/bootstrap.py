@@ -23,8 +23,10 @@ from utils.logger import get_logger
 from ..registry import AdapterRegistry, get_registry
 from .brave import BraveSearchAdapter
 from .ddgs import DDGSAdapter
+from .exa import ExaAdapter
 from .perplexity import PerplexityAdapter
 from .serper import SerperAdapter
+from .similarweb import SimilarWebAdapter
 from .tavily import TavilyAdapter
 
 logger = get_logger("adapters.search.bootstrap")
@@ -35,6 +37,8 @@ _SEARCH_ADAPTER_CLASSES = (
     PerplexityAdapter,
     SerperAdapter,
     TavilyAdapter,
+    ExaAdapter,
+    SimilarWebAdapter,
     DDGSAdapter,
 )
 

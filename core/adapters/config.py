@@ -144,6 +144,15 @@ ENV_ALIASES: dict[str, str] = {
 
     # ── Helpdesk / Customer support ──────
     "intercom":         "INTERCOM_ACCESS_TOKEN",
+
+    # ── Analytics ─────────────────────────
+    "posthog":          "POSTHOG_API_KEY",
+    "posthog_host":     "POSTHOG_HOST",
+    "mixpanel":         "MIXPANEL_TOKEN",
+
+    # ── Intelligence ──────────────────────
+    "exa":              "EXA_API_KEY",
+    "similarweb":       "SIMILARWEB_API_KEY",
 }
 
 

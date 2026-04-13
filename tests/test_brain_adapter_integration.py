@@ -502,7 +502,7 @@ class TestAutonomousControllerAdapter:
         assert hasattr(ac, "_adapter_status")
 
         # All adapter categories bootstrapped
-        assert len(ac._adapter_status) >= 45
+        assert len(ac._adapter_status) >= 49
         names = set(ac._adapter_status.keys())
         # Phase 1 LLM adapters
         assert {
@@ -515,7 +515,7 @@ class TestAutonomousControllerAdapter:
             "shopify_fulfillment", "shopify_metafield",
         } <= names
         # Search adapters
-        assert {"brave_search", "serper", "ddgs", "perplexity", "tavily"} <= names
+        assert {"brave_search", "serper", "ddgs", "perplexity", "tavily", "exa", "similarweb"} <= names
         # Shipping adapters
         assert {"easypost", "shippo"} <= names
         # Email adapters
@@ -532,6 +532,8 @@ class TestAutonomousControllerAdapter:
         assert {"recharge"} <= names
         # Helpdesk
         assert {"intercom"} <= names
+        # Analytics
+        assert {"posthog", "mixpanel"} <= names
         # DDGS is the only one configured by default (no API key)
         assert ac._adapter_status["ddgs"] is True
 

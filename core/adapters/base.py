@@ -166,6 +166,11 @@ class Capability(str, Enum):
     HELPDESK_SEARCH_CONTACTS = "helpdesk_search_contacts"
     HELPDESK_CREATE_TICKET = "helpdesk_create_ticket"
 
+    # ── Analytics ─────────────────────────
+    ANALYTICS_TRACK_EVENT = "analytics_track_event"
+    ANALYTICS_QUERY = "analytics_query"
+    ANALYTICS_IDENTIFY = "analytics_identify"
+
 
 # ── Result envelope ────────────────────────────────────────────
 

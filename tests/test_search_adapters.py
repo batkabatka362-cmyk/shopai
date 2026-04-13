@@ -45,6 +45,7 @@ def _clean(monkeypatch):
     for var in (
         "BRAVE_SEARCH_API_KEY", "SERPER_API_KEY",
         "PERPLEXITY_API_KEY", "TAVILY_API_KEY",
+        "EXA_API_KEY", "SIMILARWEB_API_KEY",
         "GROQ_API_KEY", "GEMINI_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -355,12 +356,13 @@ class TestSerperAdapter:
 
 
 class TestSearchBootstrap:
-    def test_register_all_adds_five_adapters(self):
+    def test_register_all_adds_seven_adapters(self):
         from core.adapters.search.bootstrap import register_all
         status = register_all()
-        assert len(status) == 5
+        assert len(status) == 7
         assert set(status.keys()) == {
-            "brave_search", "perplexity", "serper", "tavily", "ddgs",
+            "brave_search", "perplexity", "serper", "tavily",
+            "exa", "similarweb", "ddgs",
         }
 
     def test_ddgs_always_configured(self):
@@ -373,12 +375,14 @@ class TestSearchBootstrap:
         assert status["serper"] is False
         assert status["perplexity"] is False
         assert status["tavily"] is False
+        assert status["exa"] is False
+        assert status["similarweb"] is False
 
     def test_register_all_idempotent(self):
         from core.adapters.search.bootstrap import register_all
         register_all()
         register_all()  # second call must not raise
-        assert len(get_registry()) == 5
+        assert len(get_registry()) == 7
 
     def test_router_picks_ddgs_when_only_ddgs_configured(self):
         from core.adapters.search.bootstrap import register_all
