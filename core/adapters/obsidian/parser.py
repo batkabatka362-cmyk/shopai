@@ -84,8 +84,9 @@ def parse_note(
                 parsed = yaml.safe_load(fm_match.group(1))
                 if isinstance(parsed, dict):
                     frontmatter = parsed
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # Malformed YAML — treat as no frontmatter.
+                _ = exc
             body = text[fm_match.end():]
 
     # ── Tags ──────────────────────────────────────────────
@@ -119,8 +120,9 @@ def parse_note(
     if vault_root is not None:
         try:
             rel_path = str(path.relative_to(vault_root))
-        except ValueError:
-            pass
+        except ValueError as exc:
+            # Path is not under vault_root — keep absolute.
+            _ = exc
 
     content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
