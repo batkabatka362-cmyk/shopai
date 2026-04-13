@@ -1,47 +1,60 @@
 ---
-title: Adapter Pattern
-tags:
-  - concept
-  - adapter
-  - architecture
+title: "Adapter Pattern"
+tags: [concept, architecture, adapters]
+created: "2026-04-13"
 related:
-  - ShopAI Architecture
-  - Shopify API Basics
-created: 2026-04-13
+  - "[[ShopAI Architecture]]"
 ---
+
 # Adapter Pattern
 
-## Тодорхойлолт
+## Summary
 
-ShopAI-ийн бүх гадаад сервис (LLM, email, SMS, хайлт, төлбөр...)
-нэг стандарт interface-ээр ажилладаг. `BaseAdapter` → `_execute()` →
-`AdapterResult` гэсэн гинж.
+Every external service in ShopAI is wrapped in a thin adapter that follows the `BaseAdapter` interface. The SmartRouter automatically discovers and routes to adapters based on capabilities, priority, and availability.
 
-## Бүтэц
+## How It Works
 
 ```
-BaseAdapter (abstract)
-├── name: str              — "twilio", "obsidian" гэх мэт
-├── category: AdapterCategory — SMS, KNOWLEDGE_BASE, LLM...
-├── capabilities: set      — юу хийж чадах вэ
-├── is_configured() → bool — API key/config байгаа эсэх
-└── _execute(capability, params) → AdapterResult
+Brain decides action -> SmartRouter picks adapter -> Adapter calls external API -> Result flows back
 ```
 
-## 14 Категори
+### BaseAdapter Contract
 
-LLM, Shopify, Search, Email, SMS, Image, Translation, Payment,
-Shipping, Scraper, Reviews, Image CDN, Analytics, **Knowledge Base**
+Every adapter must implement:
+- `name` - Unique identifier (e.g., "klaviyo", "stripe")
+- `category` - AdapterCategory enum (e.g., EMAIL, ADS, VOICE)
+- `capabilities` - Set of Capability enums (what it can do)
+- `is_configured()` - Whether credentials are present
+- `_execute(capability, params)` - The actual work
+- `priority` - Router preference (0-100, higher = preferred)
 
-## SmartRouter
+### SmartRouter Selection
 
-`AdapterRegistry` бүх adapter-уудыг хадгална. `SmartRouter` нь
-capability-аар хайж, `is_configured()` шалгаж, priority/cost-оор
-эрэмбэлж, хамгийн тохиромжтойг сонгоно.
+1. Find all adapters with the requested capability
+2. Filter to only `is_configured() == True`
+3. Sort by priority (descending)
+4. Pick the top one; fallback to next on failure
+5. ActionWeightStore adjusts weights by observed outcomes
 
-## Холбоотой
+### Creating a New Adapter
 
-- [[ShopAI Architecture]] — ерөнхий архитектур
-- [[Shopify API Basics]] — Shopify adapter-ийн API
-- [[Obsidian Integration]] — Knowledge Base категорийн adapter
-- [[Use Obsidian for Memory]] — яагаад Obsidian сонгосон
+Each adapter group follows the same structure:
+```
+core/adapters/<category>/
+    __init__.py      - Package exports
+    _base.py         - CategoryBaseAdapter with shared logic
+    vendor.py        - Concrete adapter (~100-200 lines)
+    bootstrap.py     - register_all() function
+```
+
+## Key Design Decisions
+
+- **Extensible groups** - Each category has a base adapter; adding a new vendor is ~100 lines
+- **No vendor lock-in** - Router can switch between providers automatically
+- **Graceful degradation** - Unconfigured adapters register but are skipped
+- **Cost-aware routing** - `cost_per_call` and `estimate_cost()` for budget management
+
+## Related
+
+- [[ShopAI Architecture]] - System overview
+- [[Shopify API Basics]] - Primary integration target

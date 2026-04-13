@@ -9,45 +9,27 @@
   "colorGroups": [
     {
       "query": "path:Concepts",
-      "color": {
-        "a": 1,
-        "rgb": 4355839
-      }
+      "color": { "a": 1, "rgb": 5570815 }
     },
     {
       "query": "path:Errors",
-      "color": {
-        "a": 1,
-        "rgb": 16724736
-      }
+      "color": { "a": 1, "rgb": 16729156 }
     },
     {
       "query": "path:Wins",
-      "color": {
-        "a": 1,
-        "rgb": 3394560
-      }
+      "color": { "a": 1, "rgb": 65416 }
     },
     {
       "query": "path:Decisions",
-      "color": {
-        "a": 1,
-        "rgb": 10027263
-      }
+      "color": { "a": 1, "rgb": 11141375 }
     },
     {
-      "query": "path:ShopAI",
-      "color": {
-        "a": 1,
-        "rgb": 16753920
-      }
+      "query": "path:ShopAI/Learned",
+      "color": { "a": 1, "rgb": 16753920 }
     },
     {
       "query": "path:Knowledge",
-      "color": {
-        "a": 1,
-        "rgb": 6724044
-      }
+      "color": { "a": 1, "rgb": 52479 }
     }
   ],
   "collapse-display": false,

@@ -44,6 +44,7 @@ def _clean(monkeypatch):
     """Wipe every singleton + env var between tests."""
     for var in (
         "BRAVE_SEARCH_API_KEY", "SERPER_API_KEY",
+        "PERPLEXITY_API_KEY", "TAVILY_API_KEY",
         "GROQ_API_KEY", "GEMINI_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -354,11 +355,13 @@ class TestSerperAdapter:
 
 
 class TestSearchBootstrap:
-    def test_register_all_adds_three_adapters(self):
+    def test_register_all_adds_five_adapters(self):
         from core.adapters.search.bootstrap import register_all
         status = register_all()
-        assert len(status) == 3
-        assert set(status.keys()) == {"brave_search", "serper", "ddgs"}
+        assert len(status) == 5
+        assert set(status.keys()) == {
+            "brave_search", "perplexity", "serper", "tavily", "ddgs",
+        }
 
     def test_ddgs_always_configured(self):
         """DDGS has no API key requirement so it's always
@@ -368,12 +371,14 @@ class TestSearchBootstrap:
         assert status["ddgs"] is True
         assert status["brave_search"] is False
         assert status["serper"] is False
+        assert status["perplexity"] is False
+        assert status["tavily"] is False
 
     def test_register_all_idempotent(self):
         from core.adapters.search.bootstrap import register_all
         register_all()
         register_all()  # second call must not raise
-        assert len(get_registry()) == 3
+        assert len(get_registry()) == 5
 
     def test_router_picks_ddgs_when_only_ddgs_configured(self):
         from core.adapters.search.bootstrap import register_all
@@ -395,11 +400,17 @@ class TestSearchBootstrap:
         from core.adapters.search.bootstrap import register_all
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "k")
         monkeypatch.setenv("SERPER_API_KEY", "k")
+        monkeypatch.setenv("PERPLEXITY_API_KEY", "k")
+        monkeypatch.setenv("TAVILY_API_KEY", "k")
         get_config().reload()
         register_all()
         chain = get_router().candidates(Capability.WEB_SEARCH)
-        # Brave first (90), then Serper (80), then DDGS (50)
-        assert [a.name for a in chain] == ["brave_search", "serper", "ddgs"]
+        names = [a.name for a in chain]
+        # Brave first (90), Perplexity + Serper (80), Tavily (75), DDGS (50)
+        assert names[0] == "brave_search"
+        assert names[-1] == "ddgs"
+        assert "perplexity" in names
+        assert "tavily" in names
 
 
 # ── search_executor.py migration ─────────────────────────────

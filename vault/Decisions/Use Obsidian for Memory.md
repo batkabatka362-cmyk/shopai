@@ -1,46 +1,49 @@
 ---
-title: Use Obsidian for Memory
-tags:
-  - decision
-  - obsidian
-  - memory
-status: active
-date: 2026-04-13
-outcome: success
+title: "Use Obsidian for Memory"
+tags: [decision, memory, obsidian]
+created: "2026-04-13"
+status: "accepted"
+outcome: "successful"
+related:
+  - "[[ShopAI Architecture]]"
+  - "[[Obsidian Integration]]"
+  - "[[Obsidian Integration Complete]]"
 ---
+
 # Use Obsidian for Memory
 
-## Контекст
+## Context
 
-ShopAI-д хүний уншиж, засварлаж, хянаж болох мэдлэгийн сан
-хэрэгтэй байсан. Систем юу сурсан, юун дээр алдсан, юу мэддэг
-болохыг нүдээр харах боломжтой байх ёстой.
+ShopAI needed a knowledge base that operators could visualize and explore. The existing JSON-based memory worked but was invisible - no one could see what ShopAI had learned or how concepts connected.
 
-## Сонголтууд
+## Options Considered
 
-1. **Obsidian** — Локал markdown, graph view, wikilinks, plugin ecosystem
-2. **Notion** — Cloud-based, API хэрэгтэй, rate limit-тэй
-3. **Plain JSON/SQLite** — Хүнд уншигдахуйц биш, visual view байхгүй
+1. **Obsidian (local vault)** - Markdown files with YAML frontmatter, graph view, free, no server needed
+   - Pros: Visual graph, operator-friendly, zero ops, versioned in git
+   - Cons: Not a real database, no concurrent writes
+2. **Notion API** - Cloud-based wiki with API
+   - Pros: Collaborative, rich formatting
+   - Cons: API rate limits, vendor dependency, cost
+3. **Custom database** - Build a knowledge graph from scratch
+   - Pros: Full control
+   - Cons: Violates "don't build new features" principle, massive effort
 
-## Шийдвэр
+## Decision
 
-**Obsidian** сонгосон, учир нь:
-- **Graph view** — бүх холболтыг визуал харуулна
-- **Локал** — API key шаардлагагүй, хурдан, бүрэн хяналттай
-- **Markdown** — git-д хадгалж болно, хүн уншиж болно
-- **Wikilinks** — `[[note]]` ашиглаж мэдлэгийг холбоно
-- **Plugin ecosystem** — Dataview, Templater зэргийг дараа нэмж болно
+**Obsidian** - It follows the core principle: use existing, battle-tested tools. Obsidian's graph view is exactly what we need for visualizing ShopAI's knowledge. Files on disk means zero infrastructure.
 
-## Үр дагавар
+## Consequences
 
-- `core/adapters/obsidian/` package бүтсэн
-- `KNOWLEDGE_BASE` adapter категори нэмэгдсэн
-- Хоёр чиглэлтэй sync: vault ↔ UnifiedMemory
-- Хүн (оператор) ба AI (ShopAI) хоёулаа нэг мэдлэгийн санд ажиллана
+- Operators can open the vault in Obsidian and explore ShopAI's knowledge visually
+- Auto-export from learning loop means the vault grows automatically
+- Templates ensure consistent note structure
+- Graph view shows connections between concepts, errors, wins, and decisions
 
-## Холбоотой
+## Outcome
 
-- [[Obsidian Integration]] — техникийн хэрэгжүүлэлт
-- [[ShopAI Architecture]] — ерөнхий архитектур
-- [[Adapter Pattern]] — adapter бүтэц
-- [[Obsidian Integration Complete]] — амжилтын бичлэг
+Successfully implemented. See [[Obsidian Integration Complete]].
+
+## Related
+
+- [[Obsidian Integration]] - Technical details
+- [[ShopAI Architecture]] - Where it fits

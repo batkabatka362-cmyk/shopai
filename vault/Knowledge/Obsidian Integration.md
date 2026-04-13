@@ -1,51 +1,61 @@
 ---
-title: Obsidian Integration
-tags:
-  - knowledge
-  - obsidian
-  - memory
-source: ShopAI codebase
-created: 2026-04-13
+title: "Obsidian Integration"
+tags: [knowledge, reference, obsidian, memory]
+created: "2026-04-13"
+source: "core/adapters/obsidian/"
+related:
+  - "[[ShopAI Architecture]]"
+  - "[[Use Obsidian for Memory]]"
 ---
+
 # Obsidian Integration
 
-## Гол мэдээлэл
+## Overview
 
-ShopAI нь Obsidian vault-ыг мэдлэгийн сан болгон ашигладаг.
-Хоёр чиглэлтэй:
+ShopAI uses an Obsidian vault as its knowledge base. The graph view creates visual connections between concepts, errors, wins, and learned patterns - giving operators a visual map of everything ShopAI knows.
 
-### Import (Vault → ShopAI)
-- `VaultMemoryBridge.import_vault()` — бүх `.md` файлуудыг уншина
-- QualityEngine-ээр ангилна (KNOWLEDGE / SIGNAL / NOISE)
-- UnifiedMemory-руу хадгална
-- Content hash-аар idempotent — өөрчлөгдөөгүй note-ийг алгасна
+## How It Works
 
-### Export (ShopAI → Vault)
-- `VaultMemoryBridge.export_knowledge()` — сурсан зүйлсийг бичнэ
-- `ShopAI/Learned/` folder-руу markdown болгон бичнэ
-- Frontmatter: source, confidence, tags
-- Controller-ийн reflection hook-оос автоматаар дуудагдана
+### VaultMemoryBridge
+- Reads/writes Markdown notes to the vault directory
+- Parses YAML frontmatter for metadata
+- Supports wikilinks `[[like this]]` for graph connections
 
-### Search
-- `VAULT_SEARCH_NOTES` — бүтэн текстээр хайлт
-- Title match → өндөр оноо, body match → бага оноо
-- Tag, folder-оор шүүх боломжтой
+### Adapter Capabilities
+- `VAULT_READ_NOTES` - Read notes from the vault
+- `VAULT_SEARCH_NOTES` - Full-text search across notes
+- `VAULT_WRITE_NOTE` - Create/update notes
 
-## Тохиргоо
+### Auto-Export
+After each autonomous cycle, the controller's reflection hook exports promoted patterns to `ShopAI/Learned/`. This means the vault grows automatically as ShopAI learns.
 
-```bash
-export OBSIDIAN_VAULT_PATH="./vault"
+## Vault Structure
+
+```
+vault/
+  Concepts/       - Core knowledge and architecture docs
+  Knowledge/      - Reference information and API docs
+  Errors/         - Failure patterns and postmortems
+  Wins/           - Success patterns and what worked
+  Decisions/      - Decision records with rationale
+  ShopAI/Learned/ - Auto-exported learned patterns
+  Templates/      - Note templates for each category
 ```
 
-## Файлууд
+## Configuration
 
-- `core/adapters/obsidian/parser.py` — Markdown задлагч
-- `core/adapters/obsidian/vault.py` — Adapter
-- `core/adapters/obsidian/memory_bridge.py` — Хоёр чиглэлтэй sync
-- `core/adapters/obsidian/bootstrap.py` — Registry бүртгэл
+Set `OBSIDIAN_VAULT_PATH=./vault` in your environment to enable the integration.
 
-## Холбоотой
+## Graph View
 
-- [[ShopAI Architecture]] — бүтэц
-- [[Adapter Pattern]] — adapter pattern
-- [[Use Obsidian for Memory]] — шийдвэрийн бичлэг
+Open the vault in Obsidian to see the graph. Color groups:
+- **Blue** - Concepts
+- **Red** - Errors
+- **Green** - Wins
+- **Purple** - Decisions
+- **Orange** - ShopAI auto-learned patterns
+
+## Related
+
+- [[ShopAI Architecture]] - Where Obsidian fits
+- [[Use Obsidian for Memory]] - Why we chose Obsidian

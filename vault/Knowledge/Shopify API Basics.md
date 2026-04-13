@@ -1,45 +1,61 @@
 ---
-title: Shopify API Basics
-tags:
-  - knowledge
-  - shopify
-  - api
-source: Shopify Developer Docs
-created: 2026-04-13
+title: "Shopify API Basics"
+tags: [knowledge, reference, shopify]
+created: "2026-04-13"
+source: "https://shopify.dev/docs/api"
+related:
+  - "[[ShopAI Architecture]]"
+  - "[[Adapter Pattern]]"
 ---
+
 # Shopify API Basics
 
-## Гол мэдээлэл
+## Overview
 
-### Authentication
-- `SHOPAI_SHOPIFY_URL` — дэлгүүрийн URL (`mystore.myshopify.com`)
-- `SHOPAI_SHOPIFY_KEY` — Admin API access token
-- GraphQL Admin API ашигладаг (REST биш)
+Shopify provides two main APIs that ShopAI uses to manage stores: the Admin REST API and the GraphQL Admin API.
 
-### Rate Limits
-- GraphQL: cost-based throttling (1000 cost point / sec)
-- REST: 40 req / sec (bucket, leaky bucket algorithm)
-- Rate limit-д орвол 429 буцааж, `Retry-After` header-тэй
+## Key Endpoints
 
-### Гол endpoint-ууд
-- Products — `SHOPIFY_FETCH_PRODUCTS`
-- Orders — `SHOPIFY_FETCH_ORDERS`
-- Customers — `SHOPIFY_FETCH_CUSTOMERS`
-- Inventory — `SHOPIFY_UPDATE_INVENTORY`
-- Fulfillment — `SHOPIFY_CREATE_FULFILLMENT`
+### Products
+- `GET /admin/api/2024-01/products.json` - List products
+- `POST /admin/api/2024-01/products.json` - Create product
+- `PUT /admin/api/2024-01/products/{id}.json` - Update product
 
-## Хэрэглээ
+### Orders
+- `GET /admin/api/2024-01/orders.json` - List orders
+- `POST /admin/api/2024-01/orders/{id}/fulfillments.json` - Create fulfillment
 
-[[Adapter Pattern]]-ийн Shopify категорийн adapter-ууд эдгээр
-endpoint-уудыг ашиглана. [[ShopAI Architecture]]-ийн autonomous
-controller дамжуулж дууддаг.
+### Customers
+- `GET /admin/api/2024-01/customers.json` - List customers
+- Customer segmentation via GraphQL
 
-## Лавлагаа
+### Inventory
+- `POST /admin/api/2024-01/inventory_levels/set.json` - Set inventory level
 
-- Shopify Admin API docs
-- GraphQL Storefront API docs
+## Authentication
 
-## Холбоотой
+ShopAI uses a private app access token:
+- `X-Shopify-Access-Token` header
+- Configured via `SHOPAI_SHOPIFY_KEY` env var
 
-- [[Adapter Pattern]] — adapter бүтэц
-- [[ShopAI Architecture]] — системийн бүтэц
+## Rate Limits
+
+- REST API: 2 requests/second per app
+- GraphQL: 1,000 cost points per second
+- ShopAI's adapter handles retry + backoff automatically
+
+## ShopAI Capabilities
+
+| Capability | What it does |
+|-----------|-------------|
+| `shopify_fetch_products` | Read product catalog |
+| `shopify_fetch_orders` | Read order history |
+| `shopify_create_fulfillment` | Ship an order |
+| `shopify_assess_risk` | Check order fraud risk |
+| `shopify_update_inventory` | Adjust stock levels |
+| `shopify_create_discount` | Create discount codes |
+
+## Related
+
+- [[ShopAI Architecture]] - How Shopify fits in
+- [[Adapter Pattern]] - How the Shopify adapter is built

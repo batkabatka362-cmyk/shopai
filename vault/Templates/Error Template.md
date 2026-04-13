@@ -1,33 +1,38 @@
 ---
-title: 
-tags:
-  - error
-severity: medium
-status: resolved
-date: {{date}}
+title: "{{title}}"
+tags: [error, postmortem]
+created: "{{date}}"
+severity: "medium"
+status: "resolved"
+related:
+  - "[[ShopAI Architecture]]"
 ---
+
 # {{title}}
 
-## Юу болсон
+## What Happened
 
-(Алдааны тайлбар)
+Describe the error or failure.
 
-## Шалтгаан
+## Root Cause
 
-(Root cause)
+What caused it? Why did it happen?
 
-## Нөлөөлөл
+## Impact
 
-(Юунд нөлөөлсөн)
+- Affected systems:
+- Duration:
+- User impact:
 
-## Шийдэл
+## Fix Applied
 
-(Яаж зассан)
+What was done to resolve it.
 
-## Сургамж
+## Lessons Learned
 
-(Дахин гаргахгүйн тулд юу хийх вэ)
+- What ShopAI learned from this failure
+- [[Related Concept]] or [[Related Decision]]
 
-## Холбоотой
+## Prevention
 
-- [[]]
+How to prevent this from happening again.

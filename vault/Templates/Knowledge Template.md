@@ -1,24 +1,34 @@
 ---
-title: 
-tags:
-  - knowledge
-source: 
-created: {{date}}
+title: "{{title}}"
+tags: [knowledge, reference]
+created: "{{date}}"
+source: ""
+related:
+  - "[[ShopAI Architecture]]"
 ---
+
 # {{title}}
 
-## Гол мэдээлэл
+## Overview
 
-(Хадгалах мэдээлэл)
+Brief summary of this knowledge area.
 
-## Хэрэглээ
+## Key Points
 
-(ShopAI-д хэрхэн ашиглах)
+- Point 1
+- Point 2
+- Point 3
 
-## Лавлагаа
+## Details
 
-- (холбоос, эх сурвалж)
+Detailed reference information.
 
-## Холбоотой
+## Usage in ShopAI
 
-- [[]]
+How this knowledge applies to ShopAI operations.
+
+## Sources
+
+- External documentation links
+- API references
+- Related code files

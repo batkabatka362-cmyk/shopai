@@ -1,28 +1,33 @@
 ---
-title: 
-tags:
-  - win
-impact: medium
-date: {{date}}
+title: "{{title}}"
+tags: [win, success]
+created: "{{date}}"
+impact: "high"
+related:
+  - "[[ShopAI Architecture]]"
 ---
+
 # {{title}}
 
-## Юу амжилттай болсон
+## What Went Right
 
-(Тайлбар)
+Describe the success.
 
-## Яагаад амжилттай болсон
+## Why It Worked
 
-(Шалтгаан, стратеги)
+What factors led to this positive outcome?
 
-## Үр дүн
+## Metrics
 
-(Тоон үр дүн — conversion, revenue, гэх мэт)
+- Before:
+- After:
+- Improvement:
 
-## Давтах боломж
+## Replication
 
-(Энэ амжилтыг яаж давтах вэ)
+How can this success be replicated in other areas?
 
-## Холбоотой
+## Connected Wins
 
-- [[]]
+- [[Related Win]]
+- [[Related Decision]]

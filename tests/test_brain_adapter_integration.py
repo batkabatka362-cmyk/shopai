@@ -501,8 +501,8 @@ class TestAutonomousControllerAdapter:
         assert ac._adapter_router is not None
         assert hasattr(ac, "_adapter_status")
 
-        # 7 LLM + 4 Shopify + 3 search + 2 shipping + 2 email = 18
-        assert len(ac._adapter_status) == 18
+        # All adapter categories bootstrapped
+        assert len(ac._adapter_status) >= 40
         names = set(ac._adapter_status.keys())
         # Phase 1 LLM adapters
         assert {
@@ -514,12 +514,20 @@ class TestAutonomousControllerAdapter:
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
         } <= names
-        # Phase 3 search adapters
-        assert {"brave_search", "serper", "ddgs"} <= names
+        # Phase 3 search adapters (including Perplexity + Tavily)
+        assert {"brave_search", "serper", "ddgs", "perplexity", "tavily"} <= names
         # Phase 4 shipping adapters
         assert {"easypost", "shippo"} <= names
         # Phase 5 email adapters
-        assert {"brevo", "resend"} <= names
+        assert {"brevo", "resend", "klaviyo", "sendgrid"} <= names
+        # Wave 3 adapters
+        assert {"google_ads", "meta_ads"} <= names
+        assert {"pinecone", "weaviate"} <= names
+        assert {"elevenlabs"} <= names
+        assert {"zapier"} <= names
+        assert {"recharge"} <= names
+        # Helpdesk
+        assert {"intercom"} <= names
         # DDGS is the only one configured by default (no API key)
         assert ac._adapter_status["ddgs"] is True
 

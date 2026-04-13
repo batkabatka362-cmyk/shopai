@@ -1,25 +1,26 @@
 ---
-title: 
-tags:
-  - concept
-related: []
-created: {{date}}
+title: "{{title}}"
+tags: [concept]
+created: "{{date}}"
+related:
+  - "[[ShopAI Architecture]]"
 ---
+
 # {{title}}
 
-## Тодорхойлолт
+## Summary
 
-(Энд ойлголтын тайлбар бичнэ)
+Brief description of the concept.
 
-## Яагаад чухал вэ
+## Details
 
-(ShopAI-д яагаад хамааралтай вэ)
+Explain how it works, why it matters, and how it connects to other parts of the system.
 
-## Холбоотой ойлголтууд
+## Related Concepts
 
-- [[]]
-- [[]]
+- [[ShopAI Architecture]]
+- [[Adapter Pattern]]
 
-## Жишээ
+## References
 
-(Бодит хэрэглээний жишээ)
+- Links to documentation, code files, or external resources.

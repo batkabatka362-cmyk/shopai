@@ -520,6 +520,11 @@ def start(port: int = 3000) -> None:
             reg_obs()
         except Exception:
             pass
+        try:
+            from core.adapters.helpdesk.bootstrap import register_all as reg_helpdesk
+            reg_helpdesk()
+        except Exception:
+            pass
 
         logger.info("Adapter bootstrap complete for dashboard")
     except Exception as exc:

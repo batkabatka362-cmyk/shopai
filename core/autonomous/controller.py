@@ -241,6 +241,7 @@ class AutonomousController:
                 from core.adapters.subscription.bootstrap import register_all as register_subscription
                 from core.adapters.voice.bootstrap import register_all as register_voice
                 from core.adapters.automation.bootstrap import register_all as register_automation
+                from core.adapters.helpdesk.bootstrap import register_all as register_helpdesk
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
@@ -258,6 +259,7 @@ class AutonomousController:
                 subscription_status = register_subscription()
                 voice_status = register_voice()
                 automation_status = register_automation()
+                helpdesk_status = register_helpdesk()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
@@ -267,7 +269,7 @@ class AutonomousController:
                     **vector_status, **scraper_status,
                     **reviews_status, **ads_status,
                     **subscription_status, **voice_status,
-                    **automation_status,
+                    **automation_status, **helpdesk_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(

@@ -1,8 +1,7 @@
 {
   "newFileLocation": "folder",
   "newFileFolderPath": "Templates",
-  "attachmentFolderPath": ".attachments",
+  "attachmentFolderPath": "Attachments",
   "alwaysUpdateLinks": true,
-  "showLineNumber": true,
-  "strictLineBreaks": false
+  "showFrontmatter": true
 }

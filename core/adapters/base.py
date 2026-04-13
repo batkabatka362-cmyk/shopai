@@ -69,6 +69,7 @@ class AdapterCategory(str, Enum):
     VOICE = "voice"                        # Voice / TTS / speech APIs
     AUTOMATION = "automation"              # Workflow automation (Zapier, n8n)
     REVIEWS = "reviews"                    # Product reviews (Judge.me)
+    HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
     OTHER = "other"
 
 
@@ -158,6 +159,12 @@ class Capability(str, Enum):
     # ── Automation ────────────────────────
     AUTOMATION_TRIGGER = "automation_trigger"
     AUTOMATION_LIST_ZAPS = "automation_list_zaps"
+
+    # ── Helpdesk / Customer support ──────
+    HELPDESK_LIST_CONVERSATIONS = "helpdesk_list_conversations"
+    HELPDESK_SEND_REPLY = "helpdesk_send_reply"
+    HELPDESK_SEARCH_CONTACTS = "helpdesk_search_contacts"
+    HELPDESK_CREATE_TICKET = "helpdesk_create_ticket"
 
 
 # ── Result envelope ────────────────────────────────────────────

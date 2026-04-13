@@ -54,6 +54,8 @@ ENV_ALIASES: dict[str, str] = {
     # ── Search ────────────────────────────────
     "serper":        "SERPER_API_KEY",
     "brave_search":  "BRAVE_SEARCH_API_KEY",
+    "perplexity":    "PERPLEXITY_API_KEY",
+    "tavily":        "TAVILY_API_KEY",
 
     # ── Email / SMS ───────────────────────────
     "resend":        "RESEND_API_KEY",
@@ -135,6 +137,9 @@ ENV_ALIASES: dict[str, str] = {
 
     # ── Automation ────────────────────────
     "zapier_nla":       "ZAPIER_NLA_API_KEY",
+
+    # ── Helpdesk / Customer support ──────
+    "intercom":         "INTERCOM_ACCESS_TOKEN",
 }
 
 

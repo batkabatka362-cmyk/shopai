@@ -1,30 +1,40 @@
 ---
-title: 
-tags:
-  - decision
-status: active
-date: {{date}}
-outcome: pending
+title: "{{title}}"
+tags: [decision]
+created: "{{date}}"
+status: "accepted"
+outcome: "pending"
+related:
+  - "[[ShopAI Architecture]]"
 ---
+
 # {{title}}
 
-## Контекст
+## Context
 
-(Яагаад энэ шийдвэрийг гаргах шаардлагатай болсон)
+What situation required a decision?
 
-## Сонголтууд
+## Options Considered
 
-1. **Сонголт A** — (тайлбар)
-2. **Сонголт B** — (тайлбар)
+1. **Option A** - description, pros, cons
+2. **Option B** - description, pros, cons
+3. **Option C** - description, pros, cons
 
-## Шийдвэр
+## Decision
 
-(Юуг сонгосон, яагаад)
+Which option was chosen and why.
 
-## Үр дагавар
+## Consequences
 
-(Юу өөрчлөгдсөн)
+- Expected positive outcomes
+- Expected risks or tradeoffs
+- Monitoring plan
 
-## Холбоотой
+## Outcome
 
-- [[]]
+_To be filled after implementation._
+
+## Related
+
+- [[Related Concept]]
+- [[Related Error]] (if decision was prompted by a failure)

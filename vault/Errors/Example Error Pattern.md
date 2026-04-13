@@ -1,40 +1,48 @@
 ---
-title: Example Error Pattern
-tags:
-  - error
-  - example
-severity: low
-status: resolved
-date: 2026-04-13
+title: "Example Error Pattern"
+tags: [error, postmortem, example]
+created: "2026-04-13"
+severity: "medium"
+status: "resolved"
+related:
+  - "[[Adapter Pattern]]"
+  - "[[ShopAI Architecture]]"
 ---
-# Example Error Pattern
 
-## Юу болсон
+# Registry .all() Method Missing
 
-Энэ бол жишээ error note. Бодит алдаа гарах бүрт ийм
-форматаар бичнэ.
+## What Happened
 
-## Шалтгаан
+The dashboard API handler called `reg.all()` to iterate adapters, but `AdapterRegistry` has no `all()` method. All 6 dashboard endpoints returned empty data.
 
-- `requirements.txt`-д `requests` library дутуу байсан
-- CI дээр adapter тестүүд 182 fail болсон
-- Локал дээр ажилладаг байсан (requests суусан байсан)
+## Root Cause
 
-## Нөлөөлөл
+Assumed the registry had an `all()` method from standard dict-like interfaces. The actual API uses `names()` + `get(name)` pattern for iteration.
 
-- PR #18 дээр CI улаан болсон
-- [[Adapter Pattern]]-ийн бүх SMS, email, shipping тестүүд fail
+## Impact
 
-## Шийдэл
+- Affected systems: Dashboard (all 5 tabs showed empty)
+- Duration: Caught during development
+- User impact: None (pre-release)
 
-`requests>=2.28` нэмж `requirements.txt`-д оруулсан.
+## Fix Applied
 
-## Сургамж
+Created `_iter_adapters()` static method:
+```python
+for name in reg.names():
+    adapter = reg.get(name)
+    if adapter is not None:
+        yield adapter
+```
+Replaced all 6 occurrences of `reg.all()`.
 
-- CI environment нь локал-аас өөр — бүх dependency explicit байх ёстой
-- `_REQUESTS_AVAILABLE` guard нь сайн pattern, гэхдээ dep бүртгэх хэрэгтэй
+## Lessons Learned
 
-## Холбоотой
+- Always check the actual API before assuming standard methods exist
+- The [[Adapter Pattern]] registry uses `names()` + `get()`, not `all()`
+- Write a helper once, use everywhere
 
-- [[Adapter Pattern]] — adapter бүтэц
-- [[ShopAI Architecture]] — системийн ерөнхий бүтэц
+## Prevention
+
+- Read source code before using internal APIs
+- Integration tests for dashboard endpoints

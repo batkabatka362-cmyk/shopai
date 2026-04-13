@@ -21,5 +21,7 @@ Importing this package alone does NOT register anything — call
 ``bootstrap.register_all()`` so test isolation stays clean.
 """
 from ._base import SearchBaseAdapter, SearchHit
+from .perplexity import PerplexityAdapter
+from .tavily import TavilyAdapter
 
-__all__ = ["SearchBaseAdapter", "SearchHit"]
+__all__ = ["SearchBaseAdapter", "SearchHit", "PerplexityAdapter", "TavilyAdapter"]
