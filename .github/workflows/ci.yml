@@ -49,15 +49,22 @@ jobs:
           pytest tests/ --tb=long -v 2>&1 | tee /tmp/pytest-output.txt
 
       - name: Post failure details as PR comment
-        if: failure() && steps.pytest.outcome == 'failure' && github.event_name == 'pull_request'
+        if: failure() && steps.pytest.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BODY="## CI Test Failures (py${{ matrix.python-version }})"$'\n'
-          BODY+='```'$'\n'
-          BODY+="$(tail -100 /tmp/pytest-output.txt)"$'\n'
-          BODY+='```'
-          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
+          # Find the PR number for current branch (works for both push and PR events)
+          PR_NUM="${{ github.event.pull_request.number }}"
+          if [ -z "$PR_NUM" ]; then
+            PR_NUM=$(gh pr list --head "${{ github.ref_name }}" --json number -q '.[0].number' 2>/dev/null || true)
+          fi
+          if [ -n "$PR_NUM" ]; then
+            BODY="## CI Test Failures (py${{ matrix.python-version }})"$'\n'
+            BODY+='```'$'\n'
+            BODY+="$(tail -100 /tmp/pytest-output.txt)"$'\n'
+            BODY+='```'
+            gh pr comment "$PR_NUM" --body "$BODY"
+          fi
 
       - name: Summarize failures
         if: failure() && steps.pytest.outcome == 'failure'
