@@ -13,6 +13,10 @@ from urllib.parse import urlparse, parse_qs
 
 from utils.logger import get_logger
 from core.orchestrator import MainOrchestrator
+from api.validation import (
+    validate_store_id, validate_safe_name, validate_batch_items,
+    validate_params, validate_webhook_topic,
+)
 
 logger = get_logger("api.server")
 
@@ -39,7 +43,10 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
-            engine_name = path.split("/")[-1]
+            engine_name, err = validate_safe_name(path.split("/")[-1], "engine")
+            if err:
+                self._json_response(400, {"error": err})
+                return
             self._engine_info(engine_name)
             return
 
@@ -162,22 +169,29 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(503, {"error": "Orchestrator not initialized"})
             return
 
-        task_type = body.get("task_type", body.get("engine"))
-        params = body.get("params", body.get("data", {}))
+        task_type, err = validate_safe_name(
+            body.get("task_type", body.get("engine")), "task_type")
+        if err:
+            self._json_response(400, {"error": err})
+            return
 
-        if not task_type:
-            self._json_response(400, {"error": "Missing task_type"})
+        params, err = validate_params(body.get("params", body.get("data", {})))
+        if err:
+            self._json_response(400, {"error": err})
             return
 
         result = self.orchestrator.submit_task(task_type, params)
         self._json_response(200, result)
 
     def _run_chain(self, body: dict) -> None:
-        chain_name = body.get("chain")
-        data = body.get("data", {})
+        chain_name, err = validate_safe_name(body.get("chain"), "chain")
+        if err:
+            self._json_response(400, {"error": err})
+            return
 
-        if not chain_name:
-            self._json_response(400, {"error": "Missing chain name"})
+        data, err = validate_params(body.get("data", {}))
+        if err:
+            self._json_response(400, {"error": err})
             return
 
         from core.chaining import ChainRegistry
@@ -189,16 +203,24 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": str(exc)})
 
     def _batch_process(self, body: dict) -> None:
-        engine = body.get("engine")
-        items = body.get("items", [])
+        engine, err = validate_safe_name(body.get("engine"), "engine")
+        if err:
+            self._json_response(400, {"error": err})
+            return
 
-        if not engine or not items:
-            self._json_response(400, {"error": "Missing engine or items"})
+        items, err = validate_batch_items(body.get("items", []))
+        if err:
+            self._json_response(400, {"error": err})
+            return
+
+        shared_params, err = validate_params(body.get("shared_params"))
+        if err:
+            self._json_response(400, {"error": err})
             return
 
         from core.performance import BatchProcessor
         bp = BatchProcessor()
-        result = bp.process(engine, items, body.get("shared_params"))
+        result = bp.process(engine, items, shared_params)
         self._json_response(200, result)
 
     def _analyze_engine(self, body: dict) -> None:
@@ -215,13 +237,13 @@ class ShopAIHandler(BaseHTTPRequestHandler):
 
     def _handle_webhook(self, body: dict) -> None:
         """Handle Shopify webhook event — triggers engines + records experience."""
-        topic = self.headers.get("X-Shopify-Topic", body.get("topic", ""))
+        topic, err = validate_webhook_topic(
+            self.headers.get("X-Shopify-Topic", body.get("topic", "")))
+        if err:
+            self._json_response(400, {"error": err})
+            return
         shop = self.headers.get("X-Shopify-Shop-Domain", body.get("shop", ""))
         hmac_val = self.headers.get("X-Shopify-Hmac-SHA256", "")
-
-        if not topic:
-            self._json_response(400, {"error": "Missing webhook topic"})
-            return
 
         from core.webhooks import ShopifyWebhookHandler
         handler = ShopifyWebhookHandler()
@@ -260,22 +282,28 @@ class ShopAIHandler(BaseHTTPRequestHandler):
 
     def _auto_cycle(self, body: dict) -> None:
         """Run one autonomous AI cycle."""
-        store_id = body.get("store_id", "")
+        store_id, err = validate_store_id(body.get("store_id", ""))
+        if err:
+            self._json_response(400, {"error": err})
+            return
         try:
             from data_pipeline.store.store_manager import StoreManager
             from core.autonomous.controller import AutonomousController
             sm = StoreManager()
-            controller = AutonomousController(sm, auto_approve=body.get("auto_approve", False))
+            controller = AutonomousController(sm, auto_approve=bool(body.get("auto_approve", False)))
             controller.initialize()
             result = controller.run_cycle(store_id)
             self._json_response(200, result)
         except Exception as exc:
-            logger.warning("cycle run failed for %s: %s", body.get("store_id"), exc)
+            logger.warning("cycle run failed for %s: %s", store_id, exc)
             self._json_response(500, {"error": str(exc)})
 
     def _store_sync(self, body: dict) -> None:
         """Sync store data from Shopify."""
-        store_id = body.get("store_id", "")
+        store_id, err = validate_store_id(body.get("store_id", ""))
+        if err:
+            self._json_response(400, {"error": err})
+            return
         try:
             from data_pipeline.store.store_manager import StoreManager
             from data_pipeline.store.sync_service import SyncService
@@ -284,7 +312,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             result = sync.sync_store(store_id)
             self._json_response(200, result)
         except Exception as exc:
-            logger.warning("store sync failed for %s: %s", body.get("store_id"), exc)
+            logger.warning("store sync failed for %s: %s", store_id, exc)
             self._json_response(500, {"error": str(exc)})
 
     def _agent_run(self, body: dict) -> None:
@@ -292,12 +320,22 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         if not self.orchestrator:
             self._json_response(503, {"error": "Orchestrator not initialized"})
             return
-        agent = body.get("agent", "")
-        task = body.get("task", "")
-        data = body.get("data", {})
-        if not agent or not task:
-            self._json_response(400, {"error": "Missing agent or task"})
+
+        agent, err = validate_safe_name(body.get("agent", ""), "agent")
+        if err:
+            self._json_response(400, {"error": err})
             return
+
+        task, err = validate_safe_name(body.get("task", ""), "task")
+        if err:
+            self._json_response(400, {"error": err})
+            return
+
+        data, err = validate_params(body.get("data", {}))
+        if err:
+            self._json_response(400, {"error": err})
+            return
+
         result = self.orchestrator.agent_run(agent, task, data)
         self._json_response(200, result)
 
@@ -306,11 +344,17 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         if not self.orchestrator:
             self._json_response(503, {"error": "Orchestrator not initialized"})
             return
-        workflow = body.get("workflow", "")
-        data = body.get("data", {})
-        if not workflow:
-            self._json_response(400, {"error": "Missing workflow name"})
+
+        workflow, err = validate_safe_name(body.get("workflow", ""), "workflow")
+        if err:
+            self._json_response(400, {"error": err})
             return
+
+        data, err = validate_params(body.get("data", {}))
+        if err:
+            self._json_response(400, {"error": err})
+            return
+
         result = self.orchestrator.run_workflow(workflow, data)
         self._json_response(200, result)
 

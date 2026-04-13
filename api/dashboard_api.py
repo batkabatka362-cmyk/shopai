@@ -22,6 +22,7 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 from utils.logger import get_logger
+from api.validation import validate_shop_url, validate_string, validate_webhook_topic
 logger = get_logger("api.dashboard")
 
 
@@ -104,15 +105,28 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             # POST /api/stores — register new store
             try:
                 payload = json.loads(body) if body else {}
+                shop_url, err = validate_shop_url(payload.get("url", ""))
+                if err:
+                    self._json_response({"error": err}, 400)
+                    return
+                token, err = validate_string(
+                    payload.get("token", ""), "token", required=True, max_len=256)
+                if err:
+                    self._json_response({"error": err}, 400)
+                    return
+                name, _ = validate_string(
+                    payload.get("name", ""), "name", required=False, max_len=128)
+                niche, _ = validate_string(
+                    payload.get("niche", ""), "niche", required=False, max_len=64)
+
                 from core.system.store_registry import get_store_registry
                 reg = get_store_registry()
                 result = reg.register(
-                    shop_url=payload.get("url", ""),
-                    token=payload.get("token", ""),
-                    name=payload.get("name", ""),
-                    niche=payload.get("niche", ""),
+                    shop_url=shop_url, token=token, name=name, niche=niche,
                 )
                 self._json_response(result)
+            except json.JSONDecodeError:
+                self._json_response({"error": "Invalid JSON body"}, 400)
             except Exception as exc:
                 logger.warning("store registration failed: %s", exc)
                 self._json_response({"error": str(exc)[:100]}, 500)
