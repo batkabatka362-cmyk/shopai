@@ -194,10 +194,10 @@ class AutonomousController:
             self._agent_dispatcher = AgentDispatcher()
             self._agent_dispatcher.initialize()
 
-            # ── Adapter layer (LLM + Shopify + Search + Shipping + Email + Payment + Image + Obsidian) ──
+            # ── Adapter layer ──
             #
             # Wire the brain to the universal adapter ecosystem.
-            # Eight bootstrap calls register every available
+            # Nine bootstrap calls register every available
             # adapter into the process-wide ``AdapterRegistry``:
             #
             #   * LLM (Groq, Gemini, DeepSeek, Mistral, Ollama,
@@ -210,6 +210,7 @@ class AutonomousController:
             #   * Payment (PayPal, Stripe)
             #   * Image (DALL-E 3)
             #   * Knowledge base (Obsidian)
+            #   * Browser (Playwright)
             #
             # Adapters whose credentials are unset still register;
             # the smart router skips them via ``is_configured()``.
@@ -227,6 +228,7 @@ class AutonomousController:
                 from core.adapters.payment.bootstrap import register_all as register_payment
                 from core.adapters.image.bootstrap import register_all as register_image
                 from core.adapters.obsidian.bootstrap import register_all as register_obsidian
+                from core.adapters.browser.bootstrap import register_all as register_browser
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
@@ -235,11 +237,13 @@ class AutonomousController:
                 payment_status = register_payment()
                 image_status = register_image()
                 obsidian_status = register_obsidian()
+                browser_status = register_browser()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
                     **email_status, **payment_status,
                     **image_status, **obsidian_status,
+                    **browser_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(

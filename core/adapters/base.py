@@ -63,6 +63,7 @@ class AdapterCategory(str, Enum):
     PAYMENT = "payment"                    # Payment processors
     LOGISTICS = "logistics"                # Shipping carrier APIs
     KNOWLEDGE_BASE = "knowledge_base"      # Obsidian / Notion / local vaults
+    BROWSER = "browser"                    # Browser automation (Playwright)
     OTHER = "other"
 
 
@@ -125,6 +126,10 @@ class Capability(str, Enum):
     PAYMENT_REFUND = "payment_refund"
     PAYMENT_CAPTURE = "payment_capture"
     PAYMENT_LIST_DISPUTES = "payment_list_disputes"
+
+    # ── Browser automation ────────────────
+    BROWSER_SCREENSHOT = "browser_screenshot"
+    BROWSER_EXTRACT = "browser_extract"
 
     # ── Knowledge base ────────────────────
     VAULT_READ_NOTES = "vault_read_notes"
