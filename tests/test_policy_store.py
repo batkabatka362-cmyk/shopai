@@ -206,7 +206,7 @@ def test_medium_modify_patches_action(store: PolicyStore):
     action = {
         "action_type": "launch_ad",
         "platform":    "facebook",
-        "budget":      500.0,
+        "budget":      200.0,       # ≤200 avoids POL-002 high-budget time restriction
     }
     decision = store.evaluate_tiered(action, {})
 
