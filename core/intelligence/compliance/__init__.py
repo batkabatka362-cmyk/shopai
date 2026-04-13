@@ -10,6 +10,13 @@ from .product_compliance import check_product
 from .advertising_rules import check_advertising
 from .privacy_compliance import check_privacy
 
+__all__ = [
+    "LegalCompliance",
+    "check_product",
+    "check_advertising",
+    "check_privacy",
+]
+
 
 class LegalCompliance:
     """Real-time compliance checking — flow orchestrator."""
