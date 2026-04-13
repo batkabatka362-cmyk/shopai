@@ -376,6 +376,122 @@ class TestLogCycleToVault:
 
 
 # =====================================================================
+# 2b. AutonomousController._log_decision_to_vault
+# =====================================================================
+
+
+class TestLogDecisionToVault:
+    """Tests for Decision note export alongside Win/Error notes."""
+
+    @pytest.fixture()
+    def vault(self, tmp_path: Path) -> Path:
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        return vault
+
+    @pytest.fixture()
+    def controller(self):
+        from core.autonomous.controller import AutonomousController
+        return AutonomousController.__new__(AutonomousController)
+
+    def test_writes_decision_note_when_action_proposed(
+        self, vault, controller, monkeypatch,
+    ):
+        """Cycle with brain top_action writes a Decision note."""
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        cycle_result = _make_cycle_result(proposed=2)
+        cycle_result["phases"]["brain"] = {
+            "top_action": "update_price",
+            "health_score": 0.87,
+            "confidence": 0.9,
+        }
+        controller._log_cycle_to_vault(cycle_result, {})
+
+        decisions_dir = vault / "Decisions"
+        assert decisions_dir.exists()
+        notes = list(decisions_dir.glob("*.md"))
+        assert len(notes) == 1
+
+        note = parse_note(notes[0], vault)
+        assert "decision" in note["tags"]
+        assert note["frontmatter"]["action"] == "update_price"
+        assert note["frontmatter"]["status"] == "proposed"
+        assert "update_price" in note["body"]
+        assert "[[ShopAI Architecture]]" in note["body"]
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_no_decision_note_when_no_action(
+        self, vault, controller, monkeypatch,
+    ):
+        """Cycle with no top_action does not write a Decision note."""
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        cycle_result = _make_cycle_result(proposed=0)
+        controller._log_cycle_to_vault(cycle_result, {})
+
+        decisions_dir = vault / "Decisions"
+        if decisions_dir.exists():
+            assert list(decisions_dir.glob("*.md")) == []
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_decision_note_is_deduplicated_same_day(
+        self, vault, controller, monkeypatch,
+    ):
+        """Two cycles with the same action on the same day produce one note."""
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        cycle_result = _make_cycle_result(proposed=2)
+        cycle_result["phases"]["brain"] = {"top_action": "update_price"}
+
+        controller._log_cycle_to_vault(cycle_result, {})
+        # Second run with the same action
+        cycle_result2 = _make_cycle_result(
+            cycle_id="cycle_1_9999", proposed=2,
+        )
+        cycle_result2["phases"]["brain"] = {"top_action": "update_price"}
+        controller._log_cycle_to_vault(cycle_result2, {})
+
+        notes = list((vault / "Decisions").glob("*.md"))
+        assert len(notes) == 1
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_decision_note_falls_back_to_brain_decisions(
+        self, vault, controller, monkeypatch,
+    ):
+        """Without top_action, first _brain_decisions entry is used."""
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        cycle_result = _make_cycle_result(proposed=1)
+        cycle_result["_brain_decisions"] = [
+            {"action": "restock_item"},
+        ]
+        controller._log_cycle_to_vault(cycle_result, {})
+
+        notes = list((vault / "Decisions").glob("*.md"))
+        assert len(notes) == 1
+        note = parse_note(notes[0], vault)
+        assert note["frontmatter"]["action"] == "restock_item"
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+
+# =====================================================================
 # 3. retrieve() includes vault_knowledge key
 # =====================================================================
 

@@ -1638,6 +1638,22 @@ class AutonomousController:
         except Exception as exc:  # noqa: BLE001
             logger.debug("Vault cycle logging skipped: %s", exc)
 
+        # Adapter-powered side effects: analytics events, CRM
+        # upserts, helpdesk alerts, automation webhooks. Each hook
+        # is a no-op when the relevant adapter isn't configured,
+        # so operators opt in by just setting the API key. The
+        # whole bundle is wrapped so a hook failure can never
+        # break the cycle loop.
+        try:
+            from core.autonomous.adapter_hooks import run_post_cycle_hooks
+            hook_summary = run_post_cycle_hooks(
+                self._adapter_router, cycle_result, data, phase_errors,
+            )
+            if hook_summary.get("enabled"):
+                cycle_result["phases"]["adapter_hooks"] = hook_summary
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("adapter hooks skipped: %s", exc)
+
         # Wave 2 #5: post-tick reflection hook. Mines the cycle's
         # error ledger for recurring patterns and, when confidence
         # is high enough, promotes them to SOFT rules on the
@@ -1924,6 +1940,88 @@ class AutonomousController:
 
         write_note(vault, title, body, frontmatter=frontmatter, folder=folder)
         logger.info("Vault: logged %s to %s/", title, folder)
+
+        # Additional Decisions/ note when the cycle actually
+        # proposed or executed actions. The brain picks an action
+        # each tick; the operator benefits from seeing those
+        # decisions chained together in the graph view, separate
+        # from the Win/Error outcome split.
+        self._log_decision_to_vault(vault, cycle_result)
+
+    def _log_decision_to_vault(
+        self,
+        vault: Any,
+        cycle_result: dict[str, Any],
+    ) -> None:
+        """Write a markdown note to ``Decisions/`` for the cycle's
+        top decision, if one exists. Best-effort.
+
+        Creating a separate note per cycle would overwhelm the
+        vault, so we only write when the brain committed to an
+        action (``top_action`` or non-empty proposed list) AND
+        skip if a note with the same title already exists today
+        (idempotency across repeated cycles with identical state).
+        """
+        try:
+            from core.adapters.obsidian.parser import write_note
+            phases = cycle_result.get("phases", {}) or {}
+            brain = phases.get("brain", {}) or {}
+            decisions_phase = phases.get("decisions", {}) or {}
+            top_action = brain.get("top_action", "") or ""
+            if not top_action:
+                brain_decisions = cycle_result.get("_brain_decisions") or []
+                if brain_decisions and isinstance(brain_decisions[0], dict):
+                    top_action = brain_decisions[0].get("action", "") or ""
+            proposed = decisions_phase.get("proposed", 0)
+            if not top_action or proposed == 0:
+                return
+
+            cycle_id = cycle_result.get("cycle_id", "unknown")
+            store_id = cycle_result.get("store_id", "")
+            date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+            # Deduplicate same-action same-day so we don't write
+            # a Decision note for every tick that re-picks the
+            # identical action.
+            from pathlib import Path
+            target_file = (
+                Path(vault) / "Decisions"
+                / f"{date_str} - {top_action}.md"
+            )
+            if target_file.exists():
+                return
+
+            title = f"{date_str} - {top_action}"
+            body = (
+                f"# {title}\n\n"
+                f"## Шийдвэр\n\n"
+                f"Brain сонгосон үйлдэл: **{top_action}**\n\n"
+                f"## Контекст\n\n"
+                f"- Store: `{store_id}`\n"
+                f"- Cycle: `{cycle_id}`\n"
+                f"- Actions proposed: {proposed}\n"
+                f"- Health score: {brain.get('health_score', 'n/a')}\n"
+                f"- Confidence: {brain.get('confidence', 'n/a')}\n\n"
+                f"## Холбоотой\n\n"
+                f"- [[ShopAI Architecture]]\n"
+                f"- [[Cycle Win {cycle_id}]]\n"
+            )
+            frontmatter = {
+                "title": title,
+                "tags": ["decision", "auto", top_action.replace(" ", "_")],
+                "date": date_str,
+                "cycle_id": cycle_id,
+                "store_id": store_id,
+                "action": top_action,
+                "status": "proposed",
+            }
+            write_note(
+                vault, title, body,
+                frontmatter=frontmatter, folder="Decisions",
+            )
+            logger.info("Vault: logged decision %s to Decisions/", title)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Vault decision logging skipped: %s", exc)
 
     # ── Wave 7c (GAP-4): standalone error ingestion ────────────
 
