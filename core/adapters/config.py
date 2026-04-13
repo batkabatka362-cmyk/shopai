@@ -106,6 +106,12 @@ ENV_ALIASES: dict[str, str] = {
 
     # ── Knowledge base (Obsidian) ────────
     "obsidian_vault_path": "OBSIDIAN_VAULT_PATH",
+
+    # ── Vector databases ─────────────────
+    # Weaviate: self-hosted (Docker) or Weaviate Cloud. The URL
+    # points to the REST endpoint; gRPC port is inferred.
+    "weaviate_url":     "WEAVIATE_URL",
+    "weaviate_api_key": "WEAVIATE_API_KEY",
 }
 
 

@@ -406,15 +406,16 @@ class TestHuggingFaceAdapter:
 
 
 class TestBootstrap:
-    def test_register_all_adds_seven_adapters(self):
+    def test_register_all_adds_all_adapters(self):
         from core.adapters.llm.bootstrap import register_all
         status = register_all()
-        # 7 LLM adapters
-        assert len(status) == 7
+        # 9 LLM adapters (original 7 + openai + anthropic)
+        assert len(status) == 9
         names = set(status.keys())
         assert names == {
             "groq", "gemini", "deepseek", "mistral",
             "ollama_local", "openrouter", "huggingface",
+            "openai", "anthropic",
         }
 
     def test_register_all_idempotent(self):
@@ -422,7 +423,7 @@ class TestBootstrap:
         register_all()
         # Second call must NOT raise (replace=True)
         register_all()
-        assert len(get_registry()) == 7
+        assert len(get_registry()) == 9
 
     def test_unconfigured_adapters_still_register(self):
         """All 7 register even with no env vars; the router just

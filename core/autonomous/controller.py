@@ -229,6 +229,7 @@ class AutonomousController:
                 from core.adapters.image.bootstrap import register_all as register_image
                 from core.adapters.obsidian.bootstrap import register_all as register_obsidian
                 from core.adapters.browser.bootstrap import register_all as register_browser
+                from core.adapters.vector.bootstrap import register_all as register_vector
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
@@ -238,19 +239,20 @@ class AutonomousController:
                 image_status = register_image()
                 obsidian_status = register_obsidian()
                 browser_status = register_browser()
+                vector_status = register_vector()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
                     **email_status, **payment_status,
                     **image_status, **obsidian_status,
-                    **browser_status,
+                    **browser_status, **vector_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(
                     "Adapter layer initialised: %d adapters registered, "
                     "%d configured (%d LLM, %d Shopify native, %d search, "
                     "%d shipping, %d email, %d payment, %d image, "
-                    "%d knowledge base)",
+                    "%d knowledge base, %d browser, %d vector DB)",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
                     len(llm_status),
@@ -261,6 +263,8 @@ class AutonomousController:
                     len(payment_status),
                     len(image_status),
                     len(obsidian_status),
+                    len(browser_status),
+                    len(vector_status),
                 )
             except Exception as adapter_exc:  # noqa: BLE001
                 logger.warning(

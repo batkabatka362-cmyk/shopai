@@ -64,6 +64,7 @@ class AdapterCategory(str, Enum):
     LOGISTICS = "logistics"                # Shipping carrier APIs
     KNOWLEDGE_BASE = "knowledge_base"      # Obsidian / Notion / local vaults
     BROWSER = "browser"                    # Browser automation (Playwright)
+    VECTOR_DB = "vector_db"                # Vector databases (Weaviate, Pinecone)
     OTHER = "other"
 
 
@@ -130,6 +131,11 @@ class Capability(str, Enum):
     # ── Browser automation ────────────────
     BROWSER_SCREENSHOT = "browser_screenshot"
     BROWSER_EXTRACT = "browser_extract"
+
+    # ── Vector database ──────────────────
+    VECTOR_STORE = "vector_store"
+    VECTOR_SEARCH = "vector_search"
+    VECTOR_DELETE = "vector_delete"
 
     # ── Knowledge base ────────────────────
     VAULT_READ_NOTES = "vault_read_notes"

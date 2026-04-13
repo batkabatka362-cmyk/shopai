@@ -20,12 +20,14 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .anthropic import AnthropicAdapter
 from .deepseek import DeepSeekAdapter
 from .gemini import GeminiAdapter
 from .groq import GroqAdapter
 from .huggingface import HuggingFaceAdapter
 from .mistral import MistralAdapter
 from .ollama import OllamaAdapter
+from .openai import OpenAIAdapter
 from .openrouter import OpenRouterAdapter
 
 logger = get_logger("adapters.llm.bootstrap")
@@ -34,6 +36,8 @@ logger = get_logger("adapters.llm.bootstrap")
 _LLM_ADAPTER_CLASSES = (
     GroqAdapter,
     GeminiAdapter,
+    AnthropicAdapter,
+    OpenAIAdapter,
     DeepSeekAdapter,
     MistralAdapter,
     OllamaAdapter,
