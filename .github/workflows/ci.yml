@@ -43,7 +43,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           SHOPAI_LOG_LEVEL: WARNING
           SHOPAI_SKIP_CONFIG_CHECK: "1"
-        run: pytest tests/ -q --tb=short
+        run: pytest tests/ --tb=short
 
       - name: Engine import check
         env:
