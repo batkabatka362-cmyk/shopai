@@ -39,11 +39,32 @@ jobs:
           pip install pytest pytest-cov
 
       - name: Run pytest (full suite)
+        id: pytest
         env:
           PYTHONPATH: ${{ github.workspace }}
           SHOPAI_LOG_LEVEL: WARNING
           SHOPAI_SKIP_CONFIG_CHECK: "1"
-        run: pytest tests/ --tb=short
+        run: |
+          pytest tests/ --tb=short 2>&1 | tee /tmp/pytest-output.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Post failure details
+        if: failure() && steps.pytest.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Extract only FAILED lines and summary
+          FAILURES=$(grep -E "FAILED|ERRORS|ERROR|assert|Error" /tmp/pytest-output.txt | tail -30 || true)
+          SUMMARY=$(tail -5 /tmp/pytest-output.txt || true)
+          BODY="### CI Test Failure (py${{ matrix.python-version }})
+          \`\`\`
+          ${FAILURES}
+
+          ${SUMMARY}
+          \`\`\`"
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            gh pr comment ${{ github.event.pull_request.number }} --body "$BODY" || true
+          fi
 
       - name: Engine import check
         env:
