@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShopAI Neural Command</title>
+<link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+
+<!-- ── Sidebar ──────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-icon">
+      <svg viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="14" stroke="var(--accent)" stroke-width="2" opacity="0.3"/>
+        <circle cx="16" cy="16" r="8" stroke="var(--accent)" stroke-width="2"/>
+        <circle cx="16" cy="16" r="3" fill="var(--accent)"/>
+        <line x1="16" y1="2" x2="16" y2="8" stroke="var(--accent)" stroke-width="1.5" opacity="0.5"/>
+        <line x1="16" y1="24" x2="16" y2="30" stroke="var(--accent)" stroke-width="1.5" opacity="0.5"/>
+        <line x1="2" y1="16" x2="8" y2="16" stroke="var(--accent)" stroke-width="1.5" opacity="0.5"/>
+        <line x1="24" y1="16" x2="30" y2="16" stroke="var(--accent)" stroke-width="1.5" opacity="0.5"/>
+      </svg>
+    </div>
+    <div class="logo-text">
+      <span class="logo-title">ShopAI</span>
+      <span class="logo-sub">Neural Command</span>
+    </div>
+  </div>
+
+  <nav class="nav">
+    <a class="nav-item active" data-tab="command" title="Command Center">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+        <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+      </svg>
+      <span>Command Center</span>
+    </a>
+    <a class="nav-item" data-tab="neural" title="Neural Map">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="12" cy="5" r="2.5"/>
+        <circle cx="5" cy="19" r="2.5"/>
+        <circle cx="19" cy="19" r="2.5"/>
+        <circle cx="12" cy="13" r="2"/>
+        <line x1="12" y1="7.5" x2="12" y2="11"/>
+        <line x1="10.2" y1="14.3" x2="6.8" y2="17"/>
+        <line x1="13.8" y1="14.3" x2="17.2" y2="17"/>
+      </svg>
+      <span>Neural Map</span>
+    </a>
+    <a class="nav-item" data-tab="analytics" title="Analytics">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M3 20h18"/>
+        <path d="M6 16V10"/>
+        <path d="M10 16V6"/>
+        <path d="M14 16V12"/>
+        <path d="M18 16V8"/>
+      </svg>
+      <span>Analytics</span>
+    </a>
+    <a class="nav-item" data-tab="assistant" title="AI Assistant">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 2a7 7 0 0 1 7 7v3a7 7 0 0 1-14 0V9a7 7 0 0 1 7-7z"/>
+        <circle cx="9" cy="10" r="1" fill="currentColor"/>
+        <circle cx="15" cy="10" r="1" fill="currentColor"/>
+        <path d="M9 14c1.5 1.5 4.5 1.5 6 0"/>
+        <path d="M8 22h8"/>
+        <path d="M12 18v4"/>
+      </svg>
+      <span>AI Assistant</span>
+    </a>
+    <a class="nav-item" data-tab="stream" title="Synaptic Stream">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M4 4h16"/>
+        <path d="M4 8h12"/>
+        <path d="M4 12h16"/>
+        <path d="M4 16h10"/>
+        <path d="M4 20h14"/>
+      </svg>
+      <span>Synaptic Stream</span>
+    </a>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="pulse-dot"></div>
+    <span class="system-status" id="sidebar-status">Initializing...</span>
+  </div>
+</aside>
+
+<!-- ── Main content ─────────────────────────────────── -->
+<main class="main">
+  <header class="topbar">
+    <h1 class="page-title" id="page-title">Command Center</h1>
+    <div class="topbar-right">
+      <div class="live-badge">
+        <div class="live-dot"></div>
+        <span>LIVE</span>
+      </div>
+      <span class="clock" id="clock"></span>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <!-- Tab 1: Command Center -->
+    <section id="tab-command" class="tab-panel active">
+      <div class="metrics-row" id="overview-metrics"></div>
+      <div class="grid-2">
+        <div class="panel" id="adapter-grid">
+          <div class="panel-header">
+            <h2>Adapter Status</h2>
+            <span class="badge" id="adapter-count">0</span>
+          </div>
+          <div class="panel-body" id="adapter-list"></div>
+        </div>
+        <div class="panel" id="health-panel">
+          <div class="panel-header">
+            <h2>System Health</h2>
+          </div>
+          <div class="panel-body" id="health-checks"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: Neural Map -->
+    <section id="tab-neural" class="tab-panel">
+      <div class="canvas-container">
+        <canvas id="neural-canvas"></canvas>
+        <div class="graph-legend" id="graph-legend"></div>
+        <div class="graph-info" id="graph-info">
+          <span>Click a node for details</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: Analytics -->
+    <section id="tab-analytics" class="tab-panel">
+      <div class="metrics-row" id="analytics-metrics"></div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header"><h2>Adapters by Category</h2></div>
+          <div class="panel-body chart-container">
+            <canvas id="chart-categories"></canvas>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>LLM Providers</h2></div>
+          <div class="panel-body chart-container">
+            <canvas id="chart-llm"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header"><h2>Capability Coverage</h2></div>
+          <div class="panel-body" id="capability-map"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>Cost Analysis</h2></div>
+          <div class="panel-body chart-container">
+            <canvas id="chart-cost"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 4: AI Assistant -->
+    <section id="tab-assistant" class="tab-panel">
+      <div class="chat-container">
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-msg bot">
+            <div class="chat-avatar">AI</div>
+            <div class="chat-bubble">
+              <p>Hello! I'm your <strong>ShopAI Assistant</strong>.</p>
+              <p>Ask me about adapter status, system health, store analytics, or give me commands to execute.</p>
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="chat-input" placeholder="Ask ShopAI anything..." autocomplete="off">
+          <button id="chat-send" class="btn-accent">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+              <path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 5: Synaptic Stream -->
+    <section id="tab-stream" class="tab-panel">
+      <div class="stream-controls">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="adapter_status">Adapters</button>
+        <button class="filter-btn" data-filter="decision">Decisions</button>
+        <button class="filter-btn" data-filter="error">Errors</button>
+        <button class="filter-btn" data-filter="info">Info</button>
+        <div class="stream-spacer"></div>
+        <div class="stream-stats">
+          <span id="stream-count">0</span> events
+        </div>
+      </div>
+      <div class="stream-feed" id="stream-feed"></div>
+    </section>
+
+  </div>
+</main>
+
+<script src="/js/main.js"></script>
+<script src="/js/overview.js"></script>
+<script src="/js/neural.js"></script>
+<script src="/js/analytics.js"></script>
+<script src="/js/assistant.js"></script>
+<script src="/js/stream.js"></script>
+</body>
+</html>
