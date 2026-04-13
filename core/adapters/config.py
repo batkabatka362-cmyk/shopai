@@ -94,6 +94,10 @@ ENV_ALIASES: dict[str, str] = {
     "paypal_client_id":     "PAYPAL_CLIENT_ID",
     "paypal_client_secret": "PAYPAL_CLIENT_SECRET",
     "paypal_env":           "PAYPAL_ENV",
+    # Stripe uses a single secret key. Live vs test is encoded in
+    # the key prefix (sk_live_ vs sk_test_) — no separate env var.
+    "stripe_secret_key":    "STRIPE_SECRET_KEY",
+    "stripe_api_version":   "STRIPE_API_VERSION",
 
     # ── Shopify (already handled by core/auth/shopify_auth) ──
     "shopify_url":   "SHOPAI_SHOPIFY_URL",

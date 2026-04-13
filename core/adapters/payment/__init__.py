@@ -26,8 +26,10 @@ new ``StripeAdapter(PaymentBaseAdapter)`` plus an entry in
 """
 from ._base import PaymentBaseAdapter
 from .paypal import PayPalAdapter
+from .stripe import StripeAdapter
 
 __all__ = [
     "PaymentBaseAdapter",
     "PayPalAdapter",
+    "StripeAdapter",
 ]

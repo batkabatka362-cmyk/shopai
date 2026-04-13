@@ -23,12 +23,14 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .paypal import PayPalAdapter
+from .stripe import StripeAdapter
 
 logger = get_logger("adapters.payment.bootstrap")
 
 
 _PAYMENT_ADAPTER_CLASSES = (
     PayPalAdapter,
+    StripeAdapter,
 )
 
 
