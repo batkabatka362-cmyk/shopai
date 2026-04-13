@@ -46,16 +46,15 @@ jobs:
           SHOPAI_SKIP_CONFIG_CHECK: "1"
         run: |
           set -o pipefail
-          pytest tests/ --tb=short 2>&1 | tee /tmp/pytest-output.txt
+          pytest tests/ --tb=long -v 2>&1 | tee /tmp/pytest-output.txt
 
       - name: Summarize failures
         if: failure() && steps.pytest.outcome == 'failure'
         run: |
           echo "## Test Failures (py${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -E "FAILED|AssertionError|assert " /tmp/pytest-output.txt | tail -30 >> $GITHUB_STEP_SUMMARY || true
-          echo "" >> $GITHUB_STEP_SUMMARY
-          tail -5 /tmp/pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
+          # Show last 80 lines which includes traceback + summary
+          tail -80 /tmp/pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Engine import check
