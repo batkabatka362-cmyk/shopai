@@ -141,9 +141,25 @@ ENV_ALIASES: dict[str, str] = {
 
     # ── Automation ────────────────────────
     "zapier_nla":       "ZAPIER_NLA_API_KEY",
+    # n8n: workflow automation; self-hosted or cloud. Base URL
+    # points to the instance (e.g. https://n8n.example.com), API
+    # key uses the X-N8N-API-KEY header.
+    "n8n_url":          "N8N_BASE_URL",
+    "n8n_api_key":      "N8N_API_KEY",
 
     # ── Helpdesk / Customer support ──────
     "intercom":         "INTERCOM_ACCESS_TOKEN",
+    # Zendesk uses HTTP Basic auth: "{email}/token:{api_token}".
+    # Subdomain identifies the tenant (e.g. "acme" →
+    # https://acme.zendesk.com).
+    "zendesk_subdomain": "ZENDESK_SUBDOMAIN",
+    "zendesk_email":     "ZENDESK_EMAIL",
+    "zendesk_api_token": "ZENDESK_API_TOKEN",
+    # Crisp uses HTTP Basic auth with identifier + key, plus a
+    # tier tag (default "plugin"). Website ID scopes every call.
+    "crisp_identifier":  "CRISP_IDENTIFIER",
+    "crisp_key":         "CRISP_KEY",
+    "crisp_website_id":  "CRISP_WEBSITE_ID",
 
     # ── Analytics ─────────────────────────
     "posthog":          "POSTHOG_API_KEY",
@@ -153,6 +169,10 @@ ENV_ALIASES: dict[str, str] = {
     # ── Intelligence ──────────────────────
     "exa":              "EXA_API_KEY",
     "similarweb":       "SIMILARWEB_API_KEY",
+
+    # ── CRM ──────────────────────────────
+    # HubSpot uses a single private app access token (Bearer).
+    "hubspot":          "HUBSPOT_ACCESS_TOKEN",
 }
 
 

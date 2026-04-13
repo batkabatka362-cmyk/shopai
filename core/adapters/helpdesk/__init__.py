@@ -1,6 +1,8 @@
 """Helpdesk / customer support adapters.
 
   * ``intercom`` — Intercom Conversations + Contacts API
+  * ``zendesk``  — Zendesk Ticketing v2 API
+  * ``crisp``    — Crisp Chat v1 API
 
 Bootstrap::
 

@@ -70,6 +70,7 @@ class AdapterCategory(str, Enum):
     AUTOMATION = "automation"              # Workflow automation (Zapier, n8n)
     REVIEWS = "reviews"                    # Product reviews (Judge.me)
     HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
+    CRM = "crm"                            # Customer relationship management (HubSpot)
     OTHER = "other"
 
 
@@ -170,6 +171,12 @@ class Capability(str, Enum):
     ANALYTICS_TRACK_EVENT = "analytics_track_event"
     ANALYTICS_QUERY = "analytics_query"
     ANALYTICS_IDENTIFY = "analytics_identify"
+
+    # ── CRM ──────────────────────────────
+    CRM_SEARCH_CONTACTS = "crm_search_contacts"
+    CRM_UPSERT_CONTACT = "crm_upsert_contact"
+    CRM_LIST_DEALS = "crm_list_deals"
+    CRM_CREATE_DEAL = "crm_create_deal"
 
 
 # ── Result envelope ────────────────────────────────────────────

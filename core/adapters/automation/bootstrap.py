@@ -4,6 +4,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .n8n import N8NAdapter
 from .zapier import ZapierAdapter
 
 logger = get_logger("adapters.automation.bootstrap")
@@ -11,6 +12,7 @@ logger = get_logger("adapters.automation.bootstrap")
 
 _AUTOMATION_ADAPTER_CLASSES = (
     ZapierAdapter,
+    N8NAdapter,
 )
 
 

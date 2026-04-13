@@ -530,6 +530,11 @@ def start(port: int = 3000) -> None:
             reg_analytics()
         except Exception:
             pass
+        try:
+            from core.adapters.crm.bootstrap import register_all as reg_crm
+            reg_crm()
+        except Exception:
+            pass
 
         logger.info("Adapter bootstrap complete for dashboard")
     except Exception as exc:
