@@ -252,6 +252,7 @@ class TestStartupValidation:
 
     def test_warnings_do_not_block(self, monkeypatch, capsys):
         # Warning-only: URL without credentials
+        monkeypatch.delenv("SHOPAI_SKIP_CONFIG_CHECK", raising=False)
         monkeypatch.setenv("SHOPAI_SHOPIFY_URL", "test.myshopify.com")
         monkeypatch.delenv("SHOPAI_SHOPIFY_KEY", raising=False)
         monkeypatch.delenv("SHOPAI_SHOPIFY_CLIENT_ID", raising=False)
