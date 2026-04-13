@@ -1717,6 +1717,40 @@ class AutonomousController:
                 len(retired), cycle_result.get("cycle_id"),
             )
 
+        # Obsidian vault auto-export: persist promoted patterns and
+        # learned knowledge as markdown notes in the vault. Only runs
+        # when OBSIDIAN_VAULT_PATH is configured. Best-effort — a
+        # missing adapter or write failure never breaks the cycle.
+        self._maybe_export_to_vault(report)
+
+    # ── Obsidian vault auto-export ──────────────────────────────
+
+    def _maybe_export_to_vault(self, report: Any) -> None:
+        """Export learned knowledge to Obsidian vault if configured.
+
+        Called at the end of ``_run_reflection_hook``. Best-effort:
+        a missing adapter, unconfigured vault path, or write failure
+        is silently logged — never breaks the cycle.
+        """
+        if not getattr(report, "patterns_promoted", 0):
+            return
+        try:
+            from core.adapters.config import get_config
+            vault_path = get_config().get("obsidian_vault_path")
+            if not vault_path:
+                return
+            from core.adapters.obsidian.memory_bridge import VaultMemoryBridge
+            from core.memory.unified_memory import get_unified_memory
+            bridge = VaultMemoryBridge(vault_path)
+            result = bridge.export_knowledge(get_unified_memory(), limit=10)
+            if result.get("exported", 0):
+                logger.info(
+                    "Vault auto-export: %d notes written",
+                    result["exported"],
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Vault auto-export skipped: %s", exc)
+
     # ── Wave 7c (GAP-4): standalone error ingestion ────────────
 
     def record_failure(

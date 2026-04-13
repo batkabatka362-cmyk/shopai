@@ -21,3 +21,12 @@ engines/global_brain/.vector_store.json
 engines/meta_governance/.audit/
 .coverage
 htmlcov/
+
+# Obsidian vault — track templates and seed notes, ignore user content
+vault/.obsidian/workspace.json
+vault/.obsidian/workspace-mobile.json
+vault/.obsidian/plugins/
+vault/.obsidian/themes/
+vault/.obsidian/hotkeys.json
+vault/ShopAI/Learned/
+vault/.shopai_import_state.json
