@@ -5,9 +5,45 @@ Manages: cycle intervals, store rotation, health monitoring.
 from __future__ import annotations
 import threading
 import time
+from collections import deque
 from typing import Any
 from utils.logger import get_logger
 logger = get_logger("scheduler")
+
+_RECENT_SUMMARIES_MAX = 20
+
+
+def _compact_summary(result: dict) -> dict:
+    """Condense a full ``cycle_result`` into a dashboard-friendly row.
+
+    We deliberately drop the heavy sub-payloads (decisions list, raw
+    data, brain internals) so the dashboard's ``/api/cycle`` endpoint
+    can serialise a 20-cycle history quickly and keep the wire size
+    under a few kilobytes.
+    """
+    phases = result.get("phases", {}) or {}
+    brain = phases.get("brain", {}) or {}
+    data = phases.get("data", {}) or {}
+    analysis = phases.get("analysis", {}) or {}
+    decisions = phases.get("decisions", {}) or {}
+    return {
+        "cycle_id": result.get("cycle_id", ""),
+        "store_id": result.get("store_id", ""),
+        "timestamp": result.get("timestamp", time.time()),
+        "duration_s": result.get("duration_s", 0.0),
+        "status": result.get("status", ""),
+        "phase_error_count": result.get("phase_error_count", 0),
+        "phase_errors": dict(result.get("phase_errors", {}) or {}),
+        "products": data.get("products", 0),
+        "orders": data.get("orders", 0),
+        "customers": data.get("customers", 0),
+        "insights": analysis.get("insights", 0),
+        "actions_proposed": decisions.get("proposed", 0),
+        "top_action": brain.get("top_action", ""),
+        "health_score": brain.get("health_score"),
+        "adapter_hooks": phases.get("adapter_hooks", {}),
+        "reflection": result.get("reflection", {}),
+    }
 
 
 class AutoScheduler:
@@ -19,6 +55,10 @@ class AutoScheduler:
         self._interval = 600  # 10 minutes default
         self._cycles_run = 0
         self._last_result: dict = {}
+        # Compact per-cycle summaries, bounded buffer. Feeds the
+        # dashboard's Cycle tab so operators can scroll through
+        # recent history without reloading full cycle payloads.
+        self._recent_summaries: deque = deque(maxlen=_RECENT_SUMMARIES_MAX)
         self._stores: list[str] = []
         self._on_cycle_complete = None
 
@@ -60,6 +100,7 @@ class AutoScheduler:
                 try:
                     result = self._run_cycle(store_id)
                     self._last_result = result
+                    self._recent_summaries.append(_compact_summary(result))
                     self._cycles_run += 1
                     if self._on_cycle_complete:
                         self._on_cycle_complete(result)
@@ -96,6 +137,7 @@ class AutoScheduler:
         """Run a single cycle immediately."""
         result = self._run_cycle(store_id)
         self._last_result = result
+        self._recent_summaries.append(_compact_summary(result))
         self._cycles_run += 1
         return result
 
@@ -107,6 +149,32 @@ class AutoScheduler:
             "stores": self._stores,
             "last_duration": self._last_result.get("duration_s", 0),
         }
+
+    def get_last_summary(self) -> dict | None:
+        """Compact summary of the most recent cycle, or None."""
+        if not self._last_result:
+            return None
+        return _compact_summary(self._last_result)
+
+    def get_recent_summaries(self, limit: int = 20) -> list[dict]:
+        """Bounded list of compact summaries, most recent last."""
+        if limit <= 0:
+            return []
+        items = list(self._recent_summaries)
+        return items[-limit:]
+
+    def record_cycle_result(self, result: dict) -> None:
+        """External hook so callers invoking ``AutonomousController``
+        directly (bypassing the scheduler loop) can still feed the
+        dashboard's cycle buffer.
+
+        Kept tolerant of a non-dict input so a bad caller can never
+        corrupt the ring.
+        """
+        if not isinstance(result, dict):
+            return
+        self._last_result = result
+        self._recent_summaries.append(_compact_summary(result))
 
 
 _instance = None

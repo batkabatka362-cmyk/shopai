@@ -39,6 +39,8 @@ const App = {
       analytics: 'Analytics',
       assistant: 'AI Assistant',
       stream: 'Synaptic Stream',
+      cycle: 'Cycles',
+      vault: 'Vault',
     };
     document.getElementById('page-title').textContent = titles[tab] || tab;
 
@@ -46,6 +48,8 @@ const App = {
     if (tab === 'neural') NeuralMap.init();
     if (tab === 'analytics') Analytics.refresh();
     if (tab === 'stream') Stream.refresh();
+    if (tab === 'cycle' && window.Cycle) Cycle.refresh();
+    if (tab === 'vault' && window.Vault) Vault.refresh();
   },
 
   async refresh() {

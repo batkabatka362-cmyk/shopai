@@ -71,6 +71,28 @@
       </svg>
       <span>AI Assistant</span>
     </a>
+    <a class="nav-item" data-tab="cycle" title="Cycles">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 2v4"/>
+        <path d="M12 18v4"/>
+        <path d="M4.93 4.93l2.83 2.83"/>
+        <path d="M16.24 16.24l2.83 2.83"/>
+        <path d="M2 12h4"/>
+        <path d="M18 12h4"/>
+        <path d="M4.93 19.07l2.83-2.83"/>
+        <path d="M16.24 7.76l2.83-2.83"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+      <span>Cycles</span>
+    </a>
+    <a class="nav-item" data-tab="vault" title="Vault">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M4 4h13l3 3v13H4z"/>
+        <path d="M4 10h16"/>
+        <circle cx="12" cy="15" r="2"/>
+      </svg>
+      <span>Vault</span>
+    </a>
     <a class="nav-item" data-tab="stream" title="Synaptic Stream">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M4 4h16"/>
@@ -189,6 +211,54 @@
       </div>
     </section>
 
+    <!-- Tab: Cycles -->
+    <section id="tab-cycle" class="tab-panel">
+      <div class="metrics-row" id="cycle-metrics"></div>
+      <div class="panel" id="cycle-latest-panel">
+        <div class="panel-header">
+          <h2>Latest Cycle</h2>
+          <span class="badge" id="cycle-latest-badge">—</span>
+        </div>
+        <div class="panel-body" id="cycle-latest"></div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header"><h2>Adapter Hooks</h2></div>
+          <div class="panel-body" id="cycle-hooks"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>Recent Cycles</h2></div>
+          <div class="panel-body" id="cycle-history"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: Vault -->
+    <section id="tab-vault" class="tab-panel">
+      <div class="metrics-row" id="vault-metrics"></div>
+      <div class="panel" id="vault-banner-panel">
+        <div class="panel-body" id="vault-banner"></div>
+      </div>
+      <div class="grid-3">
+        <div class="panel vault-col">
+          <div class="panel-header"><h2>Recent Wins</h2></div>
+          <div class="panel-body" id="vault-wins"></div>
+        </div>
+        <div class="panel vault-col">
+          <div class="panel-header"><h2>Recent Errors</h2></div>
+          <div class="panel-body" id="vault-errors"></div>
+        </div>
+        <div class="panel vault-col">
+          <div class="panel-header"><h2>Recent Decisions</h2></div>
+          <div class="panel-body" id="vault-decisions"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h2>Auto-Exported Patterns</h2></div>
+        <div class="panel-body" id="vault-learned"></div>
+      </div>
+    </section>
+
     <!-- Tab 5: Synaptic Stream -->
     <section id="tab-stream" class="tab-panel">
       <div class="stream-controls">
@@ -214,5 +284,7 @@
 <script src="/js/analytics.js"></script>
 <script src="/js/assistant.js"></script>
 <script src="/js/stream.js"></script>
+<script src="/js/cycle.js"></script>
+<script src="/js/vault.js"></script>
 </body>
 </html>

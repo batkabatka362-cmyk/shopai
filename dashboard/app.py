@@ -98,6 +98,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/analytics": self._api_analytics,
             "/api/stream": self._api_stream,
             "/api/health": self._api_health,
+            "/api/cycle": self._api_cycle,
+            "/api/vault": self._api_vault,
         }
         handler = routes.get(path.rstrip("/"))
         if handler:
@@ -132,6 +134,38 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             self._json(200, HealthChecker().check_all())
         except Exception:
             self._json(200, {"status": "unknown", "checks": {}})
+
+    def _api_cycle(self) -> None:
+        """Latest + recent cycle summaries from the AutoScheduler."""
+        try:
+            from core.system.auto_scheduler import get_scheduler
+            sched = get_scheduler()
+            latest = sched.get_last_summary()
+            recent = sched.get_recent_summaries(limit=20)
+            status = sched.get_status()
+            self._json(200, {
+                "has_data": latest is not None,
+                "latest": latest,
+                "recent": recent,
+                "scheduler": {
+                    "running": status.get("running", False),
+                    "cycles_run": status.get("cycles_run", 0),
+                    "interval": status.get("interval", 0),
+                    "stores": status.get("stores", []),
+                },
+            })
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {
+                "has_data": False,
+                "latest": None,
+                "recent": [],
+                "scheduler": {},
+                "error": str(exc)[:120],
+            })
+
+    def _api_vault(self) -> None:
+        """Vault summary: folder counts + recent wins/errors/decisions."""
+        self._json(200, _collect_vault_summary())
 
     def _handle_chat(self, body: dict) -> None:
         message = body.get("message", "")
@@ -367,6 +401,10 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             return self._chat_adapter_status()
         if "health" in msg_lower:
             return self._chat_health()
+        if "cycle" in msg_lower or "сүүлийн" in msg_lower or "суулийн" in msg_lower:
+            return self._chat_cycle()
+        if "vault" in msg_lower or "ноут" in msg_lower or "тэмдэглэл" in msg_lower:
+            return self._chat_vault()
         if "help" in msg_lower:
             return self._chat_help()
 
@@ -423,11 +461,82 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         except Exception:
             return "Unable to check system health."
 
+    def _chat_cycle(self) -> str:
+        try:
+            from core.system.auto_scheduler import get_scheduler
+            sched = get_scheduler()
+            latest = sched.get_last_summary()
+            status = sched.get_status()
+            if not latest:
+                return (
+                    "**No cycle has run yet.**\n\n"
+                    "Start the scheduler or run `get_scheduler().run_once(\"your-store\")`."
+                )
+            hooks = latest.get("adapter_hooks", {}) or {}
+            fired = [k for k in ("analytics", "crm", "helpdesk", "automation")
+                     if self._hook_fired(hooks.get(k))]
+            lines = [
+                f"**Latest cycle — {latest.get('cycle_id', '?')}**\n",
+                f"- Store: {latest.get('store_id', '?')}",
+                f"- Duration: {latest.get('duration_s', 0):.2f}s",
+                f"- Phase errors: {latest.get('phase_error_count', 0)}",
+                f"- Actions proposed: {latest.get('actions_proposed', 0)}",
+                f"- Top action: {latest.get('top_action') or '—'}",
+                f"- Hooks fired: {', '.join(fired) if fired else 'none'}",
+                f"\nScheduler: {status.get('cycles_run', 0)} cycle(s) run, "
+                f"{'running' if status.get('running') else 'idle'}.",
+            ]
+            return "\n".join(lines)
+        except Exception as exc:  # noqa: BLE001
+            return f"Unable to read cycle state: {exc}"
+
+    @staticmethod
+    def _hook_fired(h: dict | None) -> bool:
+        if not h:
+            return False
+        ev = (h.get("cycle_event") or {}) if isinstance(h, dict) else {}
+        return bool(
+            (ev and ev.get("ok"))
+            or h.get("synced", 0)
+            or h.get("created")
+            or h.get("triggered")
+        )
+
+    def _chat_vault(self) -> str:
+        try:
+            data = _collect_vault_summary()
+            if not data.get("configured"):
+                return (
+                    "**Vault not configured.**\n\n"
+                    "Set `OBSIDIAN_VAULT_PATH=./vault` in your environment."
+                )
+            totals = data.get("totals", {}) or {}
+            lines = [
+                f"**Vault at `{data.get('path', '?')}`**\n",
+                f"- Total notes: {totals.get('total', 0)}",
+                f"- Concepts: {totals.get('Concepts', 0)}",
+                f"- Knowledge: {totals.get('Knowledge', 0)}",
+                f"- Wins: {totals.get('Wins', 0)}",
+                f"- Errors: {totals.get('Errors', 0)}",
+                f"- Decisions: {totals.get('Decisions', 0)}",
+                f"- Learned patterns: {totals.get('ShopAI/Learned', 0)}",
+            ]
+            recent = data.get("recent_learned", [])[:3]
+            if recent:
+                lines.append("\n**Recent learned:**")
+                for r in recent:
+                    lines.append(f"- {r.get('title', '?')}")
+            return "\n".join(lines)
+        except Exception as exc:  # noqa: BLE001
+            return f"Unable to read vault: {exc}"
+
     def _chat_help(self) -> str:
         return (
             "**ShopAI Assistant Commands:**\n\n"
             "- **adapter status** — show all adapter connections\n"
             "- **health** — system health check\n"
+            "- **cycle** — latest autonomous cycle summary\n"
+            "- **vault** — Obsidian vault summary\n"
             "- **help** — this help message\n\n"
             "You can also ask natural language questions about your store, "
             "and I'll answer using the connected LLM."
@@ -454,6 +563,101 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         pass  # Suppress default request logging
+
+
+# ── Vault summary helper ─────────────────────────────────────────
+#
+# Module-level (not a handler method) so tests can import and
+# exercise it directly without spinning an HTTP server.
+
+
+_VAULT_FOLDERS_OF_INTEREST = (
+    "Concepts", "Knowledge", "Wins", "Errors",
+    "Decisions", "Templates", "ShopAI/Learned",
+)
+
+
+def _collect_vault_summary() -> dict[str, Any]:
+    """Inspect the configured Obsidian vault and return a compact
+    summary suitable for the dashboard Vault tab.
+
+    Returns ``{"configured": False}`` when ``OBSIDIAN_VAULT_PATH`` is
+    unset or the directory is missing. Always safe to call — any
+    internal error falls back to an empty-but-well-formed response.
+    """
+    try:
+        from core.adapters.config import get_config
+        vault_raw = get_config().get("obsidian_vault_path")
+    except Exception:  # noqa: BLE001
+        vault_raw = None
+
+    if not vault_raw:
+        return {"configured": False, "path": "", "totals": {},
+                "recent_wins": [], "recent_errors": [],
+                "recent_decisions": [], "recent_learned": []}
+
+    vault = Path(vault_raw)
+    if not vault.is_dir():
+        return {"configured": False, "path": str(vault_raw),
+                "totals": {}, "recent_wins": [], "recent_errors": [],
+                "recent_decisions": [], "recent_learned": []}
+
+    totals: dict[str, int] = {}
+    for folder in _VAULT_FOLDERS_OF_INTEREST:
+        sub = vault / folder
+        totals[folder] = (
+            sum(1 for _ in sub.rglob("*.md")) if sub.is_dir() else 0
+        )
+    totals["total"] = sum(1 for _ in vault.rglob("*.md"))
+
+    try:
+        from core.adapters.obsidian.parser import parse_note
+    except Exception:  # noqa: BLE001
+        parse_note = None
+
+    def _recent(folder: str, limit: int = 10) -> list[dict]:
+        sub = vault / folder
+        if not sub.is_dir():
+            return []
+        # Sort by mtime desc; we don't trust frontmatter dates for
+        # ordering (user-editable, optional).
+        files = sorted(
+            sub.rglob("*.md"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:limit]
+        out: list[dict] = []
+        for f in files:
+            entry = {
+                "title": f.stem,
+                "folder": folder,
+                "mtime": f.stat().st_mtime,
+            }
+            if parse_note is not None:
+                try:
+                    n = parse_note(f, vault)
+                    fm = n.get("frontmatter", {}) or {}
+                    entry["title"] = str(fm.get("title") or f.stem)
+                    entry["date"] = str(fm.get("date") or "")
+                    entry["tags"] = list(n.get("tags", []) or [])[:6]
+                    if fm.get("cycle_id"):
+                        entry["cycle_id"] = str(fm["cycle_id"])
+                    if fm.get("action"):
+                        entry["action"] = str(fm["action"])
+                except Exception:  # noqa: BLE001
+                    pass
+            out.append(entry)
+        return out
+
+    return {
+        "configured": True,
+        "path": str(vault),
+        "totals": totals,
+        "recent_wins": _recent("Wins"),
+        "recent_errors": _recent("Errors"),
+        "recent_decisions": _recent("Decisions"),
+        "recent_learned": _recent("ShopAI/Learned"),
+    }
 
 
 def start(port: int = 3000) -> None:
