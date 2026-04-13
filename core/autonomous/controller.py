@@ -194,10 +194,10 @@ class AutonomousController:
             self._agent_dispatcher = AgentDispatcher()
             self._agent_dispatcher.initialize()
 
-            # ── Adapter layer (Phase 1-6: LLM + Shopify + Search + Shipping + Email + Payment) ──
+            # ── Adapter layer (LLM + Shopify + Search + Shipping + Email + Payment + Image + Obsidian) ──
             #
             # Wire the brain to the universal adapter ecosystem.
-            # Six bootstrap calls register every available
+            # Eight bootstrap calls register every available
             # adapter into the process-wide ``AdapterRegistry``:
             #
             #   * LLM (Groq, Gemini, DeepSeek, Mistral, Ollama,
@@ -206,8 +206,10 @@ class AutonomousController:
             #     metafield)
             #   * Web search (Brave, Serper, DDGS)
             #   * Shipping (EasyPost, Shippo)
-            #   * Email (Brevo, Resend)
+            #   * Email (Brevo, Resend, SendGrid)
             #   * Payment (PayPal, Stripe)
+            #   * Image (DALL-E 3)
+            #   * Knowledge base (Obsidian)
             #
             # Adapters whose credentials are unset still register;
             # the smart router skips them via ``is_configured()``.
@@ -223,22 +225,28 @@ class AutonomousController:
                 from core.adapters.shipping.bootstrap import register_all as register_shipping
                 from core.adapters.email.bootstrap import register_all as register_email
                 from core.adapters.payment.bootstrap import register_all as register_payment
+                from core.adapters.image.bootstrap import register_all as register_image
+                from core.adapters.obsidian.bootstrap import register_all as register_obsidian
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
                 shipping_status = register_shipping()
                 email_status = register_email()
                 payment_status = register_payment()
+                image_status = register_image()
+                obsidian_status = register_obsidian()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
                     **email_status, **payment_status,
+                    **image_status, **obsidian_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(
                     "Adapter layer initialised: %d adapters registered, "
                     "%d configured (%d LLM, %d Shopify native, %d search, "
-                    "%d shipping, %d email, %d payment)",
+                    "%d shipping, %d email, %d payment, %d image, "
+                    "%d knowledge base)",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
                     len(llm_status),
@@ -247,6 +255,8 @@ class AutonomousController:
                     len(shipping_status),
                     len(email_status),
                     len(payment_status),
+                    len(image_status),
+                    len(obsidian_status),
                 )
             except Exception as adapter_exc:  # noqa: BLE001
                 logger.warning(
