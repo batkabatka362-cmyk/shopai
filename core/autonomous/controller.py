@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import time
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from utils.logger import get_logger
@@ -1569,6 +1570,14 @@ class AutonomousController:
                      cycle_result["phases"]["analysis"]["insights"],
                      cycle_result["phases"]["decisions"]["proposed"])
 
+        # Obsidian vault: log cycle outcome as a vault note so
+        # the operator can see the decision history in graph view.
+        # Best-effort — never blocks the cycle.
+        try:
+            self._log_cycle_to_vault(cycle_result, phase_errors)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Vault cycle logging skipped: %s", exc)
+
         # Wave 2 #5: post-tick reflection hook. Mines the cycle's
         # error ledger for recurring patterns and, when confidence
         # is high enough, promotes them to SOFT rules on the
@@ -1750,6 +1759,111 @@ class AutonomousController:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Vault auto-export skipped: %s", exc)
+
+    def _log_cycle_to_vault(
+        self,
+        cycle_result: dict[str, Any],
+        phase_errors: dict[str, str],
+    ) -> None:
+        """Write a Win or Error note to the Obsidian vault after a cycle.
+
+        Determines outcome from ``phase_errors`` and key metrics in
+        ``cycle_result``, then writes a markdown note to either
+        ``Wins/`` or ``Errors/`` so the operator can browse the
+        decision history in Obsidian's graph view.
+
+        Best-effort: called inside a try/except in ``run_cycle``,
+        so failures here never break the autonomous loop.
+        """
+        from core.adapters.config import get_config
+
+        vault_path = get_config().get("obsidian_vault_path")
+        if not vault_path:
+            return
+
+        from pathlib import Path
+
+        vault = Path(vault_path)
+        if not vault.is_dir():
+            return
+
+        from core.adapters.obsidian.parser import write_note
+
+        cycle_id = cycle_result.get("cycle_id", "unknown")
+        store_id = cycle_result.get("store_id", "")
+        duration = cycle_result.get("duration_s", 0)
+        insights = (
+            cycle_result.get("phases", {})
+            .get("analysis", {})
+            .get("insights", 0)
+        )
+        proposed = (
+            cycle_result.get("phases", {})
+            .get("decisions", {})
+            .get("proposed", 0)
+        )
+        error_count = cycle_result.get("phase_error_count", 0)
+
+        # Decide Win vs Error: if >25% of phases failed, it's an error.
+        total_phases = max(len(cycle_result.get("phases", {})), 1)
+        is_error = error_count > 0 and (error_count / total_phases) > 0.25
+
+        if is_error:
+            folder = "Errors"
+            title = f"Cycle Error {cycle_id}"
+            tags = ["error", "cycle", "auto"]
+            error_lines = "\n".join(
+                f"- **{phase}**: {msg}"
+                for phase, msg in phase_errors.items()
+            )
+            body = (
+                f"# {title}\n\n"
+                f"## Тоймлол\n\n"
+                f"Store: `{store_id}` | Duration: {duration}s | "
+                f"Errors: {error_count}/{total_phases} phases\n\n"
+                f"## Алдаанууд\n\n{error_lines}\n\n"
+                f"## Контекст\n\n"
+                f"- Insights: {insights}\n"
+                f"- Actions proposed: {proposed}\n\n"
+                f"## Холбоотой\n\n"
+                f"- [[ShopAI Architecture]]\n"
+                f"- [[Example Error Pattern]]\n"
+            )
+        else:
+            folder = "Wins"
+            title = f"Cycle Win {cycle_id}"
+            tags = ["win", "cycle", "auto"]
+            body = (
+                f"# {title}\n\n"
+                f"## Тоймлол\n\n"
+                f"Store: `{store_id}` | Duration: {duration}s | "
+                f"Errors: {error_count}\n\n"
+                f"## Үр дүн\n\n"
+                f"- Insights: {insights}\n"
+                f"- Actions proposed: {proposed}\n"
+            )
+            # Add learning summary if reflection ran
+            reflection = cycle_result.get("reflection", {})
+            if reflection:
+                promoted = reflection.get("patterns_promoted", 0)
+                body += f"- Patterns promoted: {promoted}\n"
+            body += (
+                f"\n## Холбоотой\n\n"
+                f"- [[ShopAI Architecture]]\n"
+                f"- [[Obsidian Integration Complete]]\n"
+            )
+
+        frontmatter = {
+            "title": title,
+            "tags": tags,
+            "date": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d"),
+            "cycle_id": cycle_id,
+            "store_id": store_id,
+            "phase_error_count": error_count,
+        }
+
+        write_note(vault, title, body, frontmatter=frontmatter, folder=folder)
+        logger.info("Vault: logged %s to %s/", title, folder)
 
     # ── Wave 7c (GAP-4): standalone error ingestion ────────────
 

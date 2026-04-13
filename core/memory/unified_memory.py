@@ -300,6 +300,12 @@ class UnifiedMemory:
         # merge is additive — the legacy structure is never touched
         # so existing consumers keep working unchanged.
         result["vector_matches"] = self._vector_lookup(category, context or {})
+
+        # Obsidian vault knowledge: search the vault for notes
+        # relevant to this decision category. Best-effort — a
+        # missing vault or adapter never breaks the retrieve path.
+        result["vault_knowledge"] = self._vault_lookup(category, context or {})
+
         return result
 
     def _vector_lookup(
@@ -353,6 +359,57 @@ class UnifiedMemory:
             elif isinstance(val, (list, tuple)):
                 parts.append(f"{key} " + " ".join(str(v) for v in val))
         return " ".join(parts).strip()
+
+    def _vault_lookup(
+        self,
+        category: str,
+        context: dict[str, Any],
+        *,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Search the Obsidian vault for notes relevant to this
+        decision category. Best-effort: returns ``[]`` when the
+        vault is not configured, the adapter is missing, or any
+        exception occurs.
+
+        Results are simplified dicts with ``title``, ``body``
+        (truncated), ``tags``, and ``score`` — ready to be
+        consumed by the decision engine alongside other memory
+        sources.
+        """
+        try:
+            from core.adapters.config import get_config
+            vault_path = get_config().get("obsidian_vault_path")
+            if not vault_path:
+                return []
+            from core.adapters.obsidian.parser import search_notes
+            from pathlib import Path
+            vault = Path(vault_path)
+            if not vault.is_dir():
+                return []
+
+            query = self._build_vector_query(category, context)
+            if not query:
+                return []
+
+            results = search_notes(vault, query, limit=limit)
+            return [
+                {
+                    "title": note.get("title", ""),
+                    "body": note.get("body", "")[:500],
+                    "tags": note.get("tags", []),
+                    "score": note.get("score", 0),
+                    "source": "obsidian_vault",
+                    "path": note.get("path", ""),
+                }
+                for note in results
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "UnifiedMemory: vault lookup failed for %s: %s",
+                category, exc,
+            )
+            return []
 
     def get_context(self, task_type: str) -> dict[str, Any]:
         """Build context for a task from SharedMemory."""
