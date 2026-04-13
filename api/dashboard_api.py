@@ -125,8 +125,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                     shop_url=shop_url, token=token, name=name, niche=niche,
                 )
                 self._json_response(result)
-            except json.JSONDecodeError:
-                self._json_response({"error": "Invalid JSON body"}, 400)
+            except json.JSONDecodeError as exc:
+                self._json_response({"error": f"Invalid JSON body: {exc}"}, 400)
             except Exception as exc:
                 logger.warning("store registration failed: %s", exc)
                 self._json_response({"error": str(exc)[:100]}, 500)
