@@ -26,5 +26,6 @@ Importing this package alone does NOT register anything — call
 ``bootstrap.register_all()`` so test isolation stays clean.
 """
 from ._base import EmailBaseAdapter, EmailMessage
+from .sendgrid import SendGridAdapter
 
-__all__ = ["EmailBaseAdapter", "EmailMessage"]
+__all__ = ["EmailBaseAdapter", "EmailMessage", "SendGridAdapter"]

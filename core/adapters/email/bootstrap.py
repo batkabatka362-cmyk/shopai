@@ -24,6 +24,7 @@ from utils.logger import get_logger
 from ..registry import AdapterRegistry, get_registry
 from .brevo import BrevoAdapter
 from .resend import ResendAdapter
+from .sendgrid import SendGridAdapter
 
 logger = get_logger("adapters.email.bootstrap")
 
@@ -31,6 +32,7 @@ logger = get_logger("adapters.email.bootstrap")
 _EMAIL_ADAPTER_CLASSES = (
     BrevoAdapter,
     ResendAdapter,
+    SendGridAdapter,
 )
 
 

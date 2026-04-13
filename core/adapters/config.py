@@ -58,6 +58,7 @@ ENV_ALIASES: dict[str, str] = {
     # ── Email / SMS ───────────────────────────
     "resend":        "RESEND_API_KEY",
     "brevo":         "BREVO_API_KEY",
+    "sendgrid":      "SENDGRID_API_KEY",
     "klaviyo":       "KLAVIYO_API_KEY",
     "omnisend":      "OMNISEND_API_KEY",
     "postscript":    "POSTSCRIPT_API_KEY",
