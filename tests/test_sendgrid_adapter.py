@@ -43,8 +43,8 @@ from core.adapters.errors import AdapterError
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     for var in (
-        "BREVO_API_KEY", "RESEND_API_KEY", "SENDGRID_API_KEY",
-        "EASYPOST_API_KEY", "SHIPPO_API_KEY",
+        "BREVO_API_KEY", "KLAVIYO_API_KEY", "RESEND_API_KEY",
+        "SENDGRID_API_KEY", "EASYPOST_API_KEY", "SHIPPO_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
     reset_config()

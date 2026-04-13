@@ -65,6 +65,10 @@ class AdapterCategory(str, Enum):
     KNOWLEDGE_BASE = "knowledge_base"      # Obsidian / Notion / local vaults
     BROWSER = "browser"                    # Browser automation (Playwright)
     VECTOR_DB = "vector_db"                # Vector databases (Weaviate, Pinecone)
+    SUBSCRIPTION = "subscription"          # Subscription management (ReCharge)
+    VOICE = "voice"                        # Voice / TTS / speech APIs
+    AUTOMATION = "automation"              # Workflow automation (Zapier, n8n)
+    REVIEWS = "reviews"                    # Product reviews (Judge.me)
     OTHER = "other"
 
 
@@ -141,6 +145,19 @@ class Capability(str, Enum):
     VAULT_READ_NOTES = "vault_read_notes"
     VAULT_SEARCH_NOTES = "vault_search_notes"
     VAULT_WRITE_NOTE = "vault_write_note"
+
+    # ── Advertising ───────────────────────
+    ADS_CREATE_CAMPAIGN = "ads_create_campaign"
+    ADS_GET_PERFORMANCE = "ads_get_performance"
+    ADS_UPDATE_BUDGET = "ads_update_budget"
+
+    # ── Voice / TTS ──────────────────────
+    VOICE_TEXT_TO_SPEECH = "voice_text_to_speech"
+    VOICE_LIST_VOICES = "voice_list_voices"
+
+    # ── Automation ────────────────────────
+    AUTOMATION_TRIGGER = "automation_trigger"
+    AUTOMATION_LIST_ZAPS = "automation_list_zaps"
 
 
 # ── Result envelope ────────────────────────────────────────────

@@ -112,6 +112,29 @@ ENV_ALIASES: dict[str, str] = {
     # points to the REST endpoint; gRPC port is inferred.
     "weaviate_url":     "WEAVIATE_URL",
     "weaviate_api_key": "WEAVIATE_API_KEY",
+    # Pinecone: managed vector DB. API key + environment.
+    "pinecone":         "PINECONE_API_KEY",
+    "pinecone_environment": "PINECONE_ENVIRONMENT",
+
+    # ── Advertising ──────────────────────
+    # Google Ads: OAuth2 + developer token
+    "google_ads_developer_token": "GOOGLE_ADS_DEVELOPER_TOKEN",
+    "google_ads_client_id":       "GOOGLE_ADS_CLIENT_ID",
+    "google_ads_client_secret":   "GOOGLE_ADS_CLIENT_SECRET",
+    "google_ads_refresh_token":   "GOOGLE_ADS_REFRESH_TOKEN",
+    "google_ads_customer_id":     "GOOGLE_ADS_CUSTOMER_ID",
+    # Meta (Facebook) Ads: long-lived access token + ad account ID
+    "meta_ads_access_token": "META_ADS_ACCESS_TOKEN",
+    "meta_ads_account_id":   "META_ADS_ACCOUNT_ID",
+
+    # ── Subscriptions ────────────────────
+    "recharge":         "RECHARGE_API_TOKEN",
+
+    # ── Voice / TTS ──────────────────────
+    "elevenlabs":       "ELEVENLABS_API_KEY",
+
+    # ── Automation ────────────────────────
+    "zapier_nla":       "ZAPIER_NLA_API_KEY",
 }
 
 

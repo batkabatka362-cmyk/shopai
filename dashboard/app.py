@@ -467,16 +467,43 @@ def start(port: int = 3000) -> None:
         from core.adapters.llm.bootstrap import register_all as reg_llm
         from core.adapters.search.bootstrap import register_all as reg_search
         from core.adapters.email.bootstrap import register_all as reg_email
+        from core.adapters.sms.bootstrap import register_all as reg_sms
         from core.adapters.payment.bootstrap import register_all as reg_pay
         from core.adapters.browser.bootstrap import register_all as reg_browser
         from core.adapters.vector.bootstrap import register_all as reg_vector
+        from core.adapters.scraper.bootstrap import register_all as reg_scraper
+        from core.adapters.reviews.bootstrap import register_all as reg_reviews
 
         reg_llm()
         reg_search()
         reg_email()
+        reg_sms()
         reg_pay()
         reg_browser()
         reg_vector()
+        reg_scraper()
+        reg_reviews()
+
+        try:
+            from core.adapters.ads.bootstrap import register_all as reg_ads
+            reg_ads()
+        except Exception:
+            pass
+        try:
+            from core.adapters.subscription.bootstrap import register_all as reg_sub
+            reg_sub()
+        except Exception:
+            pass
+        try:
+            from core.adapters.voice.bootstrap import register_all as reg_voice
+            reg_voice()
+        except Exception:
+            pass
+        try:
+            from core.adapters.automation.bootstrap import register_all as reg_auto
+            reg_auto()
+        except Exception:
+            pass
 
         try:
             from core.adapters.shipping.bootstrap import register_all as reg_ship

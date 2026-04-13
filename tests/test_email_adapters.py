@@ -43,8 +43,8 @@ from core.adapters.errors import AdapterError
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     for var in (
-        "BREVO_API_KEY", "RESEND_API_KEY", "SENDGRID_API_KEY",
-        "EASYPOST_API_KEY", "SHIPPO_API_KEY",
+        "BREVO_API_KEY", "KLAVIYO_API_KEY", "RESEND_API_KEY",
+        "SENDGRID_API_KEY", "EASYPOST_API_KEY", "SHIPPO_API_KEY",
         "GROQ_API_KEY", "GEMINI_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -455,7 +455,7 @@ class TestEmailBootstrap:
     def test_register_all_adds_all_adapters(self):
         from core.adapters.email.bootstrap import register_all
         status = register_all()
-        assert set(status.keys()) == {"brevo", "resend", "sendgrid"}
+        assert set(status.keys()) == {"brevo", "klaviyo", "resend", "sendgrid"}
 
     def test_neither_configured_without_keys(self):
         from core.adapters.email.bootstrap import register_all
@@ -467,7 +467,7 @@ class TestEmailBootstrap:
         from core.adapters.email.bootstrap import register_all
         register_all()
         register_all()
-        assert len(get_registry()) == 3
+        assert len(get_registry()) == 4
 
     def test_router_picks_brevo_when_both_configured(self, monkeypatch):
         from core.adapters.email.bootstrap import register_all

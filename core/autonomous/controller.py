@@ -197,20 +197,24 @@ class AutonomousController:
             # ── Adapter layer ──
             #
             # Wire the brain to the universal adapter ecosystem.
-            # Nine bootstrap calls register every available
-            # adapter into the process-wide ``AdapterRegistry``:
+            # Bootstrap calls register every available adapter into
+            # the process-wide ``AdapterRegistry``:
             #
             #   * LLM (Groq, Gemini, DeepSeek, Mistral, Ollama,
-            #     OpenRouter, HuggingFace)
+            #     OpenRouter, HuggingFace, OpenAI, Anthropic)
             #   * Shopify native (risk, inventory, fulfillment,
             #     metafield)
             #   * Web search (Brave, Serper, DDGS)
             #   * Shipping (EasyPost, Shippo)
-            #   * Email (Brevo, Resend, SendGrid)
+            #   * Email (Brevo, Resend, SendGrid, Klaviyo)
+            #   * SMS (Twilio)
             #   * Payment (PayPal, Stripe)
             #   * Image (DALL-E 3)
             #   * Knowledge base (Obsidian)
             #   * Browser (Playwright)
+            #   * Vector DB (Weaviate)
+            #   * Scraper (Firecrawl)
+            #   * Reviews (Judge.me)
             #
             # Adapters whose credentials are unset still register;
             # the smart router skips them via ``is_configured()``.
@@ -225,34 +229,54 @@ class AutonomousController:
                 from core.adapters.search.bootstrap import register_all as register_search
                 from core.adapters.shipping.bootstrap import register_all as register_shipping
                 from core.adapters.email.bootstrap import register_all as register_email
+                from core.adapters.sms.bootstrap import register_all as register_sms
                 from core.adapters.payment.bootstrap import register_all as register_payment
                 from core.adapters.image.bootstrap import register_all as register_image
                 from core.adapters.obsidian.bootstrap import register_all as register_obsidian
                 from core.adapters.browser.bootstrap import register_all as register_browser
                 from core.adapters.vector.bootstrap import register_all as register_vector
+                from core.adapters.scraper.bootstrap import register_all as register_scraper
+                from core.adapters.reviews.bootstrap import register_all as register_reviews
+                from core.adapters.ads.bootstrap import register_all as register_ads
+                from core.adapters.subscription.bootstrap import register_all as register_subscription
+                from core.adapters.voice.bootstrap import register_all as register_voice
+                from core.adapters.automation.bootstrap import register_all as register_automation
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
                 shipping_status = register_shipping()
                 email_status = register_email()
+                sms_status = register_sms()
                 payment_status = register_payment()
                 image_status = register_image()
                 obsidian_status = register_obsidian()
                 browser_status = register_browser()
                 vector_status = register_vector()
+                scraper_status = register_scraper()
+                reviews_status = register_reviews()
+                ads_status = register_ads()
+                subscription_status = register_subscription()
+                voice_status = register_voice()
+                automation_status = register_automation()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
-                    **email_status, **payment_status,
-                    **image_status, **obsidian_status,
-                    **browser_status, **vector_status,
+                    **email_status, **sms_status,
+                    **payment_status, **image_status,
+                    **obsidian_status, **browser_status,
+                    **vector_status, **scraper_status,
+                    **reviews_status, **ads_status,
+                    **subscription_status, **voice_status,
+                    **automation_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(
                     "Adapter layer initialised: %d adapters registered, "
-                    "%d configured (%d LLM, %d Shopify native, %d search, "
-                    "%d shipping, %d email, %d payment, %d image, "
-                    "%d knowledge base, %d browser, %d vector DB)",
+                    "%d configured (%d LLM, %d Shopify, %d search, "
+                    "%d shipping, %d email, %d SMS, %d payment, "
+                    "%d image, %d vault, %d browser, %d vector, "
+                    "%d scraper, %d reviews, %d ads, %d subscription, "
+                    "%d voice, %d automation)",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
                     len(llm_status),
@@ -260,11 +284,18 @@ class AutonomousController:
                     len(search_status),
                     len(shipping_status),
                     len(email_status),
+                    len(sms_status),
                     len(payment_status),
                     len(image_status),
                     len(obsidian_status),
                     len(browser_status),
                     len(vector_status),
+                    len(scraper_status),
+                    len(reviews_status),
+                    len(ads_status),
+                    len(subscription_status),
+                    len(voice_status),
+                    len(automation_status),
                 )
             except Exception as adapter_exc:  # noqa: BLE001
                 logger.warning(
