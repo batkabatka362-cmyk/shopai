@@ -11,7 +11,6 @@ from core.state.state_manager import StateManager
 from core.context.context_manager import ContextManager
 from core.memory.memory_manager import MemoryManager
 from core.memory.memory_router import MemoryRouter
-from core.memory.memory_sync import MemorySync
 from .task_router import TaskRouter
 from .execution_router import ExecutionRouter
 from .decision_router import DecisionRouter
@@ -53,7 +52,10 @@ class MainOrchestrator:
         self._context = ContextManager()
         self._memory = MemoryManager()
         self._memory_router = MemoryRouter(self._memory)
-        self._memory_sync = MemorySync(self._memory)
+        # Fix I (core audit #8): MemorySync was instantiated
+        # here but none of promote/demote/sync_stats ever
+        # fired in production or tests. Removed along with
+        # the file to cut dead code from the init path.
         self._task_router = TaskRouter()
         self._execution_router = ExecutionRouter()
         self._decision_router = DecisionRouter()
@@ -77,6 +79,18 @@ class MainOrchestrator:
         self._pipeline_bridge = PipelineBridge()
         self._execution_bridge = ExecutionBridge()
         self._workflow_bridge = WorkflowBridge()
+        # New module integrations
+        self._agent_manager = None
+        self._message_bus = None
+        self._vector_db = None
+        self._rule_engine = None
+        self._prompt_manager = None
+        self._product_pipeline = None
+        self._marketing_pipeline = None
+        self._analytics_pipeline = None
+        self._kpi_tracker = None
+        self._system_health = None
+        self._engine_memories: dict[str, Any] = {}
         self._running = False
 
     def initialize(self, config_override: dict[str, Any] | None = None) -> None:
@@ -107,6 +121,9 @@ class MainOrchestrator:
         # Wire events system
         EventHandler().register_defaults()
         self._event_bus.emit(EventType.SYSTEM_HEALTH_CHECK, "orchestrator", {"phase": "startup"})
+
+        # Initialize new modules
+        self._init_modules()
 
         # Auto-register engine handlers from registry
         self._register_engines()
@@ -144,9 +161,16 @@ class MainOrchestrator:
             self._metrics.increment("task.cache_hit")
             self._tracer.finish_span(trace_span, "cache_hit")
             elapsed = time.monotonic() - start_time
-            cached["_cached"] = True
-            cached["elapsed_seconds"] = round(elapsed, 3)
-            return cached
+            # Copy first — previously we mutated the cached dict in
+            # place, so the next cache hit would inherit the previous
+            # caller's `_cached` flag and elapsed_seconds. With shared
+            # cache backends this also leaked one caller's timing into
+            # every subsequent reader of the same entry.
+            response = dict(cached) if isinstance(cached, dict) else cached
+            if isinstance(response, dict):
+                response["_cached"] = True
+                response["elapsed_seconds"] = round(elapsed, 3)
+            return response
 
         # Register in runtime state
         self._state.runtime.register_task(task_id, task_type)
@@ -167,16 +191,47 @@ class MainOrchestrator:
                 self._tracer.finish_span(trace_span, "no_engine")
                 return {"task_id": task_id, "engine": task_type, "status": "failed", "result": None, "error": f"No engine for task_type={task_type}", "timestamp": time.time()}
 
+            # Engine memory: check for duplicate inputs
+            engine_mem = self._engine_memories.get(task_type)
+            if engine_mem and params:
+                try:
+                    dedup = engine_mem.remember_input(params)
+                    if dedup.get("is_duplicate"):
+                        self._metrics.increment("task.duplicate_input")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "MainOrchestrator: engine_mem.remember_input "
+                        "failed for %s: %s", task_type, exc,
+                    )
+
             # Execute (with fallback support)
             exec_span = self._tracer.start_span(trace_span.trace_id, f"execute:{engine}", trace_span.span_id)
             result = self._execute_with_fallback(engine, task_id, params or {})
             self._tracer.finish_span(exec_span, result.get("status", "unknown"))
 
+            # Engine memory: record successful patterns
+            if engine_mem and result.get("status") == "completed":
+                try:
+                    engine_mem.remember_success(params or {}, result.get("result", {}))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "MainOrchestrator: engine_mem.remember_success "
+                        "failed for %s: %s", task_type, exc,
+                    )
+
             # Store result in memory
             self._memory_router.route_store(f"result:{task_id}", result, data_type="task_result")
 
-            # Update runtime state
-            self._state.runtime.update_task(task_id, result["status"], result=result.get("result"), error=result.get("error"))
+            # Update runtime state. Use .get() so a malformed
+            # executor response (missing "status") doesn't crash
+            # the orchestrator mid-cycle — match the defensive
+            # access pattern already used three lines below.
+            self._state.runtime.update_task(
+                task_id,
+                result.get("status", "unknown"),
+                result=result.get("result"),
+                error=result.get("error"),
+            )
 
             elapsed = time.monotonic() - start_time
             result["elapsed_seconds"] = round(elapsed, 3)
@@ -195,6 +250,25 @@ class MainOrchestrator:
                 error_msg = result.get("error", "unknown")
                 self._event_bus.emit(EventType.ENGINE_FAILED, task_type, {"task_id": task_id, "error": error_msg})
                 self._error_patterns.record(task_type, str(error_msg), severity="high")
+
+            # Record KPI for decision quality tracking
+            if self._kpi_tracker is not None:
+                try:
+                    self._kpi_tracker.record_decision_outcome(
+                        decision_id=task_id,
+                        decision_type=task_type,
+                        confidence=result.get("confidence", "unknown"),
+                        confidence_score=result.get("confidence_score", 50),
+                        success=status == "completed",
+                        data_quality=result.get("data_quality", 50),
+                        execution_results={"dispatched": 1, "success_count": 1 if status == "completed" else 0,
+                                           "fail_count": 0 if status == "completed" else 1},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "MainOrchestrator: kpi_tracker.record_decision_outcome "
+                        "failed for %s: %s", task_id, exc,
+                    )
 
             return result
 
@@ -327,6 +401,11 @@ class MainOrchestrator:
         """Run a named engine chain."""
         return self._chain_registry.run(chain_name, data)
 
+    def run_full_loop(self, data: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run the FULL system loop: Pipeline → Intelligence → Agents → Execution → Memory → Learning."""
+        from core.full_system_loop import FullSystemLoop
+        return FullSystemLoop().run(data, config)
+
     # -- bridges --
 
     def agent_run(self, agent_name: str, task: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -363,11 +442,227 @@ class MainOrchestrator:
     def pipeline(self) -> PipelineBridge:
         return self._pipeline_bridge
 
+    # -- new module accessors --
+
+    @property
+    def agent_manager(self):
+        return self._agent_manager
+
+    @property
+    def message_bus(self):
+        return self._message_bus
+
+    @property
+    def vector_db(self):
+        return self._vector_db
+
+    @property
+    def rule_engine(self):
+        return self._rule_engine
+
+    @property
+    def prompt_manager(self):
+        return self._prompt_manager
+
+    def run_pipeline(self, pipeline_type: str, data: Any) -> dict[str, Any]:
+        """Run data through a specific pipeline before engine processing."""
+        pipelines = {
+            "product": self._product_pipeline,
+            "marketing": self._marketing_pipeline,
+            "analytics": self._analytics_pipeline,
+        }
+        pipeline = pipelines.get(pipeline_type)
+        if pipeline is None:
+            return {"status": "error", "error": f"Unknown pipeline: {pipeline_type}"}
+        try:
+            return pipeline.run(data)
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+
+    def store_knowledge(self, collection: str, key: str, embedding: list[float], metadata: dict[str, Any] | None = None) -> bool:
+        """Store a vector embedding in the knowledge base."""
+        if self._vector_db is None:
+            return False
+        self._vector_db.add(collection, key, embedding, metadata or {})
+        return True
+
+    def search_knowledge(self, collection: str, query_embedding: list[float], top_k: int = 5) -> list[dict[str, Any]]:
+        """Search knowledge base by vector similarity."""
+        if self._vector_db is None:
+            return []
+        return self._vector_db.search(collection, query_embedding, top_k=top_k)
+
+    def evaluate_rules(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Evaluate business rules against data."""
+        if self._rule_engine is None:
+            return []
+        return self._rule_engine.evaluate(data)
+
+    def publish_message(self, topic: str, payload: dict[str, Any], sender: str = "orchestrator") -> bool:
+        """Publish a message to the agent message bus."""
+        if self._message_bus is None:
+            return False
+        self._message_bus.publish(topic, payload, sender)
+        return True
+
+    @property
+    def kpi_tracker(self):
+        return self._kpi_tracker
+
+    def get_engine_memory(self, engine_type: str) -> dict[str, Any]:
+        """Get learned patterns for an engine type."""
+        mem = self._engine_memories.get(engine_type)
+        if mem is None:
+            return {"status": "not_available"}
+        return {
+            "engine": engine_type,
+            "success_patterns": mem.get_success_patterns(),
+            "baselines": mem.get_baselines() if hasattr(mem, "get_baselines") else {},
+        }
+
+    def get_system_health(self) -> dict[str, Any]:
+        """Generate comprehensive system health report."""
+        if self._system_health is None:
+            return {"status": "unavailable"}
+        return self._system_health.generate()
+
+    def get_kpi_summary(self) -> dict[str, Any]:
+        """Get decision quality and revenue KPIs."""
+        if self._kpi_tracker is None:
+            return {"status": "unavailable"}
+        return {
+            "decisions": self._kpi_tracker.get_decision_kpis(),
+            "revenue": self._kpi_tracker.get_revenue_kpis(),
+        }
+
     # -- internal helpers --
+
+    def _init_modules(self) -> None:
+        """Initialize all external modules — agents, pipelines, memory, knowledge."""
+        try:
+            from agents.manager.agent_manager import AgentManager
+            from agents.communication.message_bus import MessageBus
+            self._agent_manager = AgentManager()
+            self._message_bus = MessageBus()
+            # Register default agents
+            for agent_type in ("product", "marketing", "customer", "operations", "analytics", "content"):
+                self._agent_manager.register_agent(agent_type, agent_type, {"auto_created": True})
+            logger.info("Agents module initialized (%d agents)", len(self._agent_manager.list_agents()))
+        except Exception as exc:
+            logger.warning("Agents module not available: %s", exc)
+
+        try:
+            from memory.vector_store.vector_db import VectorDB
+            self._vector_db = VectorDB()
+            logger.info("VectorDB initialized")
+        except Exception as exc:
+            logger.warning("VectorDB not available: %s", exc)
+
+        try:
+            from knowledge.rules.rule_engine import RuleEngine
+            from knowledge.prompts.prompt_manager import PromptManager
+            self._rule_engine = RuleEngine()
+            self._prompt_manager = PromptManager()
+            # Load default business rules
+            self._rule_engine.add_rule(
+                "low_stock_alert",
+                condition={"inventory_quantity": {"lt": 5}},
+                action={"type": "notify", "message": "Low stock alert"},
+                priority=10,
+            )
+            self._rule_engine.add_rule(
+                "high_value_order",
+                condition={"total": {"gt": 200}},
+                action={"type": "notify", "message": "High value order"},
+                priority=8,
+            )
+            logger.info("Knowledge module initialized (%d rules)", len(self._rule_engine.list_rules()))
+        except Exception as exc:
+            logger.warning("Knowledge module not available: %s", exc)
+
+        try:
+            from data_pipeline.pipelines.product_pipeline import ProductPipeline
+            from data_pipeline.pipelines.marketing_pipeline import MarketingPipeline
+            from data_pipeline.pipelines.analytics_pipeline import AnalyticsPipeline
+            self._product_pipeline = ProductPipeline()
+            self._marketing_pipeline = MarketingPipeline()
+            self._analytics_pipeline = AnalyticsPipeline()
+            logger.info("Data pipelines initialized (product, marketing, analytics)")
+        except Exception as exc:
+            logger.warning("Data pipelines not available: %s", exc)
+
+        # Initialize KPI + health monitoring
+        try:
+            from core.intelligence.kpi_tracker import KPITracker
+            from core.intelligence.system_health import SystemHealthReport
+            self._kpi_tracker = KPITracker()
+            self._system_health = SystemHealthReport()
+            logger.info("KPI tracker and system health monitor initialized")
+        except Exception as exc:
+            logger.warning("KPI/Health not available: %s", exc)
+
+        # Initialize engine memory for pattern learning
+        try:
+            from core.shared_memory import EngineMemory
+            for engine_type in ("pricing", "marketing", "customer", "seo", "content", "inventory"):
+                self._engine_memories[engine_type] = EngineMemory(engine_type)
+            logger.info("Engine memory initialized for %d engine types", len(self._engine_memories))
+        except Exception as exc:
+            logger.warning("Engine memory not available: %s", exc)
+
+        # Wire execution bridge to real executors
+        self._wire_executors()
+
+    def _wire_executors(self) -> None:
+        """Connect ExecutionBridge to real execution modules.
+
+        Each executor is registered individually so a single broken
+        import doesn't take down the entire executor set. Previously
+        this method wrapped all 5 imports in a single try/except —
+        if AdLauncher (or any of the other four) failed to import,
+        the orchestrator silently ran with **zero** executors
+        registered and downstream Shopify/marketing/CMS actions all
+        returned "no executor found" with no operator signal.
+        """
+        # (provider, action, "module.path", "ClassName")
+        executor_specs: list[tuple[str, str, str, str]] = [
+            ("shopify",       "product.create_listing",   "execution.shopify.product_creator",   "ProductCreator"),
+            ("shopify",       "pricing.update",           "execution.shopify.product_updater",   "ProductUpdater"),
+            ("multi_channel", "marketing.launch_campaign","execution.marketing.ad_launcher",     "AdLauncher"),
+            ("multi_channel", "marketing.manage_campaign","execution.marketing.campaign_manager","CampaignManager"),
+            ("cms",           "content.publish",          "execution.content.publisher",         "ContentPublisher"),
+        ]
+
+        import importlib
+        registered = 0
+        failures: list[str] = []
+        for provider, action, module_path, class_name in executor_specs:
+            try:
+                mod = importlib.import_module(module_path)
+                cls = getattr(mod, class_name)
+                self._execution_bridge.register_executor(provider, action, cls())
+                registered += 1
+            except Exception as exc:  # noqa: BLE001
+                err = f"{class_name}: {type(exc).__name__}: {exc}"
+                failures.append(err)
+                logger.warning(
+                    "MainOrchestrator: executor %r failed to wire (%s)",
+                    class_name, err,
+                )
+        if failures:
+            logger.warning(
+                "MainOrchestrator: %d/%d executors wired (%d failed)",
+                registered, len(executor_specs), len(failures),
+            )
+        else:
+            logger.info(
+                "Execution bridge wired to %d real executors", registered,
+            )
 
     def _register_engines(self) -> None:
         """Auto-register all engines from the registry as execution handlers."""
         from engines.base import EngineInput
+        from engines.base.engine_types import normalize_engine_output
 
         for engine_name in list_engines():
             def _make_handler(name: str):
@@ -378,7 +673,12 @@ class MainOrchestrator:
                         engine_name=name,
                         data=params,
                     )
-                    output = engine.run(engine_input)
+                    dict_input = {"status": "success", "data": params, "meta": {}, "error": None}
+                    try:
+                        raw_output = engine.run(dict_input)
+                    except (TypeError, AttributeError):
+                        raw_output = engine.run(engine_input)
+                    output = normalize_engine_output(raw_output, engine_input)
                     return output.to_dict()
                 return handler
 
@@ -387,7 +687,11 @@ class MainOrchestrator:
     def _execute_with_fallback(self, engine: str, task_id: str, params: dict[str, Any] | None) -> dict[str, Any]:
         max_attempts = self._config.get("orchestrator", {}).get("retry_max_attempts", 3)
         result = self._execution_router.execute(engine, task_id, params)
-        if result["status"] == "completed":
+        # Defensive .get(): a malformed executor returning a dict
+        # without a "status" key would previously crash with KeyError
+        # before the fallback chain ever ran. Treat missing status
+        # as not-completed so the fallback path still gets a chance.
+        if (result or {}).get("status") == "completed":
             return result
 
         for attempt in range(max_attempts):
@@ -396,10 +700,13 @@ class MainOrchestrator:
                 break
             logger.info("Attempting fallback %s for task %s (attempt %d)", fallback_engine, task_id, attempt)
             result = self._execution_router.execute(fallback_engine, task_id, params)
-            if result["status"] == "completed":
+            if (result or {}).get("status") == "completed":
                 return result
 
-        return result
+        return result or {
+            "status": "failed",
+            "error": "executor returned no result",
+        }
 
     @staticmethod
     def _load_configs() -> dict[str, Any]:

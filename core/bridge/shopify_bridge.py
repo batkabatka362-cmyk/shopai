@@ -1,14 +1,21 @@
 """ShopifyBridge — connects ShopAI engines to real Shopify store data.
 
-Fetches real products/orders/customers from Shopify → feeds to engines.
-Engine results → creates/updates Shopify products/prices/inventory.
+Data flow:
+  1. Try DB cache (fast, always available)
+  2. If stale/missing → fetch from Shopify API → store in DB
+  3. If both fail → raise ``ShopifyBridgeUnavailable``
+
+Previously step 3 returned a hardcoded "mock" dataset (5 products,
+5 orders, 4 customers) when both the cache and the live API
+failed. Downstream engines treated the mock rows as truth and made
+decisions against fictional inventory, fictional revenue, and
+fictional customers — the mock silently masked real failures.
 
 Requires: SHOPAI_SHOPIFY_URL and SHOPAI_SHOPIFY_KEY env vars.
 """
 from __future__ import annotations
 
 import os
-import copy
 import time
 from typing import Any
 
@@ -18,14 +25,40 @@ from utils.helpers import generate_id
 logger = get_logger("bridge.shopify")
 
 
+class ShopifyBridgeUnavailable(RuntimeError):
+    """Raised when the bridge cannot serve a request — neither the
+    DB cache nor the live Shopify API returned usable data.
+
+    Before this class existed the bridge silently returned a small
+    hardcoded mock dataset in the same situation, which let broken
+    API credentials, network outages, and empty caches all masquerade
+    as "successful" reads and quietly corrupt downstream decisions.
+    Callers that want the old behaviour must now handle this
+    exception explicitly and choose their own fallback strategy.
+    """
+
+    def __init__(self, resource: str, reason: str = "") -> None:
+        msg = (
+            f"ShopifyBridge cannot serve {resource!r}: no cache, "
+            f"no live API data"
+        )
+        if reason:
+            msg += f" ({reason})"
+        super().__init__(msg)
+        self.resource = resource
+        self.reason = reason
+
+
 class ShopifyBridge:
-    """Connects engines to real Shopify store."""
+    """Connects engines to real Shopify store data via DB cache + live API."""
 
     def __init__(self, shop_url: str = "", api_key: str = "") -> None:
         self._shop_url = shop_url or os.environ.get("SHOPAI_SHOPIFY_URL", "")
         self._api_key = api_key or os.environ.get("SHOPAI_SHOPIFY_KEY", "")
         self._api = None
         self._connected = False
+        self._store_id = self._shop_url.replace(".myshopify.com", "").replace("https://", "")
+        self._db = None
 
     def connect(self) -> dict[str, Any]:
         """Connect to Shopify store."""
@@ -37,9 +70,24 @@ class ShopifyBridge:
             self._api = ShopifyAPI(self._shop_url, self._api_key)
             self._connected = True
             logger.info("Connected to Shopify: %s", self._shop_url)
+
+            # Initialize DB
+            self._init_db()
+
             return {"connected": True, "shop": self._shop_url}
         except Exception as exc:
             return {"connected": False, "error": str(exc)}
+
+    def _init_db(self) -> None:
+        """Initialize DB connection for caching."""
+        try:
+            from data_pipeline.store.db import ShopAIDatabase
+            self._db = ShopAIDatabase()
+            # Ensure store exists in DB
+            if self._store_id:
+                self._db.add_store(self._store_id, self._shop_url)
+        except Exception as exc:
+            logger.debug("DB init failed (non-critical): %s", exc)
 
     @property
     def is_connected(self) -> bool:
@@ -48,43 +96,89 @@ class ShopifyBridge:
     # --- Fetch data for engines ---
 
     def fetch_products(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Fetch products from Shopify in engine-ready format."""
-        if not self._connected:
-            return self._mock_products()
+        """Fetch products: DB cache → live API.
 
-        try:
-            raw = self._api.fetch_products(self._shop_url, self._api_key)
-            return self._normalize_products(raw.get("products", [])[:limit])
-        except Exception as exc:
-            logger.error("Shopify fetch_products failed: %s", exc)
-            return self._mock_products()
+        Raises ``ShopifyBridgeUnavailable`` if neither path yields
+        data. Pre-cleanup this method silently returned a hardcoded
+        5-product mock dataset in the same failure case.
+        """
+        cached = self._read_cache("products", limit)
+        if cached:
+            return cached
+
+        last_error = ""
+        if self._connected and self._api:
+            try:
+                raw = self._api.fetch_products(self._shop_url, self._api_key)
+                products = self._normalize_products(raw.get("products", [])[:limit])
+                self._write_cache("products", products)
+                return products
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.error("Shopify fetch_products failed: %s", exc)
+
+        raise ShopifyBridgeUnavailable("products", last_error)
 
     def fetch_orders(self, days_back: int = 30, limit: int = 100) -> list[dict[str, Any]]:
-        """Fetch orders from Shopify in engine-ready format."""
-        if not self._connected:
-            return self._mock_orders()
+        """Fetch orders: DB cache → live API.
 
-        try:
-            raw = self._api.fetch_orders(self._shop_url, self._api_key, days_back=days_back)
-            return self._normalize_orders(raw.get("orders", [])[:limit])
-        except Exception as exc:
-            logger.error("Shopify fetch_orders failed: %s", exc)
-            return self._mock_orders()
+        Raises ``ShopifyBridgeUnavailable`` if neither path yields
+        data. See ``fetch_products`` for the mock-removal rationale.
+        """
+        cached = self._read_cache("orders", limit)
+        if cached:
+            return cached
+
+        last_error = ""
+        if self._connected and self._api:
+            try:
+                raw = self._api.fetch_orders(self._shop_url, self._api_key, days_back=days_back)
+                orders = self._normalize_orders(raw.get("orders", [])[:limit])
+                self._write_cache("orders", orders)
+                return orders
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.error("Shopify fetch_orders failed: %s", exc)
+
+        raise ShopifyBridgeUnavailable("orders", last_error)
 
     def fetch_customers(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Fetch customers from Shopify in engine-ready format."""
-        if not self._connected:
-            return self._mock_customers()
+        """Fetch customers: DB cache → live API.
 
-        try:
-            raw = self._api.fetch_customers(self._shop_url, self._api_key)
-            return self._normalize_customers(raw.get("customers", [])[:limit])
-        except Exception as exc:
-            logger.error("Shopify fetch_customers failed: %s", exc)
-            return self._mock_customers()
+        Raises ``ShopifyBridgeUnavailable`` if neither path yields
+        data. See ``fetch_products`` for the mock-removal rationale.
+        """
+        cached = self._read_cache("customers", limit)
+        if cached:
+            return cached
+
+        last_error = ""
+        if self._connected and self._api:
+            try:
+                raw = self._api.fetch_customers(self._shop_url, self._api_key)
+                customers = self._normalize_customers(raw.get("customers", [])[:limit])
+                self._write_cache("customers", customers)
+                return customers
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.error("Shopify fetch_customers failed: %s", exc)
+
+        raise ShopifyBridgeUnavailable("customers", last_error)
 
     def fetch_for_engine(self, engine_name: str) -> dict[str, Any]:
-        """Fetch the right data for a specific engine."""
+        """Fetch the right data for a specific engine — uses DataProvider if available."""
+        try:
+            from data_pipeline.store.data_provider import DataProvider
+            from data_pipeline.store.store_manager import StoreManager
+            sm = StoreManager()
+            if self._store_id:
+                sm.add_store(self._store_id, self._shop_url, api_key=self._api_key)
+            provider = DataProvider(sm)
+            return provider.get_data_for_engine(engine_name, self._store_id)
+        except Exception as exc:
+            logger.debug("data provider fallback failed: %s", exc)
+
+        # Fallback to direct fetch
         product_engines = {"product_selection", "pricing", "product_description", "inventory",
                            "product_ranking", "product_optimization", "catalog", "seo"}
         customer_engines = {"customer_segmentation", "churn_prediction", "retention", "loyalty",
@@ -108,7 +202,6 @@ class ShopifyBridge:
     # --- Push results to Shopify ---
 
     def push_prices(self, price_updates: list[dict[str, Any]]) -> dict[str, Any]:
-        """Push pricing changes to Shopify."""
         if not self._connected:
             return {"pushed": False, "reason": "not_connected", "updates": len(price_updates)}
 
@@ -130,7 +223,6 @@ class ShopifyBridge:
         return {"pushed": True, "total": len(results), "results": results}
 
     def push_inventory(self, inventory_updates: list[dict[str, Any]]) -> dict[str, Any]:
-        """Push inventory changes to Shopify."""
         if not self._connected:
             return {"pushed": False, "reason": "not_connected"}
 
@@ -150,6 +242,39 @@ class ShopifyBridge:
                 results.append({"item": update.get("name"), "status": "failed", "error": str(exc)})
 
         return {"pushed": True, "total": len(results), "results": results}
+
+    # --- DB Cache ---
+
+    def _read_cache(self, data_type: str, limit: int) -> list[dict[str, Any]]:
+        """Read from SQLite cache."""
+        if not self._db or not self._store_id:
+            self._init_db()
+        if not self._db or not self._store_id:
+            return []
+        try:
+            if data_type == "products":
+                return self._db.get_products(self._store_id, limit=limit)
+            elif data_type == "orders":
+                return self._db.get_orders(self._store_id, limit=limit)
+            elif data_type == "customers":
+                return self._db.get_customers(self._store_id, limit=limit)
+        except Exception as exc:
+            logger.debug("DB data retrieval failed for %s: %s", data_type, exc)
+        return []
+
+    def _write_cache(self, data_type: str, records: list[dict[str, Any]]) -> None:
+        """Write to SQLite cache."""
+        if not self._db or not self._store_id:
+            return
+        try:
+            if data_type == "products":
+                self._db.upsert_products(self._store_id, records)
+            elif data_type == "orders":
+                self._db.upsert_orders(self._store_id, records)
+            elif data_type == "customers":
+                self._db.upsert_customers(self._store_id, records)
+        except Exception as exc:
+            logger.debug("Cache write failed: %s", exc)
 
     # --- Normalizers ---
 
@@ -205,33 +330,4 @@ class ShopifyBridge:
             })
         return customers
 
-    # --- Mock data (when Shopify not connected) ---
-
-    @staticmethod
-    def _mock_products() -> list[dict[str, Any]]:
-        return [
-            {"id": "1", "name": "Wireless Earbuds Pro", "price": 49.99, "cost": 15, "weight": 0.1, "category": "electronics", "inventory_quantity": 150, "compare_at_price": 69.99},
-            {"id": "2", "name": "Premium Yoga Mat", "price": 39.99, "cost": 12, "weight": 2.0, "category": "fitness", "inventory_quantity": 80, "compare_at_price": 0},
-            {"id": "3", "name": "LED Desk Lamp", "price": 34.99, "cost": 18, "weight": 1.5, "category": "home", "inventory_quantity": 45, "compare_at_price": 44.99},
-            {"id": "4", "name": "Phone Case Ultra", "price": 19.99, "cost": 3, "weight": 0.05, "category": "accessories", "inventory_quantity": 300, "compare_at_price": 0},
-            {"id": "5", "name": "Resistance Bands Set", "price": 24.99, "cost": 5, "weight": 0.3, "category": "fitness", "inventory_quantity": 200, "compare_at_price": 34.99},
-        ]
-
-    @staticmethod
-    def _mock_orders() -> list[dict[str, Any]]:
-        return [
-            {"id": "1001", "total": 89.98, "subtotal": 84.98, "status": "paid", "items": 2, "customer_id": "c1"},
-            {"id": "1002", "total": 49.99, "subtotal": 49.99, "status": "paid", "items": 1, "customer_id": "c2"},
-            {"id": "1003", "total": 124.97, "subtotal": 119.97, "status": "paid", "items": 3, "customer_id": "c1"},
-            {"id": "1004", "total": 34.99, "subtotal": 34.99, "status": "refunded", "items": 1, "customer_id": "c3"},
-            {"id": "1005", "total": 64.98, "subtotal": 59.98, "status": "paid", "items": 2, "customer_id": "c4"},
-        ]
-
-    @staticmethod
-    def _mock_customers() -> list[dict[str, Any]]:
-        return [
-            {"id": "c1", "name": "Alice Kim", "email": "alice@example.com", "orders": 8, "total_spent": 650, "tags": ["vip", "repeat"]},
-            {"id": "c2", "name": "Bob Park", "email": "bob@example.com", "orders": 1, "total_spent": 49.99, "tags": ["new"]},
-            {"id": "c3", "name": "Carol Lee", "email": "carol@example.com", "orders": 3, "total_spent": 180, "tags": ["returning"]},
-            {"id": "c4", "name": "Dave Song", "email": "dave@example.com", "orders": 0, "total_spent": 0, "tags": ["lead"]},
-        ]
+    # --- Mock data fallbacks removed (see ShopifyBridgeUnavailable) ---

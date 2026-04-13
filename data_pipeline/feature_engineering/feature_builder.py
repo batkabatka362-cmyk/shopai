@@ -5,6 +5,8 @@ import logging
 import math
 from typing import Any
 
+from utils.helpers import safe_float, safe_int
+
 logger = logging.getLogger("data_pipeline.feature_builder")
 
 # Price tier thresholds (in currency units)
@@ -48,8 +50,16 @@ class FeatureBuilder:
         Returns:
             Records enriched with new feature fields.
         """
+        # Defensive coercion of public entry point. Audit pass 50.
+        if not isinstance(data, list):
+            return []
+        # Filter to dict-shaped records only.
+        data = [r for r in data if isinstance(r, dict)]
+
         if not feature_config:
             logger.debug("build_features: no config; returning data unchanged")
+            return [dict(r) for r in data]
+        if not isinstance(feature_config, list):
             return [dict(r) for r in data]
 
         logger.info("Building features for %d records", len(data))
@@ -58,16 +68,20 @@ class FeatureBuilder:
         for record in data:
             new_rec = dict(record)
             for cfg in feature_config:
+                if not isinstance(cfg, dict):
+                    continue
                 ftype = cfg.get("type", "")
-                target = cfg.get("target_field", ftype + "_features")
+                if not isinstance(ftype, str):
+                    continue
+                target = cfg.get("target_field") or (ftype + "_features")
+                if not isinstance(target, str):
+                    continue
                 if ftype == "price":
                     new_rec[target] = self.build_price_features(new_rec)
                 elif ftype == "engagement":
                     new_rec[target] = self.build_engagement_features(new_rec)
                 elif ftype == "trend":
-                    # For trend features the record should contain a
-                    # "time_series" key with a list of dicts
-                    ts = new_rec.get("time_series", [])
+                    ts = new_rec.get("time_series") or []
                     new_rec[target] = self.build_trend_features(ts)
                 else:
                     logger.warning("Unknown feature type: '%s'", ftype)
@@ -95,11 +109,19 @@ class FeatureBuilder:
             * ``discount_depth``— fractional discount vs ``compare_at`` (0–1).
             * ``is_on_sale``    — bool: True if price < compare_at.
         """
-        price = float(product.get("price") or 0.0)
-        cost = float(product.get("cost") or 0.0)
-        compare_at = float(product.get("compare_at") or 0.0)
+        if not isinstance(product, dict):
+            product = {}
+        # Use safe_float to handle currency strings, None, and
+        # garbage. Pre-audit ``float(product.get("price") or 0)``
+        # crashed on non-numeric strings. Audit pass 50.
+        price = safe_float(product.get("price"))
+        cost = safe_float(product.get("cost"))
+        compare_at = safe_float(product.get("compare_at"))
 
-        margin = (price - cost) / price if price > 0 else 0.0
+        from utils.finance import margin as _margin
+        # require_cost=False so zero-cost items get a full 100% margin
+        # (matches the original semantics of this feature)
+        margin = _margin(price, cost, require_cost=False)
         margin_pct = round(margin * 100, 2)
         price_tier = self._price_tier(price)
 
@@ -135,13 +157,17 @@ class FeatureBuilder:
             * ``rfm_score``      — composite score: 1/recency + frequency + monetary/100.
             * ``segment``        — "champion" | "loyal" | "at_risk" | "inactive".
         """
-        recency = float(user_data.get("days_since_last_order") or 0.0)
-        frequency = float(user_data.get("order_count") or 0.0)
-        monetary = float(user_data.get("total_spent") or 0.0)
+        if not isinstance(user_data, dict):
+            user_data = {}
+        recency = safe_float(user_data.get("days_since_last_order"))
+        frequency = safe_float(user_data.get("order_count"))
+        monetary = safe_float(user_data.get("total_spent"))
 
-        aov = float(user_data.get("avg_order_value") or (
-            monetary / frequency if frequency > 0 else 0.0
-        ))
+        aov_raw = user_data.get("avg_order_value")
+        if aov_raw is not None and aov_raw != "":
+            aov = safe_float(aov_raw)
+        else:
+            aov = monetary / frequency if frequency > 0 else 0.0
 
         recency_score = 1.0 / (recency + 1)  # +1 to avoid div/0; higher = more recent
         rfm_score = round(recency_score * 0.4 + (frequency / 10) * 0.3 + (monetary / 1000) * 0.3, 4)
@@ -173,18 +199,29 @@ class FeatureBuilder:
             * ``mean``         — mean of the series.
             * ``n``            — number of data points.
         """
-        if not time_series:
-            return {
-                "growth_rate": 0.0,
-                "volatility": 0.0,
-                "momentum": 0.0,
-                "trend": "flat",
-                "mean": 0.0,
-                "n": 0,
-            }
+        empty = {
+            "growth_rate": 0.0,
+            "volatility": 0.0,
+            "momentum": 0.0,
+            "trend": "flat",
+            "mean": 0.0,
+            "n": 0,
+        }
+        if not isinstance(time_series, list) or not time_series:
+            return empty
 
-        values = [float(item.get("value", 0) or 0) for item in time_series]
+        # Defensive: drop non-dict items and non-numeric values.
+        # Pre-audit ``float(item.get("value", 0) or 0)`` crashed
+        # on non-dict items (``None.get``) and on currency
+        # strings. Audit pass 50.
+        values: list[float] = []
+        for item in time_series:
+            if not isinstance(item, dict):
+                continue
+            values.append(safe_float(item.get("value")))
         n = len(values)
+        if n == 0:
+            return empty
         mean_val = sum(values) / n
 
         first, last = values[0], values[-1]

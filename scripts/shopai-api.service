@@ -1,0 +1,53 @@
+# ShopAI HTTP API server systemd unit.
+#
+# Sister unit to shopai-daemon.service — runs the api.server module
+# on port 8080 (configurable via SHOPAI_API_PORT).
+#
+# Install:
+#     sudo cp scripts/shopai-api.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now shopai-api
+#     curl http://localhost:8080/health
+
+[Unit]
+Description=ShopAI HTTP API server
+Documentation=https://github.com/batkabatka362-cmyk/shopai
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shopai
+Group=shopai
+WorkingDirectory=/opt/shopai
+EnvironmentFile=/opt/shopai/.env
+
+ExecStart=/opt/shopai/venv/bin/python -m api.server
+
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shopai-api
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/shopai/data /opt/shopai/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

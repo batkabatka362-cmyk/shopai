@@ -1,0 +1,32 @@
+{
+  "entry_id": "k_b20fd4b62e51",
+  "knowledge": {
+    "knowledge_id": "k_b20fd4b62e51",
+    "content": "Instagram ads convert 2x better than Facebook for young adults",
+    "knowledge_type": "correlation",
+    "category": "customer",
+    "subcategory": "acquisition",
+    "source_engine": "learning_loop",
+    "confidence": 0.8,
+    "tags": [
+      "customer",
+      "learning_loop",
+      "insight",
+      "conversion",
+      "marketing"
+    ],
+    "timestamp": "2026-04-02T11:55:52Z",
+    "structured_at": "2026-04-02T11:55:52Z",
+    "score": 0.89,
+    "score_breakdown": {
+      "reliability": 1.0,
+      "recency": 1.0,
+      "relevance": 0.8,
+      "impact": 0.7
+    }
+  },
+  "score": 0.89,
+  "stored_at": "2026-04-02T11:55:52Z",
+  "access_count": 0,
+  "last_accessed": "2026-04-02T11:55:52Z"
+}

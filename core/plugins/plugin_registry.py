@@ -46,8 +46,8 @@ class PluginRegistry:
         if plugin:
             try:
                 plugin.shutdown()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("plugin shutdown failed for %s: %s", plugin_name, exc)
             return True
         return False
 

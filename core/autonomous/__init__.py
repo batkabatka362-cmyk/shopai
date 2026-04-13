@@ -1,4 +1,7 @@
-"""AutonomousOperator — fully autonomous Shopify store operator.
+"""AutonomousOperator + AutonomousController — fully autonomous Shopify store operator.
+
+AutonomousOperator: Legacy one-shot operator (runs all intelligence modules once)
+AutonomousController: New self-improving continuous loop (data → analyze → decide → act → learn)
 
 ONE COMMAND runs everything:
   1. Fetch store data (products, customers, orders)
@@ -128,6 +131,28 @@ class AutonomousOperator:
                 "headline": desc["headline"][:60],
                 "has_bullets": len(desc["bullet_points"]) > 0,
             }
+
+        # 8. FULL SYSTEM LOOP — intelligence + agents + execution + learning (closed loop)
+        from core.full_system_loop import FullSystemLoop
+        fsl_result = FullSystemLoop().run(
+            {"products": products, "customers": customers, "orders": orders},
+            config={"goal": cfg.get("goal", "maximize_profit")},
+        )
+        results["full_loop"] = {
+            "status": fsl_result.get("status"),
+            "decision": fsl_result.get("phases", {}).get("intelligence", {}).get("decision", {}),
+            "confidence_score": fsl_result.get("phases", {}).get("intelligence", {}).get("confidence_score", 0),
+            "actions_dispatched": fsl_result.get("phases", {}).get("execution", {}).get("actions_dispatched", 0),
+            "outcome_recorded": fsl_result.get("phases", {}).get("learning", {}).get("outcome_recorded", False),
+        }
+
+        # 9. SYSTEM HEALTH — self-monitoring
+        from core.intelligence.system_health import SystemHealthReport
+        health_report = SystemHealthReport().generate()
+        results["system_health"] = {
+            "grade": health_report.get("overall_grade", "N/A"),
+            "sections": {k: v.get("grade", "N/A") for k, v in health_report.get("sections", {}).items()},
+        }
 
         elapsed = time.monotonic() - start
         self._cycle_count += 1

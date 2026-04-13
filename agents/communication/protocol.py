@@ -2,8 +2,24 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import datetime, timezone
+
+
+def _as_dict(value, label: str) -> dict:
+    """Coerce a value to a dict via deep-copy.
+
+    Replaces `dict(value)` which crashed with TypeError when the
+    caller passed a non-dict (string, list, None, etc.). The
+    deep-copy also prevents the publisher from mutating the
+    original after we've stored it in the envelope.
+    """
+    if isinstance(value, dict):
+        return copy.deepcopy(value)
+    if value is None:
+        return {}
+    return {label: value}
 
 
 class Protocol:
@@ -42,7 +58,11 @@ class Protocol:
             "type": msg_type,
             "sender": sender,
             "receiver": receiver,
-            "payload": dict(payload),
+            # Defensive deep-copy through _as_dict so a non-dict
+            # payload doesn't crash with TypeError, AND so the
+            # caller mutating the original after create_message
+            # doesn't bleed into the envelope.
+            "payload": _as_dict(payload, "raw"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "correlation_id": correlation_id or msg_id,
         }
@@ -52,7 +72,7 @@ class Protocol:
         cls, sender: str, receiver: str, action: str, params: dict
     ) -> dict:
         """Convenience: create a *request* message."""
-        payload = {"action": action, "params": dict(params)}
+        payload = {"action": action, "params": _as_dict(params, "raw")}
         return cls.create_message("request", sender, receiver, payload)
 
     @classmethod
@@ -60,7 +80,7 @@ class Protocol:
         cls, request_id: str, sender: str, result: dict, status: str = "success"
     ) -> dict:
         """Convenience: create a *response* that correlates to a prior request."""
-        payload = {"result": dict(result), "status": status}
+        payload = {"result": _as_dict(result, "raw"), "status": status}
         return cls.create_message(
             "response", sender, receiver="*", payload=payload, correlation_id=request_id
         )
@@ -68,7 +88,7 @@ class Protocol:
     @classmethod
     def create_broadcast(cls, sender: str, topic: str, payload: dict) -> dict:
         """Convenience: create a *broadcast* message (receiver is '*')."""
-        full_payload = {"topic": topic, **payload}
+        full_payload = {"topic": topic, **_as_dict(payload, "raw")}
         return cls.create_message("broadcast", sender, receiver="*", payload=full_payload)
 
     # ------------------------------------------------------------------
@@ -80,18 +100,25 @@ class Protocol:
         """Validate a message dict against the protocol schema.
 
         Returns (is_valid, list_of_errors).
+
+        Note: a present-but-None required field is treated as
+        MISSING. The previous version only flagged absent keys, so
+        a message with `sender: None` silently passed validation
+        even though every downstream consumer would crash on it.
         """
         errors: list[str] = []
 
         if not isinstance(message, dict):
             return False, ["Message must be a dict"]
 
-        # Check required fields
-        missing = cls.REQUIRED_FIELDS - set(message.keys())
+        # Treat present-but-None required fields as missing.
+        present_keys = {k for k, v in message.items() if v is not None}
+        missing = cls.REQUIRED_FIELDS - present_keys
         if missing:
             errors.append(f"Missing required fields: {sorted(missing)}")
 
-        # Type check
+        # Type check — explicit None now flagged via the missing
+        # check above, so this branch only runs for present values.
         msg_type = message.get("type")
         if msg_type is not None and msg_type not in cls.MESSAGE_TYPES:
             errors.append(

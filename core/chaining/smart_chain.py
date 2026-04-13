@@ -16,7 +16,7 @@ from typing import Any, Callable
 from utils.logger import get_logger
 from utils.helpers import generate_id
 from engines.registry import get_engine
-from engines.base.engine_types import EngineInput, EngineStatus
+from engines.base.engine_types import EngineInput, EngineStatus, normalize_engine_output
 
 logger = get_logger("chaining.smart_chain")
 
@@ -163,7 +163,13 @@ class SmartChain:
                     engine_name=engine_name,
                     data=copy.deepcopy(context),
                 )
-                output = engine.run(inp)
+                # Try dict-based input first (new flow.py engines), fall back to EngineInput (legacy)
+                dict_input = {"status": "success", "data": inp.data, "meta": {}, "error": None}
+                try:
+                    raw_output = engine.run(dict_input)
+                except (TypeError, AttributeError):
+                    raw_output = engine.run(inp)
+                output = normalize_engine_output(raw_output, inp)
                 elapsed = time.monotonic() - start
 
                 return {

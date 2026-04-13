@@ -1,196 +1,198 @@
-"""ChatAI — customer-facing chat intelligence.
+"""ChatAI — customer chat routed through the LLM adapter layer.
 
-Handles: FAQ, order status, product questions, recommendations.
-Works WITHOUT LLM via rule-based matching + product intelligence.
-When LLM available, uses it for natural language responses.
+History:
+
+  * **Pre-cleanup** ChatAI was a regex matcher that pretended
+    to be an AI. It returned hardcoded template strings that
+    had no relationship to the merchant's real policies, and
+    reported high confidence so callers thought they were
+    getting AI-generated answers.
+  * **Cleanup pass** ripped the regex + templates out and made
+    ``respond()`` return an ``adapter_required`` envelope so
+    consumers could detect the gap.
+  * **This migration** routes the message through the
+    ``SmartRouter`` using ``Capability.CHAT_COMPLETE``. The
+    router picks the best configured LLM adapter (Groq → Gemini
+    → DeepSeek → Mistral → Ollama → OpenRouter → HuggingFace)
+    with automatic fallback. When NO adapter is wired the
+    method still returns the placeholder envelope so existing
+    callers don't break.
+
+The class signature (``ChatAI().respond(message, context)``) is
+unchanged; new code just gets a real ``response`` field instead
+of an empty string.
 """
 from __future__ import annotations
 
-import re
 from typing import Any
+
+from utils.logger import get_logger
+
+logger = get_logger("intelligence.chat_ai")
+
+
+_SYSTEM_PROMPT = (
+    "You are a customer service assistant for an e-commerce store. "
+    "Be concise, friendly, and helpful. If you don't know the answer "
+    "or need order-specific information, say so honestly and suggest "
+    "the customer reach out to support. Never invent shipping policies, "
+    "return windows, or discount codes — answer only with information "
+    "the merchant has actually provided in the context."
+)
 
 
 class ChatAI:
-    """Customer chat intelligence — handles common questions with real answers."""
+    """Customer chat router. Delegates to the LLM adapter layer.
 
-    def respond(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Generate response to a customer message."""
-        msg = message.lower().strip()
+    The class is intentionally thin: ``respond()`` builds a
+    prompt from the customer message + optional context dict,
+    sends it through the SmartRouter, and returns either the
+    LLM's reply or the cleanup-era ``adapter_required``
+    placeholder when no adapter is available.
+    """
+
+    def respond(
+        self,
+        message: str,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Generate a response for *message*.
+
+        Args:
+            message: Raw customer text.
+            context: Optional dict with merchant data the LLM
+                should consider (recent orders, customer name,
+                product details, ...). Forwarded into the
+                prompt verbatim — caller controls what the LLM
+                sees.
+
+        Returns:
+            Structured envelope::
+
+                {
+                    "status": "ok" | "adapter_required" | "error",
+                    "response": "...",
+                    "intent": "unknown",      # placeholder for future
+                    "confidence": "low|med|high|none",
+                    "adapter": "groq" | "gemini" | ...,
+                    "model": "...",
+                    "message": "<echo of original>",
+                    "context": {...},
+                }
+
+            ``status = "adapter_required"`` is returned when no
+            LLM adapter is configured at all — same shape as the
+            cleanup-era placeholder so legacy consumers keep
+            working.
+        """
         ctx = context or {}
+        msg = message if isinstance(message, str) else ""
 
-        # Intent detection
-        intent = self._detect_intent(msg)
+        result = self._route_to_llm(msg, ctx)
+        if result is None:
+            # No router available at all — adapter package
+            # missing or import failed.
+            return self._placeholder(msg, ctx)
+        if not result.ok:
+            # Router exists but every candidate failed (no
+            # configured adapter, vendor outage, ...). Return
+            # the placeholder envelope so callers can detect
+            # the gap. Logged at debug level — the metrics
+            # collector already records the failure cause.
+            logger.debug(
+                "chat_ai router returned failure: %s",
+                type(result.error).__name__ if result.error else "?",
+            )
+            return self._placeholder(msg, ctx)
 
-        # Route to handler
-        handlers = {
-            "order_status": self._handle_order_status,
-            "shipping": self._handle_shipping,
-            "returns": self._handle_returns,
-            "product_question": self._handle_product_question,
-            "recommendation": self._handle_recommendation,
-            "pricing": self._handle_pricing,
-            "discount": self._handle_discount,
-            "contact": self._handle_contact,
-            "greeting": self._handle_greeting,
-            "thanks": self._handle_thanks,
-        }
-
-        handler = handlers.get(intent, self._handle_unknown)
-        response = handler(msg, ctx)
-        response["intent"] = intent
-        response["confidence"] = self._intent_confidence(msg, intent)
-
-        return response
-
-    def _detect_intent(self, msg: str) -> str:
-        """Detect customer intent from message."""
-        patterns = {
-            "order_status": r"(order|tracking|where|status|shipped|delivery|arrived)",
-            "shipping": r"(shipping|ship|deliver|how long|when.*arrive|transit|expedite)",
-            "returns": r"(return|refund|exchange|money back|send back|broken|damaged)",
-            "product_question": r"(size|color|material|compatible|work with|fit|feature|spec)",
-            "recommendation": r"(recommend|suggest|best|which one|help.*choose|looking for)",
-            "pricing": r"(price|cost|how much|expensive|cheap|worth)",
-            "discount": r"(discount|coupon|code|promo|sale|deal|offer|% off)",
-            "contact": r"(contact|email|phone|speak|human|agent|support|help)",
-            "greeting": r"^(hi|hello|hey|good morning|good afternoon)$",
-            "thanks": r"(thank|thanks|appreciate|great|awesome|perfect)",
-        }
-
-        for intent, pattern in patterns.items():
-            if re.search(pattern, msg):
-                return intent
-        return "unknown"
-
-    def _handle_order_status(self, msg: str, ctx: dict) -> dict[str, Any]:
-        order_id = ctx.get("order_id", "")
-        # Extract order number from message
-        numbers = re.findall(r'#?(\d{4,})', msg)
-        if numbers:
-            order_id = numbers[0]
-
-        if order_id:
-            return {
-                "response": f"Let me check order #{order_id} for you. Your order is being processed and you'll receive a tracking email once it ships. Typical delivery is 3-7 business days.",
-                "action": "lookup_order",
-                "order_id": order_id,
-                "quick_replies": ["When will it arrive?", "Can I change my order?", "I need help"],
-            }
-        return {
-            "response": "I'd be happy to check your order status! Could you please provide your order number? You can find it in your confirmation email.",
-            "action": "request_order_id",
-            "quick_replies": ["I don't have my order number", "Check my recent orders"],
-        }
-
-    def _handle_shipping(self, msg: str, ctx: dict) -> dict[str, Any]:
-        return {
-            "response": "📦 **Shipping Info:**\n\n• Standard shipping: 5-7 business days (Free over $50)\n• Express shipping: 2-3 business days ($9.99)\n• Same-day delivery: Available in select areas ($14.99)\n\nAll orders include tracking. You'll get a tracking email once your order ships!",
-            "action": "info",
-            "quick_replies": ["Track my order", "Do you ship internationally?", "Free shipping?"],
-        }
-
-    def _handle_returns(self, msg: str, ctx: dict) -> dict[str, Any]:
-        return {
-            "response": "🔄 **Return Policy:**\n\n• 30-day hassle-free returns\n• Free return shipping on all orders\n• Full refund processed within 3-5 business days\n• Exchanges available at no extra cost\n\nTo start a return, go to your order in your account or reply with your order number.",
-            "action": "info",
-            "quick_replies": ["Start a return", "Exchange for different size", "My item is damaged"],
-        }
-
-    def _handle_product_question(self, msg: str, ctx: dict) -> dict[str, Any]:
-        product = ctx.get("product", ctx.get("product_name", ""))
-        if product:
-            return {
-                "response": f"Great question about **{product}**! Here are the key details:\n\n• Premium quality materials\n• Designed for everyday use\n• Comes with a 1-year warranty\n\nIs there anything specific you'd like to know?",
-                "action": "product_info",
-                "product": product,
-                "quick_replies": ["What sizes are available?", "Is it compatible with...?", "See reviews"],
-            }
-        return {
-            "response": "I'd love to help with product information! Which product are you interested in?",
-            "action": "request_product",
-            "quick_replies": ["Browse bestsellers", "New arrivals", "On sale"],
-        }
-
-    def _handle_recommendation(self, msg: str, ctx: dict) -> dict[str, Any]:
-        # Use intelligence for recommendations
-        category = ""
-        if "gift" in msg: category = "gift"
-        elif "fitness" in msg or "workout" in msg: category = "fitness"
-        elif "tech" in msg or "electronics" in msg: category = "electronics"
-
-        response = "Based on what's trending, here are my top picks:\n\n"
-        response += "⭐ **#1 Bestseller** — Most popular this month\n"
-        response += "🔥 **#2 Trending** — Fastest growing in sales\n"
-        response += "💎 **#3 Best Value** — Highest rated for the price\n"
-
-        if category:
-            response += f"\nI've filtered for **{category}** products."
+        text = (result.data or {}).get("text", "") or ""
+        if not text.strip():
+            return self._placeholder(msg, ctx)
 
         return {
-            "response": response,
-            "action": "recommend",
-            "category": category,
-            "quick_replies": ["Show me more", "What's on sale?", "Best for gifting"],
+            "status": "ok",
+            "response": text.strip(),
+            "intent": "unknown",  # placeholder for future intent classifier
+            "confidence": "medium",
+            "adapter": result.adapter,
+            "model": result.model or "",
+            "tokens_in": result.tokens_in,
+            "tokens_out": result.tokens_out,
+            "message": msg,
+            "context": ctx,
         }
 
-    def _handle_pricing(self, msg: str, ctx: dict) -> dict[str, Any]:
-        return {
-            "response": "Our prices include free shipping on orders over $50! We also offer:\n\n• 10% off your first order (use code WELCOME10)\n• Bundle savings when you buy 2+ items\n• Price match guarantee\n\nWhich product's price would you like to know about?",
-            "action": "pricing_info",
-            "quick_replies": ["Show me deals", "Do you price match?", "Bundle options"],
-        }
+    # ── Internals ──────────────────────────────────────────────
 
-    def _handle_discount(self, msg: str, ctx: dict) -> dict[str, Any]:
-        return {
-            "response": "🎉 Here are our current offers:\n\n• **WELCOME10** — 10% off first order\n• **FREE shipping** on orders over $50\n• **Bundle & Save** — Buy 2, get 15% off\n\nEnter the code at checkout!",
-            "action": "discount_info",
-            "has_discount": True,
-            "codes": ["WELCOME10"],
-            "quick_replies": ["Apply WELCOME10", "More deals", "Shop now"],
-        }
+    def _route_to_llm(
+        self,
+        message: str,
+        context: dict[str, Any],
+    ) -> Any:
+        """Send the message through the SmartRouter using
+        ``Capability.CHAT_COMPLETE``. Returns the
+        ``AdapterResult`` (success or failure), or ``None`` if
+        the adapter package is unavailable / import failed.
+        """
+        try:
+            from core.adapters import Capability, get_router
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("adapter import failed: %s", exc)
+            return None
 
-    def _handle_contact(self, msg: str, ctx: dict) -> dict[str, Any]:
-        return {
-            "response": "I'm connecting you with our support team! In the meantime:\n\n📧 Email: support@store.com\n💬 Live chat: Available Mon-Fri 9am-5pm\n📞 Phone: 1-800-XXX-XXXX\n\nOur average response time is under 2 hours.",
-            "action": "escalate_to_human",
-            "quick_replies": ["Email support", "Call us", "I can wait for chat"],
-        }
-
-    def _handle_greeting(self, msg: str, ctx: dict) -> dict[str, Any]:
-        customer_name = ctx.get("customer_name", "")
-        greeting = f"Hi {customer_name}! " if customer_name else "Hi there! "
-        return {
-            "response": f"{greeting}👋 Welcome! I'm your shopping assistant. How can I help you today?",
-            "action": "greet",
-            "quick_replies": ["Track my order", "Product recommendations", "Current deals"],
-        }
-
-    def _handle_thanks(self, msg: str, ctx: dict) -> dict[str, Any]:
-        return {
-            "response": "You're welcome! 😊 Happy to help. Is there anything else I can assist you with?",
-            "action": "close",
-            "quick_replies": ["No, that's all", "Actually, one more thing", "Browse products"],
-        }
-
-    def _handle_unknown(self, msg: str, ctx: dict) -> dict[str, Any]:
-        return {
-            "response": "I'm not sure I understood that. Here are some things I can help with:\n\n• 📦 Order tracking\n• 🛍️ Product recommendations\n• 🔄 Returns & refunds\n• 💰 Pricing & discounts\n• 📞 Contact support\n\nOr just type your question and I'll do my best!",
-            "action": "fallback",
-            "quick_replies": ["Track order", "Recommendations", "Contact support"],
-        }
+        prompt = self._build_prompt(message, context)
+        try:
+            return get_router().execute(
+                Capability.CHAT_COMPLETE,
+                {
+                    "prompt": prompt,
+                    "system": _SYSTEM_PROMPT,
+                    "max_tokens": 400,
+                    "temperature": 0.3,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("chat_ai router raised: %s", exc)
+            return None
 
     @staticmethod
-    def _intent_confidence(msg: str, intent: str) -> str:
-        if intent == "unknown":
-            return "low"
-        # Multiple keyword matches = high confidence
-        patterns = {
-            "order_status": r"(order|tracking|where|status)",
-            "shipping": r"(shipping|deliver|how long)",
-            "returns": r"(return|refund|exchange)",
+    def _build_prompt(message: str, context: dict[str, Any]) -> str:
+        """Build the user-side prompt. Includes the merchant
+        context as a JSON-style block so the LLM can ground its
+        answer in real data instead of inventing policies."""
+        parts: list[str] = []
+        if context:
+            # Compact JSON-ish dump of the context — the LLM is
+            # very good at parsing this without prose framing.
+            import json
+            try:
+                ctx_dump = json.dumps(context, ensure_ascii=False, default=str)
+            except Exception:  # noqa: BLE001
+                ctx_dump = str(context)
+            parts.append(f"CONTEXT: {ctx_dump}")
+        parts.append(f"CUSTOMER MESSAGE: {message}")
+        parts.append(
+            "Reply directly to the customer in 1-3 sentences. "
+            "Do not preface with 'Sure' or 'I'd be happy'.",
+        )
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _placeholder(message: str, context: dict[str, Any]) -> dict[str, Any]:
+        """Return the cleanup-era ``adapter_required`` envelope.
+
+        Used when the LLM adapter layer cannot satisfy the
+        request (no adapter configured, every candidate failed,
+        empty response). The shape matches what the cleanup
+        commit pinned so existing tests + callers don't break.
+        """
+        return {
+            "status": "adapter_required",
+            "adapter": "chat_ai",
+            "message": message,
+            "context": context,
+            "response": "",
+            "action": "route_to_adapter",
+            "intent": "unknown",
+            "confidence": "none",
         }
-        pattern = patterns.get(intent)
-        if pattern:
-            matches = len(re.findall(pattern, msg))
-            return "high" if matches >= 2 else "medium"
-        return "medium"

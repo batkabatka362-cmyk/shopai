@@ -138,8 +138,8 @@ class PostProcessor:
         if json_match:
             try:
                 return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                logger.debug("post-processor JSON extraction failed: %s", exc)
 
         # Try key-value extraction
         kv_pattern = re.findall(r'(\w+):\s*(.+?)(?:\n|$)', text)
@@ -217,7 +217,7 @@ class PostProcessor:
                 if key in extracted:
                     try:
                         return float(extracted[key])
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as exc:
+                        logger.debug("post-processor score cast failed: %s", exc)
 
         return 5.0  # Default neutral score

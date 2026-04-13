@@ -6,6 +6,7 @@ Uses :class:`Scraper` for page fetching and respects robots.txt via
 from __future__ import annotations
 
 import logging
+import threading
 import urllib.parse
 import urllib.robotparser
 from collections import deque
@@ -47,13 +48,23 @@ class Crawler:
         user_agent: str = "ShopAI-Crawler/1.0",
         respect_robots: bool = True,
     ) -> None:
-        self._max_pages = max_pages
-        self._depth = depth
+        self._max_pages = max_pages if isinstance(max_pages, int) and max_pages > 0 else 100
+        self._depth = depth if isinstance(depth, int) and depth >= 0 else 3
         self._scraper = Scraper(rate_limit=rate_limit, user_agent=user_agent)
-        self._user_agent = user_agent
-        self._respect_robots = respect_robots
+        self._user_agent = user_agent if isinstance(user_agent, str) and user_agent else "ShopAI-Crawler/1.0"
+        self._respect_robots = bool(respect_robots)
         self._visited: set[str] = set()
+        # Track "robots.txt for base URL" and "unreachable"
+        # separately. Pre-audit the unreachable fallback
+        # mutated the stdlib parser's ``allow_all`` flag
+        # directly — that DID work (``allow_all`` is a real
+        # if undocumented attribute) but it's fragile: future
+        # stdlib refactors could rename it. Audit pass 44.
         self._robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
+        self._robots_unreachable: set[str] = set()
+        # Protect the two caches from concurrent crawl_site
+        # calls on the same Crawler instance.
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -76,14 +87,19 @@ class Crawler:
             List of page dicts: ``{"url": str, "depth": int, "fields": dict,
             "links": [str], "errors": [str]}``.
         """
-        max_pages = max_pages if max_pages is not None else self._max_pages
-        depth = depth if depth is not None else self._depth
+        if not isinstance(start_url, str) or not start_url:
+            return []
+        max_pages = max_pages if isinstance(max_pages, int) and max_pages > 0 else self._max_pages
+        depth = depth if isinstance(depth, int) and depth >= 0 else self._depth
 
-        self._visited.clear()
+        with self._lock:
+            self._visited.clear()
         results: list[dict[str, Any]] = []
 
         queue: deque[tuple[str, int]] = deque()
         queue.append((self._normalise_url(start_url), 0))
+
+        base = self._base_url(start_url)
 
         while queue and len(self._visited) < max_pages:
             url, current_depth = queue.popleft()
@@ -97,23 +113,34 @@ class Crawler:
             self._visited.add(url)
             logger.debug("Crawling [depth=%d] %s", current_depth, url)
 
-            page_record = self._scraper.scrape_page(
-                url,
-                selectors={
-                    "title": "title",
-                    "h1": "h1",
-                    "description": 'meta[name="description"]',
-                },
-            )
+            # Fetch the page HTML ONCE and use it for both
+            # the metadata extraction and the link discovery.
+            # Pre-audit this did two separate fetches per
+            # page (one via scrape_page, one via
+            # _extract_links → _fetch_raw_html), wasting
+            # bandwidth and slowing the crawl. Audit pass 44.
+            try:
+                raw_html = self._fetch_raw_html(url)
+            except ScraperError as exc:
+                results.append({
+                    "url": url,
+                    "depth": current_depth,
+                    "fields": {},
+                    "links": [],
+                    "errors": [str(exc)],
+                })
+                continue
+
+            page_record = self._parse_page_fields(url, raw_html)
             page_record["depth"] = current_depth
 
-            # Discover links on this page
-            links = self._extract_links(url)
+            # Discover links from the same HTML we already
+            # fetched — no second round trip.
+            links = self._parse_links(url, raw_html)
             page_record["links"] = links
             results.append(page_record)
 
             if current_depth < depth:
-                base = self._base_url(start_url)
                 for link in links:
                     norm = self._normalise_url(link)
                     if norm not in self._visited and self._same_origin(norm, base):
@@ -128,28 +155,31 @@ class Crawler:
         """Crawl *site_url* and return records only for product pages.
 
         Product pages are identified by URL patterns (``/products``, ``/item``,
-        etc.) or by the presence of JSON-LD ``Product`` schema.
+        etc.).
 
         Returns:
             List of product dicts extracted by :meth:`Scraper.extract_product_data`.
         """
+        if not isinstance(site_url, str) or not site_url:
+            return []
+
         all_pages = self.crawl_site(site_url)
         products: list[dict[str, Any]] = []
 
         for page in all_pages:
-            url = page.get("url", "")
-            if not self._looks_like_product_url(url):
+            url = page.get("url", "") if isinstance(page, dict) else ""
+            if not url or not self._looks_like_product_url(url):
                 continue
             try:
-                # Re-fetch the page to get full HTML for product extraction.
-                # We use a fresh scrape with empty selectors to just grab HTML.
-                raw = self._scraper.scrape_page(url, selectors={})
-                # The scraper stores raw HTML internally; we call extract on it.
-                # Since scrape_page already parsed, we ask the scraper for the
-                # product fields via a targeted call.
-                product = self._scraper.extract_product_data(
-                    self._fetch_raw_html(url)
-                )
+                # crawl_site already visited and fetched this
+                # page; re-fetch here ONCE to get full HTML for
+                # product extraction. Pre-audit did TWO extra
+                # fetches per product (an empty-selector
+                # scrape_page call plus _fetch_raw_html) — the
+                # first result was discarded unused. Audit
+                # pass 44.
+                raw_html = self._fetch_raw_html(url)
+                product = self._scraper.extract_product_data(raw_html)
                 product["url"] = url
                 products.append(product)
             except Exception as exc:  # noqa: BLE001
@@ -171,35 +201,83 @@ class Crawler:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _extract_links(self, url: str) -> list[str]:
-        """Fetch *url* and return all absolute ``href`` links found."""
-        try:
-            page = self._scraper.scrape_page(url, selectors={"_links": _LINK_SELECTOR})
-        except ScraperError:
-            return []
+    def _parse_page_fields(self, url: str, raw_html: str) -> dict[str, Any]:
+        """Extract title / h1 / description from already-fetched HTML.
 
-        # We need raw anchor hrefs.  Re-fetch without the abstraction.
-        try:
-            raw_html = self._fetch_raw_html(url)
-        except Exception:  # noqa: BLE001
-            return []
-
+        Mirrors what ``Scraper.scrape_page`` would return, but
+        operates on HTML we've ALREADY fetched — so the
+        crawler never does two network calls per page.
+        Audit pass 44.
+        """
+        result: dict[str, Any] = {"url": url, "fields": {}, "errors": []}
         try:
             from bs4 import BeautifulSoup  # type: ignore[import]
-            soup = BeautifulSoup(raw_html, "html.parser")
-            links: list[str] = []
-            for tag in soup.find_all("a", href=True):
-                abs_url = urllib.parse.urljoin(url, tag["href"])
-                # Strip fragments and query strings for deduplication
-                parsed = urllib.parse.urlparse(abs_url)
-                clean = parsed._replace(fragment="").geturl()
-                links.append(clean)
-            return links
         except ImportError:
-            # bs4 not available — do a simple regex fallback
+            result["errors"].append("BeautifulSoup (bs4) not installed")
+            return result
+
+        try:
+            soup = BeautifulSoup(raw_html, "html.parser")
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(f"HTML parse failed: {exc}")
+            return result
+
+        try:
+            title_el = soup.select_one("title")
+            result["fields"]["title"] = title_el.get_text(strip=True) if title_el else None
+            h1_el = soup.select_one("h1")
+            result["fields"]["h1"] = h1_el.get_text(strip=True) if h1_el else None
+            desc_el = soup.select_one('meta[name="description"]')
+            if desc_el:
+                # ``meta[name="description"]`` has its text in
+                # the ``content`` attribute, not as inner text.
+                content = desc_el.get("content") or desc_el.get_text(strip=True)
+                result["fields"]["description"] = content
+            else:
+                result["fields"]["description"] = None
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(f"field extraction failed: {exc}")
+
+        return result
+
+    def _parse_links(self, url: str, raw_html: str) -> list[str]:
+        """Extract absolute hrefs from already-fetched HTML.
+
+        No network call — operates on the HTML the caller
+        already has. Audit pass 44 replaces the pre-audit
+        ``_extract_links`` which fetched the page twice per
+        call (once via ``scrape_page`` with a dummy selector,
+        then again via ``_fetch_raw_html``).
+        """
+        if not isinstance(raw_html, str) or not raw_html:
+            return []
+        try:
+            from bs4 import BeautifulSoup  # type: ignore[import]
+        except ImportError:
             import re
             found = re.findall(r'href=["\']([^"\']+)["\']', raw_html)
             return [urllib.parse.urljoin(url, h) for h in found]
+
+        try:
+            soup = BeautifulSoup(raw_html, "html.parser")
+        except Exception:  # noqa: BLE001
+            return []
+
+        links: list[str] = []
+        for tag in soup.find_all("a", href=True):
+            href = tag.get("href")
+            if not isinstance(href, str):
+                continue
+            abs_url = urllib.parse.urljoin(url, href)
+            parsed = urllib.parse.urlparse(abs_url)
+            # Only follow http(s) links — the scraper's
+            # scheme allowlist will reject anything else, but
+            # filter early to keep the queue clean.
+            if parsed.scheme.lower() not in ("http", "https"):
+                continue
+            clean = parsed._replace(fragment="").geturl()
+            links.append(clean)
+        return links
 
     def _fetch_raw_html(self, url: str) -> str:
         """Fetch the raw HTML string for *url*."""
@@ -210,17 +288,33 @@ class Crawler:
         if not self._respect_robots:
             return True
         base = self._base_url(url)
-        if base not in self._robots_cache:
-            rp = urllib.robotparser.RobotFileParser()
-            robots_url = f"{base}/robots.txt"
-            rp.set_url(robots_url)
-            try:
-                rp.read()
-            except Exception:  # noqa: BLE001
-                # If robots.txt is unreachable, allow crawling
-                rp.allow_all = True  # type: ignore[attr-defined]
+
+        with self._lock:
+            cached = self._robots_cache.get(base)
+            unreachable = base in self._robots_unreachable
+        if unreachable:
+            # Pre-audit this path mutated ``rp.allow_all =
+            # True`` on the stdlib parser. That worked, but
+            # it relied on an undocumented attribute. Track
+            # unreachability explicitly instead so the intent
+            # is obvious at the call site. Audit pass 44.
+            return True
+        if cached is not None:
+            return cached.can_fetch(self._user_agent, url)
+
+        rp = urllib.robotparser.RobotFileParser()
+        robots_url = f"{base}/robots.txt"
+        rp.set_url(robots_url)
+        try:
+            rp.read()
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                self._robots_unreachable.add(base)
+            return True
+
+        with self._lock:
             self._robots_cache[base] = rp
-        return self._robots_cache[base].can_fetch(self._user_agent, url)
+        return rp.can_fetch(self._user_agent, url)
 
     @staticmethod
     def _normalise_url(url: str) -> str:

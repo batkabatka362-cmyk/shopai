@@ -2,43 +2,100 @@ name: ShopAI CI
 
 on:
   push:
-    branches: [main, claude/*]
+    branches: [main, "claude/*"]
   pull_request:
     branches: [main]
 
+# Cancel in-progress runs when a new commit is pushed to the same
+# branch / PR — we only care about the latest state.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   test:
+    name: Tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest pytest-cov
 
-      - name: Run tests
+      - name: Run pytest (full suite)
+        id: pytest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          SHOPAI_LOG_LEVEL: WARNING
+          SHOPAI_SKIP_CONFIG_CHECK: "1"
         run: |
-          PYTHONPATH=. python tests/run_tests.py
+          set -o pipefail
+          pytest tests/ --tb=long -v 2>&1 | tee /tmp/pytest-output.txt
+
+      - name: Post failure details as PR comment
+        if: failure() && steps.pytest.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Find the PR number for current branch (works for both push and PR events)
+          PR_NUM="${{ github.event.pull_request.number }}"
+          if [ -z "$PR_NUM" ] || [ "$PR_NUM" = "0" ]; then
+            PR_NUM=$(gh pr list --head "${{ github.ref_name }}" --json number -q '.[0].number' 2>/dev/null || true)
+          fi
+          echo "PR_NUM=$PR_NUM"
+          if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "null" ]; then
+            # Write body to temp file to avoid shell escaping issues
+            {
+              echo "## CI Test Failures (py${{ matrix.python-version }})"
+              echo '```'
+              tail -100 /tmp/pytest-output.txt || true
+              echo '```'
+            } > /tmp/pr-comment-body.md
+            gh pr comment "$PR_NUM" --body-file /tmp/pr-comment-body.md || echo "Failed to post PR comment"
+          else
+            echo "No PR found for branch ${{ github.ref_name }}"
+          fi
+
+      - name: Summarize failures
+        if: failure() && steps.pytest.outcome == 'failure'
+        run: |
+          echo "## Test Failures (py${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -100 /tmp/pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Engine import check
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
-          PYTHONPATH=. python -c "
+          python -c "
           from engines.registry import engine_count, list_engines
           import importlib
           errors = []
           for n in list_engines():
               try:
-                  importlib.import_module(f'engines.{n}.engine')
+                  importlib.import_module(f'engines.{n}')
               except Exception as e:
                   errors.append(f'{n}: {e}')
           print(f'Engines: {engine_count()}, Import errors: {len(errors)}')
@@ -47,13 +104,69 @@ jobs:
               exit(1)
           "
 
-      - name: System health check
+      - name: Config schema validation
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
-          PYTHONPATH=. python -c "
-          from core.self_monitor import HealthChecker
-          h = HealthChecker().check_all()
-          print(f'Health: {h[\"status\"]}')
-          if h['status'] != 'healthy':
-              print(h)
+          # Validate the schema itself loads and reports cleanly on
+          # an empty env (no .env file present in CI).
+          python -c "
+          from infrastructure.config.schema import validate_config, get_config_report
+          result = validate_config()
+          if result.errors:
+              print('Config schema errors:')
+              for e in result.errors:
+                  print(f'  {e}')
               exit(1)
+          rows = get_config_report()
+          print(f'Config schema: {len(rows)} fields validated')
           "
+
+      - name: DB migration dry-run
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          SHOPAI_DATA_DIR: /tmp/shopai-ci-data
+        run: |
+          mkdir -p /tmp/shopai-ci-data
+          # Construct every DB and verify the migration framework
+          # applies cleanly on a fresh data directory.
+          python -c "
+          from core.memory.intelligence import MemoryIntelligence
+          from core.brain.memory import IntelligentMemory
+          from data_pipeline.store.db import ShopAIDatabase
+          from core.system.ab_testing import ABTestingFramework
+          from core.ai.experience import ExperienceAccumulator
+          from core.data.architecture import DataArchitecture
+          from data_pipeline.tracking.event_collector import EventCollector
+          from data_pipeline.tracking.price_history import PriceHistory
+          from core.system.store_registry import StoreRegistry
+          from models.rl.pricing_agent import PricingAgent
+          from core.db.migrations import get_all_schema_info
+          MemoryIntelligence(); IntelligentMemory(); ShopAIDatabase()
+          ABTestingFramework(); ExperienceAccumulator(); DataArchitecture()
+          EventCollector(); PriceHistory(); StoreRegistry(); PricingAgent()
+          for info in get_all_schema_info():
+              print(f'{info[\"name\"]:25s} v{info[\"current_version\"]}/{info[\"target_version\"]} {info[\"status\"]}')
+              assert info['status'] == 'up_to_date', f'{info[\"name\"]} not up to date'
+          "
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: shopai:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -200,7 +200,7 @@ class Consensus:
                 scores[option] = scores.get(option, 0.0) + w
             return scores
 
-        if method in ("ranked_choice", "borda_count") and rankings is not None:
+        if method == "borda_count" and rankings is not None:
             scores_b: dict[str, float] = {}
             for voter, ranking in rankings.items():
                 n = len(ranking)
@@ -208,5 +208,22 @@ class Consensus:
                     points = n - 1 - pos
                     scores_b[option] = scores_b.get(option, 0.0) + points
             return scores_b
+
+        if method == "ranked_choice" and rankings is not None:
+            # Previously this branch returned BORDA scores for
+            # ranked_choice, which was misleading: the actual
+            # ranked_choice algorithm is instant-runoff and only
+            # cares about FIRST-PLACE votes per round. Operators
+            # looking at result["scores"] for a ranked_choice
+            # consensus saw Borda numbers that had nothing to do
+            # with the elimination logic that picked the winner.
+            # Now we return the first-place vote counts which
+            # actually correspond to the algorithm.
+            first_place: Counter = Counter()
+            for ranking in rankings.values():
+                if not isinstance(ranking, list) or not ranking:
+                    continue
+                first_place[ranking[0]] += 1
+            return dict(first_place)
 
         return {}

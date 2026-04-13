@@ -35,6 +35,19 @@ class DataCleaner:
         Returns:
             Cleaned list; records that are completely empty are dropped.
         """
+        # Defensive coercion of public entry point. Audit pass
+        # 41 — data_pipeline is the outer boundary where
+        # external / webhook / scraper data enters the system,
+        # so hardening here stops bad data at the edge instead
+        # of propagating into every downstream module.
+        if not isinstance(data, list):
+            return []
+        # Filter to dict-shaped records only. Scrapers and
+        # file loaders occasionally emit raw strings or None
+        # when the parser gave up; we don't want those to
+        # crash the rest of the pipeline on .items() / .get().
+        data = [r for r in data if isinstance(r, dict)]
+
         logger.info("Cleaning %d records", len(data))
         result = self.strip_whitespace(data)
         result = self.remove_nulls(result)
@@ -65,11 +78,23 @@ class DataCleaner:
         Returns:
             Deduplicated list in original order.
         """
+        if not isinstance(data, list):
+            return []
         seen: set[Any] = set()
         result: list[dict[str, Any]] = []
         for record in data:
+            if not isinstance(record, dict):
+                continue
             key = record.get(key_field)
-            if key is None or key not in seen:
+            # Keys that aren't hashable (e.g. a dict value) can't
+            # go in a set — treat them the same as missing and
+            # always keep the record.
+            try:
+                already_seen = key in seen
+            except TypeError:
+                result.append(dict(record))
+                continue
+            if key is None or not already_seen:
                 result.append(dict(record))
                 if key is not None:
                     seen.add(key)
@@ -94,9 +119,13 @@ class DataCleaner:
         Returns:
             New list with filled records.
         """
+        if not isinstance(data, list):
+            return []
         result: list[dict[str, Any]] = []
         filled = 0
         for record in data:
+            if not isinstance(record, dict):
+                continue
             new_record = dict(record)
             if new_record.get(field) is None:
                 new_record[field] = default_value
@@ -112,9 +141,12 @@ class DataCleaner:
         Returns:
             New list with whitespace-stripped string values.
         """
+        if not isinstance(data, list):
+            return []
         return [
             {k: v.strip() if isinstance(v, str) else v for k, v in record.items()}
             for record in data
+            if isinstance(record, dict)
         ]
 
     @staticmethod
@@ -128,8 +160,12 @@ class DataCleaner:
         Returns:
             Filtered list.
         """
+        if not isinstance(data, list):
+            return []
         result: list[dict[str, Any]] = []
         for record in data:
+            if not isinstance(record, dict):
+                continue
             if any(v is not None and v != "" for v in record.values()):
                 result.append(record)
         return result

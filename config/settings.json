@@ -1,0 +1,16 @@
+{
+  "store_id": "deguar",
+  "cycle_interval_seconds": 600,
+  "max_products_per_cycle": 15,
+  "max_shopify_calls_per_second": 2,
+  "auto_approve": false,
+  "enable_live_execution": false,
+  "enable_notifications": true,
+  "dashboard_port": 8080,
+  "dashboard_ui_port": 8082,
+  "memory_prune_days": 30,
+  "rl_learn_every_n_cycles": 5,
+  "strategy_expand_every_n_cycles": 5,
+  "log_level": "INFO",
+  "backup_before_shopify_changes": true
+}

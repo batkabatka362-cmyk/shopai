@@ -1,0 +1,63 @@
+{
+  "collapse-filter": false,
+  "search": "",
+  "showTags": true,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {
+      "query": "path:Concepts",
+      "color": {
+        "a": 1,
+        "rgb": 4355839
+      }
+    },
+    {
+      "query": "path:Errors",
+      "color": {
+        "a": 1,
+        "rgb": 16724736
+      }
+    },
+    {
+      "query": "path:Wins",
+      "color": {
+        "a": 1,
+        "rgb": 3394560
+      }
+    },
+    {
+      "query": "path:Decisions",
+      "color": {
+        "a": 1,
+        "rgb": 10027263
+      }
+    },
+    {
+      "query": "path:ShopAI",
+      "color": {
+        "a": 1,
+        "rgb": 16753920
+      }
+    },
+    {
+      "query": "path:Knowledge",
+      "color": {
+        "a": 1,
+        "rgb": 6724044
+      }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": true,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": true,
+  "centerStrength": 0.5,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 250
+}

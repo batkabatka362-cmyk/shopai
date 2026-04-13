@@ -1,0 +1,66 @@
+{
+  "record_id": "1fd9fa5bd197",
+  "timestamp": "2026-04-02T11:45:56Z",
+  "input_hash": "6612037860a11722",
+  "action_types": [
+    "create_product",
+    "launch_ad"
+  ],
+  "total_tasks": 2,
+  "success_count": 2,
+  "fail_count": 0,
+  "overall_status": "success",
+  "success_rate": 1.0,
+  "results": [
+    {
+      "task_id": "task_7373b6e8",
+      "result": {
+        "product_id": "shp_9bc18217eb",
+        "title": "Wireless Earbuds",
+        "price": 29.99,
+        "description": "Premium sound",
+        "status": "draft",
+        "created": true,
+        "handle": "wireless-earbuds",
+        "api_endpoint": "/admin/api/2024-01/products.json",
+        "api_method": "CREATE"
+      }
+    },
+    {
+      "task_id": "task_eb93e390",
+      "result": {
+        "campaign_id": "fb_4bb8108fa4",
+        "ad_set_id": "as_6e2f95e5",
+        "platform": "facebook",
+        "budget_daily": 50.0,
+        "currency": "USD",
+        "targeting": {
+          "age_min": 18,
+          "age_max": 34,
+          "interests": [
+            "technology",
+            "fashion",
+            "social_media"
+          ],
+          "demographics": "young_adults"
+        },
+        "status": "PENDING_REVIEW",
+        "api_endpoint": "/v18.0/act_{ad_account_id}/campaigns",
+        "api_method": "POST"
+      }
+    }
+  ],
+  "logs": [
+    "Parsed action 'create_product' at index 0 -> task_7373b6e8 (priority=2)",
+    "Parsed action 'launch_ad' at index 1 -> task_eb93e390 (priority=3)",
+    "Task task_7373b6e8 (create_product): VALID (9 checks passed)",
+    "Task task_eb93e390 (launch_ad): VALID (11 checks passed)",
+    "Tool selected for task_7373b6e8 (create_product): shopify_api [sync]",
+    "Tool selected for task_eb93e390 (launch_ad): facebook_ads [async]",
+    "Batch 0: sequential \u2014 1 task(s): task_7373b6e8",
+    "Batch 1: sequential \u2014 1 task(s): task_eb93e390",
+    "Task create_product (task_7373b6e8) executed successfully via shopify_api in 0.000s",
+    "Task launch_ad (task_eb93e390) executed successfully via facebook_ads in 0.000s",
+    "Execution complete: 2 succeeded, 0 failed, 0 partial out of 2 tasks (100.0% success rate, 0.001s total)"
+  ]
+}

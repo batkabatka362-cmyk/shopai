@@ -1,0 +1,37 @@
+{
+  "record_id": "af81cd5e95b6",
+  "timestamp": "2026-04-02T11:45:17Z",
+  "input_hash": "1d48dc239f8eeb4d",
+  "action_types": [
+    "create_product"
+  ],
+  "total_tasks": 1,
+  "success_count": 1,
+  "fail_count": 0,
+  "overall_status": "success",
+  "success_rate": 1.0,
+  "results": [
+    {
+      "task_id": "task_2ebf6146",
+      "result": {
+        "product_id": "shp_071e562fac",
+        "title": "Test",
+        "price": 9.99,
+        "description": "",
+        "status": "draft",
+        "created": true,
+        "handle": "test",
+        "api_endpoint": "/admin/api/2024-01/products.json",
+        "api_method": "CREATE"
+      }
+    }
+  ],
+  "logs": [
+    "Parsed action 'create_product' at index 0 -> task_2ebf6146 (priority=2)",
+    "Task task_2ebf6146 (create_product): VALID (9 checks passed)",
+    "Tool selected for task_2ebf6146 (create_product): shopify_api [sync]",
+    "Batch 0: sequential \u2014 1 task(s): task_2ebf6146",
+    "Task create_product (task_2ebf6146) executed successfully via shopify_api in 0.000s",
+    "Execution complete: 1 succeeded, 0 failed, 0 partial out of 1 tasks (100.0% success rate, 0.000s total)"
+  ]
+}

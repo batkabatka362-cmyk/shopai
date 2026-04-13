@@ -1,0 +1,79 @@
+{
+  "record_id": "c54ced169300",
+  "timestamp": "2026-04-02T11:25:20Z",
+  "strategy_type": "pricing",
+  "input_hash": "2795eec9dafc1f76",
+  "best_option": {
+    "scenario_id": "0dcecad359",
+    "label": "Conservative",
+    "parameters": {
+      "current_price": 23.992,
+      "cost": 9.6,
+      "monthly_units": 400
+    },
+    "total_score": 1.0,
+    "predicted_revenue": 1996.95,
+    "predicted_profit": 1216.05,
+    "risk_level": "low",
+    "confidence": 0.9314,
+    "reasoning": [
+      "'Conservative' ranked #1 with total score 1.00",
+      "Expected profit 1216.05 on revenue 1996.95",
+      "Risk level: low (loss probability 0.0%)",
+      "Key advantages: Strong margin (62%) provides cost buffer; Profitable even in worst-case (p5) scenarios",
+      "Conservative variation selected \u2014 prioritizes stability"
+    ],
+    "model_note": "LLaMA would synthesize richer justification narratives"
+  },
+  "all_scenarios": [
+    {
+      "scenario_id": "988bf283d6",
+      "label": "Baseline",
+      "description": "Unmodified base parameters \u2014 the control scenario.",
+      "parameters": {
+        "current_price": 29.99,
+        "cost": 12.0,
+        "monthly_units": 500
+      },
+      "variation_type": "baseline",
+      "tags": [
+        "pricing",
+        "control"
+      ]
+    },
+    {
+      "scenario_id": "c8a618e306",
+      "label": "Aggressive",
+      "description": "Parameters pushed 30% above baseline to test upside potential.",
+      "parameters": {
+        "current_price": 38.987,
+        "cost": 15.6,
+        "monthly_units": 650
+      },
+      "variation_type": "aggressive",
+      "tags": [
+        "pricing",
+        "high-risk",
+        "high-reward"
+      ]
+    },
+    {
+      "scenario_id": "0dcecad359",
+      "label": "Conservative",
+      "description": "Parameters reduced 20% below baseline for risk-averse stance.",
+      "parameters": {
+        "current_price": 23.992,
+        "cost": 9.6,
+        "monthly_units": 400
+      },
+      "variation_type": "conservative",
+      "tags": [
+        "pricing",
+        "low-risk",
+        "stable"
+      ]
+    }
+  ],
+  "confidence": 0.9314,
+  "outcome_actual": null
+}

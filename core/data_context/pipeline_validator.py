@@ -200,8 +200,8 @@ class PipelineValidator:
                     cleaned = str(original).replace("$", "").replace(",", "").replace(" ", "").strip()
                     data[field] = float(cleaned)
                     repairs.append({"field": field, "action": "converted_to_float", "from": original, "to": data[field]})
-                except (ValueError, AttributeError):
-                    pass
+                except (ValueError, AttributeError) as exc:
+                    logger.debug("pipeline field string-to-float conversion failed: %s", exc)
 
             elif issue["issue"] == "float_should_be_int":
                 original = data[field]

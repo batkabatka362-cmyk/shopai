@@ -1,0 +1,45 @@
+{
+  "record_id": "ac32c515d64b",
+  "timestamp": "2026-04-02T11:45:08Z",
+  "source_engine": "learning_loop",
+  "action_type": "collect_data",
+  "activity_id": "2b626218d8dd",
+  "decision": "approved",
+  "issues": [],
+  "risks": [
+    {
+      "risk_type": "financial",
+      "level": "low",
+      "score": 0.1,
+      "detail": "Financial risk score 0.10; daily remaining=$500.00/600.00"
+    },
+    {
+      "risk_type": "reputation",
+      "level": "low",
+      "score": 0.05,
+      "detail": "Reputation risk score 0.05 for 'collect_data'"
+    },
+    {
+      "risk_type": "operational",
+      "level": "low",
+      "score": 0.05,
+      "detail": "Operational risk score 0.05 for 'collect_data'"
+    },
+    {
+      "risk_type": "compliance",
+      "level": "low",
+      "score": 0.05,
+      "detail": "Compliance risk score 0.05 \u2014 0 violations, 0 policy failures"
+    }
+  ],
+  "risk_score": 0.0675,
+  "violations": [],
+  "override_applied": false,
+  "modifications": {},
+  "validation_score": 0.8364,
+  "feedback_summary": {
+    "recommendations": [],
+    "governance_confidence": 0.8798
+  },
+  "elapsed_seconds": 0.0
+}

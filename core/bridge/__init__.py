@@ -19,7 +19,7 @@ from typing import Any
 from utils.logger import get_logger
 from utils.helpers import generate_id
 from engines.registry import get_engine, is_registered
-from engines.base.engine_types import EngineInput, EngineStatus
+from engines.base.engine_types import EngineInput, EngineStatus, normalize_engine_output
 from agents.communication.message_bus import MessageBus
 from agents.communication.protocol import Protocol
 
@@ -190,7 +190,13 @@ class AgentEngineBridge:
         try:
             engine = get_engine(engine_name)
             inp = EngineInput(task_id=run_id, engine_name=engine_name, data=copy.deepcopy(data))
-            output = engine.run(inp)
+            # Try dict input (new engines), fall back to EngineInput (legacy)
+            dict_input = {"status": "success", "data": copy.deepcopy(data), "meta": {}, "error": None}
+            try:
+                raw_output = engine.run(dict_input)
+            except (TypeError, AttributeError):
+                raw_output = engine.run(inp)
+            output = normalize_engine_output(raw_output, inp)
             return {
                 "status": output.status.value,
                 "engine": engine_name,

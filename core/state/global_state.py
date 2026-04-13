@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import threading
 from typing import Any
 
@@ -36,7 +37,8 @@ class GlobalState:
             logger.info("Global state initialized")
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
+        with self._lock:
+            return self._data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
         with self._lock:
@@ -60,7 +62,12 @@ class GlobalState:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            return dict(self._data)
+            # Deep-copy so callers mutating nested dicts (e.g.
+            # `snapshot["active_sessions"]["x"] = True`) can't
+            # poison the canonical state. The previous shallow
+            # `dict(self._data)` exposed every nested mutable
+            # value to caller mutation.
+            return copy.deepcopy(self._data)
 
     def reset(self) -> None:
         with self._lock:

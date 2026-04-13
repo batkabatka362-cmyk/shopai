@@ -1,0 +1,31 @@
+{
+  "entry_id": "k_7b30c8792e95",
+  "knowledge": {
+    "knowledge_id": "k_7b30c8792e95",
+    "content": "seasonal: Sales spike on weekends",
+    "knowledge_type": "insight",
+    "category": "financial",
+    "subcategory": "revenue",
+    "source_engine": "learning_loop",
+    "confidence": 0.55,
+    "tags": [
+      "seasonal",
+      "pattern",
+      "revenue",
+      "learning_loop"
+    ],
+    "timestamp": "2026-04-02T11:55:52Z",
+    "structured_at": "2026-04-02T11:55:52Z",
+    "score": 0.695,
+    "score_breakdown": {
+      "reliability": 0.55,
+      "recency": 1.0,
+      "relevance": 0.8,
+      "impact": 0.4
+    }
+  },
+  "score": 0.695,
+  "stored_at": "2026-04-02T11:55:52Z",
+  "access_count": 0,
+  "last_accessed": "2026-04-02T11:55:52Z"
+}

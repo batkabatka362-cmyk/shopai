@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import copy
+import threading
 import uuid
 from datetime import datetime, timezone
+
+from utils.helpers import safe_float
 
 
 class Negotiation:
     """Facilitates structured negotiations between agents.
 
     Supports strategies: majority, unanimous, weighted.
+
+    Thread-safe: a single internal lock guards all mutations of
+    the negotiation table so concurrent propose/vote/resolve
+    calls from multiple cycles can't observe partial state.
     """
 
     STRATEGIES = ("majority", "unanimous", "weighted")
@@ -18,6 +26,7 @@ class Negotiation:
     def __init__(self) -> None:
         # negotiation_id -> negotiation record
         self._negotiations: dict[str, dict] = {}
+        self._lock = threading.Lock()
 
     @staticmethod
     def _new_id() -> str:
@@ -32,18 +41,23 @@ class Negotiation:
     ) -> str:
         """Create a new negotiation proposal. Returns the negotiation_id."""
         neg_id = self._new_id()
-        self._negotiations[neg_id] = {
+        # Defensive deep-copy of the proposal so caller mutation
+        # after propose() can't bleed into the stored record.
+        proposal_copy = copy.deepcopy(proposal) if isinstance(proposal, dict) else {"raw": proposal}
+        record = {
             "id": neg_id,
             "proposer": proposer,
-            "proposal": dict(proposal),
-            "recipients": list(recipients),
+            "proposal": proposal_copy,
+            "recipients": list(recipients) if recipients else [],
             "strategy": "majority",  # default, can be overridden via negotiate()
-            "votes": {},  # agent_id -> {vote, reason, timestamp}
+            "votes": {},  # agent_id -> {vote, reason, weight, timestamp}
             "status": "open",
             "result": None,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "resolved_at": None,
         }
+        with self._lock:
+            self._negotiations[neg_id] = record
         return neg_id
 
     def vote(
@@ -52,52 +66,70 @@ class Negotiation:
         agent_id: str,
         vote: str,
         reason: str = "",
+        weight: float = 1.0,
     ) -> None:
-        """Cast a vote on an open negotiation."""
-        if negotiation_id not in self._negotiations:
-            raise KeyError(f"Unknown negotiation: {negotiation_id}")
+        """Cast a vote on an open negotiation.
 
-        neg = self._negotiations[negotiation_id]
-        if neg["status"] != "open":
-            raise RuntimeError(f"Negotiation {negotiation_id} is already {neg['status']}")
-
+        `weight` is used by the weighted strategy. Defaults to 1.0
+        for plain accept/reject votes. The previous version
+        abused the `reason` field as a numeric weight, which was
+        semantically wrong (reason should be human-readable text)
+        and made it impossible to attach BOTH a real reason AND a
+        weight to a vote. Now they're separate parameters.
+        """
         if vote not in self.VALID_VOTES:
             raise ValueError(f"Invalid vote '{vote}'. Must be one of {self.VALID_VOTES}")
 
-        if agent_id not in neg["recipients"] and agent_id != neg["proposer"]:
-            raise ValueError(f"Agent {agent_id} is not a participant in this negotiation")
+        with self._lock:
+            if negotiation_id not in self._negotiations:
+                raise KeyError(f"Unknown negotiation: {negotiation_id}")
 
-        neg["votes"][agent_id] = {
-            "vote": vote,
-            "reason": reason,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+            neg = self._negotiations[negotiation_id]
+            if neg.get("status") != "open":
+                raise RuntimeError(
+                    f"Negotiation {negotiation_id} is already {neg.get('status')}"
+                )
+
+            recipients = neg.get("recipients") or []
+            if agent_id not in recipients and agent_id != neg.get("proposer"):
+                raise ValueError(
+                    f"Agent {agent_id} is not a participant in this negotiation"
+                )
+
+            neg["votes"][agent_id] = {
+                "vote": vote,
+                "reason": reason,
+                "weight": safe_float(weight, default=1.0) or 1.0,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
 
     def resolve(self, negotiation_id: str) -> dict:
         """Resolve a negotiation based on its strategy. Returns the result."""
-        if negotiation_id not in self._negotiations:
-            raise KeyError(f"Unknown negotiation: {negotiation_id}")
+        with self._lock:
+            if negotiation_id not in self._negotiations:
+                raise KeyError(f"Unknown negotiation: {negotiation_id}")
 
-        neg = self._negotiations[negotiation_id]
-        if neg["status"] != "open":
-            return dict(neg)
+            neg = self._negotiations[negotiation_id]
+            if neg.get("status") != "open":
+                return copy.deepcopy(neg)
 
-        strategy = neg["strategy"]
-        votes = neg["votes"]
+            strategy = neg.get("strategy", "majority")
+            votes = neg.get("votes") or {}
+            recipients = neg.get("recipients") or []
 
-        if strategy == "majority":
-            result = self._resolve_majority(votes)
-        elif strategy == "unanimous":
-            result = self._resolve_unanimous(votes, neg["recipients"])
-        elif strategy == "weighted":
-            result = self._resolve_weighted(votes)
-        else:
-            raise ValueError(f"Unknown strategy: {strategy}")
+            if strategy == "majority":
+                result = self._resolve_majority(votes)
+            elif strategy == "unanimous":
+                result = self._resolve_unanimous(votes, recipients)
+            elif strategy == "weighted":
+                result = self._resolve_weighted(votes)
+            else:
+                raise ValueError(f"Unknown strategy: {strategy}")
 
-        neg["status"] = "resolved"
-        neg["result"] = result
-        neg["resolved_at"] = datetime.now(timezone.utc).isoformat()
-        return dict(neg)
+            neg["status"] = "resolved"
+            neg["result"] = result
+            neg["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            return copy.deepcopy(neg)
 
     def negotiate(
         self,
@@ -107,37 +139,47 @@ class Negotiation:
     ) -> dict:
         """High-level helper: create a proposal, auto-accept from all agents, resolve.
 
-        Useful for programmatic negotiation where votes are pre-determined
-        in the proposal under key ``votes`` (a dict mapping agent_id -> vote string).
-        If no votes are provided, all agents auto-accept.
+        Programmatic negotiation can pre-supply votes via the
+        proposal dict under key ``votes`` (a dict mapping agent_id
+        → vote string). For weighted strategy, weights can be
+        supplied under key ``weights`` (agent_id → float). If no
+        votes are provided, all agents auto-accept.
         """
         if strategy not in self.STRATEGIES:
             raise ValueError(f"Unknown strategy '{strategy}'. Must be one of {self.STRATEGIES}")
 
+        agents = list(agents) if agents else []
         proposer = agents[0] if agents else "system"
-        recipients = agents[1:] if len(agents) > 1 else list(agents)
+        recipients = agents[1:] if len(agents) > 1 else []
 
         neg_id = self.propose(proposer, proposal, recipients)
-        neg = self._negotiations[neg_id]
-        neg["strategy"] = strategy
+        with self._lock:
+            neg = self._negotiations[neg_id]
+            neg["strategy"] = strategy
 
         # Cast votes (from proposal dict or auto-accept)
-        provided_votes = proposal.get("votes", {})
+        proposal_dict = proposal if isinstance(proposal, dict) else {}
+        provided_votes = proposal_dict.get("votes") or {}
+        provided_weights = proposal_dict.get("weights") or {}
         for agent_id in agents:
             v = provided_votes.get(agent_id, "accept")
             reason = provided_votes.get(f"{agent_id}_reason", "")
+            weight = safe_float(provided_weights.get(agent_id), default=1.0) or 1.0
             # Ensure the agent is listed as participant
-            if agent_id not in neg["recipients"] and agent_id != neg["proposer"]:
-                neg["recipients"].append(agent_id)
-            self.vote(neg_id, agent_id, v, reason)
+            with self._lock:
+                rec = self._negotiations[neg_id]
+                if agent_id not in rec["recipients"] and agent_id != rec["proposer"]:
+                    rec["recipients"].append(agent_id)
+            self.vote(neg_id, agent_id, v, reason=reason, weight=weight)
 
         return self.resolve(neg_id)
 
     def get_status(self, negotiation_id: str) -> dict:
-        """Return the current state of a negotiation."""
-        if negotiation_id not in self._negotiations:
-            raise KeyError(f"Unknown negotiation: {negotiation_id}")
-        return dict(self._negotiations[negotiation_id])
+        """Return a deep-copy of the current state of a negotiation."""
+        with self._lock:
+            if negotiation_id not in self._negotiations:
+                raise KeyError(f"Unknown negotiation: {negotiation_id}")
+            return copy.deepcopy(self._negotiations[negotiation_id])
 
     # ------------------------------------------------------------------
     # Resolution strategies
@@ -145,9 +187,13 @@ class Negotiation:
 
     @staticmethod
     def _resolve_majority(votes: dict) -> dict:
-        """Accept if more accept than reject (abstains ignored)."""
-        accept_count = sum(1 for v in votes.values() if v["vote"] == "accept")
-        reject_count = sum(1 for v in votes.values() if v["vote"] == "reject")
+        """Accept if more accept than reject (abstains ignored).
+
+        Defensive `.get("vote")` so a malformed vote record
+        (missing field) doesn't crash the resolution.
+        """
+        accept_count = sum(1 for v in votes.values() if v.get("vote") == "accept")
+        reject_count = sum(1 for v in votes.values() if v.get("vote") == "reject")
         total_cast = accept_count + reject_count
 
         accepted = accept_count > reject_count if total_cast > 0 else False
@@ -162,12 +208,10 @@ class Negotiation:
     @staticmethod
     def _resolve_unanimous(votes: dict, recipients: list[str]) -> dict:
         """Accept only if every recipient has voted accept."""
-        all_voted = all(
-            agent_id in votes for agent_id in recipients
-        )
+        all_voted = all(agent_id in votes for agent_id in recipients) if recipients else False
         all_accept = all(
-            v["vote"] == "accept" for v in votes.values()
-        )
+            v.get("vote") == "accept" for v in votes.values()
+        ) if votes else False
         return {
             "accepted": all_voted and all_accept,
             "method": "unanimous",
@@ -178,20 +222,24 @@ class Negotiation:
 
     @staticmethod
     def _resolve_weighted(votes: dict) -> dict:
-        """Weighted resolution: each vote may carry a weight (default 1).
+        """Weighted resolution.
 
-        Weight is taken from vote reason if it is a numeric string, otherwise 1.
+        The previous version abused `vote.reason` as a numeric
+        weight (parsing the human-readable text via float()),
+        which mixed two semantically distinct fields and made it
+        impossible to attach both a real reason AND a weight to
+        a vote. Now `vote.weight` is a first-class field set by
+        Negotiation.vote() and Negotiation.negotiate(); the
+        reason field is back to being free-form text.
         """
         accept_weight = 0.0
         reject_weight = 0.0
         for v in votes.values():
-            try:
-                weight = float(v["reason"]) if v["reason"] else 1.0
-            except (ValueError, TypeError):
-                weight = 1.0
-            if v["vote"] == "accept":
+            weight = safe_float(v.get("weight"), default=1.0) or 1.0
+            choice = v.get("vote")
+            if choice == "accept":
                 accept_weight += weight
-            elif v["vote"] == "reject":
+            elif choice == "reject":
                 reject_weight += weight
 
         total = accept_weight + reject_weight
@@ -199,6 +247,6 @@ class Negotiation:
         return {
             "accepted": accepted,
             "method": "weighted",
-            "accept_weight": accept_weight,
-            "reject_weight": reject_weight,
+            "accept_weight": round(accept_weight, 4),
+            "reject_weight": round(reject_weight, 4),
         }

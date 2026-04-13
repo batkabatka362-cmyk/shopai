@@ -21,7 +21,11 @@ from utils.logger import get_logger
 
 logger = get_logger("shared_memory.engine")
 
-_MEMORY_DIR = "/tmp/shopai_engine_memory"
+try:
+    from core.memory.storage_config import engine_memory_dir
+    _MEMORY_DIR = engine_memory_dir()
+except Exception:
+    _MEMORY_DIR = "/tmp/shopai_engine_memory"
 
 
 class EngineMemory:
@@ -119,8 +123,8 @@ class EngineMemory:
             }
             with open(path, "w") as f:
                 json.dump(state, f)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug("engine memory save failed: %s", exc)
 
     def _load(self) -> None:
         path = os.path.join(_MEMORY_DIR, f"{self._engine_name}.json")
@@ -131,5 +135,5 @@ class EngineMemory:
                     self._seen_inputs = set(state.get("seen_inputs", []))
                     self._successful_patterns = state.get("successful_patterns", [])
                     self._baselines = state.get("baselines", {})
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.debug("engine memory load failed: %s", exc)

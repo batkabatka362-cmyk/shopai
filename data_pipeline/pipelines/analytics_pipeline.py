@@ -11,6 +11,7 @@ from data_pipeline.processing.validator import DataValidator
 from data_pipeline.feature_engineering.feature_builder import FeatureBuilder
 from data_pipeline.feature_engineering.feature_store import FeatureStore
 from data_pipeline.ingestion.api.analytics_api import AnalyticsAPI
+from utils.helpers import safe_float
 
 logger = logging.getLogger("data_pipeline.analytics_pipeline")
 
@@ -45,12 +46,16 @@ def _compute_analytics_metrics(record: dict[str, Any]) -> dict[str, Any]:
     """
     import math
 
+    if not isinstance(record, dict):
+        return {}
     rec = dict(record)
 
-    sessions = float(rec.get("sessions") or 0)
-    revenue = float(rec.get("totalRevenue") or 0.0)
-    bounce_rate = float(rec.get("bounceRate") or 0.0)
-    page_views = float(rec.get("screenPageViews") or 0)
+    # Pre-audit bare float() crashed on non-numeric strings
+    # from GA4 / Mixpanel. Audit pass 50.
+    sessions = safe_float(rec.get("sessions"))
+    revenue = safe_float(rec.get("totalRevenue"))
+    bounce_rate = safe_float(rec.get("bounceRate"))
+    page_views = safe_float(rec.get("screenPageViews"))
 
     # session_value: revenue per session
     rec["session_value"] = round(revenue / sessions, 4) if sessions > 0 else 0.0
@@ -120,6 +125,10 @@ class AnalyticsPipeline:
             }``
         """
         start = time.monotonic()
+        # Defensive: coerce None / non-list at entry so
+        # ``len(raw_analytics)`` can't crash. Audit pass 50.
+        if not isinstance(raw_analytics, list):
+            raw_analytics = []
         logger.info("AnalyticsPipeline.run: %d raw records", len(raw_analytics))
 
         # Step 1: Clean
@@ -132,19 +141,19 @@ class AnalyticsPipeline:
         normalized = self._normalizer.normalize(valid, _ANALYTICS_NORM_CONFIG)
 
         # Step 4: Compute KPIs
-        records = [_compute_analytics_metrics(r) for r in normalized]
+        records = [_compute_analytics_metrics(r) for r in normalized if isinstance(r, dict)]
 
         # Step 5: Store
         self._feature_store.store("analytics_latest", records)
 
         duration = round(time.monotonic() - start, 3)
 
-        total_sessions = sum(float(r.get("sessions") or 0) for r in records)
-        total_revenue = sum(float(r.get("totalRevenue") or 0) for r in records)
+        total_sessions = sum(safe_float(r.get("sessions")) for r in records)
+        total_revenue = sum(safe_float(r.get("totalRevenue")) for r in records)
         avg_session_value = (
             round(total_revenue / total_sessions, 4) if total_sessions > 0 else 0.0
         )
-        bounce_rates = [float(r.get("bounce_rate_normalized") or 0) for r in records]
+        bounce_rates = [safe_float(r.get("bounce_rate_normalized")) for r in records]
         avg_bounce_rate = (
             round(sum(bounce_rates) / len(bounce_rates), 4) if bounce_rates else 0.0
         )

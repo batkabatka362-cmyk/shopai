@@ -9,15 +9,17 @@ Uses Intelligence modules to enrich ALL engine data with real algorithms:
 from __future__ import annotations
 
 import copy
-import math
+import threading as _threading
 from typing import Any
 
 from utils.logger import get_logger
+from utils.helpers import safe_float, safe_int
 
 logger = get_logger("step_logic.pre")
 
 # Lazy-load intelligence modules
 _pricing_intel = None
+_pricing_intel_lock = _threading.Lock()
 _rec_intel = None
 _email_intel = None
 _seo_intel = None
@@ -26,8 +28,10 @@ _seo_intel = None
 def _get_pricing():
     global _pricing_intel
     if _pricing_intel is None:
-        from core.intelligence.pricing_intelligence import PricingIntelligence
-        _pricing_intel = PricingIntelligence()
+        with _pricing_intel_lock:
+            if _pricing_intel is None:
+                from core.intelligence.pricing_intelligence import PricingIntelligence
+                _pricing_intel = PricingIntelligence()
     return _pricing_intel
 
 
@@ -91,8 +95,8 @@ class PreProcessor:
                 comps = data.get("competitor_data", data.get("competitor_prices", []))
                 if isinstance(comps, list) and comps:
                     p = products[0]
-                    price = float(p.get("price", 0))
-                    cost = float(p.get("cost", 0))
+                    price = safe_float(p.get("price"))
+                    cost = safe_float(p.get("cost"))
                     if price > 0 and cost > 0:
                         data["_competitor_intel"] = _get_pricing().competitor_response(price, cost, comps)
 
@@ -144,11 +148,11 @@ class PreProcessor:
             # Financial unit economics for any product with cost data
             if isinstance(products, list) and products and isinstance(products[0], dict):
                 p = products[0]
-                if float(p.get("cost", 0)) > 0:
+                if safe_float(p.get("cost")) > 0:
                     from core.intelligence.financial_intelligence import FinancialIntelligence
                     fi = FinancialIntelligence()
-                    ad_spend = float(data.get("ad_spend", data.get("marketing_spend", 0)))
-                    orders_count = int(data.get("order_count", data.get("total_orders", 0)))
+                    ad_spend = safe_float(data.get("ad_spend", data.get("marketing_spend", 0)))
+                    orders_count = safe_int(data.get("order_count", data.get("total_orders", 0)))
                     data["_financial_intel"] = fi.unit_economics(p, ad_spend=ad_spend, orders=max(orders_count, 1))
 
             # Competitor analysis if competitor data present
@@ -223,58 +227,28 @@ class PreProcessor:
         return data
 
     def _score_product(self, product: dict[str, Any]) -> dict[str, Any]:
-        """Score a product on multiple dimensions."""
-        scored = dict(product)
-
-        price = float(product.get("price", 0))
-        cost = float(product.get("cost", 0))
-        weight = float(product.get("weight", 0))
-        search_volume = float(product.get("search_volume", 0))
-        competition = float(product.get("competition", 1))
-
-        # Margin score (0-10)
-        margin_pct = (price - cost) / price * 100 if price > 0 and cost > 0 else 0
-        margin_score = min(margin_pct / 10, 10)
-
-        # Demand score (0-10)
-        demand_score = min(math.log1p(search_volume) / math.log1p(10000) * 10, 10) if search_volume > 0 else 0
-
-        # Competition score (0-10, lower competition = higher score)
-        comp_score = max(10 - math.log1p(competition), 0) if competition > 0 else 10
-
-        # Shipping score (0-10, lighter = better)
-        ship_score = max(10 - weight * 0.5, 0) if weight > 0 else 5
-
-        # Total weighted score
-        total = (
-            margin_score * 0.35
-            + demand_score * 0.30
-            + comp_score * 0.20
-            + ship_score * 0.15
-        )
-
-        scored["margin_pct"] = round(margin_pct, 2)
-        scored["margin_score"] = round(margin_score, 2)
-        scored["demand_score"] = round(demand_score, 2)
-        scored["competition_score"] = round(comp_score, 2)
-        scored["shipping_score"] = round(ship_score, 2)
-        scored["total_score"] = round(total, 2)
-        scored["viable"] = total >= 5.0 and margin_pct >= 20
-
-        return scored
+        """Score a product — delegates to SmartExecutor's 7-factor model."""
+        from core.step_logic.smart_executor import SmartExecutor
+        scored = SmartExecutor()._score_products([product])
+        return scored[0] if scored else dict(product)
 
     @staticmethod
     def _analyze_pricing(data: dict[str, Any]) -> dict[str, Any]:
         """Pre-compute pricing analysis."""
+        from utils.helpers import safe_float
         prices = []
         for key in ("products", "product_data"):
             items = data.get(key, [])
             if isinstance(items, list):
                 for item in items:
                     if isinstance(item, dict) and "price" in item:
-                        prices.append(float(item["price"]))
+                        p = safe_float(item["price"])
+                        if p > 0:
+                            prices.append(p)
             elif isinstance(items, dict) and "price" in items:
-                prices.append(float(items["price"]))
+                p = safe_float(items["price"])
+                if p > 0:
+                    prices.append(p)
 
         if not prices:
             return {"has_pricing": False}

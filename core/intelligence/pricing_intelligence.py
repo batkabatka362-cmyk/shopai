@@ -6,15 +6,37 @@ Not placeholder — actual algorithms:
   - Competitor price response strategy
   - A/B price test analysis with statistical significance
   - Price sensitivity by customer segment
+  - LLM-backed pricing recommendations (NEW)
+
+The deterministic algorithms always run. The LLM layer is OPTIONAL
+and called via `recommend_with_llm()` — when no LLM is wired, the
+heuristic computations are returned with a "no LLM" note.
 """
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Optional
+
+# ── Statistical thresholds ───────────────────────────────────
+R_SQUARED_GOOD = 0.7          # regression fit quality thresholds
+R_SQUARED_MODERATE = 0.4
+Z_SCORE_001 = 3.29            # z-score → p-value lookup table
+Z_SCORE_01 = 2.58
+Z_SCORE_05 = 1.96
+Z_SCORE_10 = 1.65
+SIGNIFICANCE_LEVEL = 0.05     # default p-value threshold
+# ── Elasticity interpretation ranges ─────────────────────────
+ELASTICITY_VERY_INELASTIC = 0.5
+ELASTICITY_INELASTIC = 1.0
+ELASTICITY_UNIT = 1.5
+ELASTICITY_ELASTIC = 2.5
 
 
 class PricingIntelligence:
     """Real pricing algorithms for e-commerce."""
+
+    def __init__(self, *, llm: Any = None) -> None:
+        self._llm = llm
 
     def compute_demand_curve(self, sales_history: list[dict[str, Any]]) -> dict[str, Any]:
         """Estimate demand curve from historical price-quantity data.
@@ -79,7 +101,7 @@ class PricingIntelligence:
             "elasticity_type": "elastic" if abs(elasticity) > 1 else "inelastic",
             "intercept": round(a, 4),
             "r_squared": round(r_squared, 4),
-            "model_fit": "good" if r_squared > 0.7 else "moderate" if r_squared > 0.4 else "poor",
+            "model_fit": "good" if r_squared > R_SQUARED_GOOD else "moderate" if r_squared > R_SQUARED_MODERATE else "poor",
             "optimal_price": round(best_price, 2),
             "max_revenue_observed": round(best_revenue, 2),
             "price_sensitivity_zones": zones,
@@ -189,13 +211,13 @@ class PricingIntelligence:
         # Approximate p-value (two-tailed)
         # Using normal approximation
         abs_z = abs(z_score)
-        if abs_z > 3.29: p_value = 0.001
-        elif abs_z > 2.58: p_value = 0.01
-        elif abs_z > 1.96: p_value = 0.05
-        elif abs_z > 1.65: p_value = 0.10
+        if abs_z > Z_SCORE_001: p_value = 0.001
+        elif abs_z > Z_SCORE_01: p_value = 0.01
+        elif abs_z > Z_SCORE_05: p_value = 0.05
+        elif abs_z > Z_SCORE_10: p_value = 0.10
         else: p_value = 0.20
 
-        significant = p_value < 0.05
+        significant = p_value < SIGNIFICANCE_LEVEL
         lift = ((rate_b - rate_a) / rate_a * 100) if rate_a > 0 else 0
 
         winner = "B" if rpv_b > rpv_a and significant else "A" if rpv_a > rpv_b and significant else "no_winner"
@@ -225,10 +247,10 @@ class PricingIntelligence:
 
     @staticmethod
     def _interpret_elasticity(e: float) -> str:
-        if abs(e) < 0.5: return "Very inelastic — large price changes cause small demand changes. Strong pricing power."
-        if abs(e) < 1.0: return "Inelastic — demand relatively insensitive to price. Can increase prices."
-        if abs(e) < 1.5: return "Unit elastic — price and demand change proportionally. Price carefully."
-        if abs(e) < 2.5: return "Elastic — customers are price sensitive. Compete on price or differentiate."
+        if abs(e) < ELASTICITY_VERY_INELASTIC: return "Very inelastic — large price changes cause small demand changes. Strong pricing power."
+        if abs(e) < ELASTICITY_INELASTIC: return "Inelastic — demand relatively insensitive to price. Can increase prices."
+        if abs(e) < ELASTICITY_UNIT: return "Unit elastic — price and demand change proportionally. Price carefully."
+        if abs(e) < ELASTICITY_ELASTIC: return "Elastic — customers are price sensitive. Compete on price or differentiate."
         return "Very elastic — small price changes cause large demand swings. Price-driven market."
 
     @staticmethod
@@ -240,3 +262,118 @@ class PricingIntelligence:
         if winner == "A":
             return f"Keep variant A (${a.get('price')}) — performs better with statistical significance."
         return "Results inconclusive. Consider testing different price points."
+
+    # ── LLM-backed pricing recommendation ─────────────────────
+
+    def recommend_with_llm(
+        self,
+        product: dict[str, Any],
+        *,
+        recent_sales: Optional[list[dict]] = None,
+        competitor_prices: Optional[list[float]] = None,
+    ) -> dict[str, Any]:
+        """Ask the LLM for a concrete pricing recommendation.
+
+        Combines:
+            - the deterministic competitor_response analysis
+            - the LLM's reasoning over the same numbers + product context
+
+        Returns:
+            {
+                "heuristic": <competitor_response output>,
+                "llm": {action, new_price, delta_pct, reasoning,
+                        confidence, risks} or {"error": ...},
+                "source": "llm" | "heuristic_only",
+            }
+
+        When no LLM is wired, returns the heuristic result with
+        source="heuristic_only" so callers always get an answer.
+        """
+        from utils.finance import margin_pct
+
+        price = float(product.get("price", 0) or 0)
+        cost = float(product.get("cost", 0) or 0)
+        margin = margin_pct(price, cost, require_cost=False)
+
+        # Always run the heuristic
+        comp_dicts = [
+            {"price": p} for p in (competitor_prices or [])
+        ]
+        heuristic = self.competitor_response(price, cost, comp_dicts)
+
+        result: dict[str, Any] = {
+            "heuristic": heuristic,
+            "llm": None,
+            "source": "heuristic_only",
+        }
+
+        llm = self._get_llm()
+        if llm is None:
+            return result
+        try:
+            if not llm.is_available():
+                return result
+        except Exception:  # noqa: BLE001
+            return result
+
+        try:
+            from core.system.prompt_library import get_prompt
+        except Exception:  # noqa: BLE001
+            return result
+
+        template = get_prompt("decision.pricing_recommendation")
+        if template is None:
+            return result
+
+        rendered = template.render(
+            product_name=product.get("name", product.get("title", "Unknown")),
+            price=price,
+            cost=cost,
+            margin_pct=round(margin, 1),
+            recent_sales=len(recent_sales or []),
+            competitor_prices=", ".join(
+                f"${p:.2f}" for p in (competitor_prices or [])
+            ) or "(none)",
+        )
+
+        try:
+            structured = llm.ask_structured(
+                role=template.role,
+                prompt=rendered.user,
+                system_prompt=rendered.system,
+                schema_hint=template.schema_hint,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["llm"] = {"error": str(exc)[:200]}
+            return result
+
+        if not getattr(structured, "ok", False):
+            result["llm"] = {"error": structured.error or "unparseable"}
+            return result
+
+        data = structured.data or {}
+        # Normalize the LLM response shape
+        try:
+            llm_response = {
+                "action": str(data.get("action", "hold")),
+                "new_price": float(data.get("new_price", price)),
+                "delta_pct": float(data.get("delta_pct", 0)),
+                "reasoning": str(data.get("reasoning", ""))[:500],
+                "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
+                "risks": list(data.get("risks", []))[:5],
+            }
+            result["llm"] = llm_response
+            result["source"] = "llm"
+        except (TypeError, ValueError) as exc:
+            result["llm"] = {"error": f"normalization failed: {exc}"}
+        return result
+
+    def _get_llm(self) -> Any:
+        """Lazily resolve the LLM adapter."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from core.system.llm_adapter import get_llm
+            return get_llm()
+        except Exception:  # noqa: BLE001
+            return None

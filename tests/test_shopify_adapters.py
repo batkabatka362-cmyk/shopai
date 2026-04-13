@@ -1,0 +1,839 @@
+"""Tests for Phase 2 Shopify Native adapters.
+
+Real GraphQL calls are forbidden — every test patches the
+adapter's ``_gql`` method (or where appropriate, the underlying
+``ShopifyGraphQL.query``) to return canned responses.
+
+Coverage:
+
+  * Each adapter's metadata (name, capabilities, category, priority)
+  * Configuration gating (env vars + explicit constructor args)
+  * Happy-path GraphQL → AdapterResult success for every operation
+  * Vendor schema translation (GID normalisation, risk score
+    map, fulfillmentOrders → fulfillmentCreate two-step dance,
+    metafields camelCase translation)
+  * userErrors → AdapterValidationError mapping
+  * GraphQL "errors" envelope → AdapterError mapping
+  * Bootstrap registers all 4 adapters
+"""
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+
+from core.adapters import (
+    AdapterCategory,
+    AdapterResult,
+    AdapterValidationError,
+    Capability,
+    get_registry,
+    reset_config,
+    reset_metrics,
+    reset_registry,
+    reset_router,
+)
+from core.adapters.errors import AdapterAuthError, AdapterError
+
+
+@pytest.fixture(autouse=True)
+def _clean(monkeypatch):
+    """Wipe every singleton + Shopify env var between tests."""
+    for var in ("SHOPAI_SHOPIFY_URL", "SHOPAI_SHOPIFY_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    reset_config()
+    reset_registry()
+    reset_metrics()
+    reset_router()
+    yield
+    reset_config()
+    reset_registry()
+    reset_metrics()
+    reset_router()
+
+
+# ── ShopifyBaseAdapter ───────────────────────────────────────
+
+
+class TestShopifyBaseAdapter:
+    def test_unconfigured_without_credentials(self):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter()
+        assert not a.is_configured()
+
+    def test_configured_via_constructor(self):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter(
+            shop_url="store.myshopify.com",
+            access_token="shpat_test",
+        )
+        assert a.is_configured()
+
+    def test_configured_via_env(self, monkeypatch):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        monkeypatch.setenv("SHOPAI_SHOPIFY_URL", "store.myshopify.com")
+        monkeypatch.setenv("SHOPAI_SHOPIFY_KEY", "shpat_test")
+        reset_config()
+        a = ShopifyRiskAdapter()
+        assert a.is_configured()
+
+    def test_constructor_overrides_env(self, monkeypatch):
+        """Explicit credentials win over env vars (so multi-store
+        setups can each have their own adapter instance)."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        monkeypatch.setenv("SHOPAI_SHOPIFY_URL", "env.myshopify.com")
+        monkeypatch.setenv("SHOPAI_SHOPIFY_KEY", "env_token")
+        reset_config()
+        a = ShopifyRiskAdapter(
+            shop_url="explicit.myshopify.com",
+            access_token="explicit_token",
+        )
+        shop, token = a._resolve_credentials()
+        assert shop == "explicit.myshopify.com"
+        assert token == "explicit_token"
+
+    def test_category_is_shopify_native(self):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        for cls in (
+            ShopifyRiskAdapter,
+            ShopifyInventoryAdapter,
+            ShopifyFulfillmentAdapter,
+            ShopifyMetafieldAdapter,
+        ):
+            assert cls().category == AdapterCategory.SHOPIFY_NATIVE
+            assert cls().priority == 100  # Native always preferred
+
+    def test_user_errors_raise_validation_error(self):
+        """Shopify mutations return userErrors next to the
+        success payload — the base must raise
+        AdapterValidationError so the router does NOT fall back."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+        with pytest.raises(AdapterValidationError) as exc:
+            a._check_user_errors(
+                {
+                    "fulfillmentCreate": {
+                        "userErrors": [
+                            {"field": ["fulfillment", "lineItems"],
+                             "message": "Line items missing"}
+                        ],
+                    },
+                },
+                "fulfillmentCreate",
+            )
+        assert "Line items missing" in str(exc.value)
+
+    def test_gql_envelope_errors_become_adapter_error(self, monkeypatch):
+        """When Shopify returns HTTP 200 but with ``errors`` in
+        the envelope, the base must raise ``AdapterError``."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        # Patch the lazily-built client method
+        def fake_make_client():
+            class _FakeClient:
+                def query(self, q, v):
+                    return {
+                        "data": None,
+                        "errors": [
+                            {"message": "Field 'badField' doesn't exist"}
+                        ],
+                    }
+            return _FakeClient()
+
+        monkeypatch.setattr(a, "_make_client", fake_make_client)
+        with pytest.raises(AdapterError) as exc:
+            a._gql("query { x }")
+        assert "GraphQL errors" in str(exc.value)
+
+
+# ── ShopifyRiskAdapter ───────────────────────────────────────
+
+
+class TestShopifyRiskAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter()
+        assert a.name == "shopify_risk"
+        assert Capability.SHOPIFY_ASSESS_RISK in a.capabilities
+        assert a.cost_per_call == 0.0
+
+    def test_to_gid_accepts_numeric(self):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        assert ShopifyRiskAdapter._to_gid("12345") == "gid://shopify/Order/12345"
+        assert ShopifyRiskAdapter._to_gid(12345) == "gid://shopify/Order/12345"
+
+    def test_to_gid_passes_through_existing_gid(self):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        gid = "gid://shopify/Order/777"
+        assert ShopifyRiskAdapter._to_gid(gid) == gid
+
+    def test_assess_risk_high(self):
+        """Happy path: HIGH risk order with multiple facts."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "order": {
+                "id": "gid://shopify/Order/999",
+                "name": "#1042",
+                "risk": {
+                    "recommendation": "CANCEL",
+                    "assessments": [{
+                        "riskLevel": "HIGH",
+                        "provider": {"handle": "shopify_protect", "features": []},
+                        "facts": [
+                            {"description": "Address mismatch",
+                             "sentiment": "NEGATIVE"},
+                            {"description": "Card AVS failed",
+                             "sentiment": "NEGATIVE"},
+                        ],
+                    }],
+                },
+                "shopifyProtect": {
+                    "status": "ACTIVE",
+                    "eligibility": {"status": "ELIGIBLE"},
+                },
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ASSESS_RISK,
+                {"order_id": "999"},
+            )
+
+        assert result.ok
+        assert result.data["risk_level"] == "HIGH"
+        assert result.data["score"] == 0.9
+        assert result.data["recommendation"] == "cancel"
+        assert len(result.data["facts"]) == 2
+        assert result.data["protect_eligible"] is True
+        assert result.data["found"] is True
+
+    def test_assess_risk_picks_highest_severity(self):
+        """If multiple assessments are returned, the adapter
+        must pick the highest-severity one — that matches
+        Shopify admin behaviour."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "name": "#1",
+                "risk": {
+                    "assessments": [
+                        {"riskLevel": "LOW", "facts": []},
+                        {"riskLevel": "HIGH", "facts": []},
+                        {"riskLevel": "MEDIUM", "facts": []},
+                    ],
+                },
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ASSESS_RISK,
+                {"order_id": "1"},
+            )
+        assert result.data["risk_level"] == "HIGH"
+        assert result.data["score"] == 0.9
+
+    def test_assess_risk_order_not_found(self):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"order": None}):
+            result = a.execute(
+                Capability.SHOPIFY_ASSESS_RISK,
+                {"order_id": "ghost"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["risk_level"] == "UNKNOWN"
+
+    def test_assess_risk_missing_order_id_raises(self):
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        a = ShopifyRiskAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+
+# ── ShopifyInventoryAdapter ──────────────────────────────────
+
+
+class TestShopifyInventoryAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        a = ShopifyInventoryAdapter()
+        assert a.name == "shopify_inventory"
+        assert Capability.SHOPIFY_FETCH_PRODUCTS in a.capabilities
+        assert Capability.SHOPIFY_UPDATE_INVENTORY in a.capabilities
+
+    def test_fetch_inventory_aggregates_locations(self):
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        a = ShopifyInventoryAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventoryItems": {
+                "edges": [{
+                    "node": {
+                        "id": "gid://shopify/InventoryItem/A1",
+                        "sku": "ABC-123",
+                        "tracked": True,
+                        "inventoryLevels": {
+                            "edges": [
+                                {"node": {
+                                    "location": {
+                                        "id": "gid://shopify/Location/L1",
+                                        "name": "Main",
+                                    },
+                                    "quantities": [
+                                        {"name": "available", "quantity": 50},
+                                        {"name": "on_hand", "quantity": 60},
+                                    ],
+                                }},
+                                {"node": {
+                                    "location": {
+                                        "id": "gid://shopify/Location/L2",
+                                        "name": "Warehouse 2",
+                                    },
+                                    "quantities": [
+                                        {"name": "available", "quantity": 37},
+                                        {"name": "on_hand", "quantity": 40},
+                                    ],
+                                }},
+                            ],
+                        },
+                    },
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_FETCH_PRODUCTS,
+                {"sku": "ABC-123"},
+            )
+
+        assert result.ok
+        assert result.data["sku"] == "ABC-123"
+        assert result.data["found"] is True
+        assert result.data["tracked"] is True
+        assert result.data["total"] == 87  # 50 + 37 (available)
+        assert len(result.data["by_location"]) == 2
+        assert result.data["by_location"][0]["available"] == 50
+        assert result.data["by_location"][0]["on_hand"] == 60
+
+    def test_fetch_inventory_sku_not_found(self):
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        a = ShopifyInventoryAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventoryItems": {"edges": []},
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_FETCH_PRODUCTS,
+                {"sku": "missing"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["total"] == 0
+
+    def test_fetch_inventory_missing_sku_raises(self):
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        a = ShopifyInventoryAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_FETCH_PRODUCTS, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_set_on_hand_happy_path(self):
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        a = ShopifyInventoryAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventorySetOnHandQuantities": {
+                "inventoryAdjustmentGroup": {
+                    "createdAt": "2026-04-08T12:00:00Z",
+                    "reason": "cycle_count",
+                    "changes": [
+                        {"name": "on_hand", "delta": 5,
+                         "quantityAfterChange": 50},
+                    ],
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_INVENTORY,
+                {
+                    "reason": "cycle_count",
+                    "set_quantities": [{
+                        "inventory_item_id": "gid://shopify/InventoryItem/A1",
+                        "location_id": "gid://shopify/Location/L1",
+                        "quantity": 50,
+                    }],
+                },
+            )
+        assert result.ok
+        assert result.data["applied"] == 1
+        assert result.data["reason"] == "cycle_count"
+
+    def test_set_on_hand_user_errors_become_validation_error(self):
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        a = ShopifyInventoryAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventorySetOnHandQuantities": {
+                "userErrors": [
+                    {"field": ["input", "setQuantities"],
+                     "message": "Inventory item not found"}
+                ],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_INVENTORY,
+                {
+                    "set_quantities": [{
+                        "inventory_item_id": "gid://shopify/InventoryItem/missing",
+                        "location_id": "gid://shopify/Location/L1",
+                        "quantity": 0,
+                    }],
+                },
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+        assert "Inventory item not found" in result.error.reason
+
+    def test_set_on_hand_missing_fields_raises(self):
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        a = ShopifyInventoryAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_INVENTORY,
+            {"set_quantities": [{"inventory_item_id": "x"}]},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_set_on_hand_empty_list_raises(self):
+        from core.adapters.shopify.inventory import ShopifyInventoryAdapter
+        a = ShopifyInventoryAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_INVENTORY,
+            {"set_quantities": []},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+
+# ── ShopifyFulfillmentAdapter ────────────────────────────────
+
+
+class TestShopifyFulfillmentAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
+        a = ShopifyFulfillmentAdapter()
+        assert a.name == "shopify_fulfillment"
+        assert Capability.SHOPIFY_CREATE_FULFILLMENT in a.capabilities
+
+    def test_fulfill_two_step_dance(self):
+        """The adapter must do TWO GraphQL calls: first
+        ``fulfillmentOrders`` to discover the FulfillmentOrders
+        for the order, then ``fulfillmentCreate`` to actually
+        ship them. Verify the second call uses the IDs from
+        the first."""
+        from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
+        a = ShopifyFulfillmentAdapter(shop_url="s", access_token="t")
+
+        responses = [
+            # 1st call: fulfillmentOrders query
+            {
+                "order": {
+                    "id": "gid://shopify/Order/777",
+                    "name": "#777",
+                    "fulfillmentOrders": {
+                        "edges": [{
+                            "node": {
+                                "id": "gid://shopify/FulfillmentOrder/FO1",
+                                "status": "OPEN",
+                                "lineItems": {
+                                    "edges": [
+                                        {"node": {
+                                            "id": "gid://shopify/FulfillmentOrderLineItem/LI1",
+                                            "remainingQuantity": 2,
+                                            "totalQuantity": 2,
+                                            "lineItem": {
+                                                "id": "x",
+                                                "title": "Widget",
+                                                "sku": "WID-1",
+                                            },
+                                        }},
+                                    ],
+                                },
+                            },
+                        }],
+                    },
+                },
+            },
+            # 2nd call: fulfillmentCreate mutation
+            {
+                "fulfillmentCreate": {
+                    "fulfillment": {
+                        "id": "gid://shopify/Fulfillment/F1",
+                        "status": "SUCCESS",
+                        "createdAt": "2026-04-08T12:00:00Z",
+                        "trackingInfo": [{
+                            "company": "USPS",
+                            "number": "9400111899223197428490",
+                            "url": "https://tools.usps.com/?t=9400111899223197428490",
+                        }],
+                    },
+                    "userErrors": [],
+                },
+            },
+        ]
+
+        call_count = {"i": 0}
+        captured_vars = []
+        def fake_gql(query, variables):
+            r = responses[call_count["i"]]
+            captured_vars.append(variables)
+            call_count["i"] += 1
+            return r
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT,
+                {
+                    "order_id": "777",
+                    "tracking": {
+                        "company": "USPS",
+                        "number": "9400111899223197428490",
+                    },
+                    "notify_customer": True,
+                },
+            )
+
+        assert result.ok
+        assert result.data["fulfillment_id"] == "gid://shopify/Fulfillment/F1"
+        assert result.data["status"] == "SUCCESS"
+        assert call_count["i"] == 2
+        # First call: fulfillmentOrders query for the order GID
+        assert captured_vars[0]["id"] == "gid://shopify/Order/777"
+        # Second call: fulfillmentCreate uses the FO ID from the first response
+        fc_input = captured_vars[1]["fulfillment"]
+        assert "lineItemsByFulfillmentOrder" in fc_input
+        fos = fc_input["lineItemsByFulfillmentOrder"]
+        assert fos[0]["fulfillmentOrderId"] == "gid://shopify/FulfillmentOrder/FO1"
+        assert fos[0]["fulfillmentOrderLineItems"][0]["quantity"] == 2
+
+    def test_fulfill_skips_closed_fulfillment_orders(self):
+        """Only OPEN fulfillment orders should be fulfilled — closed
+        ones must be filtered out."""
+        from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
+        a = ShopifyFulfillmentAdapter(shop_url="s", access_token="t")
+
+        with patch.object(a, "_gql", return_value={
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "fulfillmentOrders": {
+                    "edges": [
+                        {"node": {
+                            "id": "fo_closed",
+                            "status": "CLOSED",
+                            "lineItems": {"edges": []},
+                        }},
+                    ],
+                },
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT,
+                {"order_id": "1"},
+            )
+        # No OPEN fulfillment orders → adapter raises
+        assert not result.ok
+        assert "nothing left to fulfil" in result.error.reason
+
+    def test_fulfill_order_not_found(self):
+        from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
+        a = ShopifyFulfillmentAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"order": None}):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT,
+                {"order_id": "ghost"},
+            )
+        assert not result.ok
+        assert "not found" in result.error.reason
+
+    def test_cancel_action(self):
+        from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
+        a = ShopifyFulfillmentAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "fulfillmentCancel": {
+                "fulfillment": {
+                    "id": "gid://shopify/Fulfillment/F1",
+                    "status": "CANCELLED",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT,
+                {
+                    "action": "cancel",
+                    "fulfillment_id": "gid://shopify/Fulfillment/F1",
+                },
+            )
+        assert result.ok
+        assert result.data["status"] == "CANCELLED"
+        assert result.data["action"] == "cancelled"
+
+    def test_cancel_missing_id_raises(self):
+        from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
+        a = ShopifyFulfillmentAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_FULFILLMENT,
+            {"action": "cancel"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_fulfill_user_errors_propagate(self):
+        from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
+        a = ShopifyFulfillmentAdapter(shop_url="s", access_token="t")
+
+        responses = [
+            {  # fulfillmentOrders
+                "order": {
+                    "id": "gid://shopify/Order/1",
+                    "fulfillmentOrders": {
+                        "edges": [{
+                            "node": {
+                                "id": "fo1", "status": "OPEN",
+                                "lineItems": {"edges": [
+                                    {"node": {
+                                        "id": "li1",
+                                        "remainingQuantity": 1,
+                                        "totalQuantity": 1,
+                                        "lineItem": {"id": "x"},
+                                    }},
+                                ]},
+                            },
+                        }],
+                    },
+                },
+            },
+            {  # fulfillmentCreate with userErrors
+                "fulfillmentCreate": {
+                    "fulfillment": None,
+                    "userErrors": [
+                        {"field": ["fulfillment", "trackingInfo"],
+                         "message": "Tracking number invalid"},
+                    ],
+                },
+            },
+        ]
+        i = {"n": 0}
+        def gql(q, v):
+            r = responses[i["n"]]
+            i["n"] += 1
+            return r
+
+        with patch.object(a, "_gql", side_effect=gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT,
+                {"order_id": "1"},
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+        assert "Tracking number invalid" in result.error.reason
+
+
+# ── ShopifyMetafieldAdapter ──────────────────────────────────
+
+
+class TestShopifyMetafieldAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        a = ShopifyMetafieldAdapter()
+        assert a.name == "shopify_metafield"
+        assert Capability.SHOPIFY_SET_METAFIELD in a.capabilities
+
+    def test_normalise_translates_snake_to_camel(self):
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        out = ShopifyMetafieldAdapter._normalise([{
+            "owner_id": "gid://shopify/Order/1",
+            "namespace": "shopai",
+            "key": "fraud_score",
+            "type": "number_decimal",
+            "value": 0.42,
+        }])
+        assert out[0]["ownerId"] == "gid://shopify/Order/1"
+        assert "owner_id" not in out[0]
+        # Numeric value coerced to string
+        assert out[0]["value"] == "0.42"
+
+    def test_normalise_defaults_namespace_and_type(self):
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        out = ShopifyMetafieldAdapter._normalise([{
+            "owner_id": "gid://shopify/Order/1",
+            "key": "k",
+            "value": "v",
+        }])
+        assert out[0]["namespace"] == "shopai"
+        assert out[0]["type"] == "single_line_text_field"
+
+    def test_normalise_missing_required_raises(self):
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyMetafieldAdapter._normalise([{"key": "x"}])
+        assert "owner_id" in str(exc.value)
+
+    def test_normalise_non_dict_entry_raises(self):
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMetafieldAdapter._normalise(["not a dict"])  # type: ignore[list-item]
+
+    def test_set_metafields_single_chunk(self):
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        a = ShopifyMetafieldAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metafieldsSet": {
+                "metafields": [{
+                    "id": "gid://shopify/Metafield/1",
+                    "key": "fraud_score",
+                    "namespace": "shopai",
+                    "ownerType": "ORDER",
+                    "type": "number_decimal",
+                    "value": "0.42",
+                }],
+                "userErrors": [],
+            },
+        }) as mocked:
+            result = a.execute(
+                Capability.SHOPIFY_SET_METAFIELD,
+                {"metafields": [{
+                    "owner_id": "gid://shopify/Order/1",
+                    "key": "fraud_score",
+                    "type": "number_decimal",
+                    "value": "0.42",
+                }]},
+            )
+
+        assert result.ok
+        assert result.data["written"] == 1
+        assert result.data["chunks"] == 1
+        assert mocked.call_count == 1
+
+    def test_set_metafields_chunks_at_25(self):
+        """Shopify caps metafieldsSet at 25 entries per call.
+        Larger payloads must be split automatically."""
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        a = ShopifyMetafieldAdapter(shop_url="s", access_token="t")
+
+        # Build 60 metafields → expect 3 chunks (25 + 25 + 10)
+        big_payload = [{
+            "owner_id": f"gid://shopify/Order/{i}",
+            "key": "k",
+            "value": str(i),
+        } for i in range(60)]
+
+        # Each chunk returns its own slice of metafields
+        call_count = {"n": 0}
+        def fake_gql(q, v):
+            call_count["n"] += 1
+            sent = v["metafields"]
+            return {
+                "metafieldsSet": {
+                    "metafields": [{"id": f"m{i}"} for i in range(len(sent))],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SET_METAFIELD,
+                {"metafields": big_payload},
+            )
+
+        assert result.ok
+        assert call_count["n"] == 3  # 25 + 25 + 10
+        assert result.data["chunks"] == 3
+        assert result.data["written"] == 60
+
+    def test_set_metafields_user_errors_propagate(self):
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        a = ShopifyMetafieldAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metafieldsSet": {
+                "metafields": [],
+                "userErrors": [{
+                    "field": ["metafields", "0", "value"],
+                    "message": "Value cannot be blank",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SET_METAFIELD,
+                {"metafields": [{
+                    "owner_id": "gid://shopify/Order/1",
+                    "key": "k",
+                    "value": "",
+                }]},
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+        assert "Value cannot be blank" in result.error.reason
+
+    def test_empty_metafields_raises(self):
+        from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        a = ShopifyMetafieldAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_SET_METAFIELD, {"metafields": []})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+
+# ── Bootstrap ────────────────────────────────────────────────
+
+
+class TestShopifyBootstrap:
+    def test_register_all_adds_four_adapters(self):
+        from core.adapters.shopify.bootstrap import register_all
+        status = register_all()
+        assert len(status) == 4
+        assert set(status.keys()) == {
+            "shopify_risk", "shopify_inventory",
+            "shopify_fulfillment", "shopify_metafield",
+        }
+
+    def test_register_all_idempotent(self):
+        from core.adapters.shopify.bootstrap import register_all
+        register_all()
+        # Second call must not raise
+        register_all()
+        assert len(get_registry()) == 4
+
+    def test_explicit_creds_make_adapters_configured(self):
+        from core.adapters.shopify.bootstrap import register_all
+        status = register_all(
+            shop_url="store.myshopify.com",
+            access_token="shpat_test",
+        )
+        assert all(status.values()), f"some adapters not configured: {status}"
+
+    def test_env_creds_make_adapters_configured(self, monkeypatch):
+        from core.adapters.shopify.bootstrap import register_all
+        monkeypatch.setenv("SHOPAI_SHOPIFY_URL", "store.myshopify.com")
+        monkeypatch.setenv("SHOPAI_SHOPIFY_KEY", "shpat_test")
+        reset_config()
+        status = register_all()
+        assert all(status.values())
+
+    def test_router_picks_shopify_for_each_capability(self, monkeypatch):
+        from core.adapters import get_router
+        from core.adapters.shopify.bootstrap import register_all
+        monkeypatch.setenv("SHOPAI_SHOPIFY_URL", "store.myshopify.com")
+        monkeypatch.setenv("SHOPAI_SHOPIFY_KEY", "shpat_test")
+        reset_config()
+        register_all()
+
+        router = get_router()
+        # Each capability resolves to exactly one Shopify adapter
+        assert router.route(Capability.SHOPIFY_ASSESS_RISK).name == "shopify_risk"
+        assert router.route(Capability.SHOPIFY_FETCH_PRODUCTS).name == "shopify_inventory"
+        assert router.route(Capability.SHOPIFY_UPDATE_INVENTORY).name == "shopify_inventory"
+        assert router.route(Capability.SHOPIFY_CREATE_FULFILLMENT).name == "shopify_fulfillment"
+        assert router.route(Capability.SHOPIFY_SET_METAFIELD).name == "shopify_metafield"
