@@ -502,7 +502,7 @@ class TestAutonomousControllerAdapter:
         assert hasattr(ac, "_adapter_status")
 
         # All adapter categories bootstrapped
-        assert len(ac._adapter_status) >= 40
+        assert len(ac._adapter_status) >= 45
         names = set(ac._adapter_status.keys())
         # Phase 1 LLM adapters
         assert {
@@ -514,12 +514,16 @@ class TestAutonomousControllerAdapter:
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
         } <= names
-        # Phase 3 search adapters (including Perplexity + Tavily)
+        # Search adapters
         assert {"brave_search", "serper", "ddgs", "perplexity", "tavily"} <= names
-        # Phase 4 shipping adapters
+        # Shipping adapters
         assert {"easypost", "shippo"} <= names
-        # Phase 5 email adapters
-        assert {"brevo", "resend", "klaviyo", "sendgrid"} <= names
+        # Email adapters
+        assert {"brevo", "resend", "klaviyo", "sendgrid", "postmark", "omnisend"} <= names
+        # SMS adapters
+        assert {"twilio", "messagebird"} <= names
+        # Image adapters
+        assert {"dalle3", "stability_ai", "removebg"} <= names
         # Wave 3 adapters
         assert {"google_ads", "meta_ads"} <= names
         assert {"pinecone", "weaviate"} <= names

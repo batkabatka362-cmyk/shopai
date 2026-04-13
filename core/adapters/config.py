@@ -63,7 +63,9 @@ ENV_ALIASES: dict[str, str] = {
     "sendgrid":      "SENDGRID_API_KEY",
     "klaviyo":       "KLAVIYO_API_KEY",
     "omnisend":      "OMNISEND_API_KEY",
+    "postmark":      "POSTMARK_SERVER_TOKEN",
     "postscript":    "POSTSCRIPT_API_KEY",
+    "messagebird":   "MESSAGEBIRD_API_KEY",
     # Twilio uses HTTP Basic auth: the Account SID is the
     # username and the Auth Token is the password. The "from"
     # number is tenant-wide so we keep it in config rather than
@@ -76,6 +78,8 @@ ENV_ALIASES: dict[str, str] = {
     "firecrawl":     "FIRECRAWL_API_KEY",
     "imagekit_pub":  "IMAGEKIT_PUBLIC_KEY",
     "imagekit_priv": "IMAGEKIT_PRIVATE_KEY",
+    "stability_ai":  "STABILITY_API_KEY",
+    "removebg":      "REMOVEBG_API_KEY",
 
     # ── Translation ───────────────────────────
     # DeepL free-tier keys end in ":fx"; paid-tier keys do not.

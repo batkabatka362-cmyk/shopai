@@ -23,6 +23,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .messagebird import MessageBirdAdapter
 from .twilio import TwilioAdapter
 
 logger = get_logger("adapters.sms.bootstrap")
@@ -30,6 +31,7 @@ logger = get_logger("adapters.sms.bootstrap")
 
 _SMS_ADAPTER_CLASSES = (
     TwilioAdapter,
+    MessageBirdAdapter,
 )
 
 
