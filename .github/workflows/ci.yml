@@ -48,13 +48,23 @@ jobs:
           set -o pipefail
           pytest tests/ --tb=long -v 2>&1 | tee /tmp/pytest-output.txt
 
+      - name: Post failure details as PR comment
+        if: failure() && steps.pytest.outcome == 'failure' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BODY="## CI Test Failures (py${{ matrix.python-version }})"$'\n'
+          BODY+='```'$'\n'
+          BODY+="$(tail -100 /tmp/pytest-output.txt)"$'\n'
+          BODY+='```'
+          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
+
       - name: Summarize failures
         if: failure() && steps.pytest.outcome == 'failure'
         run: |
           echo "## Test Failures (py${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          # Show last 80 lines which includes traceback + summary
-          tail -80 /tmp/pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
+          tail -100 /tmp/pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Engine import check
