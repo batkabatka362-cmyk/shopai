@@ -12,6 +12,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   test:
     name: Tests (py${{ matrix.python-version }})
@@ -55,15 +60,21 @@ jobs:
         run: |
           # Find the PR number for current branch (works for both push and PR events)
           PR_NUM="${{ github.event.pull_request.number }}"
-          if [ -z "$PR_NUM" ]; then
+          if [ -z "$PR_NUM" ] || [ "$PR_NUM" = "0" ]; then
             PR_NUM=$(gh pr list --head "${{ github.ref_name }}" --json number -q '.[0].number' 2>/dev/null || true)
           fi
-          if [ -n "$PR_NUM" ]; then
-            BODY="## CI Test Failures (py${{ matrix.python-version }})"$'\n'
-            BODY+='```'$'\n'
-            BODY+="$(tail -100 /tmp/pytest-output.txt)"$'\n'
-            BODY+='```'
-            gh pr comment "$PR_NUM" --body "$BODY"
+          echo "PR_NUM=$PR_NUM"
+          if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "null" ]; then
+            # Write body to temp file to avoid shell escaping issues
+            {
+              echo "## CI Test Failures (py${{ matrix.python-version }})"
+              echo '```'
+              tail -100 /tmp/pytest-output.txt || true
+              echo '```'
+            } > /tmp/pr-comment-body.md
+            gh pr comment "$PR_NUM" --body-file /tmp/pr-comment-body.md || echo "Failed to post PR comment"
+          else
+            echo "No PR found for branch ${{ github.ref_name }}"
           fi
 
       - name: Summarize failures
