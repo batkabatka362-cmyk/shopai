@@ -62,6 +62,7 @@ class AdapterCategory(str, Enum):
     ADS = "ads"                            # Ad platform APIs
     PAYMENT = "payment"                    # Payment processors
     LOGISTICS = "logistics"                # Shipping carrier APIs
+    KNOWLEDGE_BASE = "knowledge_base"      # Obsidian / Notion / local vaults
     OTHER = "other"
 
 
@@ -124,6 +125,11 @@ class Capability(str, Enum):
     PAYMENT_REFUND = "payment_refund"
     PAYMENT_CAPTURE = "payment_capture"
     PAYMENT_LIST_DISPUTES = "payment_list_disputes"
+
+    # ── Knowledge base ────────────────────
+    VAULT_READ_NOTES = "vault_read_notes"
+    VAULT_SEARCH_NOTES = "vault_search_notes"
+    VAULT_WRITE_NOTE = "vault_write_note"
 
 
 # ── Result envelope ────────────────────────────────────────────

@@ -776,6 +776,35 @@ class UnifiedMemory:
         report["class"] = cls.value
         return report
 
+    # ── Vault import (Obsidian integration) ────────────────────
+
+    def import_from_vault(
+        self,
+        vault_path: str,
+        *,
+        folder: str | None = None,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Import notes from an Obsidian vault into memory.
+
+        Convenience wrapper around
+        ``core.adapters.obsidian.memory_bridge.VaultMemoryBridge``.
+        Guarded so a missing obsidian adapter never breaks the
+        memory subsystem.
+
+        Returns the bridge's import report dict, or an error dict
+        if the bridge is not available.
+        """
+        self._ensure_init()
+        try:
+            from core.adapters.obsidian.memory_bridge import VaultMemoryBridge
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Obsidian bridge not available: %s", exc)
+            return {"imported": 0, "skipped": 0, "errors": 0,
+                    "error": f"bridge unavailable: {exc}"}
+        bridge = VaultMemoryBridge(vault_path)
+        return bridge.import_vault(self, folder=folder, tags=tags)
+
     # ── STATS ────────────────────────────────────────────────
 
     def get_stats(self) -> dict[str, Any]:

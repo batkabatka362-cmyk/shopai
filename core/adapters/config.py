@@ -98,6 +98,9 @@ ENV_ALIASES: dict[str, str] = {
     # ── Shopify (already handled by core/auth/shopify_auth) ──
     "shopify_url":   "SHOPAI_SHOPIFY_URL",
     "shopify_key":   "SHOPAI_SHOPIFY_KEY",
+
+    # ── Knowledge base (Obsidian) ────────
+    "obsidian_vault_path": "OBSIDIAN_VAULT_PATH",
 }
 
 
