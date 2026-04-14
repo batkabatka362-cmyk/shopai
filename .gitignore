@@ -28,6 +28,12 @@ vault/.obsidian/workspace-mobile.json
 vault/.obsidian/plugins/
 vault/.obsidian/themes/
 vault/.obsidian/hotkeys.json
-vault/ShopAI/Learned/
+# Anything in Learned/ is auto-generated, EXCEPT the three seed
+# files that ship with the repo (README + two worked examples).
+# The non-trailing-slash form lets git descend into the folder so
+# the exceptions below are evaluated.
+vault/ShopAI/Learned/*
 !vault/ShopAI/Learned/README.md
+!vault/ShopAI/Learned/Example Learned Pattern.md
+!vault/ShopAI/Learned/How Auto-Export Works.md
 vault/.shopai_import_state.json

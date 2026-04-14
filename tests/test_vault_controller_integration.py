@@ -529,3 +529,204 @@ class TestRetrieveVaultKnowledge:
         assert result.get("vault_knowledge") == []
 
         reset_config()
+
+
+# =====================================================================
+# 4. Boot import — _maybe_import_vault_on_boot
+# =====================================================================
+
+
+class TestBootImport:
+    """Tests for the startup hook that ingests vault notes into
+    UnifiedMemory once on controller initialize."""
+
+    def _make_controller(self):
+        from core.autonomous.controller import AutonomousController
+        c = AutonomousController.__new__(AutonomousController)
+        c._vault_import_done = False
+        return c
+
+    def test_boot_import_calls_bridge_with_memory(
+        self, tmp_path, monkeypatch,
+    ):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        _seed_vault(vault)
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        controller = self._make_controller()
+        ingested: list[tuple] = []
+
+        class FakeMemory:
+            def ingest(self, *, category, data, source):
+                ingested.append((category, data.get("title"), source))
+
+        controller._unified_memory = FakeMemory()
+        report = controller._maybe_import_vault_on_boot()
+
+        assert report["imported"] >= 1
+        titles = [t for _, t, _ in ingested]
+        assert "ShopAI Architecture" in titles
+        assert controller._vault_import_done is True
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_boot_import_noop_when_vault_unset(self, monkeypatch):
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        from core.adapters.config import reset_config
+        reset_config()
+
+        controller = self._make_controller()
+        controller._unified_memory = object()  # would blow up if called
+        report = controller._maybe_import_vault_on_boot()
+        assert report == {"imported": 0, "skipped": 0, "errors": 0}
+        assert controller._vault_import_done is False
+
+        reset_config()
+
+    def test_boot_import_noop_when_memory_none(self, tmp_path, monkeypatch):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        controller = self._make_controller()
+        controller._unified_memory = None
+        report = controller._maybe_import_vault_on_boot()
+        assert report == {"imported": 0, "skipped": 0, "errors": 0}
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_boot_import_swallows_bridge_failure(
+        self, tmp_path, monkeypatch,
+    ):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        controller = self._make_controller()
+
+        class BoomMemory:
+            def ingest(self, *a, **kw):
+                raise RuntimeError("boom")
+
+        controller._unified_memory = BoomMemory()
+        # The bridge catches per-note ingest failures, so the overall
+        # call still returns — we only need to guarantee no raise.
+        report = controller._maybe_import_vault_on_boot()
+        assert "errors" in report
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+
+# =====================================================================
+# 5. Rate-limited _maybe_export_to_vault
+# =====================================================================
+
+
+class TestExportRateLimit:
+    """Exports must now run even when no patterns were promoted,
+    as long as enough time has elapsed since the last export
+    (hourly sweep). Previously export was gated strictly on
+    ``patterns_promoted > 0``."""
+
+    def _make_controller(self, last_ts: float = 0.0):
+        from core.autonomous.controller import AutonomousController
+        c = AutonomousController.__new__(AutonomousController)
+        c._last_vault_export_ts = last_ts
+        c._vault_min_export_interval_sec = 3600.0
+        return c
+
+    def test_no_export_when_no_patterns_and_not_due(self, tmp_path, monkeypatch):
+        import time as _t
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        c = self._make_controller(last_ts=_t.time())  # just ran
+        report = type("R", (), {"patterns_promoted": 0})()
+        # Should not touch the bridge.
+        called = {"n": 0}
+        from core.adapters.obsidian import memory_bridge as mb
+
+        real = mb.VaultMemoryBridge
+
+        class Spy(real):  # type: ignore[misc,valid-type]
+            def export_knowledge(self, memory, **kw):
+                called["n"] += 1
+                return {"exported": 0, "skipped": 0}
+
+        monkeypatch.setattr(mb, "VaultMemoryBridge", Spy)
+        c._maybe_export_to_vault(report)
+        assert called["n"] == 0
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_export_runs_when_promoted(self, tmp_path, monkeypatch):
+        import time as _t
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        c = self._make_controller(last_ts=_t.time())
+        report = type("R", (), {"patterns_promoted": 3})()
+        called = {"n": 0}
+        from core.adapters.obsidian import memory_bridge as mb
+        real = mb.VaultMemoryBridge
+
+        class Spy(real):  # type: ignore[misc,valid-type]
+            def export_knowledge(self, memory, **kw):
+                called["n"] += 1
+                return {"exported": 1, "skipped": 0}
+
+        monkeypatch.setattr(mb, "VaultMemoryBridge", Spy)
+        c._maybe_export_to_vault(report)
+        assert called["n"] == 1
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_export_runs_on_hourly_sweep_even_without_promotions(
+        self, tmp_path, monkeypatch,
+    ):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        # last_ts=0 → elapsed is huge → sweep due.
+        c = self._make_controller(last_ts=0.0)
+        report = type("R", (), {"patterns_promoted": 0})()
+        called = {"n": 0}
+        from core.adapters.obsidian import memory_bridge as mb
+        real = mb.VaultMemoryBridge
+
+        class Spy(real):  # type: ignore[misc,valid-type]
+            def export_knowledge(self, memory, **kw):
+                called["n"] += 1
+                return {"exported": 0, "skipped": 0}
+
+        monkeypatch.setattr(mb, "VaultMemoryBridge", Spy)
+        c._maybe_export_to_vault(report)
+        assert called["n"] == 1
+        # Last-ts is now updated so an immediate re-run is skipped.
+        called["n"] = 0
+        c._maybe_export_to_vault(report)
+        assert called["n"] == 0
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()

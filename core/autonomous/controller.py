@@ -157,6 +157,15 @@ class AutonomousController:
         self._reflection_synth = None
         self._error_buffer = None
 
+        # Vault sync rate limiting — track the last auto-export
+        # timestamp so we don't hammer the filesystem every cycle
+        # when no new patterns have been promoted, but still run an
+        # opportunistic check once per hour to pick up out-of-band
+        # learned records (e.g. manual memory ingests).
+        self._last_vault_export_ts: float = 0.0
+        self._vault_import_done: bool = False
+        self._vault_min_export_interval_sec: float = 3600.0
+
     def initialize(self, store_manager: Any = None) -> dict[str, Any]:
         """Initialize all components."""
         if store_manager:
@@ -346,8 +355,49 @@ class AutonomousController:
                 "error": self._init_error,
                 "auto_approve": self._auto_approve,
             }
+
+        # Obsidian vault — one-shot import on boot so hand-written
+        # notes in Concepts/Knowledge/Decisions land in UnifiedMemory
+        # before the first run_cycle. Best-effort: a missing vault
+        # or failing memory instance must never block initialisation.
+        self._maybe_import_vault_on_boot()
+
         logger.info("AutonomousController initialized")
         return {"status": "initialized", "auto_approve": self._auto_approve}
+
+    # ── Obsidian boot import ─────────────────────────────────
+
+    def _maybe_import_vault_on_boot(self) -> dict[str, Any]:
+        """Scan the configured Obsidian vault once on startup and
+        ingest every ``.md`` note into UnifiedMemory.
+
+        Returns the bridge's import report so callers/tests can
+        inspect the counts. Silently returns an empty report when
+        the vault is unconfigured or unreachable.
+        """
+        empty = {"imported": 0, "skipped": 0, "errors": 0}
+        try:
+            from core.adapters.config import get_config
+            vault_path = get_config().get("obsidian_vault_path")
+            if not vault_path:
+                return empty
+            if self._unified_memory is None:
+                return empty
+            from core.adapters.obsidian.memory_bridge import VaultMemoryBridge
+            bridge = VaultMemoryBridge(vault_path)
+            result = bridge.import_vault(self._unified_memory)
+            self._vault_import_done = True
+            if result.get("imported", 0) or result.get("errors", 0):
+                logger.info(
+                    "Vault boot import: %d imported, %d skipped, %d errors",
+                    result.get("imported", 0),
+                    result.get("skipped", 0),
+                    result.get("errors", 0),
+                )
+            return result
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Vault boot import skipped: %s", exc)
+            return empty
 
     # ── Single Cycle ─────────────────────────────────────────
 
@@ -1920,11 +1970,24 @@ class AutonomousController:
     def _maybe_export_to_vault(self, report: Any) -> None:
         """Export learned knowledge to Obsidian vault if configured.
 
-        Called at the end of ``_run_reflection_hook``. Best-effort:
-        a missing adapter, unconfigured vault path, or write failure
-        is silently logged — never breaks the cycle.
+        Called at the end of ``_run_reflection_hook``. Exports run
+        unconditionally on every reflection cycle that PROMOTED
+        patterns, plus an opportunistic hourly sweep so any memory
+        record marked ``source="learned"`` reaches the vault even
+        if reflection found nothing new that cycle — previously we
+        gated export strictly on ``patterns_promoted > 0``, which
+        meant out-of-band ingests (manual memory loads, feedback
+        learner lessons) stayed invisible to the graph until the
+        next promotion.
+
+        Best-effort: a missing adapter, unconfigured vault path, or
+        write failure is silently logged — never breaks the cycle.
         """
-        if not getattr(report, "patterns_promoted", 0):
+        promoted = int(getattr(report, "patterns_promoted", 0) or 0)
+        now = time.time()
+        elapsed = now - self._last_vault_export_ts
+        due_for_sweep = elapsed >= self._vault_min_export_interval_sec
+        if promoted == 0 and not due_for_sweep:
             return
         try:
             from core.adapters.config import get_config
@@ -1935,10 +1998,13 @@ class AutonomousController:
             from core.memory.unified_memory import get_unified_memory
             bridge = VaultMemoryBridge(vault_path)
             result = bridge.export_knowledge(get_unified_memory(), limit=10)
+            self._last_vault_export_ts = now
             if result.get("exported", 0):
                 logger.info(
-                    "Vault auto-export: %d notes written",
-                    result["exported"],
+                    "Vault auto-export: %d notes written "
+                    "(promoted=%d, sweep=%s)",
+                    result["exported"], promoted,
+                    "yes" if due_for_sweep else "no",
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Vault auto-export skipped: %s", exc)
