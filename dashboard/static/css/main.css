@@ -677,6 +677,19 @@ body {
   font-size: 12px;
 }
 
+/* Streaming bubble — animated caret at the end so the operator sees
+   the response is still growing in real time. */
+.chat-bubble.streaming::after {
+  content: '▎';
+  color: var(--accent);
+  margin-left: 2px;
+  animation: streamCaret 1s steps(2, start) infinite;
+}
+@keyframes streamCaret {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 .chat-input-row {
   padding: 16px;
   border-top: 1px solid var(--border);

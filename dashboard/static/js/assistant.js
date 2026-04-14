@@ -100,15 +100,108 @@ const Assistant = {
     input.value = '';
     this._pushTurn('user', message);
     this._appendMessage('user', message);
-    this.addTyping();
 
+    // Try streaming first; fall back to single-shot on any failure.
+    try {
+      const ok = await this._streamResponse(message);
+      if (!ok) await this._singleShotResponse(message);
+    } catch (e) {
+      await this._singleShotResponse(message);
+    } finally {
+      this._sending = false;
+      this._toggleSend(true);
+    }
+  },
+
+  async _streamResponse(message) {
+    // Create the bot bubble up front so we can append deltas to it.
+    this.addTyping();
+    let resp;
+    try {
+      resp = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          history: this._history.slice(0, -1),
+        }),
+      });
+    } catch (e) {
+      this.removeTyping();
+      return false;
+    }
+    if (!resp.ok || !resp.body) {
+      this.removeTyping();
+      return false;
+    }
+
+    this.removeTyping();
+    const bubble = this._startStreamingBubble();
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulated = '';
+    let done = false;
+
+    while (!done) {
+      const { value, done: readerDone } = await reader.read();
+      if (readerDone) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() || '';
+      for (const frame of frames) {
+        const line = frame.trim();
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        let data;
+        try { data = JSON.parse(payload); }
+        catch (e) { continue; }
+        if (data.delta) {
+          accumulated += data.delta;
+          bubble.innerHTML = this.formatMarkdown(accumulated);
+          const container = document.getElementById('chat-messages');
+          container.scrollTop = container.scrollHeight;
+        }
+        if (data.done) { done = true; break; }
+        if (data.error) {
+          accumulated = accumulated + '\n\n[error: ' + data.error + ']';
+          bubble.innerHTML = this.formatMarkdown(accumulated);
+          done = true;
+          break;
+        }
+      }
+    }
+
+    // Strip the "still streaming" caret now that we're done.
+    bubble.classList.remove('streaming');
+    if (!accumulated) return false;
+    this._pushTurn('assistant', accumulated);
+    return true;
+  },
+
+  _startStreamingBubble() {
+    const container = document.getElementById('chat-messages');
+    const div = document.createElement('div');
+    div.className = 'chat-msg bot';
+    div.innerHTML = `
+      <div class="chat-avatar">AI</div>
+      <div class="chat-bubble streaming"></div>
+    `;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    return div.querySelector('.chat-bubble');
+  },
+
+  async _singleShotResponse(message) {
+    this.addTyping();
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message,
-          history: this._history.slice(0, -1), // exclude the turn we just added
+          history: this._history.slice(0, -1),
         }),
       });
       const data = await response.json();
@@ -122,9 +215,6 @@ const Assistant = {
         'bot',
         'Connection error. Please check if the server is running.',
       );
-    } finally {
-      this._sending = false;
-      this._toggleSend(true);
     }
   },
 

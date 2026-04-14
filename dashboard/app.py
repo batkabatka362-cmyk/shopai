@@ -54,6 +54,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         # this server on a public network.
         routes = {
             "/api/chat": self._handle_chat,
+            "/api/chat/stream": self._handle_chat_stream,
             "/api/scheduler/start": self._handle_scheduler_start,
             "/api/scheduler/stop": self._handle_scheduler_stop,
             "/api/scheduler/run-once": self._handle_scheduler_run_once,
@@ -245,6 +246,84 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 
         response = self._process_chat(message, history)
         self._json(200, {"response": response})
+
+    def _handle_chat_stream(self, body: dict) -> None:
+        """Stream a chat response as newline-delimited SSE ``data:`` frames.
+
+        Current adapters don't expose a vendor-native streaming hook, so
+        we resolve the full reply via ``_process_chat`` and then chunk
+        the text word-by-word to deliver a typewriter effect in the UI.
+        Each frame is JSON so a future real-streaming upgrade can swap
+        in without changing the client parser.
+        """
+        message = body.get("message", "")
+        history = body.get("history") or []
+        if not isinstance(history, list):
+            history = []
+        if not message:
+            self._json(400, {"error": "message required"})
+            return
+
+        try:
+            full = self._process_chat(message, history)
+        except Exception as exc:  # noqa: BLE001
+            full = f"Error: {str(exc)[:200]}"
+
+        self._begin_stream()
+        try:
+            self._stream_text(full)
+        finally:
+            self._finish_stream()
+
+    def _begin_stream(self) -> None:
+        """Send SSE-style response headers. HTTP/1.0 close-delimited so
+        we don't need to hand-format chunked transfer encoding."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("X-Accel-Buffering", "no")  # disable nginx buffering
+        self.end_headers()
+
+    def _stream_text(self, text: str) -> None:
+        """Chunk ``text`` into word-size deltas and flush each one."""
+        # Split on whitespace but keep the spaces so the reconstructed
+        # text matches the source exactly. ``re.split`` with a capture
+        # group does this trick.
+        import re
+        pieces = re.findall(r"\S+\s*", text)
+        if not pieces:
+            pieces = [text]
+
+        # Flatten into deltas of ~3 words each so we don't write hundreds
+        # of tiny packets for long responses.
+        batch_size = 3
+        try:
+            for i in range(0, len(pieces), batch_size):
+                delta = "".join(pieces[i:i + batch_size])
+                self._send_stream_event({"delta": delta})
+                # Small sleep between batches gives the typewriter feel
+                # without inflating perceived latency too much.
+                time.sleep(0.02)
+            self._send_stream_event({"done": True})
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected mid-stream — nothing to do.
+            pass
+
+    def _send_stream_event(self, payload: dict) -> None:
+        frame = "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+        self.wfile.write(frame.encode("utf-8"))
+        try:
+            self.wfile.flush()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _finish_stream(self) -> None:
+        try:
+            self.wfile.flush()
+        except Exception:  # noqa: BLE001
+            pass
 
     # ── Data collectors ────────────────────────────────────
 
