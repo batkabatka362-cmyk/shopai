@@ -125,6 +125,7 @@ class ShopifyDiscountAdapter(ShopifyBaseAdapter):
 
         # Shopify expects a nested customerValue that picks ONE
         # branch — percentage (0..1 float) or discountAmount (money).
+        currency = ""
         if kind == "percentage":
             if value > 100:
                 raise AdapterValidationError(
@@ -140,16 +141,17 @@ class ShopifyDiscountAdapter(ShopifyBaseAdapter):
                     self.name,
                     "'currency' is required for fixed_amount",
                 )
+            # Shopify binds the currency via the shop's primary
+            # currency when ``discountAmount`` is used, but we
+            # still echo the caller-declared currency on the
+            # response so audit logs can prove what the caller
+            # intended vs. what the shop actually enforced.
             customer_gets_value = {
                 "discountAmount": {
                     "amount": f"{value:.2f}",
                     "appliesOnEachItem": False,
                 },
             }
-            # Shopify binds the currency via the shop's primary
-            # currency when discountAmount is used; we still
-            # pass currency in the echo payload for traceability.
-            _ = currency
 
         usage_limit = params.get("usage_limit")
         if usage_limit is not None:
@@ -231,5 +233,6 @@ class ShopifyDiscountAdapter(ShopifyBaseAdapter):
                 ),
                 "kind": kind,
                 "value": value,
+                "currency": currency,
             },
         )

@@ -80,9 +80,18 @@ _COST_SPIKE_USD = _env_float("SHOPAI_RELIABILITY_COST_SPIKE_USD", 1.0)
 @dataclass
 class _ReliabilityState:
     """Cross-cycle bookkeeping kept inside the collector so the
-    controller doesn't have to manage per-tick deltas by hand."""
+    controller doesn't have to manage per-tick deltas by hand.
+
+    ``primed`` distinguishes "the baseline has been recorded"
+    from "the zero-initialised state". Without it, the very
+    first cycle would report the cumulative total as "new since
+    last cycle" — if the process came up with a populated
+    dead-letter file from a prior run, that produces a false
+    positive alert on cycle 1 for entries that may be days old.
+    """
     last_deadletter_total: int = 0
     last_cost_total_usd: float = 0.0
+    primed: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -99,6 +108,7 @@ def reset_reliability_state() -> None:
     with _STATE.lock:
         _STATE.last_deadletter_total = 0
         _STATE.last_cost_total_usd = 0.0
+        _STATE.primed = False
 
 
 # ── Individual collectors (guarded) ────────────────────────
@@ -222,7 +232,10 @@ def _collect_deadletter() -> dict[str, Any]:
 
     total = int(snap.get("total_records", 0) or 0)
     with _STATE.lock:
-        new_since = max(0, total - _STATE.last_deadletter_total)
+        if not _STATE.primed:
+            new_since = 0
+        else:
+            new_since = max(0, total - _STATE.last_deadletter_total)
         _STATE.last_deadletter_total = total
     return {
         "size": int(snap.get("size", 0) or 0),
@@ -252,7 +265,10 @@ def _collect_cost() -> dict[str, Any]:
                 "error": str(exc)}
 
     with _STATE.lock:
-        delta = max(0.0, total - _STATE.last_cost_total_usd)
+        if not _STATE.primed:
+            delta = 0.0
+        else:
+            delta = max(0.0, total - _STATE.last_cost_total_usd)
         _STATE.last_cost_total_usd = total
     top_caller = callers[0]["caller"] if callers else ""
     return {
@@ -287,6 +303,11 @@ def collect_reliability_signal() -> dict[str, Any]:
     health = _collect_health()
     deadletter = _collect_deadletter()
     cost = _collect_cost()
+    # Mark the baseline as primed AFTER both delta-consuming
+    # collectors have run their first call. Subsequent calls
+    # then compute real deltas against the stored baseline.
+    with _STATE.lock:
+        _STATE.primed = True
 
     alerts: list[str] = []
     unhealthy = health.get("unhealthy") or []

@@ -34,7 +34,28 @@ def _reset_state():
 
 class TestEmpty:
     def test_empty_snapshot(self):
-        signal = collect_reliability_signal()
+        """With every source mocked empty, the signal is
+        structurally well-formed and contains no alerts.
+        We mock the collectors explicitly rather than trusting
+        the ambient process state because earlier tests in the
+        suite may leave SLA / breaker counters populated."""
+        import core.autonomous.reliability as mod
+        with patch.object(mod, "_collect_health") as ch, \
+             patch.object(mod, "_collect_deadletter") as cdl, \
+             patch.object(mod, "_collect_cost") as cc:
+            ch.return_value = {
+                "totals": {}, "unhealthy": [], "degraded": [],
+            }
+            cdl.return_value = {
+                "size": 0, "total_records": 0,
+                "new_since_last": 0, "per_adapter": {},
+                "write_failures": 0,
+            }
+            cc.return_value = {
+                "total_usd": 0.0, "delta_usd": 0.0,
+                "top_caller": "", "caller_count": 0,
+            }
+            signal = mod.collect_reliability_signal()
         assert "health" in signal
         assert "deadletter" in signal
         assert "cost" in signal
@@ -49,7 +70,10 @@ class TestEmpty:
 
 class TestDeltaAccounting:
     def test_deadletter_new_since_last_first_call(self):
-        # First call records current total as the baseline.
+        # First call primes the baseline silently — delta is 0
+        # even if the ledger already has entries, so a process
+        # that starts up with a populated ledger doesn't fire
+        # a false "N new entries!" alert on cycle 1.
         with patch(
             "core.adapters.deadletter.get_dead_letter_ledger"
         ) as gdl:
@@ -58,7 +82,7 @@ class TestDeltaAccounting:
             }
             signal = collect_reliability_signal()
         assert signal["deadletter"]["total_records"] == 5
-        assert signal["deadletter"]["new_since_last"] == 5
+        assert signal["deadletter"]["new_since_last"] == 0
 
     def test_deadletter_delta_between_calls(self):
         with patch(
@@ -83,11 +107,32 @@ class TestDeltaAccounting:
             ledger.per_caller.return_value = [
                 {"caller": "brain", "total_usd": 1.5, "calls": 3},
             ]
-            collect_reliability_signal()  # baseline = 1.5
+            signal0 = collect_reliability_signal()  # primes + baseline
+            assert signal0["cost"]["delta_usd"] == 0.0
             ledger.total_usd.return_value = 2.25
             signal = collect_reliability_signal()
         assert signal["cost"]["delta_usd"] == pytest.approx(0.75)
         assert signal["cost"]["top_caller"] == "brain"
+
+    def test_first_call_no_cost_spike_alert(self, monkeypatch):
+        """A process that starts with an already-populated cost
+        ledger must NOT fire a cost-spike alert on cycle 1 for
+        spend that happened before the controller even booted."""
+        monkeypatch.setenv("SHOPAI_RELIABILITY_COST_SPIKE_USD", "0.50")
+        import importlib
+        import core.autonomous.reliability as mod
+        importlib.reload(mod)
+
+        with patch(
+            "core.adapters.cost_ledger.get_cost_ledger"
+        ) as gcl:
+            ledger = gcl.return_value
+            ledger.total_usd.return_value = 100.0
+            ledger.per_caller.return_value = [
+                {"caller": "startup", "total_usd": 100.0, "calls": 1},
+            ]
+            signal = mod.collect_reliability_signal()
+        assert not any("cost spike" in a for a in signal["alerts"])
 
 
 class TestAlerts:
