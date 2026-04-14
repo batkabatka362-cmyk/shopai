@@ -128,6 +128,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/vault/search": self._api_vault_search,
             "/api/alerts": self._api_alerts,
             "/api/cost": self._api_cost,
+            "/api/stores": self._api_stores,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -166,17 +167,35 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": "unknown", "checks": {}})
 
     def _api_cycle(self) -> None:
-        """Latest + recent cycle summaries from the AutoScheduler."""
+        """Latest + recent cycle summaries from the AutoScheduler.
+
+        Accepts an optional ``?store_id=`` filter so a multi-store
+        operator can narrow the Cycles tab to one store without
+        losing the global history buffer on the server.
+        """
+        from urllib.parse import parse_qs, urlparse
+        qs = parse_qs(urlparse(self.path).query)
+        store_filter = (qs.get("store_id", [""])[0] or "").strip()
         try:
             from core.system.auto_scheduler import get_scheduler
             sched = get_scheduler()
             latest = sched.get_last_summary()
-            recent = sched.get_recent_summaries(limit=20)
+            recent = sched.get_recent_summaries(limit=50)
             status = sched.get_status()
+            if store_filter:
+                recent = [
+                    r for r in recent
+                    if (r.get("store_id") or "") == store_filter
+                ]
+                # If the latest global cycle belongs to a different store,
+                # fall back to the most recent filtered summary instead.
+                if latest and latest.get("store_id") != store_filter:
+                    latest = recent[0] if recent else None
             self._json(200, {
                 "has_data": latest is not None,
+                "store_filter": store_filter,
                 "latest": latest,
-                "recent": recent,
+                "recent": recent[:20],
                 "scheduler": {
                     "running": status.get("running", False),
                     "busy": status.get("busy", False),
@@ -189,11 +208,32 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self._json(200, {
                 "has_data": False,
+                "store_filter": store_filter,
                 "latest": None,
                 "recent": [],
                 "scheduler": {},
                 "error": str(exc)[:120],
             })
+
+    def _api_stores(self) -> None:
+        """Known stores for the topbar selector.
+
+        Aggregates the ``StoreRegistry`` table with the scheduler's
+        active list so the UI can show "which stores the autonomous
+        loop is currently rotating through" separately from "which
+        stores exist in the registry at all".
+        """
+        try:
+            data = _collect_stores_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("stores collector failed: %s", exc)
+            data = {
+                "stores": [],
+                "active": [],
+                "default": "",
+                "error": str(exc)[:200],
+            }
+        self._json(200, data)
 
     def _api_vault(self) -> None:
         """Vault summary: folder counts + recent wins/errors/decisions."""
@@ -1567,6 +1607,82 @@ def _collect_adapter_alerts() -> dict[str, Any]:
         "alerts": alerts,
         "counts": counts,
         "timestamp": now,
+    }
+
+
+def _collect_stores_snapshot() -> dict[str, Any]:
+    """Return the known-store inventory used by the topbar selector.
+
+    Pulls rows from the ``StoreRegistry`` when available, falls back to
+    the scheduler's active rotation list, and — as a last-resort so the
+    selector never renders empty on a fresh box — surfaces the same
+    default store the scheduler uses (``deguar``) with a synthetic row.
+    """
+    stores: list[dict[str, Any]] = []
+    active: list[str] = []
+    default = ""
+
+    # Primary source: explicit registry (DB-backed, multi-store).
+    try:
+        from core.system.store_registry import get_store_registry
+        reg = get_store_registry()
+        for row in reg.list_stores():
+            stores.append({
+                "store_id": row.get("store_id", ""),
+                "name": row.get("name") or row.get("store_id") or "",
+                "status": row.get("status", ""),
+                "niche": row.get("niche", ""),
+                "last_cycle": float(row.get("last_cycle") or 0),
+                "health_score": int(row.get("health_score") or 0),
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("store registry unavailable: %s", exc)
+
+    # Secondary: scheduler rotation — tells us which stores the
+    # autonomous loop is currently hitting.
+    try:
+        from core.system.auto_scheduler import get_scheduler
+        sched = get_scheduler()
+        status = sched.get_status()
+        active = [s for s in (status.get("stores") or []) if isinstance(s, str)]
+    except Exception:  # noqa: BLE001
+        active = []
+
+    # Fill in any scheduler-known store that's not yet in the registry
+    # so the selector isn't missing a live store mid-rotation.
+    known_ids = {s["store_id"] for s in stores}
+    for sid in active:
+        if sid and sid not in known_ids:
+            stores.append({
+                "store_id": sid,
+                "name": sid,
+                "status": "rotating",
+                "niche": "",
+                "last_cycle": 0.0,
+                "health_score": 0,
+            })
+
+    # Default selection: prefer the first active store, then the first
+    # registered store, falling back to the scheduler default.
+    if active:
+        default = active[0]
+    elif stores:
+        default = stores[0]["store_id"]
+    else:
+        default = "deguar"
+        stores.append({
+            "store_id": default,
+            "name": default,
+            "status": "default",
+            "niche": "",
+            "last_cycle": 0.0,
+            "health_score": 0,
+        })
+
+    return {
+        "stores": stores,
+        "active": active,
+        "default": default,
     }
 
 

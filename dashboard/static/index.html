@@ -124,6 +124,12 @@
   <header class="topbar">
     <h1 class="page-title" id="page-title">Command Center</h1>
     <div class="topbar-right">
+      <div class="store-selector" id="store-selector-wrap" hidden>
+        <label for="store-selector" class="muted">Store</label>
+        <select id="store-selector" class="store-selector-input">
+          <option value="">All stores</option>
+        </select>
+      </div>
       <button class="alerts-badge" id="alerts-badge" title="Health alerts">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
@@ -414,6 +420,7 @@
 <script src="/js/cycle.js"></script>
 <script src="/js/vault.js"></script>
 <script src="/js/cost.js"></script>
+<script src="/js/stores.js"></script>
 <script src="/js/alerts.js"></script>
 </body>
 </html>

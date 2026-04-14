@@ -12,18 +12,36 @@
 const Cycle = {
   _timer: null,
   _controlsBound: false,
+  _storeHooked: false,
+
+  _cycleUrl() {
+    const sid = (window.Stores && Stores.current()) || '';
+    return '/api/cycle' + (sid ? ('?store_id=' + encodeURIComponent(sid)) : '');
+  },
 
   async refresh() {
     this._bindControls();
-    const data = await App.fetch('/api/cycle');
+    this._hookStoreChange();
+    const data = await App.fetch(this._cycleUrl());
     this.render(data || {});
     // Keep a gentle poll going while the tab is active.
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'cycle') return;
-      const fresh = await App.fetch('/api/cycle');
+      const fresh = await App.fetch(this._cycleUrl());
       this.render(fresh || {});
     }, 5000);
+  },
+
+  _hookStoreChange() {
+    if (this._storeHooked || !window.Stores) return;
+    this._storeHooked = true;
+    // Re-pull the moment the operator picks a different store so the
+    // tab doesn't wait for the next 5s tick to update.
+    Stores.onChange(async () => {
+      const fresh = await App.fetch(this._cycleUrl());
+      this.render(fresh || {});
+    });
   },
 
   render(data) {
@@ -66,12 +84,15 @@ const Cycle = {
     if (stopBtn) stopBtn.disabled = !sched.running;
     if (runBtn) runBtn.disabled = !!sched.busy;
 
-    // Seed the store input with the latest known store_id on first
-    // render so the operator doesn't have to retype it.
+    // Seed the store input with the selected store (Option N) first,
+    // falling back to the latest known cycle's store_id so a fresh box
+    // still has something sensible in the field.
     const storeInput = document.getElementById('sched-store');
     if (storeInput && !storeInput.dataset.touched) {
+      const selected = (window.Stores && Stores.current()) || '';
       const latestStore = data.latest && data.latest.store_id;
-      if (latestStore) storeInput.value = latestStore;
+      const seed = selected || latestStore;
+      if (seed) storeInput.value = seed;
     }
     if (storeInput && !storeInput.dataset.wired) {
       storeInput.dataset.wired = '1';
