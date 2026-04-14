@@ -233,6 +233,37 @@ class TestSnapshot:
         assert snap["total_penalties"] == 3
 
 
+class TestLRUCap:
+    """Self-critique fix: _rows must be bounded with LRU eviction
+    so a runaway feeder can't grow memory unbounded."""
+
+    def test_cap_evicts_oldest_touched(self):
+        led = RouteWeightLedger(max_rows=3)
+        led.penalize("a", "cap", 0.5)
+        led.penalize("b", "cap", 0.5)
+        led.penalize("c", "cap", 0.5)
+        # Touch 'a' so it moves to most-recently-used.
+        led.penalize("a", "cap", 0.9)
+        # Inserting a new row should evict 'b' (oldest untouched).
+        led.penalize("d", "cap", 0.5)
+        snap = led.snapshot()
+        adapters = {r["adapter"] for r in snap["rows"]}
+        assert "b" not in adapters
+        assert {"a", "c", "d"} <= adapters
+        assert snap["total_evictions"] >= 1
+
+    def test_eviction_counter_exposed(self):
+        led = RouteWeightLedger(max_rows=2)
+        led.penalize("a", "cap", 0.5)
+        led.penalize("b", "cap", 0.5)
+        led.penalize("c", "cap", 0.5)  # evicts a
+        assert led.snapshot()["total_evictions"] == 1
+
+    def test_bad_max_rows_rejected(self):
+        with pytest.raises(ValueError):
+            RouteWeightLedger(max_rows=0)
+
+
 class TestSingleton:
     def test_singleton_persists(self):
         led1 = get_route_weight_ledger()

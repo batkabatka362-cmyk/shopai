@@ -605,10 +605,15 @@ class SmartRouter:
             # Upgrade 1: learned route weight. The reflection
             # synthesizer penalizes ``(adapter, capability)`` pairs
             # whose promoted patterns named them as fault lines.
-            # A weight below 1.0 scales the score contribution so
-            # a historically-flaky pair is tried AFTER healthier
-            # candidates, but still remains eligible (floor: 0.05)
-            # so total exclusion stays the breaker's job.
+            # A weight below 1.0 subtracts a demotion proportional
+            # to the declared priority so the penalized pair ranks
+            # AFTER healthier candidates. We use ADDITIVE
+            # subtraction (not multiply) because a multiplicative
+            # penalty on a negative score would move it UP the
+            # rankings — if a low-success adapter already has a
+            # -20 from the stats branch, ``score * 0.5`` = -10,
+            # which ranks higher than unpenalized. Additive
+            # penalty avoids that inversion entirely.
             try:
                 from core.adapters.route_weights import (
                     get_route_weight_ledger,
@@ -622,10 +627,15 @@ class SmartRouter:
                     adapter.name, cap_name,
                 )
                 if weight < 1.0:
-                    # Scale by the declared priority so a learned
-                    # penalty can demote — but not invert — the
-                    # operator's own prioritisation.
-                    score *= weight
+                    # Penalty magnitude scales with the operator's
+                    # declared priority: a priority-100 adapter
+                    # can lose up to priority points, a priority-0
+                    # adapter loses nothing (there's no ranking
+                    # signal to demote). This preserves the
+                    # operator's absolute priority ordering as an
+                    # upper bound.
+                    penalty = (1.0 - weight) * float(adapter.priority)
+                    score -= penalty
             except Exception as exc:  # noqa: BLE001
                 logger.debug("route_weights lookup failed: %s", exc)
 

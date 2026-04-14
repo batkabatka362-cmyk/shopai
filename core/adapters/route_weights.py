@@ -76,6 +76,10 @@ _DEFAULT_HALF_LIFE_HOURS = 6.0
 # the current weight so repeated promotions compound naturally:
 # two hits = 0.5 × 0.5 = 0.25, three hits = 0.125 … clamped.
 _DEFAULT_PENALTY = 0.5
+# Cap on rows in the ledger. Reflection promotes O(1) patterns
+# per cycle so this would only trip on a runaway feeder; the LRU
+# evicts the oldest-touched pair so fresh signals always win.
+_DEFAULT_MAX_ROWS = 2048
 
 
 # ── Ledger ─────────────────────────────────────────────────
@@ -102,14 +106,23 @@ class RouteWeightLedger:
         *,
         half_life_hours: float = _DEFAULT_HALF_LIFE_HOURS,
         min_weight: float = _MIN_WEIGHT,
+        max_rows: int = _DEFAULT_MAX_ROWS,
     ) -> None:
+        if max_rows < 1:
+            raise ValueError("max_rows must be >= 1")
         self._half_life_s = max(60.0, float(half_life_hours) * 3600.0)
         self._min_weight = max(0.0, min(min_weight, 1.0))
-        self._rows: dict[tuple[str, str], _Row] = {}
+        self._max_rows = int(max_rows)
+        # OrderedDict so we can evict the least-recently-penalised
+        # pair when the cap is hit. ``move_to_end`` on every
+        # penalise/get-with-row keeps the LRU order honest.
+        from collections import OrderedDict
+        self._rows: "OrderedDict[tuple[str, str], _Row]" = OrderedDict()
         self._lock = threading.RLock()
         # Summary counters for the dashboard.
         self._total_penalties = 0
         self._total_recoveries = 0  # # of decay ticks that reset a row to 1.0
+        self._total_evictions = 0
 
     # ── Mutation ────────────────────────────────────────────
 
@@ -151,12 +164,22 @@ class RouteWeightLedger:
         with self._lock:
             row = self._rows.get(key)
             if row is None:
+                # LRU eviction: if adding this row would exceed
+                # the cap, drop the oldest (least-recently-touched)
+                # entry first. Evictions compound so a runaway
+                # feeder can't starve newly-observed fault lines.
+                while len(self._rows) >= self._max_rows:
+                    self._rows.popitem(last=False)
+                    self._total_evictions += 1
                 row = _Row(
                     weight=_MAX_WEIGHT,
                     last_penalty_ts=now,
                     penalty_count=0,
                 )
                 self._rows[key] = row
+            else:
+                # Touch → most-recently-used position in the LRU.
+                self._rows.move_to_end(key, last=True)
             # Decay BEFORE applying the new penalty so the fresh
             # penalty lands on a weight that's already partially
             # recovered. Otherwise a burst of penalties + a long
@@ -226,6 +249,8 @@ class RouteWeightLedger:
                 "rows": rows,
                 "total_penalties": self._total_penalties,
                 "total_recoveries": self._total_recoveries,
+                "total_evictions": self._total_evictions,
+                "max_rows": self._max_rows,
                 "half_life_s": self._half_life_s,
                 "min_weight": self._min_weight,
             }

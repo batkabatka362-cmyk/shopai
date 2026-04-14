@@ -331,6 +331,46 @@ class TestSpikeDetection:
         assert report.spikes == []
 
 
+class TestNoFalseSpikeOnNewCaller:
+    """Self-critique fix: a caller that appears mid-stream used to
+    look like an infinite spike because the first absolute sample
+    had them at $0 by definition. The long-burn baseline must
+    anchor on the caller's FIRST APPEARANCE, and the short/long
+    coverage ratio must exceed 2× before a spike can fire."""
+
+    def test_new_caller_no_spike_when_short_equals_long(self):
+        clock = FakeClock()
+        f = CostForecaster(clock=clock, spike_ratio=2.0)
+        # Sample 1: only 'legacy' is present.
+        led = _mock_ledger(
+            total=0.0,
+            callers=[{"caller": "legacy", "total_usd": 0.0}],
+        )
+        with patch(
+            "core.adapters.cost_ledger.get_cost_ledger",
+            return_value=led,
+        ):
+            f.sample()
+        # Sample 2 (1h later): a NEW caller joins.
+        clock.advance(3600)
+        led.per_caller.return_value = [
+            {"caller": "legacy", "total_usd": 1.0},
+            {"caller": "newbie", "total_usd": 5.0},
+        ]
+        with patch(
+            "core.adapters.cost_ledger.get_cost_ledger",
+            return_value=led,
+        ):
+            f.sample()
+        report = f.forecast(horizon_hours=1)
+        # newbie must NOT be flagged as a spike — there's no
+        # baseline yet.
+        newbie = next(c for c in report.per_caller if c.caller == "newbie")
+        assert newbie.is_spike is False
+        assert newbie.spike_ratio == 1.0
+        assert "newbie" not in report.spikes
+
+
 class TestSnapshot:
     def test_snapshot_reports_state(self):
         clock = FakeClock()

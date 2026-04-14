@@ -264,15 +264,29 @@ class CostForecaster:
             )
             short_burn = max(0.0, short_delta / short_dt_hr)
 
-            # Long-window burn over ALL samples for spike ratio.
+            # Long-window burn for the spike ratio. We anchor on
+            # the caller's FIRST APPEARANCE in the sample history,
+            # not on the oldest absolute sample — otherwise every
+            # caller who joined mid-stream would look like an
+            # infinite spike (because the first absolute sample
+            # had them at 0 by definition). The first-appearance
+            # anchor means "spike" = "this caller's recent burn
+            # is unusually high for them".
+            first_seen_idx: int | None = None
+            for i, s in enumerate(samples):
+                if caller in s.per_caller_usd:
+                    first_seen_idx = i
+                    break
+            if first_seen_idx is None:
+                continue
+            first_seen_sample = samples[first_seen_idx]
             long_dt_hr = (
-                (samples[-1].ts - samples[0].ts) / 3600.0
-                if len(samples) >= 2 else 0.0
+                (samples[-1].ts - first_seen_sample.ts) / 3600.0
             )
             if long_dt_hr > 0:
                 long_delta = (
                     samples[-1].per_caller_usd.get(caller, 0.0)
-                    - samples[0].per_caller_usd.get(caller, 0.0)
+                    - first_seen_sample.per_caller_usd.get(caller, 0.0)
                 )
                 long_burn = max(0.0, long_delta / long_dt_hr)
             else:
@@ -281,10 +295,21 @@ class CostForecaster:
             # Spike ratio: short ÷ long. A young series where
             # long_burn is ~0 trips this trivially; guard with a
             # min-denominator so "warmup" doesn't fire every time.
+            # Also require the caller's long-window coverage to
+            # exceed the short-window coverage × 2 before we
+            # trust the ratio — otherwise the two windows measure
+            # the same data and the ratio is meaningless.
+            has_baseline = long_dt_hr >= short_dt_hr * 2.0
             ratio = (
-                short_burn / long_burn if long_burn >= 1e-9 else 1.0
+                short_burn / long_burn
+                if long_burn >= 1e-9 and has_baseline
+                else 1.0
             )
-            is_spike = ratio >= self._spike_ratio and short_burn > 0.0
+            is_spike = (
+                has_baseline
+                and ratio >= self._spike_ratio
+                and short_burn > 0.0
+            )
 
             projected = current + short_burn * horizon_hours
             forecasts.append(CallerForecast(

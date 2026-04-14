@@ -135,6 +135,29 @@ class TestRouterWeightOrdering:
         names = [c.name for c in cands]
         assert names == ["alpha", "beta"]
 
+    def test_additive_penalty_not_multiplicative(self):
+        """Self-critique fix: multiplying a NEGATIVE score by a
+        weight < 1 makes the score LARGER (better rank), which
+        silently inverts the penalty. The fix uses additive
+        subtraction proportional to priority so a penalized
+        adapter always ranks below an equal-priority clean one,
+        regardless of score sign."""
+        reg = AdapterRegistry()
+        # Both priority 50, both clean → tied; penalty on alpha
+        # must push alpha below beta in every sign regime.
+        reg.register(_Stub("alpha", priority=50))
+        reg.register(_Stub("beta", priority=50))
+        r = SmartRouter(registry=reg)
+        get_route_weight_ledger().penalize(
+            "alpha", Capability.CHAT_COMPLETE.value, 0.1,
+        )
+        cands = r.candidates(
+            Capability.CHAT_COMPLETE, RouteContext(),
+        )
+        names = [c.name for c in cands]
+        assert names[0] == "beta"
+        assert names[-1] == "alpha"
+
     def test_penalized_candidate_still_eligible(self):
         """Floor (0.05) means even a heavily-penalized adapter is
         still returned, just last."""

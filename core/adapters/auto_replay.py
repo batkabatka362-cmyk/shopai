@@ -232,6 +232,12 @@ class AutoReplayCoordinator:
             logger.debug("auto_replay: ledger read failed: %s", exc)
             return report
 
+        # Process OLDEST first for fairness — a chronic producer
+        # of new failures must not starve stale-but-eligible
+        # entries forever. ``recent`` returns newest-first; we
+        # reverse so the backlog clears in arrival order.
+        entries = list(reversed(entries))
+
         # Health probes (lazy imports: both modules are optional
         # for environments that don't ship the full adapter layer).
         try:
@@ -331,7 +337,7 @@ class AutoReplayCoordinator:
             if callback is not None:
                 report.callback_invocations += 1
                 try:
-                    callback(entry)
+                    result = callback(entry)
                 except Exception as exc:  # noqa: BLE001
                     report.callback_failures += 1
                     with self._lock:
@@ -340,6 +346,18 @@ class AutoReplayCoordinator:
                         "auto_replay: callback failed for %s (%s/%s): %s",
                         eid, adapter_name, capability, exc,
                     )
+                else:
+                    # Truthy return → replay succeeded; mark the
+                    # entry so it drops out of future scans. Falsy
+                    # return → leave it for the next scan (caller
+                    # decided not to replay, perhaps because the
+                    # adapter was still tagged degraded upstream).
+                    # This relieves the caller from having to call
+                    # ``mark_replayed`` manually on the success
+                    # path, which was the most common mistake in
+                    # early integration code.
+                    if result:
+                        self.mark_replayed(eid)
 
         return report
 

@@ -209,10 +209,13 @@ class TestCallback:
         c = AutoReplayCoordinator(min_age_sec=10.0)
         seen: list[str] = []
         c.register_replay_callback(lambda e: seen.append(e.id))
+        # ledger.recent() returns newest-first; coordinator processes
+        # oldest-first for backlog fairness, so e2 (oldest in the
+        # newest-first list) is invoked before e0 (newest).
         entries = [_entry(eid=f"e{i}") for i in range(3)]
         with _patch_ledger(entries), _patch_router_breakers({}):
             report = c.scan()
-        assert seen == ["e0", "e1", "e2"]
+        assert seen == ["e2", "e1", "e0"]
         assert report.callback_invocations == 3
         assert report.callback_failures == 0
 
@@ -278,6 +281,57 @@ class TestSnapshot:
             AutoReplayCoordinator(max_ready_per_scan=0)
         with pytest.raises(ValueError):
             AutoReplayCoordinator(replayed_lru_max=0)
+
+
+class TestOldestFirstFairness:
+    """Self-critique fix: dead-letter ledger returns newest-first,
+    but the backlog must clear in arrival order so stale entries
+    don't starve while fresh failures keep landing."""
+
+    def test_oldest_processed_first_even_under_rate_limit(self):
+        c = AutoReplayCoordinator(min_age_sec=10.0, max_ready_per_scan=2)
+        # ledger.recent() returns newest-first. The coordinator
+        # reverses so oldest (e4) is processed first.
+        entries = [_entry(eid=f"e{i}") for i in range(5)]
+        with _patch_ledger(entries), _patch_router_breakers({}):
+            report = c.scan()
+        ready_ids = [c_.entry_id for c_ in report.ready]
+        # Under the rate limit of 2, the two OLDEST entries
+        # (e4, e3) are yielded, not the newest two.
+        assert ready_ids == ["e4", "e3"]
+
+
+class TestCallbackAutoMark:
+    """Self-critique fix: a truthy callback return auto-marks the
+    entry as replayed so callers don't have to remember to call
+    ``mark_replayed`` manually on every success path."""
+
+    def test_truthy_return_auto_marks(self):
+        c = AutoReplayCoordinator(min_age_sec=10.0)
+        c.register_replay_callback(lambda e: True)
+        with _patch_ledger([_entry(eid="auto-ok")]), \
+             _patch_router_breakers({}):
+            c.scan()
+        assert c.is_replayed("auto-ok")
+
+    def test_falsy_return_leaves_entry_alone(self):
+        c = AutoReplayCoordinator(min_age_sec=10.0)
+        c.register_replay_callback(lambda e: False)
+        with _patch_ledger([_entry(eid="auto-skip")]), \
+             _patch_router_breakers({}):
+            c.scan()
+        assert not c.is_replayed("auto-skip")
+
+    def test_exception_does_not_auto_mark(self):
+        c = AutoReplayCoordinator(min_age_sec=10.0)
+
+        def bad(e):
+            raise RuntimeError("boom")
+        c.register_replay_callback(bad)
+        with _patch_ledger([_entry(eid="auto-crash")]), \
+             _patch_router_breakers({}):
+            c.scan()
+        assert not c.is_replayed("auto-crash")
 
 
 class TestSingleton:
