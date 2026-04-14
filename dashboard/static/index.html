@@ -364,6 +364,21 @@
           </div>
         </div>
       </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Cost by Caller</h2>
+          <span class="badge" id="cost-attribution-badge">—</span>
+        </div>
+        <div class="panel-body" id="cost-attribution">
+          <div class="empty-state muted">
+            Per-caller spend attribution. Pass
+            <code>RouteContext(caller="support_agent")</code> so each
+            realised cost is tagged with its calling subsystem —
+            then you can see exactly which agent, hook, or flow is
+            driving this month's bill.
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Tab: Feedback -->

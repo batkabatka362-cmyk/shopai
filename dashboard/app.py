@@ -138,6 +138,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/idempotency": self._api_idempotency,
             "/api/adapter-health": self._api_adapter_health,
             "/api/deadletter": self._api_deadletter,
+            "/api/cost-attribution": self._api_cost_attribution,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -410,6 +411,29 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "per_adapter": {},
                 "per_capability": {},
                 "recent": [],
+                "error": str(exc)[:200],
+            }
+        self._json(200, data)
+
+    def _api_cost_attribution(self) -> None:
+        """Per-caller cost attribution — Option Z.
+
+        Returns the rollup (total + per-caller + every row) from the
+        cost ledger singleton. Never 500s — a cold ledger reports
+        zeros so the UI renders its empty state instead of an error.
+        """
+        try:
+            data = _collect_cost_attribution_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cost attribution collector failed: %s", exc)
+            data = {
+                "timestamp": time.time(),
+                "total_usd": 0.0,
+                "key_count": 0,
+                "max_keys": 0,
+                "overflow": {"active": False, "calls": 0, "usd": 0.0},
+                "per_caller": [],
+                "rows": [],
                 "error": str(exc)[:200],
             }
         self._json(200, data)
@@ -2304,6 +2328,38 @@ def _collect_deadletter_snapshot() -> dict[str, Any]:
         "oldest_ts": float(snap.get("oldest_ts", 0.0)),
         "path": snap.get("path"),
         "recent": [e.to_dict() for e in recent],
+    }
+
+
+def _collect_cost_attribution_snapshot() -> dict[str, Any]:
+    """Per-caller cost attribution rollup — Option Z.
+
+    Reads the process-wide ``CostLedger`` and shapes it for the
+    Cost Tracker tab:
+
+    * ``total_usd`` — all-caller total, useful for the header badge
+    * ``per_caller`` — one row per caller, sorted by spend desc
+    * ``rows``      — the full ``(caller, adapter, capability)``
+                       breakdown for the drill-down table
+    * ``overflow`` — when a buggy caller generated too many unique
+                     tags, we surface that explicitly so operators
+                     know the attribution table is not the whole
+                     story
+    """
+    from core.adapters.cost_ledger import get_cost_ledger
+
+    ledger = get_cost_ledger()
+    snap = ledger.snapshot()
+    return {
+        "timestamp": float(snap.get("timestamp", time.time())),
+        "total_usd": float(snap.get("total_usd", 0.0)),
+        "key_count": int(snap.get("key_count", 0)),
+        "max_keys": int(snap.get("max_keys", 0)),
+        "overflow": dict(snap.get("overflow") or {
+            "active": False, "calls": 0, "usd": 0.0,
+        }),
+        "per_caller": list(snap.get("per_caller") or []),
+        "rows": list(snap.get("rows") or []),
     }
 
 

@@ -2381,6 +2381,73 @@ body {
   .idem-row { grid-template-columns: 1fr; }
 }
 
+/* ── Cost attribution ──────────────────────────────────── */
+.attrib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.attrib-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  background: var(--panel-bg, rgba(255, 255, 255, 0.02));
+}
+.attrib-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.attrib-name {
+  font-weight: 600;
+  font-family: var(--mono, monospace);
+  color: var(--text-primary, #e5e8ef);
+  flex: 0 0 auto;
+}
+.attrib-usd {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary, #e5e8ef);
+}
+.attrib-pct {
+  margin-left: auto;
+  font-size: 12px;
+}
+.attrib-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+.attrib-bar-fill {
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--accent, #4e9eff),
+    var(--accent-soft, #7bbcff)
+  );
+}
+.attrib-stats {
+  font-size: 11px;
+}
+.attrib-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.attrib-table th,
+.attrib-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+  text-align: left;
+}
+.attrib-table th { color: var(--text-secondary, #aeb4c0); font-weight: 600; }
+.attrib-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+
 /* ── Dead-letter feed ───────────────────────────────────── */
 .dl-feed {
   display: flex;

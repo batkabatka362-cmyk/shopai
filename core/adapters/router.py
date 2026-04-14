@@ -29,6 +29,7 @@ from utils.logger import get_logger
 
 from .base import AdapterResult, BaseAdapter, Capability
 from .budget import BudgetEnforcer, get_budget_enforcer
+from .cost_ledger import CostLedger, get_cost_ledger
 from .rate_limit import RateLimiter, get_rate_limiter
 from .idempotency import IdempotencyCache, get_idempotency_cache
 from .health import HealthScorer
@@ -93,6 +94,12 @@ class RouteContext:
     exclude: set[str] = field(default_factory=set)
     min_quality: int = 0
     fallback_depth: int = 2
+    # Caller identity for per-request cost attribution (Option Z).
+    # A short tag like ``"support_agent"``, ``"reflection_hook"``,
+    # ``"web_dashboard"``. The router passes this through to the
+    # cost ledger; absent or malformed tags collapse to ``"unknown"``
+    # so a buggy caller cannot fragment the attribution table.
+    caller: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -145,8 +152,14 @@ class SmartRouter:
         health_scorer: HealthScorer | None = None,
         health_bonus_range: float = 30.0,
         dead_letter_ledger: DeadLetterLedger | None = None,
+        cost_ledger: CostLedger | None = None,
     ) -> None:
-        self._registry = registry or get_registry()
+        # Use explicit ``is None`` — AdapterRegistry defines
+        # ``__len__`` so an empty registry is falsy and ``or`` would
+        # silently fall back to the process-wide singleton. Tests that
+        # pass an empty registry must get THAT registry, not one
+        # polluted by an earlier test.
+        self._registry = get_registry() if registry is None else registry
         self._metrics = metrics or get_metrics()
         # ``retry_policy=None`` means "single attempt" — preserves the
         # pre-Option-R behaviour. Production wiring can plug in a
@@ -194,6 +207,12 @@ class SmartRouter:
         # singleton; tests pass a ``DeadLetterLedger(path=None)`` to
         # keep records in memory only.
         self._dead_letter = dead_letter_ledger or get_dead_letter_ledger()
+        # Per-caller cost attribution (Option Z). Pure telemetry —
+        # NEVER gates a call.  The existing BudgetEnforcer stays the
+        # single source of truth for enforcement; this ledger just
+        # tags each realised cost with its caller so operators can
+        # see which subsystem is actually spending the money.
+        self._cost_ledger = cost_ledger or get_cost_ledger()
         self._lock = threading.RLock()
 
     # ── Policy accessors ───────────────────────────────────────
@@ -234,6 +253,11 @@ class SmartRouter:
     def dead_letter_ledger(self) -> DeadLetterLedger:
         """Expose the attached dead-letter ledger (Option Y)."""
         return self._dead_letter
+
+    @property
+    def cost_ledger(self) -> CostLedger:
+        """Expose the attached per-caller cost ledger (Option Z)."""
+        return self._cost_ledger
 
     @property
     def health_scorer(self) -> HealthScorer | None:
@@ -422,6 +446,26 @@ class SmartRouter:
                     self._budget_enforcer.record(
                         adapter.name, float(result.cost_usd),
                     )
+                    # Per-caller cost attribution (Option Z). The
+                    # caller tag comes from ``RouteContext.caller`` —
+                    # absent or malformed tags collapse to "unknown"
+                    # inside the ledger. The try/except is belt-and-
+                    # -braces on top of the ledger's own internal
+                    # guard: cost telemetry MUST never turn a good
+                    # adapter result into a failure for the caller.
+                    try:
+                        self._cost_ledger.record(
+                            caller=ctx.caller,
+                            adapter=adapter.name,
+                            capability=cap_enum.value,
+                            usd=float(result.cost_usd),
+                            tokens_in=int(result.tokens_in or 0),
+                            tokens_out=int(result.tokens_out or 0),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "cost_ledger record failed: %s", exc,
+                        )
 
             if result is not None and result.ok:
                 # Idempotency store (Option V). Keyed against the

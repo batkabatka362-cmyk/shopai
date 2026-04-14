@@ -15,35 +15,116 @@ const Cost = {
   _timer: null,
 
   async refresh() {
-    const [cost, budget] = await Promise.all([
+    const [cost, budget, attribution] = await Promise.all([
       App.fetch('/api/cost'),
       App.fetch('/api/budget'),
+      App.fetch('/api/cost-attribution'),
     ]);
-    this.render(cost || {}, budget || {});
+    this.render(cost || {}, budget || {}, attribution || {});
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'cost') return;
-      const [c, b] = await Promise.all([
+      const [c, b, a] = await Promise.all([
         App.fetch('/api/cost'),
         App.fetch('/api/budget'),
+        App.fetch('/api/cost-attribution'),
       ]);
-      this.render(c || {}, b || {});
+      this.render(c || {}, b || {}, a || {});
     }, 10000);
   },
 
-  render(data, budget) {
+  render(data, budget, attribution) {
     this._renderMetrics(data);
     this._renderBudget(data);
     this._renderCategories(data);
     this._renderTopSpenders(data);
     this._renderTable(data);
     this._renderBudgetCaps(budget || {});
+    this._renderAttribution(attribution || {});
     const stamp = document.getElementById('cost-timestamp');
     if (stamp) {
       stamp.textContent = data.timestamp
         ? `updated ${this._relTime(data.timestamp)}`
         : '';
     }
+  },
+
+  _renderAttribution(data) {
+    const body = document.getElementById('cost-attribution');
+    const badge = document.getElementById('cost-attribution-badge');
+    const perCaller = data.per_caller || [];
+    const rows = data.rows || [];
+    const total = Number(data.total_usd || 0);
+    const overflow = data.overflow || {active: false};
+    if (badge) {
+      if (!perCaller.length) {
+        badge.textContent = 'no data';
+        badge.className = 'badge badge-gray';
+      } else {
+        const top = perCaller[0];
+        badge.textContent = `$${total.toFixed(4)} · top ${top.caller}`;
+        badge.className = 'badge badge-green';
+      }
+    }
+    if (!body) return;
+    if (!perCaller.length) {
+      body.innerHTML = `<div class="empty-state muted">
+        No caller-tagged cost recorded yet. Pass
+        <code>RouteContext(caller="&lt;name&gt;")</code> when calling
+        the router so spend gets attributed to its originating
+        subsystem.
+      </div>`;
+      return;
+    }
+    const overflowBanner = overflow.active
+      ? `<div class="dl-warn muted">
+           ⚠ overflow bucket active: ${overflow.calls} call(s) · $${Number(overflow.usd || 0).toFixed(6)}
+           folded because ${data.key_count}/${data.max_keys} unique
+           tags hit the cap. A buggy caller is likely generating
+           per-request tags — switch to a stable caller name.
+         </div>`
+      : '';
+    const callerItems = perCaller.map(c => {
+      const pct = total > 0 ? (c.total_usd / total) * 100 : 0;
+      return `
+        <div class="attrib-row">
+          <div class="attrib-head">
+            <span class="attrib-name">${this._esc(c.caller)}</span>
+            <span class="attrib-usd">$${Number(c.total_usd).toFixed(4)}</span>
+            <span class="muted attrib-pct">${pct.toFixed(1)}%</span>
+          </div>
+          <div class="attrib-bar-track">
+            <div class="attrib-bar-fill" style="width: ${pct.toFixed(1)}%"></div>
+          </div>
+          <div class="attrib-stats muted">
+            ${c.calls || 0} calls · ${c.adapter_count || 0} adapter${(c.adapter_count || 0) === 1 ? '' : 's'}
+            · ${(c.tokens_in || 0) + (c.tokens_out || 0)} tokens
+          </div>
+        </div>`;
+    }).join('');
+    // Drill-down table — top 20 rows by spend.
+    const drilldown = rows.slice(0, 20).map(r => `
+      <tr>
+        <td>${this._esc(r.caller)}</td>
+        <td>${this._esc(r.adapter)}</td>
+        <td><code>${this._esc(r.capability)}</code></td>
+        <td class="num">$${Number(r.total_usd).toFixed(6)}</td>
+        <td class="num">${r.calls || 0}</td>
+      </tr>`).join('');
+    const table = rows.length
+      ? `<table class="attrib-table">
+           <thead>
+             <tr>
+               <th>Caller</th><th>Adapter</th><th>Capability</th>
+               <th class="num">Spend</th><th class="num">Calls</th>
+             </tr>
+           </thead>
+           <tbody>${drilldown}</tbody>
+         </table>`
+      : '';
+    body.innerHTML = overflowBanner
+      + `<div class="attrib-list">${callerItems}</div>`
+      + table;
   },
 
   _renderBudgetCaps(data) {

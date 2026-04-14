@@ -134,6 +134,28 @@ def _isolate_default_dead_letter_ledger():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_default_cost_ledger():
+    """Option Z: keep the process-wide cost ledger from leaking
+    attribution rows between tests.
+
+    The router records every realised cost against
+    ``get_cost_ledger()`` by default, tagged with the caller. Tests
+    that don't care about cost attribution still end up sharing
+    rows through the singleton — this fixture swaps in a fresh
+    ledger for every test so counts and per-caller rollups start
+    at zero.
+    """
+    try:
+        import core.adapters.cost_ledger as _cl
+    except Exception:
+        yield
+        return
+    _cl.reset_cost_ledger()
+    yield
+    _cl.reset_cost_ledger()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_reflection_synth(tmp_path_factory, monkeypatch):
     """Wave 6 #6: keep the process-wide default ReflectionSynthesizer
     out of the repo.
