@@ -127,6 +127,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/vault/note": self._api_vault_note,
             "/api/vault/search": self._api_vault_search,
             "/api/alerts": self._api_alerts,
+            "/api/cost": self._api_cost,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -228,6 +229,25 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             logger.debug("vault note read failed: %s", exc)
             self._json(200, {"error": str(exc)[:200]})
             return
+        self._json(200, data)
+
+    def _api_cost(self) -> None:
+        """Running cost snapshot: per-adapter + per-category totals,
+        session-to-date. Budget comes from ``SHOPAI_MONTHLY_BUDGET_USD``
+        (default $100) so the UI can draw a progress bar. Never 500s —
+        a metrics collector failure returns a zeroed envelope."""
+        try:
+            data = _collect_cost_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cost collector failed: %s", exc)
+            data = {
+                "total_usd": 0.0,
+                "per_adapter": [],
+                "per_category": {},
+                "budget": {"cap_usd": 0.0, "pct_used": 0.0},
+                "timestamp": time.time(),
+                "error": str(exc)[:200],
+            }
         self._json(200, data)
 
     def _api_alerts(self) -> None:
@@ -1342,6 +1362,118 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 # warning. Expanding this list is a one-line change if a new pillar
 # becomes load-bearing.
 _CRITICAL_ADAPTER_CATEGORIES = frozenset({"llm"})
+
+
+def _monthly_budget_cap_usd() -> float:
+    """Budget ceiling in USD. Env-overridable so operators can tune
+    the alert threshold without redeploying."""
+    raw = os.environ.get("SHOPAI_MONTHLY_BUDGET_USD", "100")
+    try:
+        cap = float(raw)
+    except (TypeError, ValueError):
+        cap = 100.0
+    return max(0.0, cap)
+
+
+def _collect_cost_snapshot() -> dict[str, Any]:
+    """Roll up running cost across the adapter registry.
+
+    Pulls per-adapter counters from ``AdapterMetricsCollector`` and
+    cross-references them with the registry to attach a category.
+    Adapters that have never been called still appear so the UI can
+    distinguish 'no spend' from 'unknown'.
+    """
+    # Lazy imports: a teardown test can drop ``core.adapters`` without
+    # breaking an unrelated cost-endpoint probe.
+    try:
+        from core.adapters.metrics import get_metrics
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"metrics unavailable: {exc}") from exc
+
+    try:
+        from core.adapters import get_registry
+        reg = get_registry()
+        reg_names = list(reg.names())
+    except Exception:  # noqa: BLE001
+        reg = None
+        reg_names = []
+
+    # Map adapter_name → category for enrichment.
+    cat_by_name: dict[str, str] = {}
+    for name in reg_names:
+        try:
+            ad = reg.get(name) if reg else None
+        except Exception:  # noqa: BLE001
+            ad = None
+        if ad is None:
+            continue
+        cat = getattr(ad, "category", None)
+        cat_name = cat.value if hasattr(cat, "value") else str(cat)
+        cat_by_name[name] = cat_name
+
+    # Metrics snapshot — every adapter that has recorded at least one
+    # call shows up here keyed by adapter name.
+    try:
+        metrics_snap = get_metrics().snapshot() or {}
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"metrics.snapshot failed: {exc}") from exc
+
+    # Union of known adapter names so a registered-but-never-called
+    # adapter still gets a (0-cost) row.
+    all_names = set(metrics_snap.keys()) | set(cat_by_name.keys())
+
+    per_adapter: list[dict[str, Any]] = []
+    per_category: dict[str, float] = {}
+    total_usd = 0.0
+
+    for name in sorted(all_names):
+        stats = metrics_snap.get(name) or {}
+        cost = float(stats.get("cost_usd_total", 0.0) or 0.0)
+        calls = int(stats.get("calls_total", 0) or 0)
+        tokens_in = int(stats.get("tokens_in_total", 0) or 0)
+        tokens_out = int(stats.get("tokens_out_total", 0) or 0)
+        category = cat_by_name.get(name, "other")
+
+        avg = round(cost / calls, 6) if calls > 0 else 0.0
+        per_adapter.append({
+            "name": name,
+            "category": category,
+            "cost_usd": round(cost, 6),
+            "calls": calls,
+            "avg_cost_usd": avg,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "last_call_at": stats.get("last_call_at", 0.0),
+        })
+
+        per_category[category] = per_category.get(category, 0.0) + cost
+        total_usd += cost
+
+    # Sort biggest-spend first so the table header row is always the top burner.
+    per_adapter.sort(key=lambda r: r["cost_usd"], reverse=True)
+    per_category = {
+        k: round(v, 6)
+        for k, v in sorted(per_category.items(), key=lambda kv: kv[1], reverse=True)
+    }
+
+    cap = _monthly_budget_cap_usd()
+    pct_used = round(min(100.0, (total_usd / cap) * 100), 2) if cap > 0 else 0.0
+
+    top_spender = per_adapter[0]["name"] if per_adapter and per_adapter[0]["cost_usd"] > 0 else ""
+
+    return {
+        "total_usd": round(total_usd, 6),
+        "per_adapter": per_adapter,
+        "per_category": per_category,
+        "top_spender": top_spender,
+        "budget": {
+            "cap_usd": round(cap, 2),
+            "spent_usd": round(total_usd, 6),
+            "pct_used": pct_used,
+            "over_budget": cap > 0 and total_usd > cap,
+        },
+        "timestamp": time.time(),
+    }
 
 
 def _collect_adapter_alerts() -> dict[str, Any]:

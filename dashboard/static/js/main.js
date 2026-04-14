@@ -41,6 +41,7 @@ const App = {
       stream: 'Synaptic Stream',
       cycle: 'Cycles',
       vault: 'Vault',
+      cost: 'Cost Tracker',
     };
     document.getElementById('page-title').textContent = titles[tab] || tab;
 
@@ -50,6 +51,7 @@ const App = {
     if (tab === 'stream') Stream.refresh();
     if (tab === 'cycle' && window.Cycle) Cycle.refresh();
     if (tab === 'vault' && window.Vault) Vault.refresh();
+    if (tab === 'cost' && window.Cost) Cost.refresh();
   },
 
   async refresh() {

@@ -1582,6 +1582,134 @@ body {
   color: var(--orange);
 }
 
+/* ── Cost tracker ─────────────────────────────────── */
+
+.cost-budget-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.cost-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.cost-bar-fill {
+  height: 100%;
+  transition: width 0.4s;
+}
+
+.cost-bar-green  { background: var(--green); }
+.cost-bar-orange { background: var(--orange); }
+.cost-bar-red    { background: var(--red); }
+
+.cost-budget-foot {
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.cost-cat-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 80px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.cost-cat-label {
+  font-size: 12px;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cost-cat-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.03);
+}
+
+.cost-cat-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent), rgba(0,212,255,0.4));
+}
+
+.cost-cat-value {
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.cost-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cost-top-row:last-child { border-bottom: none; }
+
+.cost-top-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cost-top-meta {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.cost-top-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--orange);
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.cost-table thead th {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+}
+
+.cost-table tbody td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.cost-table tbody tr:hover td {
+  background: rgba(0,212,255,0.03);
+}
+
+.cost-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Vault search ─────────────────────────────────── */
 
 .vault-search-row {
