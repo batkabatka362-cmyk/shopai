@@ -29,6 +29,7 @@ from utils.logger import get_logger
 
 from .base import AdapterResult, BaseAdapter, Capability
 from .budget import BudgetEnforcer, get_budget_enforcer
+from .rate_limit import RateLimiter, get_rate_limiter
 from .errors import (
     AdapterError,
     AdapterNotConfigured,
@@ -136,6 +137,7 @@ class SmartRouter:
         retry_telemetry: RetryTelemetry | None = None,
         breaker_factory: Any | None = None,
         budget_enforcer: BudgetEnforcer | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self._registry = registry or get_registry()
         self._metrics = metrics or get_metrics()
@@ -156,6 +158,12 @@ class SmartRouter:
         # catalog, so pre-existing tests see no change; production can
         # attach budgets via ``set_budget`` after construction.
         self._budget_enforcer = budget_enforcer or get_budget_enforcer()
+        # Rate limiter (Option U). The default singleton ships with a
+        # catalog of common vendor limits (openai, anthropic, shopify,
+        # etc.) so production behaviour is sensible without any
+        # explicit configuration. Tests pass ``RateLimiter(policies={})``
+        # to get the old "always allowed" semantics.
+        self._rate_limiter = rate_limiter or get_rate_limiter()
         self._lock = threading.RLock()
 
     # ── Policy accessors ───────────────────────────────────────
@@ -186,6 +194,11 @@ class SmartRouter:
     def budget_enforcer(self) -> BudgetEnforcer:
         """Expose the attached cost budget enforcer (Option T)."""
         return self._budget_enforcer
+
+    @property
+    def rate_limiter(self) -> RateLimiter:
+        """Expose the attached per-adapter rate limiter (Option U)."""
+        return self._rate_limiter
 
     def _breaker_for(self, name: str) -> CircuitBreaker:
         """Return (creating if needed) the breaker for *name*."""
@@ -291,13 +304,30 @@ class SmartRouter:
                 )
                 continue
 
+            # Rate-limit gate (Option U). Reserves a token in the
+            # per-minute, per-hour, and concurrency windows. If the
+            # gate is shut we skip without burning a retry budget,
+            # letting the next fallback try immediately.
+            rl = self._rate_limiter.can_call(adapter.name)
+            if not rl.allow:
+                logger.info(
+                    "router skip: rate-limit closed for %s (%s, wait=%s)",
+                    adapter.name, rl.reason, rl.retry_after_s,
+                )
+                continue
+
             # Per-adapter retry loop. Each adapter gets the full
             # budget defined by ``self._retry_policy`` before the
-            # router gives up on it and moves to a fallback.
+            # router gives up on it and moves to a fallback. The
+            # rate limiter's concurrency slot is released in the
+            # ``finally`` so an exception can't leak a slot.
             def _call(_adapter=adapter) -> AdapterResult:
                 return _adapter.execute(capability, params)
 
-            outcome = self._retry_policy.run(_call)
+            try:
+                outcome = self._retry_policy.run(_call)
+            finally:
+                self._rate_limiter.release_slot(adapter.name)
             self._retry_telemetry.record(adapter.name, outcome)
             result = outcome.result
 

@@ -134,6 +134,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/retries": self._api_retries,
             "/api/sla": self._api_sla,
             "/api/budget": self._api_budget,
+            "/api/ratelimit": self._api_ratelimit,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -334,6 +335,28 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             logger.debug("budget collector failed: %s", exc)
             data = {
                 "totals": {"exceeded": 0, "warn": 0, "ok": 0, "unconfigured": 0},
+                "rows": [],
+                "timestamp": time.time(),
+                "error": str(exc)[:200],
+            }
+        self._json(200, data)
+
+    def _api_ratelimit(self) -> None:
+        """Per-adapter rate-limit dashboard — Option U.
+
+        Returns the per-window token counts, in-flight call count,
+        and traffic-light grade for every adapter that has a policy
+        registered. Adapters without a policy don't appear — the
+        limiter is opt-in, and the UI would otherwise show dozens
+        of "idle" rows for internal adapters that aren't throttled.
+        Never 500s — an empty catalog simply reports ``rows: []``.
+        """
+        try:
+            data = _collect_ratelimit_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ratelimit collector failed: %s", exc)
+            data = {
+                "totals": {"throttled": 0, "near": 0, "ok": 0, "idle": 0},
                 "rows": [],
                 "timestamp": time.time(),
                 "error": str(exc)[:200],
@@ -2157,6 +2180,26 @@ def _collect_budget_snapshot() -> dict[str, Any]:
     for r in rows:
         key = r.get("status", "unconfigured")
         totals[key] = totals.get(key, 0) + 1
+    return {
+        "timestamp": time.time(),
+        "totals": totals,
+        "rows": rows,
+    }
+
+
+def _collect_ratelimit_snapshot() -> dict[str, Any]:
+    """Per-adapter rate-limit rollup for the Reliability tab.
+
+    Reads the process-wide ``RateLimiter`` singleton. The limiter's
+    own ``snapshot`` does the heavy lifting — this wrapper just
+    layers on the header-badge rollup and a wall-clock timestamp
+    so the UI can show "updated Ns ago".
+    """
+    from core.adapters.rate_limit import get_rate_limiter
+
+    limiter = get_rate_limiter()
+    rows = limiter.snapshot()
+    totals = limiter.totals(rows)
     return {
         "timestamp": time.time(),
         "totals": totals,

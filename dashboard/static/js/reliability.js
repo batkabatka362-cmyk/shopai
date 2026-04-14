@@ -14,27 +14,106 @@ const Reliability = {
   _timer: null,
 
   async refresh() {
-    const [retries, sla] = await Promise.all([
+    const [retries, sla, rate] = await Promise.all([
       App.fetch('/api/retries'),
       App.fetch('/api/sla'),
+      App.fetch('/api/ratelimit'),
     ]);
-    this.render(retries || {}, sla || {});
+    this.render(retries || {}, sla || {}, rate || {});
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'reliability') return;
-      const [fr, fs] = await Promise.all([
+      const [fr, fs, frl] = await Promise.all([
         App.fetch('/api/retries'),
         App.fetch('/api/sla'),
+        App.fetch('/api/ratelimit'),
       ]);
-      this.render(fr || {}, fs || {});
+      this.render(fr || {}, fs || {}, frl || {});
     }, 15000);
   },
 
-  render(data, sla) {
+  render(data, sla, rate) {
     this._renderMetrics(data.totals || {});
     this._renderBreakers(data.breakers || []);
     this._renderAdapters(data.per_adapter || []);
     this._renderSLA(sla || {});
+    this._renderRateLimit(rate || {});
+  },
+
+  _renderRateLimit(rate) {
+    const body = document.getElementById('reliability-ratelimit');
+    const badge = document.getElementById('reliability-ratelimit-badge');
+    const rows = rate.rows || [];
+    const totals = rate.totals || {throttled: 0, near: 0, ok: 0, idle: 0};
+    if (badge) {
+      const t = totals.throttled || 0;
+      const n = totals.near || 0;
+      const o = totals.ok || 0;
+      badge.textContent = `${t} throttled · ${n} near · ${o} ok`;
+      badge.className = 'badge ' + (
+        t > 0 ? 'badge-red'
+        : n > 0 ? 'badge-orange'
+        : 'badge-green'
+      );
+    }
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = `<div class="empty-state muted">
+        No adapters have a rate-limit policy registered. Register one
+        with <code>RateLimiter.set_policy(adapter, RateLimit(…))</code>
+        or rely on the default catalog for common vendors.
+      </div>`;
+      return;
+    }
+    const items = rows.map(r => {
+      const cls = r.status === 'throttled' ? 'badge-red'
+        : r.status === 'near' ? 'badge-orange'
+        : r.status === 'ok' ? 'badge-green'
+        : 'badge-gray';
+      const pol = r.policy || {};
+      const minutePart = pol.requests_per_min
+        ? this._bar(r.minute_used_pct, r.tokens_min, pol.requests_per_min, 'per min')
+        : '<span class="muted">no per-minute cap</span>';
+      const hourPart = pol.requests_per_hour
+        ? this._bar(r.hour_used_pct, r.tokens_hour, pol.requests_per_hour, 'per hour')
+        : '<span class="muted">no per-hour cap</span>';
+      const conc = pol.concurrent
+        ? `<span class="muted">in-flight ${r.in_flight || 0} / ${pol.concurrent}</span>`
+        : '';
+      return `
+        <div class="rate-row">
+          <div class="rate-name">
+            <div>${this._esc(r.adapter)}</div>
+            <span class="badge ${cls}">${this._esc(r.status)}</span>
+          </div>
+          <div class="rate-bars">
+            ${minutePart}
+            ${hourPart}
+            ${conc}
+          </div>
+        </div>`;
+    }).join('');
+    body.innerHTML = `<div class="rate-list">${items}</div>`;
+  },
+
+  _bar(pct, tokens, cap, label) {
+    const p = Math.max(0, Math.min(1, Number(pct) || 0));
+    const pctLabel = `${Math.round(p * 100)}%`;
+    const fillCls = p >= 1 ? 'rate-fill-red'
+      : p >= 0.8 ? 'rate-fill-orange'
+      : 'rate-fill-green';
+    const used = Math.max(0, Math.round((cap || 0) - (Number(tokens) || 0)));
+    return `
+      <div class="rate-bar">
+        <div class="rate-bar-label">
+          <span>${this._esc(label)}</span>
+          <span class="muted">${used} / ${cap || 0} used (${pctLabel})</span>
+        </div>
+        <div class="rate-bar-track">
+          <div class="rate-bar-fill ${fillCls}"
+               style="width: ${(p * 100).toFixed(1)}%"></div>
+        </div>
+      </div>`;
   },
 
   _renderSLA(sla) {
