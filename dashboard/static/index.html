@@ -417,6 +417,20 @@
       <div class="metrics-row" id="reliability-metrics"></div>
       <div class="panel">
         <div class="panel-header">
+          <h2>Adapter Health</h2>
+          <span class="badge" id="reliability-health-badge">—</span>
+        </div>
+        <div class="panel-body" id="reliability-health">
+          <div class="empty-state muted">
+            Composite health score per adapter, folding breaker state,
+            SLA grade, retry give-ups, and rate-limit pressure into
+            one 0–100 number. Rows grade healthy / degraded / unhealthy
+            and sort worst-first so outages float to the top.
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
           <h2>Circuit Breakers</h2>
           <span class="badge" id="reliability-breakers-badge">—</span>
         </div>

@@ -14,33 +14,104 @@ const Reliability = {
   _timer: null,
 
   async refresh() {
-    const [retries, sla, rate, idem] = await Promise.all([
+    const [retries, sla, rate, idem, health] = await Promise.all([
       App.fetch('/api/retries'),
       App.fetch('/api/sla'),
       App.fetch('/api/ratelimit'),
       App.fetch('/api/idempotency'),
+      App.fetch('/api/health'),
     ]);
-    this.render(retries || {}, sla || {}, rate || {}, idem || {});
+    this.render(
+      retries || {}, sla || {}, rate || {}, idem || {}, health || {},
+    );
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'reliability') return;
-      const [fr, fs, frl, fi] = await Promise.all([
+      const [fr, fs, frl, fi, fh] = await Promise.all([
         App.fetch('/api/retries'),
         App.fetch('/api/sla'),
         App.fetch('/api/ratelimit'),
         App.fetch('/api/idempotency'),
+        App.fetch('/api/health'),
       ]);
-      this.render(fr || {}, fs || {}, frl || {}, fi || {});
+      this.render(fr || {}, fs || {}, frl || {}, fi || {}, fh || {});
     }, 15000);
   },
 
-  render(data, sla, rate, idem) {
+  render(data, sla, rate, idem, health) {
     this._renderMetrics(data.totals || {});
+    this._renderHealth(health || {});
     this._renderBreakers(data.breakers || []);
     this._renderAdapters(data.per_adapter || []);
     this._renderSLA(sla || {});
     this._renderRateLimit(rate || {});
     this._renderIdempotency(idem || {});
+  },
+
+  _renderHealth(health) {
+    const body = document.getElementById('reliability-health');
+    const badge = document.getElementById('reliability-health-badge');
+    const rows = health.rows || [];
+    const totals = health.totals || {
+      unhealthy: 0, degraded: 0, healthy: 0, unknown: 0,
+    };
+    if (badge) {
+      const u = totals.unhealthy || 0;
+      const d = totals.degraded || 0;
+      const h = totals.healthy || 0;
+      badge.textContent = `${u} down · ${d} degraded · ${h} healthy`;
+      badge.className = 'badge ' + (
+        u > 0 ? 'badge-red'
+        : d > 0 ? 'badge-orange'
+        : h > 0 ? 'badge-green'
+        : 'badge-gray'
+      );
+    }
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = `<div class="empty-state muted">
+        No telemetry yet. Health scores appear here once adapters
+        have accumulated breaker / SLA / retry / rate-limit data.
+      </div>`;
+      return;
+    }
+    const items = rows.map(r => {
+      const gradeCls = r.grade === 'unhealthy' ? 'badge-red'
+        : r.grade === 'degraded' ? 'badge-orange'
+        : r.grade === 'healthy' ? 'badge-green'
+        : 'badge-gray';
+      const pct = Math.round((r.score || 0) * 100);
+      const comps = (r.components || []).map(c => {
+        if (!c.available) {
+          return `<span class="health-chip health-chip-muted">
+            ${this._esc(c.name)}: <span class="muted">${this._esc(c.detail)}</span>
+          </span>`;
+        }
+        const chipCls = c.score >= 0.8 ? 'health-chip-ok'
+          : c.score >= 0.5 ? 'health-chip-warn'
+          : 'health-chip-bad';
+        return `<span class="health-chip ${chipCls}" title="${this._esc(c.detail)}">
+          ${this._esc(c.name)}: ${Math.round(c.score * 100)}
+        </span>`;
+      }).join(' ');
+      const barCls = r.grade === 'unhealthy' ? 'rate-fill-red'
+        : r.grade === 'degraded' ? 'rate-fill-orange'
+        : 'rate-fill-green';
+      return `
+        <div class="health-row">
+          <div class="health-head">
+            <div class="health-name">${this._esc(r.adapter)}</div>
+            <span class="badge ${gradeCls}">${this._esc(r.grade)}</span>
+            <div class="health-score muted">${pct}</div>
+          </div>
+          <div class="health-bar-track">
+            <div class="health-bar-fill ${barCls}"
+                 style="width: ${pct}%"></div>
+          </div>
+          <div class="health-comps">${comps}</div>
+        </div>`;
+    }).join('');
+    body.innerHTML = `<div class="health-list">${items}</div>`;
   },
 
   _renderIdempotency(idem) {

@@ -2283,6 +2283,62 @@ body {
   .rate-row { grid-template-columns: 1fr; }
 }
 
+/* Adapter health panel — Option W */
+.health-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.health-row {
+  padding: 12px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  background: var(--panel-bg, rgba(255, 255, 255, 0.02));
+}
+.health-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.health-name {
+  font-weight: 600;
+  color: var(--text-primary, #e5e8ef);
+  flex: 1;
+}
+.health-score {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.health-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.health-bar-fill {
+  height: 100%;
+  transition: width 300ms ease;
+}
+.health-comps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.health-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-variant-numeric: tabular-nums;
+}
+.health-chip-ok    { background: rgba(59, 214, 113, 0.15); color: var(--accent-green, #3bd671); }
+.health-chip-warn  { background: rgba(243, 166, 47, 0.15); color: var(--accent-orange, #f3a62f); }
+.health-chip-bad   { background: rgba(228, 87, 58, 0.15); color: var(--accent-red, #e4573a); }
+.health-chip-muted { opacity: 0.6; }
+
 /* Idempotency cache panel — Option V */
 .idem-summary {
   display: flex;

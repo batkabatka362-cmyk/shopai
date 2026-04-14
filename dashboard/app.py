@@ -136,6 +136,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/budget": self._api_budget,
             "/api/ratelimit": self._api_ratelimit,
             "/api/idempotency": self._api_idempotency,
+            "/api/health": self._api_health,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -385,6 +386,29 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "size": 0,
                 "live": 0,
                 "max_entries": 0,
+                "rows": [],
+                "error": str(exc)[:200],
+            }
+        self._json(200, data)
+
+    def _api_health(self) -> None:
+        """Composite adapter health score — Option W.
+
+        Folds SLA / breaker / rate-limit / retry telemetry into a
+        single 0.0–1.0 score per adapter with grade + per-component
+        breakdown. Never 500s — a cold process reports an empty
+        row list plus zero-ed totals.
+        """
+        try:
+            data = _collect_health_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("health collector failed: %s", exc)
+            data = {
+                "timestamp": time.time(),
+                "totals": {
+                    "unhealthy": 0, "degraded": 0,
+                    "healthy": 0, "unknown": 0,
+                },
                 "rows": [],
                 "error": str(exc)[:200],
             }
@@ -2231,6 +2255,39 @@ def _collect_ratelimit_snapshot() -> dict[str, Any]:
         "timestamp": time.time(),
         "totals": totals,
         "rows": rows,
+    }
+
+
+def _collect_health_snapshot() -> dict[str, Any]:
+    """Composite adapter health rollup — Option W.
+
+    Reads the four resilience telemetry streams (SLA, breakers,
+    rate limiter, retry telemetry) and asks ``HealthScorer`` to
+    fold them into one score per adapter.
+
+    We reuse the dashboard's own SLA and retry collectors so the
+    shape matches exactly what the respective panels render —
+    there's no risk of the Health panel diverging from the source
+    panels because of a parallel re-implementation.
+    """
+    from core.adapters.health import HealthScorer
+
+    sla = _collect_sla_snapshot()
+    retries = _collect_retries_snapshot()
+    rate = _collect_ratelimit_snapshot()
+
+    scorer = HealthScorer()
+    rows = scorer.score_all(
+        sla_rows=sla.get("rows") or [],
+        breakers=retries.get("breakers") or [],
+        rate_rows=rate.get("rows") or [],
+        retry_per_adapter=retries.get("per_adapter") or [],
+    )
+    totals = HealthScorer.totals(rows)
+    return {
+        "timestamp": time.time(),
+        "totals": totals,
+        "rows": [r.to_dict() for r in rows],
     }
 
 
