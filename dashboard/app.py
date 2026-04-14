@@ -173,8 +173,14 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "message required"})
             return
 
-        # AI chat response — uses available LLM adapter
-        response = self._process_chat(message)
+        # Conversation history: list of {"role": "user"|"assistant", "content": "..."}
+        # The client persists this in localStorage and re-sends on each turn.
+        # We clamp to a reasonable window so the prompt stays bounded.
+        history = body.get("history") or []
+        if not isinstance(history, list):
+            history = []
+
+        response = self._process_chat(message, history)
         self._json(200, {"response": response})
 
     # ── Data collectors ────────────────────────────────────
@@ -392,11 +398,21 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             pass
         return events[-50:]  # Last 50 events
 
-    def _process_chat(self, message: str) -> str:
+    # Max turns of history kept in the LLM prompt. 6 = 3 user + 3 assistant,
+    # enough for follow-ups without blowing the context window on free-tier LLMs.
+    _CHAT_HISTORY_WINDOW = 6
+
+    def _process_chat(self, message: str, history: list | None = None) -> str:
         """Process a chat message through available LLM or local logic."""
+        history = history or []
+
+        # Slash commands take precedence — they never touch the LLM.
+        if message.startswith("/"):
+            return self._handle_slash(message)
+
         msg_lower = message.lower()
 
-        # Built-in commands (no LLM needed)
+        # Built-in keyword commands (backwards-compat with the old chat UX).
         if "adapter" in msg_lower and ("status" in msg_lower or "list" in msg_lower):
             return self._chat_adapter_status()
         if "health" in msg_lower:
@@ -405,38 +421,170 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             return self._chat_cycle()
         if "vault" in msg_lower or "ноут" in msg_lower or "тэмдэглэл" in msg_lower:
             return self._chat_vault()
-        if "help" in msg_lower:
+        if msg_lower.strip() in {"help", "?"}:
             return self._chat_help()
 
-        # Try LLM for complex queries
+        # Fall through to the LLM router with enriched context + history.
+        return self._chat_via_llm(message, history)
+
+    def _chat_via_llm(self, message: str, history: list) -> str:
+        """Forward ``message`` + bounded history to the LLM router."""
         try:
             from core.adapters import get_router
             from core.adapters.base import Capability
             router = get_router()
+
+            system_prompt = self._build_system_prompt()
+            messages = self._build_messages(history, message)
+
             result = router.execute(
                 Capability.CHAT_COMPLETE,
                 {
-                    "system": (
-                        "You are ShopAI Assistant, an AI managing e-commerce stores. "
-                        "Answer concisely about store operations, adapters, and analytics. "
-                        "Be direct and helpful."
-                    ),
-                    "prompt": message,
+                    "system": system_prompt,
+                    "prompt": message,   # kept for adapters that only read .prompt
+                    "messages": messages,
                     "max_tokens": 500,
+                    "temperature": 0.3,
                 },
             )
             if result.ok:
                 return result.data.get("text", "I processed your request.")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("LLM chat failed: %s", exc)
 
         return (
-            "I understand your question. Currently, I can help with:\n\n"
-            "- **adapter status** — check which tools are connected\n"
-            "- **health check** — system health overview\n"
-            "- **help** — see all available commands\n\n"
-            "For complex queries, configure an LLM adapter (Groq, OpenAI, or Claude)."
+            "I don't have an LLM adapter configured right now, so I can only "
+            "handle built-in commands:\n\n"
+            "- `/status` — adapter status\n"
+            "- `/cycle` — latest autonomous cycle\n"
+            "- `/vault` — Obsidian vault summary\n"
+            "- `/health` — system health\n"
+            "- `/help` — full command list\n\n"
+            "Configure a Groq, OpenAI, or Claude key to enable free-form chat."
         )
+
+    def _build_messages(self, history: list, message: str) -> list[dict]:
+        """Clamp history to the window and append the new user turn.
+
+        Normalises role names, drops malformed entries, and guarantees a
+        well-formed list even when the client sends garbage.
+        """
+        clean: list[dict] = []
+        for entry in history[-self._CHAT_HISTORY_WINDOW:]:
+            if not isinstance(entry, dict):
+                continue
+            role = entry.get("role")
+            content = entry.get("content")
+            if role not in ("user", "assistant") or not isinstance(content, str):
+                continue
+            clean.append({"role": role, "content": content[:2000]})
+        clean.append({"role": "user", "content": message})
+        return clean
+
+    def _build_system_prompt(self) -> str:
+        """Assemble a context-aware system prompt so the LLM knows the
+        shape of the running ShopAI instance (adapter counts, latest
+        cycle, vault state) without us round-tripping for every turn.
+        """
+        ctx = self._build_chat_context()
+        lines = [
+            "You are ShopAI Assistant, an AI managing autonomous e-commerce stores.",
+            "Answer concisely and directly. Prefer bullet lists over paragraphs.",
+            "When the user asks about live state, use the CONTEXT block below.",
+            "If the CONTEXT lacks an answer, say so — do not invent numbers.",
+            "",
+            "CONTEXT:",
+            f"- adapters: {ctx['adapters_configured']}/{ctx['adapters_total']} online"
+            f" across {ctx['adapters_categories']} categories",
+            f"- system health: {ctx['system_status']}",
+        ]
+        if ctx["cycle_summary"]:
+            lines.append(f"- latest cycle: {ctx['cycle_summary']}")
+        if ctx["vault_summary"]:
+            lines.append(f"- vault: {ctx['vault_summary']}")
+        lines.append(
+            "\nThe user can also invoke slash commands (/status, /cycle, /vault, "
+            "/health, /help); those are handled outside the LLM."
+        )
+        return "\n".join(lines)
+
+    def _build_chat_context(self) -> dict[str, Any]:
+        """Gather a compact snapshot of live ShopAI state for the prompt.
+
+        Each sub-call is best-effort — a missing scheduler or vault must
+        never prevent the chat from responding.
+        """
+        ctx: dict[str, Any] = {
+            "adapters_total": 0,
+            "adapters_configured": 0,
+            "adapters_categories": 0,
+            "system_status": "unknown",
+            "cycle_summary": "",
+            "vault_summary": "",
+        }
+        try:
+            ad = self._get_adapter_status()
+            ctx["adapters_total"] = ad.get("total", 0)
+            ctx["adapters_configured"] = ad.get("configured", 0)
+            ctx["adapters_categories"] = len(ad.get("categories", {}))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            ctx["system_status"] = self._get_system_health().get("status", "unknown")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from core.system.auto_scheduler import get_scheduler
+            latest = get_scheduler().get_last_summary()
+            if latest:
+                ctx["cycle_summary"] = (
+                    f"{latest.get('cycle_id', '?')} store={latest.get('store_id', '?')} "
+                    f"duration={latest.get('duration_s', 0):.1f}s "
+                    f"errors={latest.get('phase_error_count', 0)} "
+                    f"top_action={latest.get('top_action') or 'none'}"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            vault = _collect_vault_summary()
+            if vault.get("configured"):
+                totals = vault.get("totals", {})
+                ctx["vault_summary"] = (
+                    f"{totals.get('total', 0)} notes "
+                    f"(wins={totals.get('Wins', 0)} errors={totals.get('Errors', 0)} "
+                    f"decisions={totals.get('Decisions', 0)} "
+                    f"learned={totals.get('ShopAI/Learned', 0)})"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        return ctx
+
+    # ── Slash commands ────────────────────────────────────
+
+    def _handle_slash(self, message: str) -> str:
+        """Dispatch a ``/command [args]`` message to the matching handler."""
+        parts = message.strip().split(None, 1)
+        cmd = parts[0][1:].lower()  # strip leading '/'
+        args = parts[1] if len(parts) > 1 else ""
+        handlers = {
+            "status": lambda _a: self._chat_adapter_status(),
+            "adapters": lambda _a: self._chat_adapter_status(),
+            "health": lambda _a: self._chat_health(),
+            "cycle": lambda _a: self._chat_cycle(),
+            "vault": lambda _a: self._chat_vault(),
+            "help": lambda _a: self._chat_help(),
+            "clear": lambda _a: (
+                "Chat history cleared. "
+                "(Your browser will remove local messages.)"
+            ),
+        }
+        handler = handlers.get(cmd)
+        if handler is None:
+            return (
+                f"Unknown command `/{cmd}`.\n\n"
+                + self._chat_help()
+            )
+        return handler(args)
 
     def _chat_adapter_status(self) -> str:
         try:
@@ -533,13 +681,15 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
     def _chat_help(self) -> str:
         return (
             "**ShopAI Assistant Commands:**\n\n"
-            "- **adapter status** — show all adapter connections\n"
-            "- **health** — system health check\n"
-            "- **cycle** — latest autonomous cycle summary\n"
-            "- **vault** — Obsidian vault summary\n"
-            "- **help** — this help message\n\n"
-            "You can also ask natural language questions about your store, "
-            "and I'll answer using the connected LLM."
+            "- `/status` — adapter connections\n"
+            "- `/health` — system health check\n"
+            "- `/cycle` — latest autonomous cycle summary\n"
+            "- `/vault` — Obsidian vault summary\n"
+            "- `/clear` — clear the chat history\n"
+            "- `/help` — this help message\n\n"
+            "You can also ask natural language questions (e.g. \"How many "
+            "adapters are online?\") and I'll answer using the connected LLM "
+            "with live ShopAI context."
         )
 
     # ── Helpers ────────────────────────────────────────────

@@ -191,12 +191,22 @@
     <!-- Tab 4: AI Assistant -->
     <section id="tab-assistant" class="tab-panel">
       <div class="chat-container">
+        <div class="chat-toolbar">
+          <div class="chat-chips">
+            <button class="chat-chip" data-prompt="/status">/status</button>
+            <button class="chat-chip" data-prompt="/cycle">/cycle</button>
+            <button class="chat-chip" data-prompt="/vault">/vault</button>
+            <button class="chat-chip" data-prompt="/health">/health</button>
+            <button class="chat-chip" data-prompt="/help">/help</button>
+          </div>
+          <button id="chat-clear" class="chat-clear-btn" title="Clear chat history">Clear</button>
+        </div>
         <div class="chat-messages" id="chat-messages">
           <div class="chat-msg bot">
             <div class="chat-avatar">AI</div>
             <div class="chat-bubble">
               <p>Hello! I'm your <strong>ShopAI Assistant</strong>.</p>
-              <p>Ask me about adapter status, system health, store analytics, or give me commands to execute.</p>
+              <p>Ask me about adapter status, system health, store analytics, or use slash commands like <code>/status</code>, <code>/cycle</code>, <code>/vault</code>.</p>
             </div>
           </div>
         </div>
