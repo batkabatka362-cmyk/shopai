@@ -22,10 +22,14 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .customers import ShopifyCustomersAdapter
+from .discount import ShopifyDiscountAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
 from .inventory import ShopifyInventoryAdapter
 from .metafield import ShopifyMetafieldAdapter
+from .orders import ShopifyOrdersAdapter
 from .risk import ShopifyRiskAdapter
+from .segment import ShopifySegmentAdapter
 
 logger = get_logger("adapters.shopify.bootstrap")
 
@@ -35,6 +39,10 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyInventoryAdapter,
     ShopifyFulfillmentAdapter,
     ShopifyMetafieldAdapter,
+    ShopifyOrdersAdapter,
+    ShopifyCustomersAdapter,
+    ShopifyDiscountAdapter,
+    ShopifySegmentAdapter,
 )
 
 

@@ -97,11 +97,19 @@ class TestShopifyBaseAdapter:
         from core.adapters.shopify.inventory import ShopifyInventoryAdapter
         from core.adapters.shopify.fulfillment import ShopifyFulfillmentAdapter
         from core.adapters.shopify.metafield import ShopifyMetafieldAdapter
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        from core.adapters.shopify.segment import ShopifySegmentAdapter
         for cls in (
             ShopifyRiskAdapter,
             ShopifyInventoryAdapter,
             ShopifyFulfillmentAdapter,
             ShopifyMetafieldAdapter,
+            ShopifyOrdersAdapter,
+            ShopifyCustomersAdapter,
+            ShopifyDiscountAdapter,
+            ShopifySegmentAdapter,
         ):
             assert cls().category == AdapterCategory.SHOPIFY_NATIVE
             assert cls().priority == 100  # Native always preferred
@@ -786,17 +794,460 @@ class TestShopifyMetafieldAdapter:
         assert isinstance(result.error, AdapterValidationError)
 
 
+# ── ShopifyOrdersAdapter (Option D) ─────────────────────────
+
+
+class TestShopifyOrdersAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter()
+        assert a.name == "shopify_orders"
+        assert Capability.SHOPIFY_FETCH_ORDERS in a.capabilities
+
+    def test_fetch_orders_happy_path(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        canned = {
+            "orders": {
+                "pageInfo": {"hasNextPage": True, "endCursor": "CUR1"},
+                "edges": [{
+                    "cursor": "CUR1",
+                    "node": {
+                        "id": "gid://shopify/Order/101",
+                        "name": "#1001",
+                        "createdAt": "2026-04-01T10:00:00Z",
+                        "updatedAt": "2026-04-02T10:00:00Z",
+                        "displayFinancialStatus": "PAID",
+                        "displayFulfillmentStatus": "UNFULFILLED",
+                        "currentTotalPriceSet": {
+                            "shopMoney": {"amount": "99.99",
+                                          "currencyCode": "USD"},
+                        },
+                        "customer": {
+                            "id": "gid://shopify/Customer/7",
+                            "displayName": "A Smith",
+                            "email": "a@b.co",
+                        },
+                        "email": "a@b.co",
+                        "tags": ["vip"],
+                    },
+                }],
+            },
+        }
+        with patch.object(a, "_gql", return_value=canned) as mocked:
+            result = a.execute(
+                Capability.SHOPIFY_FETCH_ORDERS,
+                {"status": "open", "first": 10},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["orders"][0]["id"] == "gid://shopify/Order/101"
+        assert result.data["orders"][0]["financial_status"] == "paid"
+        assert result.data["orders"][0]["total_amount"] == "99.99"
+        assert result.data["page_info"]["has_next_page"] is True
+        # Check that status filter got turned into a raw query
+        args = mocked.call_args[0]
+        assert args[1]["query"] == "status:open"
+
+    def test_fetch_orders_invalid_status(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_FETCH_ORDERS, {"status": "bogus"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_fetch_orders_first_out_of_range(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_FETCH_ORDERS, {"first": 500},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_fetch_orders_combines_status_and_extra_query(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orders": {"pageInfo": {}, "edges": []},
+        }) as mocked:
+            a.execute(
+                Capability.SHOPIFY_FETCH_ORDERS,
+                {"status": "open", "query": "tag:vip"},
+            )
+        assert mocked.call_args[0][1]["query"] == "status:open tag:vip"
+
+    def test_fetch_orders_any_status_sends_extra_query_only(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orders": {"pageInfo": {}, "edges": []},
+        }) as mocked:
+            a.execute(
+                Capability.SHOPIFY_FETCH_ORDERS,
+                {"status": "any", "query": "tag:vip"},
+            )
+        assert mocked.call_args[0][1]["query"] == "tag:vip"
+
+    def test_fetch_orders_with_line_items(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        canned = {
+            "orders": {
+                "pageInfo": {"hasNextPage": False, "endCursor": ""},
+                "edges": [{
+                    "cursor": "c",
+                    "node": {
+                        "id": "gid://shopify/Order/1",
+                        "name": "#1",
+                        "currentTotalPriceSet": {
+                            "shopMoney": {"amount": "10", "currencyCode": "USD"},
+                        },
+                        "lineItems": {
+                            "edges": [{
+                                "node": {
+                                    "id": "gid://shopify/LineItem/9",
+                                    "sku": "SKU-9",
+                                    "name": "Widget",
+                                    "quantity": 3,
+                                    "currentQuantity": 2,
+                                },
+                            }],
+                        },
+                    },
+                }],
+            },
+        }
+        with patch.object(a, "_gql", return_value=canned):
+            result = a.execute(
+                Capability.SHOPIFY_FETCH_ORDERS,
+                {"include_line_items": True},
+            )
+        assert result.ok
+        li = result.data["orders"][0]["line_items"]
+        assert li[0]["sku"] == "SKU-9"
+        assert li[0]["quantity"] == 3
+        assert li[0]["current_quantity"] == 2
+
+
+# ── ShopifyCustomersAdapter (Option D) ──────────────────────
+
+
+class TestShopifyCustomersAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter()
+        assert a.name == "shopify_customers"
+        assert Capability.SHOPIFY_FETCH_CUSTOMERS in a.capabilities
+
+    def test_fetch_customers_happy_path(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        canned = {
+            "customers": {
+                "pageInfo": {"hasNextPage": False, "endCursor": ""},
+                "edges": [{
+                    "cursor": "c",
+                    "node": {
+                        "id": "gid://shopify/Customer/1",
+                        "displayName": "Jane Doe",
+                        "firstName": "Jane",
+                        "lastName": "Doe",
+                        "email": "jane@example.com",
+                        "numberOfOrders": 5,
+                        "amountSpent": {"amount": "500.00", "currencyCode": "USD"},
+                        "state": "ENABLED",
+                        "tags": ["vip"],
+                        "verifiedEmail": True,
+                    },
+                }],
+            },
+        }
+        with patch.object(a, "_gql", return_value=canned):
+            result = a.execute(
+                Capability.SHOPIFY_FETCH_CUSTOMERS,
+                {"query": "tag:vip", "first": 25},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        c = result.data["customers"][0]
+        assert c["id"] == "gid://shopify/Customer/1"
+        assert c["orders_count"] == 5
+        assert c["state"] == "enabled"
+        assert c["tags"] == ["vip"]
+
+    def test_fetch_customers_first_out_of_range(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_FETCH_CUSTOMERS, {"first": 0},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_fetch_customers_with_addresses(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        canned = {
+            "customers": {
+                "pageInfo": {},
+                "edges": [{
+                    "cursor": "c",
+                    "node": {
+                        "id": "gid://shopify/Customer/1",
+                        "defaultAddress": {
+                            "id": "gid://shopify/MailingAddress/2",
+                            "address1": "123 Main St",
+                            "city": "Seattle",
+                            "countryCodeV2": "US",
+                        },
+                    },
+                }],
+            },
+        }
+        with patch.object(a, "_gql", return_value=canned):
+            result = a.execute(
+                Capability.SHOPIFY_FETCH_CUSTOMERS,
+                {"include_addresses": True},
+            )
+        addr = result.data["customers"][0]["default_address"]
+        assert addr["address1"] == "123 Main St"
+        assert addr["country_code"] == "US"
+
+
+# ── ShopifyDiscountAdapter (Option D) ───────────────────────
+
+
+class TestShopifyDiscountAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter()
+        assert a.name == "shopify_discount"
+        assert Capability.SHOPIFY_CREATE_DISCOUNT in a.capabilities
+
+    def test_create_percentage_discount(self):
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        canned = {
+            "discountCodeBasicCreate": {
+                "codeDiscountNode": {
+                    "id": "gid://shopify/DiscountCodeNode/1",
+                    "codeDiscount": {
+                        "title": "Spring15",
+                        "startsAt": "2026-04-01T00:00:00Z",
+                        "endsAt": "2026-04-30T23:59:59Z",
+                        "usageLimit": 100,
+                        "appliesOncePerCustomer": True,
+                        "codes": {
+                            "edges": [{"node": {"code": "SAVE15"}}],
+                        },
+                    },
+                },
+                "userErrors": [],
+            },
+        }
+        with patch.object(a, "_gql", return_value=canned) as mocked:
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT,
+                {
+                    "code": "SAVE15",
+                    "title": "Spring15",
+                    "kind": "percentage",
+                    "value": 15,
+                    "usage_limit": 100,
+                    "applies_once_per_customer": True,
+                },
+            )
+        assert result.ok
+        assert result.data["discount_id"] == "gid://shopify/DiscountCodeNode/1"
+        assert result.data["code"] == "SAVE15"
+        # Validate that percentage was encoded as 0..1 float
+        sent = mocked.call_args[0][1]["basicCodeDiscount"]
+        assert sent["customerGets"]["value"]["percentage"] == 0.15
+
+    def test_create_fixed_amount_discount(self):
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        canned = {
+            "discountCodeBasicCreate": {
+                "codeDiscountNode": {
+                    "id": "gid://shopify/DiscountCodeNode/2",
+                    "codeDiscount": {
+                        "title": "FIVE",
+                        "codes": {"edges": [{"node": {"code": "FIVE"}}]},
+                    },
+                },
+                "userErrors": [],
+            },
+        }
+        with patch.object(a, "_gql", return_value=canned) as mocked:
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT,
+                {
+                    "code": "FIVE",
+                    "kind": "fixed_amount",
+                    "value": 5.0,
+                    "currency": "USD",
+                    "minimum_subtotal": 30.0,
+                },
+            )
+        assert result.ok
+        sent = mocked.call_args[0][1]["basicCodeDiscount"]
+        assert "discountAmount" in sent["customerGets"]["value"]
+        assert sent["customerGets"]["value"]["discountAmount"]["amount"] == "5.00"
+        assert "minimumRequirement" in sent
+
+    def test_create_missing_code(self):
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_DISCOUNT,
+            {"kind": "percentage", "value": 10},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_bad_kind(self):
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_DISCOUNT,
+            {"code": "X", "kind": "bogus", "value": 1},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_percentage_over_100(self):
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_DISCOUNT,
+            {"code": "X", "kind": "percentage", "value": 150},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_fixed_amount_missing_currency(self):
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_DISCOUNT,
+            {"code": "X", "kind": "fixed_amount", "value": 5},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_user_errors_surface(self):
+        from core.adapters.shopify.discount import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountCodeBasicCreate": {
+                "codeDiscountNode": None,
+                "userErrors": [{
+                    "field": ["code"],
+                    "message": "Code already exists",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT,
+                {"code": "DUP", "kind": "percentage", "value": 10},
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+        assert "Code already exists" in result.error.reason
+
+
+# ── ShopifySegmentAdapter (Option D) ────────────────────────
+
+
+class TestShopifySegmentAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.segment import ShopifySegmentAdapter
+        a = ShopifySegmentAdapter()
+        assert a.name == "shopify_segment"
+        assert Capability.SHOPIFY_QUERY_SEGMENT in a.capabilities
+
+    def test_list_segments(self):
+        from core.adapters.shopify.segment import ShopifySegmentAdapter
+        a = ShopifySegmentAdapter(shop_url="s", access_token="t")
+        canned = {
+            "segments": {
+                "pageInfo": {"hasNextPage": False, "endCursor": ""},
+                "edges": [{
+                    "cursor": "c",
+                    "node": {
+                        "id": "gid://shopify/Segment/1",
+                        "name": "VIPs",
+                        "query": "tag = 'vip'",
+                        "lastEditDate": "2026-03-01T00:00:00Z",
+                        "creationDate": "2026-01-01T00:00:00Z",
+                    },
+                }],
+            },
+        }
+        with patch.object(a, "_gql", return_value=canned):
+            result = a.execute(
+                Capability.SHOPIFY_QUERY_SEGMENT,
+                {"mode": "list", "first": 25},
+            )
+        assert result.ok
+        assert result.data["mode"] == "list"
+        assert result.data["count"] == 1
+        assert result.data["segments"][0]["name"] == "VIPs"
+
+    def test_preview_segment(self):
+        from core.adapters.shopify.segment import ShopifySegmentAdapter
+        a = ShopifySegmentAdapter(shop_url="s", access_token="t")
+        canned = {
+            "customerSegmentMembers": {
+                "statistics": {"totalCount": 347},
+            },
+        }
+        with patch.object(a, "_gql", return_value=canned) as mocked:
+            result = a.execute(
+                Capability.SHOPIFY_QUERY_SEGMENT,
+                {"mode": "preview", "query": "tag = 'vip'"},
+            )
+        assert result.ok
+        assert result.data["mode"] == "preview"
+        assert result.data["count"] == 347
+        assert mocked.call_args[0][1]["query"] == "tag = 'vip'"
+
+    def test_preview_missing_query(self):
+        from core.adapters.shopify.segment import ShopifySegmentAdapter
+        a = ShopifySegmentAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_QUERY_SEGMENT, {"mode": "preview"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_invalid_mode(self):
+        from core.adapters.shopify.segment import ShopifySegmentAdapter
+        a = ShopifySegmentAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_QUERY_SEGMENT, {"mode": "bogus"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+
 # ── Bootstrap ────────────────────────────────────────────────
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_four_adapters(self):
+    def test_register_all_adds_eight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 4
+        assert len(status) == 8
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
+            "shopify_orders", "shopify_customers",
+            "shopify_discount", "shopify_segment",
         }
 
     def test_register_all_idempotent(self):
@@ -804,7 +1255,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 4
+        assert len(get_registry()) == 8
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -837,3 +1288,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_INVENTORY).name == "shopify_inventory"
         assert router.route(Capability.SHOPIFY_CREATE_FULFILLMENT).name == "shopify_fulfillment"
         assert router.route(Capability.SHOPIFY_SET_METAFIELD).name == "shopify_metafield"
+        assert router.route(Capability.SHOPIFY_FETCH_ORDERS).name == "shopify_orders"
+        assert router.route(Capability.SHOPIFY_FETCH_CUSTOMERS).name == "shopify_customers"
+        assert router.route(Capability.SHOPIFY_CREATE_DISCOUNT).name == "shopify_discount"
+        assert router.route(Capability.SHOPIFY_QUERY_SEGMENT).name == "shopify_segment"
