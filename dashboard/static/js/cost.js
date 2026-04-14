@@ -15,28 +15,112 @@ const Cost = {
   _timer: null,
 
   async refresh() {
-    const data = await App.fetch('/api/cost') || {};
-    this.render(data);
+    const [cost, budget] = await Promise.all([
+      App.fetch('/api/cost'),
+      App.fetch('/api/budget'),
+    ]);
+    this.render(cost || {}, budget || {});
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'cost') return;
-      const fresh = await App.fetch('/api/cost');
-      this.render(fresh || {});
+      const [c, b] = await Promise.all([
+        App.fetch('/api/cost'),
+        App.fetch('/api/budget'),
+      ]);
+      this.render(c || {}, b || {});
     }, 10000);
   },
 
-  render(data) {
+  render(data, budget) {
     this._renderMetrics(data);
     this._renderBudget(data);
     this._renderCategories(data);
     this._renderTopSpenders(data);
     this._renderTable(data);
+    this._renderBudgetCaps(budget || {});
     const stamp = document.getElementById('cost-timestamp');
     if (stamp) {
       stamp.textContent = data.timestamp
         ? `updated ${this._relTime(data.timestamp)}`
         : '';
     }
+  },
+
+  _renderBudgetCaps(data) {
+    const body = document.getElementById('budget-rows');
+    const badge = document.getElementById('budget-badge');
+    const rows = data.rows || [];
+    const totals = data.totals || {};
+    if (badge) {
+      const exceeded = totals.exceeded || 0;
+      const warn = totals.warn || 0;
+      const ok = totals.ok || 0;
+      const label = `${exceeded} over · ${warn} warn · ${ok} ok`;
+      badge.textContent = label;
+      badge.className = 'badge ' + (
+        exceeded > 0 ? 'badge-red'
+        : warn > 0 ? 'badge-orange'
+        : 'badge-green'
+      );
+    }
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = `<div class="empty-state muted">
+        No budget caps declared. Configure per-adapter
+        <code>CostBudget(daily_usd, monthly_usd)</code> to enable
+        hard-stop enforcement.
+      </div>`;
+      return;
+    }
+    const items = rows.map(r => {
+      const status = r.status || 'unconfigured';
+      const cls = status === 'exceeded' ? 'badge-red'
+        : status === 'warn' ? 'badge-orange'
+        : status === 'ok' ? 'badge-green'
+        : 'badge-gray';
+      const budget = r.budget || {};
+      const dailyPct = r.daily_used_pct;
+      const monthlyPct = r.monthly_used_pct;
+      const dailyBar = dailyPct === null
+        ? '<span class="muted">no daily cap</span>'
+        : this._bar(dailyPct, r.spent_daily_usd, budget.daily_usd, 'daily');
+      const monthlyBar = monthlyPct === null
+        ? '<span class="muted">no monthly cap</span>'
+        : this._bar(monthlyPct, r.spent_monthly_usd, budget.monthly_usd, 'monthly');
+      return `
+        <div class="budget-row">
+          <div class="budget-name">
+            <div>${this._esc(r.adapter)}</div>
+            <span class="badge ${cls}">${this._esc(status)}</span>
+          </div>
+          <div class="budget-bars">
+            ${dailyBar}
+            ${monthlyBar}
+          </div>
+        </div>`;
+    }).join('');
+    body.innerHTML = `<div class="budget-list">${items}</div>`;
+  },
+
+  _bar(pct, spent, cap, label) {
+    const pctLabel = `${Math.round((pct || 0) * 100)}%`;
+    const fillCls = pct >= 1 ? 'budget-fill-red'
+      : pct >= 0.8 ? 'budget-fill-orange'
+      : 'budget-fill-green';
+    return `
+      <div class="budget-bar">
+        <div class="budget-bar-label">
+          <span>${this._esc(label)}</span>
+          <span class="muted">
+            $${(spent || 0).toFixed(2)} / $${(cap || 0).toFixed(2)}
+            (${pctLabel})
+          </span>
+        </div>
+        <div class="budget-bar-track">
+          <div class="budget-bar-fill ${fillCls}"
+               style="width: ${Math.min(100, (pct || 0) * 100)}%"></div>
+        </div>
+      </div>`;
   },
 
   // ── Metric cards ──────────────────────────────────

@@ -28,6 +28,7 @@ from typing import Any
 from utils.logger import get_logger
 
 from .base import AdapterResult, BaseAdapter, Capability
+from .budget import BudgetEnforcer, get_budget_enforcer
 from .errors import (
     AdapterError,
     AdapterNotConfigured,
@@ -134,6 +135,7 @@ class SmartRouter:
         retry_policy: RetryPolicy | None = None,
         retry_telemetry: RetryTelemetry | None = None,
         breaker_factory: Any | None = None,
+        budget_enforcer: BudgetEnforcer | None = None,
     ) -> None:
         self._registry = registry or get_registry()
         self._metrics = metrics or get_metrics()
@@ -150,6 +152,10 @@ class SmartRouter:
             lambda name: CircuitBreaker(name=name)
         )
         self._breakers: dict[str, CircuitBreaker] = {}
+        # Budget enforcer (Option T). Default singleton has an empty
+        # catalog, so pre-existing tests see no change; production can
+        # attach budgets via ``set_budget`` after construction.
+        self._budget_enforcer = budget_enforcer or get_budget_enforcer()
         self._lock = threading.RLock()
 
     # ── Policy accessors ───────────────────────────────────────
@@ -175,6 +181,11 @@ class SmartRouter:
             return {
                 name: br.snapshot() for name, br in self._breakers.items()
             }
+
+    @property
+    def budget_enforcer(self) -> BudgetEnforcer:
+        """Expose the attached cost budget enforcer (Option T)."""
+        return self._budget_enforcer
 
     def _breaker_for(self, name: str) -> CircuitBreaker:
         """Return (creating if needed) the breaker for *name*."""
@@ -259,6 +270,27 @@ class SmartRouter:
                 )
                 continue
 
+            # Budget gate (Option T). Use the adapter's own cost
+            # estimator so the check covers "this specific call"
+            # rather than a generic per-call cap.
+            try:
+                est_cost = adapter.estimate_cost(
+                    capability if isinstance(capability, Capability)
+                    else Capability(capability),
+                    params,
+                )
+            except Exception:  # noqa: BLE001
+                est_cost = adapter.cost_per_call or 0.0
+            decision = self._budget_enforcer.can_call(
+                adapter.name, estimated_cost_usd=est_cost,
+            )
+            if not decision.allow:
+                logger.info(
+                    "router skip: budget gate closed for %s (%s)",
+                    adapter.name, decision.reason,
+                )
+                continue
+
             # Per-adapter retry loop. Each adapter gets the full
             # budget defined by ``self._retry_policy`` before the
             # router gives up on it and moves to a fallback.
@@ -289,6 +321,13 @@ class SmartRouter:
                     tokens_out=result.tokens_out,
                     error=(result.error.reason if result.error else ""),
                 )
+                # Book realised cost against the budget ledger only
+                # when the call actually succeeded — a failed call
+                # didn't cost real money (or the vendor refunded).
+                if result.ok and (result.cost_usd or 0) > 0:
+                    self._budget_enforcer.record(
+                        adapter.name, float(result.cost_usd),
+                    )
 
             if result is not None and result.ok:
                 return result

@@ -2168,3 +2168,60 @@ body {
 @media (max-width: 600px) {
   .sla-row { grid-template-columns: 1fr; }
 }
+
+/* ── Budget caps panel (Option T) ─────────────────────── */
+.budget-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.budget-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  background: var(--panel-bg, rgba(255, 255, 255, 0.02));
+}
+.budget-name {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--text-primary, #e5e8ef);
+}
+.budget-name .badge { align-self: flex-start; }
+.budget-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.budget-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.budget-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary, #aab1bf);
+}
+.budget-bar-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.budget-bar-fill {
+  height: 100%;
+  transition: width 200ms ease;
+}
+.budget-fill-green  { background: var(--accent-green, #3bd671); }
+.budget-fill-orange { background: var(--accent-orange, #f3a62f); }
+.budget-fill-red    { background: var(--accent-red, #e4573a); }
+@media (max-width: 600px) {
+  .budget-row { grid-template-columns: 1fr; }
+}

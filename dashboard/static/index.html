@@ -350,6 +350,20 @@
         </div>
         <div class="panel-body" id="cost-table"></div>
       </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Per-Adapter Budget Caps</h2>
+          <span class="badge" id="budget-badge">—</span>
+        </div>
+        <div class="panel-body" id="budget-rows">
+          <div class="empty-state muted">
+            Declare a ``CostBudget(daily_usd, monthly_usd)`` per
+            adapter to have the router automatically skip it when the
+            cap is about to overflow. Rows flip red once the daily or
+            monthly spend exceeds the cap and amber at 80%.
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Tab: Feedback -->

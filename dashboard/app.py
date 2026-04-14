@@ -133,6 +133,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/lessons": self._api_lessons,
             "/api/retries": self._api_retries,
             "/api/sla": self._api_sla,
+            "/api/budget": self._api_budget,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -314,6 +315,25 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             logger.debug("sla collector failed: %s", exc)
             data = {
                 "totals": {"breach": 0, "warn": 0, "ok": 0},
+                "rows": [],
+                "timestamp": time.time(),
+                "error": str(exc)[:200],
+            }
+        self._json(200, data)
+
+    def _api_budget(self) -> None:
+        """Cost budget enforcement — Option T.
+
+        Returns per-adapter spend vs. declared cap (daily + monthly)
+        plus the traffic-light grade the UI colours each row with.
+        Never 500s — an empty catalog simply reports ``rows: []``.
+        """
+        try:
+            data = _collect_budget_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("budget collector failed: %s", exc)
+            data = {
+                "totals": {"exceeded": 0, "warn": 0, "ok": 0, "unconfigured": 0},
                 "rows": [],
                 "timestamp": time.time(),
                 "error": str(exc)[:200],
@@ -2120,6 +2140,28 @@ def _reset_sla_monitor() -> None:
     """Test helper — clear the cached singleton."""
     global _SLA_MONITOR
     _SLA_MONITOR = None
+
+
+def _collect_budget_snapshot() -> dict[str, Any]:
+    """Per-adapter cost-budget rollup for the Cost tab.
+
+    Joins the process-wide ``BudgetEnforcer`` catalog with the
+    accompanying ``BudgetLedger`` windows. The enforcer's own
+    ``snapshot`` does the heavy lifting — this function just layers
+    on the tab-header rollup and a wall-clock timestamp.
+    """
+    from core.adapters.budget import get_budget_enforcer
+
+    rows = get_budget_enforcer().snapshot()
+    totals = {"exceeded": 0, "warn": 0, "ok": 0, "unconfigured": 0}
+    for r in rows:
+        key = r.get("status", "unconfigured")
+        totals[key] = totals.get(key, 0) + 1
+    return {
+        "timestamp": time.time(),
+        "totals": totals,
+        "rows": rows,
+    }
 
 
 def _collect_retries_snapshot() -> dict[str, Any]:
