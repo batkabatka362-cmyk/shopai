@@ -690,6 +690,35 @@ body {
   50% { opacity: 0; }
 }
 
+/* Feedback bar under each bot reply. */
+.chat-feedback {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-left: 44px; /* align under bubble, past avatar */
+  font-size: 11px;
+  color: var(--text-dim);
+  transition: opacity 0.4s ease;
+}
+.chat-feedback.faded { opacity: 0.25; }
+.fb-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+.fb-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.fb-btn:disabled { cursor: default; opacity: 0.5; }
+.fb-status { font-style: italic; }
+
 .chat-input-row {
   padding: 16px;
   border-top: 1px solid var(--border);

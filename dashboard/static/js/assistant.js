@@ -177,6 +177,9 @@ const Assistant = {
     bubble.classList.remove('streaming');
     if (!accumulated) return false;
     this._pushTurn('assistant', accumulated);
+    // Attach feedback bar now that the full response is in hand.
+    const msgDiv = bubble.closest('.chat-msg.bot');
+    if (msgDiv) this._attachFeedback(msgDiv, accumulated);
     return true;
   },
 
@@ -250,7 +253,62 @@ const Assistant = {
       <div class="chat-bubble">${this.formatMarkdown(text)}</div>
     `;
     container.appendChild(div);
+    if (role === 'bot') this._attachFeedback(div, text);
     container.scrollTop = container.scrollHeight;
+  },
+
+  // ── Feedback loop ───────────────────────────────────
+
+  _attachFeedback(msgDiv, responseText) {
+    // Skip the built-in greeting — only real bot replies get feedback.
+    if (!responseText || responseText.length < 4) return;
+    const prior = this._lastUserMessage();
+    if (!prior) return;
+    const bar = document.createElement('div');
+    bar.className = 'chat-feedback';
+    bar.innerHTML = `
+      <button class="fb-btn" data-rating="up" title="Helpful">▲</button>
+      <button class="fb-btn" data-rating="down" title="Not helpful">▼</button>
+      <span class="fb-status"></span>
+    `;
+    msgDiv.appendChild(bar);
+    bar.querySelectorAll('.fb-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._submitFeedback(bar, btn.dataset.rating, prior, responseText);
+      });
+    });
+  },
+
+  _lastUserMessage() {
+    for (let i = this._history.length - 1; i >= 0; i--) {
+      if (this._history[i].role === 'user') return this._history[i].content;
+    }
+    return '';
+  },
+
+  async _submitFeedback(bar, rating, message, response) {
+    const status = bar.querySelector('.fb-status');
+    // Only collect a note on thumbs-down — keep the happy path frictionless.
+    let note = '';
+    if (rating === 'down') {
+      note = window.prompt('What was wrong with this reply? (optional)') || '';
+    }
+    bar.querySelectorAll('.fb-btn').forEach(b => { b.disabled = true; });
+    try {
+      const r = await fetch('/api/chat/feedback', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({rating, message, response, note}),
+      });
+      const data = await r.json();
+      if (data.status === 'ok') status.textContent = 'thanks!';
+      else if (data.status === 'accepted') status.textContent = 'noted (vault off)';
+      else status.textContent = 'error';
+      // Fade the bar out after a moment to reduce visual noise.
+      setTimeout(() => { bar.classList.add('faded'); }, 1500);
+    } catch (e) {
+      status.textContent = 'offline';
+    }
   },
 
   // Kept for backward compat with any code that still calls addMessage().
