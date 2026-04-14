@@ -11,8 +11,10 @@
 
 const Vault = {
   _timer: null,
+  _clickBound: false,
 
   async refresh() {
+    this._bindClicks();
     const data = await App.fetch('/api/vault');
     this.render(data || {});
     if (this._timer) clearInterval(this._timer);
@@ -30,6 +32,108 @@ const Vault = {
     this._renderColumn('vault-errors', data.recent_errors || [], 'No errors recorded yet.');
     this._renderColumn('vault-decisions', data.recent_decisions || [], 'No decisions recorded yet.');
     this._renderLearned(data.recent_learned || []);
+  },
+
+  // ── Note detail modal ─────────────────────────────
+
+  _bindClicks() {
+    if (this._clickBound) return;
+    this._clickBound = true;
+    // Delegated listener — notes are re-rendered every 10s so we can't
+    // attach per-card.
+    document.addEventListener('click', (e) => {
+      const card = e.target.closest('.vault-note-clickable');
+      if (!card || !card.dataset.path) return;
+      // Learned-card also carries data-path in the future; gate for now.
+      this._openNote(card.dataset.path);
+    });
+  },
+
+  async _openNote(path) {
+    const modal = this._ensureModal();
+    const title = modal.querySelector('.vault-modal-title');
+    const meta = modal.querySelector('.vault-modal-meta');
+    const body = modal.querySelector('.vault-modal-body');
+    title.textContent = path;
+    meta.textContent = 'loading…';
+    body.innerHTML = '';
+    modal.classList.add('open');
+
+    let resp;
+    try {
+      resp = await fetch('/api/vault/note?path=' + encodeURIComponent(path));
+    } catch (e) {
+      meta.textContent = 'network error';
+      return;
+    }
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      meta.textContent = data.error || 'failed to load';
+      return;
+    }
+    title.textContent = data.title;
+    meta.textContent = `${data.path} · ${this._relTime(data.mtime)}`;
+    body.innerHTML = this._renderMarkdown(data.body || '');
+  },
+
+  _ensureModal() {
+    let modal = document.getElementById('vault-modal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'vault-modal';
+    modal.className = 'vault-modal';
+    modal.innerHTML = `
+      <div class="vault-modal-card">
+        <div class="vault-modal-head">
+          <div>
+            <div class="vault-modal-title">note</div>
+            <div class="vault-modal-meta muted"></div>
+          </div>
+          <button class="vault-modal-close" aria-label="close">✕</button>
+        </div>
+        <div class="vault-modal-body"></div>
+      </div>`;
+    document.body.appendChild(modal);
+    const close = () => modal.classList.remove('open');
+    modal.querySelector('.vault-modal-close').addEventListener('click', close);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) close();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close();
+    });
+    return modal;
+  },
+
+  _renderMarkdown(src) {
+    // Minimal renderer: escape HTML, then apply headings, bold, italic,
+    // inline code, fenced code, wikilinks, and line breaks. We avoid
+    // a full Markdown lib to keep the dashboard zero-dep.
+    const esc = (s) => String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+    // Pull fenced code blocks out first so inline rules don't touch them.
+    const fences = [];
+    let safe = esc(src).replace(/```([\s\S]*?)```/g, (_m, code) => {
+      fences.push(code);
+      return `__FENCE_${fences.length - 1}__`;
+    });
+    safe = safe
+      .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+        (_m, target, label) => `<span class="wikilink">${esc(label || target)}</span>`)
+      .replace(/\n{2,}/g, '</p><p>')
+      .replace(/\n/g, '<br>');
+    safe = `<p>${safe}</p>`;
+    // Re-inject fenced blocks.
+    safe = safe.replace(/__FENCE_(\d+)__/g,
+      (_m, i) => `<pre><code>${fences[Number(i)]}</code></pre>`);
+    return safe;
   },
 
   _renderBanner(data) {
@@ -111,21 +215,26 @@ const Vault = {
     }
     el.innerHTML = `
       <div class="learned-grid">
-        ${rows.map(r => `
-          <div class="learned-card">
+        ${rows.map(r => {
+          const pathAttr = r.path ? ` data-path="${this._esc(r.path)}"` : '';
+          const cls = r.path ? 'learned-card vault-note-clickable' : 'learned-card';
+          return `
+          <div class="${cls}"${pathAttr}>
             <div class="learned-title">${this._esc(r.title)}</div>
             ${r.cycle_id ? `<div class="muted">cycle <code>${this._esc(String(r.cycle_id).slice(-10))}</code></div>` : ''}
             ${r.action ? `<div class="muted">${this._esc(r.action)}</div>` : ''}
             <div class="muted vault-note-meta">${this._relTime(r.mtime)}</div>
-          </div>`).join('')}
+          </div>`;
+        }).join('')}
       </div>`;
   },
 
   _noteCard(r) {
     const tags = (r.tags || []).slice(0, 4).map(
       t => `<span class="vault-tag">${this._esc(t)}</span>`).join('');
+    const pathAttr = r.path ? ` data-path="${this._esc(r.path)}"` : '';
     return `
-      <div class="vault-note">
+      <div class="vault-note${r.path ? ' vault-note-clickable' : ''}"${pathAttr}>
         <div class="vault-note-head">${this._esc(r.title)}</div>
         <div class="vault-note-meta muted">${this._relTime(r.mtime)}</div>
         ${tags ? `<div class="vault-tags">${tags}</div>` : ''}

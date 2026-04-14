@@ -1122,6 +1122,94 @@ body {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.vault-note-clickable { cursor: pointer; }
+.vault-note-clickable:hover {
+  border-color: var(--accent);
+  background: rgba(0, 212, 255, 0.04);
+}
+
+/* Vault note detail modal — opens on click, ESC or backdrop-click to
+   close. Layered over the whole viewport at a high z-index. */
+.vault-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 2000;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+.vault-modal.open { display: flex; }
+.vault-modal-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  width: min(820px, 100%);
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.vault-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.vault-modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 2px;
+}
+.vault-modal-meta { font-size: 11px; }
+.vault-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.vault-modal-close:hover { color: var(--accent); }
+.vault-modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.vault-modal-body h1 { font-size: 18px; margin: 14px 0 8px; }
+.vault-modal-body h2 { font-size: 15px; margin: 12px 0 6px; color: var(--accent); }
+.vault-modal-body h3 { font-size: 13px; margin: 10px 0 4px; }
+.vault-modal-body p { margin: 0 0 8px; }
+.vault-modal-body code {
+  background: var(--bg-deep);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.vault-modal-body pre {
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.vault-modal-body pre code {
+  background: transparent;
+  padding: 0;
+}
+.vault-modal-body .wikilink {
+  color: var(--accent);
+  font-weight: 500;
 }
 
 .vault-note-head {

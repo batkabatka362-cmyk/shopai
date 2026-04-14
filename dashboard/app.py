@@ -113,6 +113,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/health": self._api_health,
             "/api/cycle": self._api_cycle,
             "/api/vault": self._api_vault,
+            "/api/vault/note": self._api_vault_note,
         }
         handler = routes.get(path.rstrip("/"))
         if handler:
@@ -181,6 +182,38 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
     def _api_vault(self) -> None:
         """Vault summary: folder counts + recent wins/errors/decisions."""
         self._json(200, _collect_vault_summary())
+
+    def _api_vault_note(self) -> None:
+        """Return the full Markdown body of a single vault note.
+
+        Query: ``?path=Wins/2026-04-14.md`` (relative to the vault root).
+        The path is resolved strictly inside the configured vault —
+        traversal attempts (``..``, absolute paths, symlinks escaping the
+        root) are rejected with 400 so the operator can't accidentally
+        leak files from the host filesystem.
+        """
+        from urllib.parse import parse_qs, urlparse
+        qs = parse_qs(urlparse(self.path).query)
+        rel = (qs.get("path", [""])[0] or "").strip()
+        if not rel:
+            self._json(400, {"error": "path required"})
+            return
+        try:
+            data = _read_vault_note(rel)
+        except _VaultNotConfigured as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        except _VaultPathDenied as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        except FileNotFoundError:
+            self._json(404, {"error": "note not found"})
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("vault note read failed: %s", exc)
+            self._json(200, {"error": str(exc)[:200]})
+            return
+        self._json(200, data)
 
     # ── Scheduler control (operator POSTs) ─────────────────
 
@@ -1167,6 +1200,49 @@ class _VaultNotConfigured(Exception):
     """Raised when the feedback writer can't locate the Obsidian vault."""
 
 
+class _VaultPathDenied(Exception):
+    """Raised when a requested note path escapes the vault root."""
+
+
+def _read_vault_note(rel: str) -> dict[str, Any]:
+    """Return ``{path, title, mtime, body}`` for a note at ``rel``.
+
+    ``rel`` must be a path relative to the vault root, ending in ``.md``.
+    We resolve both the vault root and the target to absolute paths and
+    confirm the target is a strict child — this blocks ``..``, absolute
+    paths, and symlinks that would otherwise escape the sandbox.
+    """
+    root = _vault_root().resolve()
+
+    # Reject obvious shenanigans early.
+    if not rel or rel.startswith("/") or "\\" in rel or "\x00" in rel:
+        raise _VaultPathDenied(f"invalid path: {rel!r}")
+    if not rel.endswith(".md"):
+        raise _VaultPathDenied("only .md files are readable")
+
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise _VaultPathDenied("path escapes vault root") from exc
+
+    if not candidate.is_file():
+        raise FileNotFoundError(rel)
+
+    body = candidate.read_text(encoding="utf-8", errors="replace")
+    # Hard cap on returned body — a 10 MB note would choke the UI and
+    # is never a legitimate chat-visible artifact.
+    if len(body) > 200_000:
+        body = body[:200_000] + "\n\n… [truncated]\n"
+
+    return {
+        "path": candidate.relative_to(root).as_posix(),
+        "title": candidate.stem,
+        "mtime": candidate.stat().st_mtime,
+        "body": body,
+    }
+
+
 def _vault_root() -> Path:
     """Return the configured vault root as a ``Path`` or raise."""
     try:
@@ -1312,10 +1388,15 @@ def _collect_vault_summary() -> dict[str, Any]:
         )[:limit]
         out: list[dict] = []
         for f in files:
+            try:
+                rel = f.relative_to(vault).as_posix()
+            except ValueError:
+                rel = f.name
             entry = {
                 "title": f.stem,
                 "folder": folder,
                 "mtime": f.stat().st_mtime,
+                "path": rel,
             }
             if parse_note is not None:
                 try:
