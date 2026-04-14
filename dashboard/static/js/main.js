@@ -43,6 +43,7 @@ const App = {
       vault: 'Vault',
       cost: 'Cost Tracker',
       feedback: 'Feedback',
+      reliability: 'Reliability',
     };
     document.getElementById('page-title').textContent = titles[tab] || tab;
 
@@ -54,6 +55,7 @@ const App = {
     if (tab === 'vault' && window.Vault) Vault.refresh();
     if (tab === 'cost' && window.Cost) Cost.refresh();
     if (tab === 'feedback' && window.Feedback) Feedback.refresh();
+    if (tab === 'reliability' && window.Reliability) Reliability.refresh();
   },
 
   async refresh() {

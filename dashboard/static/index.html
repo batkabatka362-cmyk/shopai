@@ -100,6 +100,13 @@
       </svg>
       <span>Feedback</span>
     </a>
+    <a class="nav-item" data-tab="reliability" title="Reliability">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7z"/>
+        <path d="M9 12l2 2 4-4"/>
+      </svg>
+      <span>Reliability</span>
+    </a>
     <a class="nav-item" data-tab="vault" title="Vault">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M4 4h13l3 3v13H4z"/>
@@ -391,6 +398,36 @@
       </div>
     </section>
 
+    <!-- Tab: Reliability -->
+    <section id="tab-reliability" class="tab-panel">
+      <div class="metrics-row" id="reliability-metrics"></div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Circuit Breakers</h2>
+          <span class="badge" id="reliability-breakers-badge">—</span>
+        </div>
+        <div class="panel-body" id="reliability-breakers">
+          <div class="empty-state muted">
+            Breakers open after consecutive adapter failures and
+            auto-close after a cool-down probe. When open, the router
+            skips that adapter and falls back to the next candidate.
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Per-Adapter Retries</h2>
+          <span class="badge" id="reliability-adapters-badge">0</span>
+        </div>
+        <div class="panel-body" id="reliability-adapters">
+          <div class="empty-state muted">
+            Retry activity shows up once the router has fallen back
+            or retried a transient failure.
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Tab: Vault -->
     <section id="tab-vault" class="tab-panel">
       <div class="metrics-row" id="vault-metrics"></div>
@@ -474,6 +511,7 @@
 <script src="/js/vault.js"></script>
 <script src="/js/cost.js"></script>
 <script src="/js/feedback.js"></script>
+<script src="/js/reliability.js"></script>
 <script src="/js/stores.js"></script>
 <script src="/js/alerts.js"></script>
 </body>

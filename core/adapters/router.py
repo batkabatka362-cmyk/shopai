@@ -36,6 +36,12 @@ from .errors import (
 )
 from .metrics import MetricsCollector, get_metrics
 from .registry import AdapterRegistry, get_registry
+from .retry import (
+    CircuitBreaker,
+    RetryPolicy,
+    RetryTelemetry,
+    get_retry_telemetry,
+)
 
 logger = get_logger("adapters.router")
 
@@ -125,10 +131,59 @@ class SmartRouter:
         self,
         registry: AdapterRegistry | None = None,
         metrics: MetricsCollector | None = None,
+        retry_policy: RetryPolicy | None = None,
+        retry_telemetry: RetryTelemetry | None = None,
+        breaker_factory: Any | None = None,
     ) -> None:
         self._registry = registry or get_registry()
         self._metrics = metrics or get_metrics()
+        # ``retry_policy=None`` means "single attempt" — preserves the
+        # pre-Option-R behaviour. Production wiring can plug in a
+        # real ``RetryPolicy`` via ``set_retry_policy`` or by
+        # constructing the router explicitly.
+        self._retry_policy = retry_policy or RetryPolicy(max_attempts=1)
+        self._retry_telemetry = retry_telemetry or get_retry_telemetry()
+        # Lazily allocate one breaker per adapter name. ``breaker_factory``
+        # is a callable ``(name) -> CircuitBreaker`` so tests can inject
+        # low-threshold / short-cool-down breakers without monkey-patching.
+        self._breaker_factory = breaker_factory or (
+            lambda name: CircuitBreaker(name=name)
+        )
+        self._breakers: dict[str, CircuitBreaker] = {}
         self._lock = threading.RLock()
+
+    # ── Policy accessors ───────────────────────────────────────
+
+    def set_retry_policy(self, policy: RetryPolicy) -> None:
+        """Replace the retry policy at runtime.
+
+        Useful so production code can flip a conservative default
+        policy into the router after construction without having to
+        reach into private attributes.
+        """
+        with self._lock:
+            self._retry_policy = policy
+
+    @property
+    def retry_telemetry(self) -> RetryTelemetry:
+        """Expose the attached retry telemetry collector."""
+        return self._retry_telemetry
+
+    def breaker_snapshot(self) -> dict[str, dict]:
+        """Return a ``{adapter_name: breaker_snapshot}`` map."""
+        with self._lock:
+            return {
+                name: br.snapshot() for name, br in self._breakers.items()
+            }
+
+    def _breaker_for(self, name: str) -> CircuitBreaker:
+        """Return (creating if needed) the breaker for *name*."""
+        with self._lock:
+            br = self._breakers.get(name)
+            if br is None:
+                br = self._breaker_factory(name)
+                self._breakers[name] = br
+            return br
 
     # ── Public API ─────────────────────────────────────────────
 
@@ -196,31 +251,59 @@ class SmartRouter:
         last_failure: AdapterResult | None = None
 
         for adapter in attempts:
-            result = adapter.execute(capability, params)
+            breaker = self._breaker_for(adapter.name)
+            if not breaker.allow():
+                logger.info(
+                    "router skip: breaker open for %s — trying next",
+                    adapter.name,
+                )
+                continue
 
-            # Always feed the metrics collector — even on failure
-            self._metrics.record(
-                adapter.name,
-                success=result.ok,
-                latency_ms=result.latency_ms,
-                cost_usd=result.cost_usd,
-                tokens_in=result.tokens_in,
-                tokens_out=result.tokens_out,
-                error=(result.error.reason if result.error else ""),
-            )
+            # Per-adapter retry loop. Each adapter gets the full
+            # budget defined by ``self._retry_policy`` before the
+            # router gives up on it and moves to a fallback.
+            def _call(_adapter=adapter) -> AdapterResult:
+                return _adapter.execute(capability, params)
 
-            if result.ok:
+            outcome = self._retry_policy.run(_call)
+            self._retry_telemetry.record(adapter.name, outcome)
+            result = outcome.result
+
+            # Feed the breaker from the FINAL attempt's outcome.
+            if result is not None and getattr(result, "ok", False):
+                breaker.record_success()
+            else:
+                breaker.record_failure()
+
+            # Always feed the metrics collector — even on failure.
+            # ``result`` is always an AdapterResult here because
+            # ``BaseAdapter.execute`` wraps its own exceptions;
+            # guard defensively anyway.
+            if result is not None and hasattr(result, "latency_ms"):
+                self._metrics.record(
+                    adapter.name,
+                    success=result.ok,
+                    latency_ms=result.latency_ms,
+                    cost_usd=result.cost_usd,
+                    tokens_in=result.tokens_in,
+                    tokens_out=result.tokens_out,
+                    error=(result.error.reason if result.error else ""),
+                )
+
+            if result is not None and result.ok:
                 return result
 
-            last_failure = result
-            # Some failures are non-retryable: the next adapter
-            # would hit the same caller bug, so just bail.
-            if isinstance(result.error, AdapterValidationError):
+            last_failure = result if isinstance(result, AdapterResult) else last_failure
+            # Some failures are non-retryable at the FALLBACK level
+            # too: the next adapter would hit the same caller bug,
+            # so just bail.
+            err = getattr(result, "error", None)
+            if isinstance(err, AdapterValidationError):
                 break
             logger.warning(
                 "router fallback: %s failed (%s), trying next",
                 adapter.name,
-                type(result.error).__name__ if result.error else "?",
+                type(err).__name__ if err else "?",
             )
 
         return last_failure or AdapterResult.failure(

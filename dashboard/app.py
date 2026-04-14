@@ -131,6 +131,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/stores": self._api_stores,
             "/api/feedback": self._api_feedback,
             "/api/lessons": self._api_lessons,
+            "/api/retries": self._api_retries,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -272,6 +273,29 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "error": str(exc)[:200],
             })
             return
+        self._json(200, data)
+
+    def _api_retries(self) -> None:
+        """Retry + circuit-breaker telemetry (Option R).
+
+        Surfaces the process-wide retry counters from
+        ``RetryTelemetry`` joined with the per-adapter circuit
+        breaker state so the Reliability tab can show "who is being
+        retried, who is being tripped, and who is currently skipped".
+        Never 500s — if the router has never been constructed the
+        snapshot is simply empty.
+        """
+        try:
+            data = _collect_retries_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("retries collector failed: %s", exc)
+            data = {
+                "totals": {"calls": 0, "retries": 0, "giveups": 0},
+                "per_adapter": [],
+                "breakers": [],
+                "timestamp": time.time(),
+                "error": str(exc)[:200],
+            }
         self._json(200, data)
 
     def _api_stores(self) -> None:
@@ -2032,6 +2056,65 @@ def _parse_lesson_frontmatter(body: str) -> dict[str, Any]:
         elif in_sources and stripped and not stripped.startswith("- "):
             in_sources = False
     return out
+
+
+def _collect_retries_snapshot() -> dict[str, Any]:
+    """Return router retry + circuit-breaker telemetry for the UI.
+
+    Joins the process-wide ``RetryTelemetry`` counters with the
+    per-adapter ``CircuitBreaker`` states owned by the default
+    router. Both are cheap in-memory reads and safe to poll.
+    """
+    from core.adapters.retry import get_retry_telemetry
+    telemetry = get_retry_telemetry().snapshot()
+
+    # The router's breakers live on the singleton — only construct
+    # the router if it has already been instantiated (avoid a side
+    # effect from a dashboard poll).
+    from core.adapters import router as _router_mod
+    router = getattr(_router_mod, "_router", None)
+    breakers: list[dict[str, Any]] = []
+    if router is not None:
+        try:
+            raw = router.breaker_snapshot()
+        except Exception:  # noqa: BLE001
+            raw = {}
+        for name, snap in raw.items():
+            breakers.append({
+                "adapter": name,
+                "state": snap.get("state", "closed"),
+                "consecutive_failures": snap.get("consecutive_failures", 0),
+                "trips": snap.get("trips", 0),
+                "fail_threshold": snap.get("fail_threshold", 0),
+                "reset_after_s": snap.get("reset_after_s", 0.0),
+            })
+
+    # Flatten per-adapter rows for easy rendering.
+    per_adapter = []
+    for name, row in telemetry.get("per_adapter", {}).items():
+        calls = int(row.get("calls", 0))
+        successes = int(row.get("successes", 0))
+        per_adapter.append({
+            "adapter": name,
+            "calls": calls,
+            "retries": int(row.get("retries", 0)),
+            "giveups": int(row.get("giveups", 0)),
+            "attempts": int(row.get("attempts", 0)),
+            "successes": successes,
+            "success_rate": (successes / calls) if calls > 0 else 0.0,
+        })
+    per_adapter.sort(key=lambda r: r["retries"] + r["giveups"], reverse=True)
+
+    return {
+        "timestamp": time.time(),
+        "totals": {
+            "calls": int(telemetry.get("total_calls", 0)),
+            "retries": int(telemetry.get("total_retries", 0)),
+            "giveups": int(telemetry.get("total_giveups", 0)),
+        },
+        "per_adapter": per_adapter,
+        "breakers": breakers,
+    }
 
 
 def _feedback_rating_from_body(body: str) -> str:
