@@ -82,6 +82,37 @@ def _isolate_default_belief_store(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_default_idempotency_cache():
+    """Option V: keep the process-wide idempotency cache from
+    leaking results between tests.
+
+    The router now consults ``get_idempotency_cache()`` before
+    dispatching, and the default singleton ships with a TTL for
+    ``CHAT_COMPLETE`` / ``EMBED_TEXT`` / ``WEB_SEARCH``. Without
+    this fixture, a router test that calls CHAT_COMPLETE twice
+    in the same process would hit the cache on the second call
+    and skip its adapter entirely — causing flaky cross-test
+    assertions about "which adapter was invoked".
+
+    The fixture installs a **no-policy** cache as the singleton
+    for the duration of each test: the router still consults it,
+    it still records hit/miss/skipped counters, but nothing ever
+    caches. Tests that explicitly cover caching behaviour can
+    instantiate their own ``IdempotencyCache`` with populated
+    policies and hand it to ``SmartRouter(idempotency_cache=...)``.
+    """
+    try:
+        import core.adapters.idempotency as _idem
+    except Exception:
+        yield
+        return
+    _idem.reset_idempotency_cache()
+    _idem._default_cache = _idem.IdempotencyCache(policies={})
+    yield
+    _idem.reset_idempotency_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_reflection_synth(tmp_path_factory, monkeypatch):
     """Wave 6 #6: keep the process-wide default ReflectionSynthesizer
     out of the repo.

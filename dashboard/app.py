@@ -135,6 +135,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/sla": self._api_sla,
             "/api/budget": self._api_budget,
             "/api/ratelimit": self._api_ratelimit,
+            "/api/idempotency": self._api_idempotency,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -359,6 +360,32 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "totals": {"throttled": 0, "near": 0, "ok": 0, "idle": 0},
                 "rows": [],
                 "timestamp": time.time(),
+                "error": str(exc)[:200],
+            }
+        self._json(200, data)
+
+    def _api_idempotency(self) -> None:
+        """Router-level result cache stats — Option V.
+
+        Reports per-capability policy, live entry counts, and hit/miss/
+        store counters from the process-wide idempotency cache. Never
+        500s — an uninitialised cache just reports zero counters.
+        """
+        try:
+            data = _collect_idempotency_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("idempotency collector failed: %s", exc)
+            data = {
+                "timestamp": time.time(),
+                "counters": {
+                    "hits": 0, "misses": 0, "stores": 0,
+                    "evictions": 0, "skipped": 0,
+                },
+                "hit_rate": 0.0,
+                "size": 0,
+                "live": 0,
+                "max_entries": 0,
+                "rows": [],
                 "error": str(exc)[:200],
             }
         self._json(200, data)
@@ -2203,6 +2230,51 @@ def _collect_ratelimit_snapshot() -> dict[str, Any]:
     return {
         "timestamp": time.time(),
         "totals": totals,
+        "rows": rows,
+    }
+
+
+def _collect_idempotency_snapshot() -> dict[str, Any]:
+    """Idempotency cache rollup for the Reliability tab.
+
+    The underlying cache already does most of the work in its own
+    ``snapshot`` — this wrapper just flattens policies + per-capability
+    live counts into a row list that renders cleanly in a table.
+    """
+    from core.adapters.idempotency import get_idempotency_cache
+
+    cache = get_idempotency_cache()
+    snap = cache.snapshot()
+    per_cap = snap.get("per_capability", {}) or {}
+    policies = snap.get("policies", {}) or {}
+    # Merge every capability that either has a policy or holds entries.
+    caps = sorted(set(per_cap.keys()) | set(policies.keys()))
+    rows: list[dict[str, Any]] = []
+    for cap in caps:
+        pol = policies.get(cap, {}) or {}
+        rows.append({
+            "capability": cap,
+            "ttl_s": float(pol.get("ttl_s", 0.0)),
+            "shared_across_adapters": bool(
+                pol.get("shared_across_adapters", False),
+            ),
+            "live": int(per_cap.get(cap, 0)),
+            "enabled": bool(pol.get("ttl_s", 0.0) > 0),
+        })
+    rows.sort(key=lambda r: (-r["live"], r["capability"]))
+    return {
+        "timestamp": time.time(),
+        "counters": {
+            "hits": int(snap.get("hits", 0)),
+            "misses": int(snap.get("misses", 0)),
+            "stores": int(snap.get("stores", 0)),
+            "evictions": int(snap.get("evictions", 0)),
+            "skipped": int(snap.get("skipped", 0)),
+        },
+        "hit_rate": float(snap.get("hit_rate", 0.0)),
+        "size": int(snap.get("size", 0)),
+        "live": int(snap.get("live", 0)),
+        "max_entries": int(snap.get("max_entries", 0)),
         "rows": rows,
     }
 

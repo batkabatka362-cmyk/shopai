@@ -468,6 +468,20 @@
           </div>
         </div>
       </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Idempotency Cache</h2>
+          <span class="badge" id="reliability-idempotency-badge">—</span>
+        </div>
+        <div class="panel-body" id="reliability-idempotency">
+          <div class="empty-state muted">
+            Per-capability result cache in front of the router gates.
+            A hit returns the prior result without touching breakers,
+            rate limits, budgets, or retries. Populated lazily — rows
+            appear once a capability has stored or skipped entries.
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Tab: Vault -->

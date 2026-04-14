@@ -14,30 +14,94 @@ const Reliability = {
   _timer: null,
 
   async refresh() {
-    const [retries, sla, rate] = await Promise.all([
+    const [retries, sla, rate, idem] = await Promise.all([
       App.fetch('/api/retries'),
       App.fetch('/api/sla'),
       App.fetch('/api/ratelimit'),
+      App.fetch('/api/idempotency'),
     ]);
-    this.render(retries || {}, sla || {}, rate || {});
+    this.render(retries || {}, sla || {}, rate || {}, idem || {});
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'reliability') return;
-      const [fr, fs, frl] = await Promise.all([
+      const [fr, fs, frl, fi] = await Promise.all([
         App.fetch('/api/retries'),
         App.fetch('/api/sla'),
         App.fetch('/api/ratelimit'),
+        App.fetch('/api/idempotency'),
       ]);
-      this.render(fr || {}, fs || {}, frl || {});
+      this.render(fr || {}, fs || {}, frl || {}, fi || {});
     }, 15000);
   },
 
-  render(data, sla, rate) {
+  render(data, sla, rate, idem) {
     this._renderMetrics(data.totals || {});
     this._renderBreakers(data.breakers || []);
     this._renderAdapters(data.per_adapter || []);
     this._renderSLA(sla || {});
     this._renderRateLimit(rate || {});
+    this._renderIdempotency(idem || {});
+  },
+
+  _renderIdempotency(idem) {
+    const body = document.getElementById('reliability-idempotency');
+    const badge = document.getElementById('reliability-idempotency-badge');
+    const counters = idem.counters || {
+      hits: 0, misses: 0, stores: 0, evictions: 0, skipped: 0,
+    };
+    const rows = idem.rows || [];
+    const hitRate = Number(idem.hit_rate || 0);
+    if (badge) {
+      const pct = Math.round(hitRate * 100);
+      const lookups = (counters.hits || 0) + (counters.misses || 0);
+      badge.textContent = lookups > 0
+        ? `${pct}% hit · ${counters.hits || 0}/${lookups}`
+        : 'no lookups yet';
+      badge.className = 'badge ' + (
+        lookups === 0 ? 'badge-gray'
+        : hitRate >= 0.5 ? 'badge-green'
+        : hitRate >= 0.2 ? 'badge-orange'
+        : 'badge-red'
+      );
+    }
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = `<div class="empty-state muted">
+        No capabilities have a cache policy registered. Enable one with
+        <code>IdempotencyCache.set_policy(cap, IdempotencyPolicy(ttl_s=…))</code>
+        or rely on the default catalog for CHAT_COMPLETE / EMBED_TEXT /
+        WEB_SEARCH.
+      </div>`;
+      return;
+    }
+    const summary = `
+      <div class="idem-summary">
+        <span class="muted">
+          ${counters.hits || 0} hits · ${counters.misses || 0} misses ·
+          ${counters.stores || 0} stored · ${counters.evictions || 0} evicted ·
+          ${counters.skipped || 0} skipped
+        </span>
+        <span class="muted">
+          ${idem.live || 0} / ${idem.size || 0} live
+          · cap ${idem.max_entries || 0}
+        </span>
+      </div>`;
+    const items = rows.map(r => {
+      const cls = r.enabled ? 'badge-green' : 'badge-gray';
+      const ttl = r.ttl_s > 0 ? `${r.ttl_s.toFixed(0)}s ttl` : 'disabled';
+      const scope = r.shared_across_adapters ? 'shared' : 'per-adapter';
+      return `
+        <div class="idem-row">
+          <div class="idem-name">
+            <div>${this._esc(r.capability)}</div>
+            <span class="badge ${cls}">${this._esc(ttl)}</span>
+          </div>
+          <div class="idem-stats muted">
+            ${r.live || 0} live · ${this._esc(scope)}
+          </div>
+        </div>`;
+    }).join('');
+    body.innerHTML = summary + `<div class="idem-list">${items}</div>`;
   },
 
   _renderRateLimit(rate) {

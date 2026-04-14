@@ -2282,3 +2282,45 @@ body {
 @media (max-width: 600px) {
   .rate-row { grid-template-columns: 1fr; }
 }
+
+/* Idempotency cache panel — Option V */
+.idem-summary {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+}
+.idem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.idem-row {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  background: var(--panel-bg, rgba(255, 255, 255, 0.02));
+}
+.idem-name {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--text-primary, #e5e8ef);
+}
+.idem-name .badge { align-self: flex-start; }
+.idem-stats {
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .idem-row { grid-template-columns: 1fr; }
+}

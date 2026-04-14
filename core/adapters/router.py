@@ -30,6 +30,7 @@ from utils.logger import get_logger
 from .base import AdapterResult, BaseAdapter, Capability
 from .budget import BudgetEnforcer, get_budget_enforcer
 from .rate_limit import RateLimiter, get_rate_limiter
+from .idempotency import IdempotencyCache, get_idempotency_cache
 from .errors import (
     AdapterError,
     AdapterNotConfigured,
@@ -138,6 +139,7 @@ class SmartRouter:
         breaker_factory: Any | None = None,
         budget_enforcer: BudgetEnforcer | None = None,
         rate_limiter: RateLimiter | None = None,
+        idempotency_cache: IdempotencyCache | None = None,
     ) -> None:
         self._registry = registry or get_registry()
         self._metrics = metrics or get_metrics()
@@ -164,6 +166,11 @@ class SmartRouter:
         # explicit configuration. Tests pass ``RateLimiter(policies={})``
         # to get the old "always allowed" semantics.
         self._rate_limiter = rate_limiter or get_rate_limiter()
+        # Idempotency cache (Option V). The default singleton is
+        # opt-in per capability — capabilities with no TTL registered
+        # are never cached, so side-effecting ops (payments, sends)
+        # cannot be accidentally deduplicated.
+        self._idempotency = idempotency_cache or get_idempotency_cache()
         self._lock = threading.RLock()
 
     # ── Policy accessors ───────────────────────────────────────
@@ -199,6 +206,11 @@ class SmartRouter:
     def rate_limiter(self) -> RateLimiter:
         """Expose the attached per-adapter rate limiter (Option U)."""
         return self._rate_limiter
+
+    @property
+    def idempotency_cache(self) -> IdempotencyCache:
+        """Expose the attached idempotency cache (Option V)."""
+        return self._idempotency
 
     def _breaker_for(self, name: str) -> CircuitBreaker:
         """Return (creating if needed) the breaker for *name*."""
@@ -269,6 +281,25 @@ class SmartRouter:
                 "router", str(capability), err,
             )
 
+        # Normalise the capability to the enum form once so every
+        # downstream gate (idempotency, budget, metrics) uses the
+        # same key type.
+        cap_enum = (
+            capability if isinstance(capability, Capability)
+            else Capability(capability)
+        )
+
+        # Idempotency gate (Option V). Keyed against the primary
+        # candidate so repeated calls with the same params hit
+        # whichever result the router last produced — even if the
+        # primary was temporarily unavailable last time and the
+        # fallback answered. Side-effecting capabilities have no
+        # policy registered and bypass this gate entirely.
+        primary = candidates[0]
+        cached = self._idempotency.get(primary.name, cap_enum, params)
+        if cached is not None:
+            return cached
+
         # Try primary + up to fallback_depth alternates.
         max_attempts = 1 + max(0, ctx.fallback_depth)
         attempts = candidates[:max_attempts]
@@ -287,11 +318,7 @@ class SmartRouter:
             # estimator so the check covers "this specific call"
             # rather than a generic per-call cap.
             try:
-                est_cost = adapter.estimate_cost(
-                    capability if isinstance(capability, Capability)
-                    else Capability(capability),
-                    params,
-                )
+                est_cost = adapter.estimate_cost(cap_enum, params)
             except Exception:  # noqa: BLE001
                 est_cost = adapter.cost_per_call or 0.0
             decision = self._budget_enforcer.can_call(
@@ -360,6 +387,13 @@ class SmartRouter:
                     )
 
             if result is not None and result.ok:
+                # Idempotency store (Option V). Keyed against the
+                # PRIMARY candidate so the next duplicate call hits
+                # regardless of which adapter actually answered this
+                # time. The cache refuses to store when no policy is
+                # registered, so side-effecting capabilities are
+                # silently left alone.
+                self._idempotency.store(primary.name, cap_enum, params, result)
                 return result
 
             last_failure = result if isinstance(result, AdapterResult) else last_failure
