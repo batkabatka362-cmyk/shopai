@@ -136,7 +136,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/budget": self._api_budget,
             "/api/ratelimit": self._api_ratelimit,
             "/api/idempotency": self._api_idempotency,
-            "/api/health": self._api_health,
+            "/api/adapter-health": self._api_adapter_health,
+            "/api/deadletter": self._api_deadletter,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -391,7 +392,29 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             }
         self._json(200, data)
 
-    def _api_health(self) -> None:
+    def _api_deadletter(self) -> None:
+        """Dead-letter ledger dashboard — Option Y.
+
+        Returns the rollup (totals + per-adapter/capability) plus
+        the most recent N entries. Never 500s — a cold ledger reports
+        an empty feed.
+        """
+        try:
+            data = _collect_deadletter_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("deadletter collector failed: %s", exc)
+            data = {
+                "timestamp": time.time(),
+                "size": 0,
+                "total_records": 0,
+                "per_adapter": {},
+                "per_capability": {},
+                "recent": [],
+                "error": str(exc)[:200],
+            }
+        self._json(200, data)
+
+    def _api_adapter_health(self) -> None:
         """Composite adapter health score — Option W.
 
         Folds SLA / breaker / rate-limit / retry telemetry into a
@@ -402,7 +425,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         try:
             data = _collect_health_snapshot()
         except Exception as exc:  # noqa: BLE001
-            logger.debug("health collector failed: %s", exc)
+            logger.debug("adapter-health collector failed: %s", exc)
             data = {
                 "timestamp": time.time(),
                 "totals": {
@@ -2255,6 +2278,32 @@ def _collect_ratelimit_snapshot() -> dict[str, Any]:
         "timestamp": time.time(),
         "totals": totals,
         "rows": rows,
+    }
+
+
+def _collect_deadletter_snapshot() -> dict[str, Any]:
+    """Dead-letter ledger rollup for the Reliability tab.
+
+    Combines the ledger's own ``snapshot`` with the most recent N
+    entries so the UI can render both a header badge ("5 in last
+    hour") and a feed of what specifically broke.
+    """
+    from core.adapters.deadletter import get_dead_letter_ledger
+
+    ledger = get_dead_letter_ledger()
+    snap = ledger.snapshot()
+    recent = ledger.recent(limit=50)
+    return {
+        "timestamp": time.time(),
+        "size": int(snap.get("size", 0)),
+        "total_records": int(snap.get("total_records", 0)),
+        "write_failures": int(snap.get("write_failures", 0)),
+        "per_adapter": dict(snap.get("per_adapter") or {}),
+        "per_capability": dict(snap.get("per_capability") or {}),
+        "newest_ts": float(snap.get("newest_ts", 0.0)),
+        "oldest_ts": float(snap.get("oldest_ts", 0.0)),
+        "path": snap.get("path"),
+        "recent": [e.to_dict() for e in recent],
     }
 
 

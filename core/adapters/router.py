@@ -32,6 +32,7 @@ from .budget import BudgetEnforcer, get_budget_enforcer
 from .rate_limit import RateLimiter, get_rate_limiter
 from .idempotency import IdempotencyCache, get_idempotency_cache
 from .health import HealthScorer
+from .deadletter import DeadLetterLedger, get_dead_letter_ledger
 from .errors import (
     AdapterError,
     AdapterNotConfigured,
@@ -143,6 +144,7 @@ class SmartRouter:
         idempotency_cache: IdempotencyCache | None = None,
         health_scorer: HealthScorer | None = None,
         health_bonus_range: float = 30.0,
+        dead_letter_ledger: DeadLetterLedger | None = None,
     ) -> None:
         self._registry = registry or get_registry()
         self._metrics = metrics or get_metrics()
@@ -188,6 +190,10 @@ class SmartRouter:
         if health_bonus_range < 0:
             raise ValueError("health_bonus_range must be >= 0")
         self._health_bonus_range = float(health_bonus_range)
+        # Dead-letter ledger (Option Y). Default is the process-wide
+        # singleton; tests pass a ``DeadLetterLedger(path=None)`` to
+        # keep records in memory only.
+        self._dead_letter = dead_letter_ledger or get_dead_letter_ledger()
         self._lock = threading.RLock()
 
     # ── Policy accessors ───────────────────────────────────────
@@ -223,6 +229,11 @@ class SmartRouter:
     def rate_limiter(self) -> RateLimiter:
         """Expose the attached per-adapter rate limiter (Option U)."""
         return self._rate_limiter
+
+    @property
+    def dead_letter_ledger(self) -> DeadLetterLedger:
+        """Expose the attached dead-letter ledger (Option Y)."""
+        return self._dead_letter
 
     @property
     def health_scorer(self) -> HealthScorer | None:
@@ -435,11 +446,41 @@ class SmartRouter:
                 type(err).__name__ if err else "?",
             )
 
-        return last_failure or AdapterResult.failure(
+        terminal = last_failure or AdapterResult.failure(
             "router",
             str(capability),
             AdapterError("router", "all candidates failed"),
         )
+        # Dead-letter hook (Option Y). Every exhausted-fallback chain
+        # lands here; record one entry per terminal failure so the
+        # dashboard can show what's broken + operators can replay
+        # after a fix. Protected by try/except so a ledger glitch
+        # never masks the real failure the caller is waiting for.
+        try:
+            terminal_err = getattr(terminal, "error", None)
+            err_type = (
+                type(terminal_err).__name__ if terminal_err else "AdapterError"
+            )
+            err_msg = (
+                getattr(terminal_err, "reason", None)
+                or getattr(terminal_err, "message", None)
+                or str(terminal_err or "all candidates failed")
+            )
+            self._dead_letter.record(
+                adapter=(
+                    terminal.adapter if getattr(terminal, "adapter", None)
+                    else (candidates[0].name if candidates else "router")
+                ),
+                capability=cap_enum.value,
+                params_hash=self._idempotency._hash_params(params),
+                error_type=err_type,
+                error_message=err_msg,
+                attempts=len(attempts),
+                params_snapshot=self._params_snapshot(params),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("dead-letter record failed: %s", exc)
+        return terminal
 
     # ── Internals ──────────────────────────────────────────────
 
@@ -521,6 +562,42 @@ class SmartRouter:
 
         scored.sort(key=lambda pair: (-pair[0], pair[1].name))
         return [adapter for _, adapter in scored]
+
+    @staticmethod
+    def _params_snapshot(params: dict[str, Any] | None) -> dict[str, Any]:
+        """Return a deliberately-small dict of params fields safe to
+        persist to the dead-letter ledger.
+
+        We want a replay hint (model, query length, operation name)
+        without writing full prompt bodies or customer PII into an
+        unencrypted file. The allow-list is:
+
+          * ``model`` / ``provider`` — vendor selection
+          * ``op`` / ``operation`` / ``action`` — what was being done
+          * ``store_id`` / ``tenant_id`` — routing context
+          * any integer length / count field
+
+        Everything else is dropped silently. Opted-out by design —
+        the ``params_hash`` is always present for exact-match replay.
+        """
+        if not params:
+            return {}
+        ALLOW_KEYS = {
+            "model", "provider", "op", "operation", "action",
+            "store_id", "tenant_id", "region", "timeout_ms",
+            "max_tokens", "top_k", "top_n",
+        }
+        out: dict[str, Any] = {}
+        for k, v in params.items():
+            if k in ALLOW_KEYS and isinstance(v, (str, int, float, bool)):
+                out[k] = v
+            elif isinstance(v, str) and k.endswith("_len"):
+                out[k] = v
+            elif k in ("prompt", "query", "q", "text") and isinstance(v, str):
+                # Keep only the LENGTH of anything that looks like
+                # prompt text — never the body itself.
+                out[f"{k}_len"] = len(v)
+        return out
 
     def _score_for_adapter(self, name: str) -> float | None:
         """Return the composite health score for one adapter, or

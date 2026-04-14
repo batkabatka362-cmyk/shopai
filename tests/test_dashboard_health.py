@@ -134,7 +134,7 @@ class TestCollectHealthSnapshot:
 
 
 class TestHealthEndpoint:
-    def test_api_health_wraps_snapshot(self, monkeypatch):
+    def test_api_adapter_health_wraps_snapshot(self, monkeypatch):
         h = _handler()
         captured: dict = {}
 
@@ -154,11 +154,11 @@ class TestHealthEndpoint:
                 "rows": [{"adapter": "x", "grade": "unhealthy", "score": 0.1}],
             },
         )
-        h._api_health()
+        h._api_adapter_health()
         assert captured["status"] == 200
         assert captured["payload"]["totals"]["unhealthy"] == 1
 
-    def test_api_health_handles_collector_failure(self, monkeypatch):
+    def test_api_adapter_health_handles_collector_failure(self, monkeypatch):
         h = _handler()
         captured: dict = {}
 
@@ -172,7 +172,7 @@ class TestHealthEndpoint:
             raise RuntimeError("telemetry gone")
 
         monkeypatch.setattr(dash, "_collect_health_snapshot", _boom)
-        h._api_health()
+        h._api_adapter_health()
         assert captured["status"] == 200
         assert captured["payload"]["totals"] == {
             "unhealthy": 0, "degraded": 0, "healthy": 0, "unknown": 0,

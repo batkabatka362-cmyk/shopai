@@ -2380,3 +2380,70 @@ body {
 @media (max-width: 600px) {
   .idem-row { grid-template-columns: 1fr; }
 }
+
+/* ── Dead-letter feed ───────────────────────────────────── */
+.dl-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dl-warn {
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-left: 3px solid var(--danger, #d6465a);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.dl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-left: 3px solid var(--danger, #d6465a);
+  border-radius: 6px;
+  background: var(--panel-bg, rgba(255, 255, 255, 0.02));
+}
+.dl-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dl-adapter {
+  font-weight: 600;
+  color: var(--text-primary, #e5e8ef);
+}
+.dl-cap {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  color: var(--text-secondary, #aeb4c0);
+}
+.dl-time {
+  margin-left: auto;
+  font-size: 12px;
+}
+.dl-msg {
+  font-size: 12px;
+  word-break: break-word;
+}
+.dl-meta {
+  font-size: 11px;
+  font-family: var(--mono, monospace);
+}
+.dl-snap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+.dl-chip {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 3px;
+  color: var(--text-secondary, #aeb4c0);
+  background: rgba(255, 255, 255, 0.02);
+}

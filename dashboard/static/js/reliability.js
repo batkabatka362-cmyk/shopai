@@ -14,31 +14,36 @@ const Reliability = {
   _timer: null,
 
   async refresh() {
-    const [retries, sla, rate, idem, health] = await Promise.all([
+    const [retries, sla, rate, idem, health, dl] = await Promise.all([
       App.fetch('/api/retries'),
       App.fetch('/api/sla'),
       App.fetch('/api/ratelimit'),
       App.fetch('/api/idempotency'),
-      App.fetch('/api/health'),
+      App.fetch('/api/adapter-health'),
+      App.fetch('/api/deadletter'),
     ]);
     this.render(
       retries || {}, sla || {}, rate || {}, idem || {}, health || {},
+      dl || {},
     );
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'reliability') return;
-      const [fr, fs, frl, fi, fh] = await Promise.all([
+      const [fr, fs, frl, fi, fh, fdl] = await Promise.all([
         App.fetch('/api/retries'),
         App.fetch('/api/sla'),
         App.fetch('/api/ratelimit'),
         App.fetch('/api/idempotency'),
-        App.fetch('/api/health'),
+        App.fetch('/api/adapter-health'),
+        App.fetch('/api/deadletter'),
       ]);
-      this.render(fr || {}, fs || {}, frl || {}, fi || {}, fh || {});
+      this.render(
+        fr || {}, fs || {}, frl || {}, fi || {}, fh || {}, fdl || {},
+      );
     }, 15000);
   },
 
-  render(data, sla, rate, idem, health) {
+  render(data, sla, rate, idem, health, dl) {
     this._renderMetrics(data.totals || {});
     this._renderHealth(health || {});
     this._renderBreakers(data.breakers || []);
@@ -46,6 +51,68 @@ const Reliability = {
     this._renderSLA(sla || {});
     this._renderRateLimit(rate || {});
     this._renderIdempotency(idem || {});
+    this._renderDeadletter(dl || {});
+  },
+
+  _renderDeadletter(dl) {
+    const body = document.getElementById('reliability-deadletter');
+    const badge = document.getElementById('reliability-deadletter-badge');
+    const recent = dl.recent || [];
+    const size = dl.size || 0;
+    const writeFail = dl.write_failures || 0;
+    if (badge) {
+      if (size === 0) {
+        badge.textContent = 'clean';
+        badge.className = 'badge badge-green';
+      } else {
+        const perAdapter = dl.per_adapter || {};
+        const top = Object.entries(perAdapter)
+          .sort((a, b) => b[1] - a[1])[0];
+        const topLabel = top ? ` · top ${top[0]} (${top[1]})` : '';
+        badge.textContent = `${size} dropped${topLabel}`;
+        badge.className = 'badge badge-red';
+      }
+    }
+    if (!body) return;
+    if (!recent.length) {
+      body.innerHTML = `<div class="empty-state muted">
+        No terminal failures recorded. Requests that fail every
+        fallback will appear here with a redacted snapshot.
+      </div>`;
+      return;
+    }
+    const warn = writeFail > 0
+      ? `<div class="dl-warn muted">
+           ⚠ ${writeFail} disk write failure${writeFail === 1 ? '' : 's'} — in-memory only
+         </div>`
+      : '';
+    const items = recent.map(e => {
+      const ts = e.timestamp
+        ? new Date(e.timestamp * 1000).toLocaleTimeString()
+        : '—';
+      const snap = e.params_snapshot || {};
+      const snapChips = Object.entries(snap)
+        .slice(0, 6)
+        .map(([k, v]) =>
+          `<span class="dl-chip">${this._esc(k)}=${this._esc(String(v))}</span>`)
+        .join(' ');
+      return `
+        <div class="dl-row">
+          <div class="dl-head">
+            <span class="dl-adapter">${this._esc(e.adapter || '?')}</span>
+            <span class="muted">·</span>
+            <span class="dl-cap">${this._esc(e.capability || '?')}</span>
+            <span class="badge badge-red">${this._esc(e.error_type || 'Error')}</span>
+            <span class="muted dl-time">${this._esc(ts)}</span>
+          </div>
+          <div class="dl-msg muted">${this._esc(e.error_message || '')}</div>
+          <div class="dl-meta muted">
+            attempts ${e.attempts || 0} · hash ${this._esc((e.params_hash || '').slice(0, 10))}
+          </div>
+          ${snapChips ? `<div class="dl-snap">${snapChips}</div>` : ''}
+        </div>`;
+    }).join('');
+    body.innerHTML = warn + `<div class="dl-feed">${items}</div>`;
   },
 
   _renderHealth(health) {

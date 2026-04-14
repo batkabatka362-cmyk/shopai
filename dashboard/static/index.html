@@ -496,6 +496,20 @@
           </div>
         </div>
       </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Dead-letter Feed</h2>
+          <span class="badge" id="reliability-deadletter-badge">—</span>
+        </div>
+        <div class="panel-body" id="reliability-deadletter">
+          <div class="empty-state muted">
+            Terminal failures — requests that exhausted every fallback
+            adapter. Each row is a redacted snapshot: adapter,
+            capability, error type, attempts, and timestamp. Prompt
+            bodies are never persisted, only their length.
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Tab: Vault -->

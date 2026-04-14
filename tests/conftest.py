@@ -113,6 +113,27 @@ def _isolate_default_idempotency_cache():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_default_dead_letter_ledger():
+    """Option Y: keep the router's default dead-letter ledger from
+    writing test-run failures into the repo.
+
+    The router singleton writes to ``core/adapters/.state/deadletter.jsonl``
+    by default. Swapping in a fresh in-memory ledger for the
+    duration of each test prevents cross-test leakage and avoids
+    touching the filesystem entirely.
+    """
+    try:
+        import core.adapters.deadletter as _dl
+    except Exception:
+        yield
+        return
+    _dl.reset_dead_letter_ledger()
+    _dl._default_ledger = _dl.DeadLetterLedger(path=None)
+    yield
+    _dl.reset_dead_letter_ledger()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_reflection_synth(tmp_path_factory, monkeypatch):
     """Wave 6 #6: keep the process-wide default ReflectionSynthesizer
     out of the repo.
