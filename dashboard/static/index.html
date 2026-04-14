@@ -93,6 +93,13 @@
       </svg>
       <span>Cost Tracker</span>
     </a>
+    <a class="nav-item" data-tab="feedback" title="Feedback">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M7 10v11l4-3h7a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v3"/>
+        <path d="M9 7l2 2 4-4"/>
+      </svg>
+      <span>Feedback</span>
+    </a>
     <a class="nav-item" data-tab="vault" title="Vault">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M4 4h13l3 3v13H4z"/>
@@ -338,6 +345,38 @@
       </div>
     </section>
 
+    <!-- Tab: Feedback -->
+    <section id="tab-feedback" class="tab-panel">
+      <div class="metrics-row" id="feedback-metrics"></div>
+      <div class="panel" id="feedback-ratio-panel">
+        <div class="panel-header">
+          <h2>Good vs Bad</h2>
+          <span class="badge" id="feedback-ratio-badge">—</span>
+        </div>
+        <div class="panel-body" id="feedback-ratio"></div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header"><h2>Recurring Complaint Themes</h2></div>
+          <div class="panel-body" id="feedback-themes"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Configuration</h2>
+            <span class="muted" id="feedback-path"></span>
+          </div>
+          <div class="panel-body" id="feedback-config"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Recent Feedback</h2>
+          <span class="badge" id="feedback-recent-count">0</span>
+        </div>
+        <div class="panel-body" id="feedback-recent"></div>
+      </div>
+    </section>
+
     <!-- Tab: Vault -->
     <section id="tab-vault" class="tab-panel">
       <div class="metrics-row" id="vault-metrics"></div>
@@ -420,6 +459,7 @@
 <script src="/js/cycle.js"></script>
 <script src="/js/vault.js"></script>
 <script src="/js/cost.js"></script>
+<script src="/js/feedback.js"></script>
 <script src="/js/stores.js"></script>
 <script src="/js/alerts.js"></script>
 </body>

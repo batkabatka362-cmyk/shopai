@@ -129,6 +129,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/alerts": self._api_alerts,
             "/api/cost": self._api_cost,
             "/api/stores": self._api_stores,
+            "/api/feedback": self._api_feedback,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -214,6 +215,35 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "scheduler": {},
                 "error": str(exc)[:120],
             })
+
+    def _api_feedback(self) -> None:
+        """Roll up the chat-feedback notes written by Option H.
+
+        Scans ``vault/ShopAI/Feedback/*.md`` for notes tagged
+        ``chat-feedback`` and returns counts + a recent list. Never
+        500s — a missing vault reports ``configured: False`` so the UI
+        can hint the operator to set ``OBSIDIAN_VAULT_PATH``.
+        """
+        try:
+            data = _collect_feedback_snapshot()
+        except _VaultNotConfigured as exc:
+            self._json(200, {
+                "configured": False,
+                "error": str(exc),
+                "total": 0, "good": 0, "bad": 0,
+                "good_rate": 0.0, "recent": [], "themes": [],
+            })
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("feedback collector failed: %s", exc)
+            self._json(200, {
+                "configured": True,
+                "total": 0, "good": 0, "bad": 0,
+                "good_rate": 0.0, "recent": [], "themes": [],
+                "error": str(exc)[:200],
+            })
+            return
+        self._json(200, data)
 
     def _api_stores(self) -> None:
         """Known stores for the topbar selector.
@@ -1694,6 +1724,169 @@ def _safe_is_configured(adapter: Any) -> bool:
         return bool(adapter.is_configured())
     except Exception:  # noqa: BLE001
         return False
+
+
+def _collect_feedback_snapshot(limit: int = 30) -> dict[str, Any]:
+    """Aggregate the chat-feedback notes written by Option H.
+
+    Feedback lives under ``vault/ShopAI/Feedback/*.md``. Each note
+    carries a ``rating: up|down`` line in its frontmatter; we grep for
+    that directly so we don't depend on the Obsidian parser module
+    being importable on this host.
+    """
+    root = _vault_root()  # raises _VaultNotConfigured
+    fb_dir = root / "ShopAI" / "Feedback"
+    if not fb_dir.is_dir():
+        return {
+            "configured": True,
+            "path": str(fb_dir),
+            "total": 0, "good": 0, "bad": 0,
+            "good_rate": 0.0, "recent": [], "themes": [],
+        }
+
+    items: list[dict[str, Any]] = []
+    good = 0
+    bad = 0
+    word_counts: dict[str, int] = {}
+
+    for f in sorted(fb_dir.rglob("*.md"),
+                    key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            body = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rating = _feedback_rating_from_body(body)
+        if rating == "up":
+            good += 1
+        elif rating == "down":
+            bad += 1
+        else:
+            # Unparseable — log to keep the dashboard useful but don't
+            # inflate the good/bad totals with noise.
+            continue
+
+        # Extract an operator-visible excerpt: the user message block
+        # if present, else the first line of body after frontmatter.
+        excerpt = _feedback_excerpt(body)
+        try:
+            rel = f.relative_to(root).as_posix()
+        except ValueError:
+            rel = f.name
+
+        items.append({
+            "path": rel,
+            "rating": rating,
+            "title": f.stem,
+            "mtime": f.stat().st_mtime,
+            "excerpt": excerpt,
+        })
+
+        # Harvest words from "bad" operator notes so the UI can show
+        # common complaint themes without a fresh LLM round-trip.
+        if rating == "down":
+            note_block = _feedback_operator_note(body)
+            for w in _tokenise_feedback(note_block):
+                word_counts[w] = word_counts.get(w, 0) + 1
+
+    total = good + bad
+    good_rate = (good / total) if total > 0 else 0.0
+
+    # Top-N complaint words, drop any with a single occurrence so the
+    # list reads as "recurring themes" rather than "dictionary dump".
+    themes = [
+        {"word": w, "count": c}
+        for w, c in sorted(word_counts.items(),
+                           key=lambda kv: kv[1], reverse=True)
+        if c >= 2
+    ][:10]
+
+    return {
+        "configured": True,
+        "path": str(fb_dir),
+        "total": total,
+        "good": good,
+        "bad": bad,
+        "good_rate": round(good_rate, 4),
+        "recent": items[:limit],
+        "themes": themes,
+    }
+
+
+def _feedback_rating_from_body(body: str) -> str:
+    """Return 'up', 'down', or '' from the frontmatter rating line."""
+    # Only scan the first ~20 lines — frontmatter lives at the top.
+    head = body.splitlines()[:25]
+    for line in head:
+        stripped = line.strip().lower()
+        if stripped.startswith("rating:"):
+            val = stripped.split(":", 1)[1].strip()
+            if val in ("up", "down"):
+                return val
+    return ""
+
+
+def _feedback_excerpt(body: str) -> str:
+    """Pull a short excerpt from the ``## User message`` block."""
+    marker = "## User message"
+    idx = body.find(marker)
+    if idx < 0:
+        # Fall back to first non-frontmatter, non-heading line.
+        for line in body.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or s.startswith("---"):
+                continue
+            return s[:160]
+        return ""
+    # Skip the heading + surrounding blank lines + fence open.
+    slice_ = body[idx + len(marker):].strip().splitlines()
+    collected: list[str] = []
+    inside_fence = False
+    for line in slice_:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            inside_fence = not inside_fence
+            if not inside_fence and collected:
+                break
+            continue
+        if inside_fence:
+            collected.append(stripped)
+            if sum(len(x) for x in collected) >= 200:
+                break
+    return " ".join(collected)[:160]
+
+
+def _feedback_operator_note(body: str) -> str:
+    """Return the text under ``## Operator note`` (or empty)."""
+    marker = "## Operator note"
+    idx = body.find(marker)
+    if idx < 0:
+        return ""
+    return body[idx + len(marker):].strip()
+
+
+# Kill list for the theme-harvester — stopwords that don't carry
+# information about *why* an answer was bad.
+_FEEDBACK_STOPWORDS = frozenset({
+    "the", "and", "but", "for", "you", "are", "was", "were", "this",
+    "that", "with", "from", "have", "has", "had", "not", "its", "it's",
+    "they", "their", "them", "what", "when", "where", "which", "who",
+    "how", "why", "can", "does", "did", "didn", "don", "does", "too",
+    "just", "really", "very", "more", "some", "any", "all", "one",
+    "two", "also", "into", "than", "then", "been", "being",
+})
+
+
+def _tokenise_feedback(text: str) -> list[str]:
+    """Cheap word-frequency tokeniser for the 'common complaints' list.
+
+    Drops short tokens, digits, and a tiny stopword list so the
+    dashboard surfaces meaningful nouns rather than filler.
+    """
+    if not text:
+        return []
+    import re
+    words = re.findall(r"[a-zA-Z]{4,}", text.lower())
+    return [w for w in words if w not in _FEEDBACK_STOPWORDS]
 
 
 _VAULT_FOLDERS_OF_INTEREST = (

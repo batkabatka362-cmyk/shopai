@@ -42,6 +42,7 @@ const App = {
       cycle: 'Cycles',
       vault: 'Vault',
       cost: 'Cost Tracker',
+      feedback: 'Feedback',
     };
     document.getElementById('page-title').textContent = titles[tab] || tab;
 
@@ -52,6 +53,7 @@ const App = {
     if (tab === 'cycle' && window.Cycle) Cycle.refresh();
     if (tab === 'vault' && window.Vault) Vault.refresh();
     if (tab === 'cost' && window.Cost) Cost.refresh();
+    if (tab === 'feedback' && window.Feedback) Feedback.refresh();
   },
 
   async refresh() {
