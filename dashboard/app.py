@@ -126,6 +126,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/vault": self._api_vault,
             "/api/vault/note": self._api_vault_note,
             "/api/vault/search": self._api_vault_search,
+            "/api/alerts": self._api_alerts,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -227,6 +228,25 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             logger.debug("vault note read failed: %s", exc)
             self._json(200, {"error": str(exc)[:200]})
             return
+        self._json(200, data)
+
+    def _api_alerts(self) -> None:
+        """Compact health snapshot — unconfigured adapters + critical gaps.
+
+        Designed to be cheap enough for 15-second polling from the UI.
+        Never raises: a degraded collector returns an empty envelope so
+        the topbar badge can keep rendering.
+        """
+        try:
+            data = _collect_adapter_alerts()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("alerts collector failed: %s", exc)
+            data = {
+                "alerts": [],
+                "counts": {"error": 0, "warning": 0, "total": 0},
+                "timestamp": time.time(),
+                "error": str(exc)[:200],
+            }
         self._json(200, data)
 
     def _api_vault_search(self) -> None:
@@ -1316,6 +1336,116 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 #
 # Module-level (not a handler method) so tests can import and
 # exercise it directly without spinning an HTTP server.
+
+
+# Categories where a total outage is a hard error rather than a
+# warning. Expanding this list is a one-line change if a new pillar
+# becomes load-bearing.
+_CRITICAL_ADAPTER_CATEGORIES = frozenset({"llm"})
+
+
+def _collect_adapter_alerts() -> dict[str, Any]:
+    """Inspect the adapter registry and emit a compact alert list.
+
+    Two kinds of alerts land here:
+
+    * ``error``   — a critical category (see ``_CRITICAL_ADAPTER_CATEGORIES``)
+      has zero configured adapters. This means a load-bearing capability
+      is wholly offline — loud red badge, toast on first detection.
+    * ``warning`` — an individual adapter is configured=False. One alert
+      per offline adapter so the UI can list them by name and the
+      operator can see exactly which env var is missing.
+
+    Returns a dict with the alerts list, per-level counts, and a
+    timestamp so the client can detect "new since last poll".
+    """
+    try:
+        from core.adapters import get_registry
+        reg = get_registry()
+        names = list(reg.names())
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "alerts": [],
+            "counts": {"error": 0, "warning": 0, "total": 0},
+            "timestamp": time.time(),
+            "error": f"registry unavailable: {exc}",
+        }
+
+    # Bucket by category so we can spot "whole category offline".
+    by_category: dict[str, list[Any]] = {}
+    for name in names:
+        try:
+            ad = reg.get(name)
+        except Exception:  # noqa: BLE001
+            continue
+        if ad is None:
+            continue
+        cat = getattr(ad, "category", None)
+        cat_name = cat.value if hasattr(cat, "value") else str(cat)
+        by_category.setdefault(cat_name, []).append(ad)
+
+    alerts: list[dict[str, Any]] = []
+    now = time.time()
+
+    # Critical-category errors first so the list reads worst-to-mildest.
+    for cat_name, adapters in by_category.items():
+        if cat_name not in _CRITICAL_ADAPTER_CATEGORIES:
+            continue
+        configured = [a for a in adapters if _safe_is_configured(a)]
+        if not configured:
+            alerts.append({
+                "id": f"category:{cat_name}",
+                "level": "error",
+                "category": cat_name,
+                "title": f"No {cat_name.upper()} adapters configured",
+                "detail": (
+                    f"All {len(adapters)} adapter(s) in category "
+                    f"'{cat_name}' are offline — this capability cannot serve."
+                ),
+                "adapters": sorted(getattr(a, "name", "?") for a in adapters),
+                "timestamp": now,
+            })
+
+    # Per-adapter warnings — one row per offline adapter.
+    for cat_name, adapters in sorted(by_category.items()):
+        for ad in sorted(adapters, key=lambda a: getattr(a, "name", "")):
+            if _safe_is_configured(ad):
+                continue
+            name = getattr(ad, "name", "?")
+            alerts.append({
+                "id": f"adapter:{name}",
+                "level": "warning",
+                "category": cat_name,
+                "adapter": name,
+                "title": f"{name} offline",
+                "detail": (
+                    "Adapter is not configured. Check the matching "
+                    "environment variables in your .env."
+                ),
+                "adapters": [name],
+                "timestamp": now,
+            })
+
+    counts = {
+        "error": sum(1 for a in alerts if a["level"] == "error"),
+        "warning": sum(1 for a in alerts if a["level"] == "warning"),
+        "total": len(alerts),
+    }
+    return {
+        "alerts": alerts,
+        "counts": counts,
+        "timestamp": now,
+    }
+
+
+def _safe_is_configured(adapter: Any) -> bool:
+    """``is_configured()`` can raise on half-initialised adapters; we
+    treat any exception as 'offline' so the alert fires rather than
+    silently masking the issue."""
+    try:
+        return bool(adapter.is_configured())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 _VAULT_FOLDERS_OF_INTEREST = (
