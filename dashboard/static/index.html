@@ -285,6 +285,34 @@
       <div class="panel" id="vault-banner-panel">
         <div class="panel-body" id="vault-banner"></div>
       </div>
+      <div class="panel" id="vault-search-panel">
+        <div class="panel-header">
+          <h2>Search Vault</h2>
+          <span class="badge" id="vault-search-count">—</span>
+        </div>
+        <div class="panel-body">
+          <div class="vault-search-row">
+            <input type="text" id="vault-search-input"
+                   class="vault-search-input"
+                   placeholder="Keyword, tag, title…" autocomplete="off">
+            <select id="vault-search-type" class="vault-search-select">
+              <option value="">All folders</option>
+              <option value="Wins">Wins</option>
+              <option value="Errors">Errors</option>
+              <option value="Decisions">Decisions</option>
+              <option value="Concepts">Concepts</option>
+              <option value="Knowledge">Knowledge</option>
+              <option value="ShopAI/Learned">Learned</option>
+            </select>
+          </div>
+          <div class="vault-search-results" id="vault-search-results">
+            <div class="empty-state muted">
+              Start typing to search the vault —
+              title hits outrank body hits.
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="grid-3">
         <div class="panel vault-col">
           <div class="panel-header"><h2>Recent Wins</h2></div>

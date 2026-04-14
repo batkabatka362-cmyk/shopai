@@ -1385,6 +1385,97 @@ body {
   color: var(--orange);
 }
 
+/* ── Vault search ─────────────────────────────────── */
+
+.vault-search-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.vault-search-input {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color 0.15s;
+}
+
+.vault-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.vault-search-select {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vault-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.vault-search-row-card {
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.vault-search-row-card:hover {
+  border-color: var(--accent);
+  background: rgba(0,212,255,0.04);
+}
+
+.vault-search-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.vault-search-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vault-search-folder {
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.vault-search-snippet {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Responsive ───────────────────────────────────── */
 
 @media (max-width: 1100px) {

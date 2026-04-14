@@ -12,9 +12,12 @@
 const Vault = {
   _timer: null,
   _clickBound: false,
+  _searchBound: false,
+  _searchTimer: null,
 
   async refresh() {
     this._bindClicks();
+    this._bindSearch();
     const data = await App.fetch('/api/vault');
     this.render(data || {});
     if (this._timer) clearInterval(this._timer);
@@ -23,6 +26,94 @@ const Vault = {
       const fresh = await App.fetch('/api/vault');
       this.render(fresh || {});
     }, 10000);
+  },
+
+  // ── Search bar ────────────────────────────────────
+
+  _bindSearch() {
+    if (this._searchBound) return;
+    const input = document.getElementById('vault-search-input');
+    const select = document.getElementById('vault-search-type');
+    if (!input || !select) return;
+    this._searchBound = true;
+    // Debounce so we don't hammer the server on every keystroke.
+    const trigger = () => {
+      if (this._searchTimer) clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => this._doSearch(), 200);
+    };
+    input.addEventListener('input', trigger);
+    select.addEventListener('change', () => this._doSearch());
+  },
+
+  async _doSearch() {
+    const input = document.getElementById('vault-search-input');
+    const select = document.getElementById('vault-search-type');
+    const resultsEl = document.getElementById('vault-search-results');
+    const countEl = document.getElementById('vault-search-count');
+    if (!input || !resultsEl) return;
+    const q = input.value.trim();
+    const type = select ? select.value : '';
+    // Empty query with "All folders" selected reverts to the idle hint.
+    if (!q && !type) {
+      resultsEl.innerHTML = `
+        <div class="empty-state muted">
+          Start typing to search the vault —
+          title hits outrank body hits.
+        </div>`;
+      if (countEl) countEl.textContent = '—';
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set('q', q);
+    if (type) params.set('type', type);
+    params.set('limit', '30');
+    let data;
+    try {
+      const r = await fetch('/api/vault/search?' + params.toString());
+      data = await r.json();
+    } catch (e) {
+      resultsEl.innerHTML =
+        `<div class="empty-state muted">Search offline.</div>`;
+      return;
+    }
+    this._renderSearchResults(data);
+  },
+
+  _renderSearchResults(data) {
+    const resultsEl = document.getElementById('vault-search-results');
+    const countEl = document.getElementById('vault-search-count');
+    if (!resultsEl) return;
+    if (!data.configured) {
+      resultsEl.innerHTML = `
+        <div class="empty-state muted">
+          Vault not configured. Set <code>OBSIDIAN_VAULT_PATH</code>.
+        </div>`;
+      if (countEl) countEl.textContent = '0';
+      return;
+    }
+    const rows = data.results || [];
+    if (countEl) countEl.textContent = String(data.total ?? rows.length);
+    if (!rows.length) {
+      resultsEl.innerHTML = `
+        <div class="empty-state muted">
+          No matches${data.query ? ` for “${this._esc(data.query)}”` : ''}.
+        </div>`;
+      return;
+    }
+    resultsEl.innerHTML = rows.map(r => `
+      <div class="vault-search-row-card vault-note-clickable"
+           data-path="${this._esc(r.path)}">
+        <div class="vault-search-head">
+          <span class="vault-search-title">${this._esc(r.title)}</span>
+          <span class="vault-search-folder">${this._esc(r.folder)}</span>
+        </div>
+        ${r.snippet ? `<div class="vault-search-snippet muted">${this._esc(r.snippet)}</div>` : ''}
+        ${(r.tags || []).length
+          ? `<div class="vault-tags">${r.tags.slice(0, 6).map(t =>
+              `<span class="vault-tag">${this._esc(t)}</span>`).join('')}</div>`
+          : ''}
+      </div>
+    `).join('');
   },
 
   render(data) {

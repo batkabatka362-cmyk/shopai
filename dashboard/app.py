@@ -125,6 +125,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/cycle": self._api_cycle,
             "/api/vault": self._api_vault,
             "/api/vault/note": self._api_vault_note,
+            "/api/vault/search": self._api_vault_search,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -225,6 +226,46 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             logger.debug("vault note read failed: %s", exc)
             self._json(200, {"error": str(exc)[:200]})
+            return
+        self._json(200, data)
+
+    def _api_vault_search(self) -> None:
+        """Keyword search across the configured Obsidian vault.
+
+        Query:
+            ?q=<keywords>&type=<folder>&limit=<n>
+
+        ``type`` narrows the walk to one folder (Wins, Errors, Decisions,
+        ShopAI/Learned, …) — defaults to the whole vault. Returns an
+        empty result set (never 500) when the vault isn't configured,
+        so the UI can render a friendly "configure vault" hint without
+        special-casing the error envelope.
+        """
+        from urllib.parse import parse_qs, urlparse
+        qs = parse_qs(urlparse(self.path).query)
+        query = (qs.get("q", [""])[0] or "").strip()
+        type_filter = (qs.get("type", [""])[0] or "").strip()
+        try:
+            limit = int(qs.get("limit", ["30"])[0] or "30")
+        except (TypeError, ValueError):
+            limit = 30
+        limit = max(1, min(limit, 200))
+        try:
+            data = _collect_vault_search(query, type_filter, limit)
+        except _VaultNotConfigured as exc:
+            self._json(200, {
+                "configured": False,
+                "error": str(exc),
+                "results": [],
+            })
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("vault search failed: %s", exc)
+            self._json(200, {
+                "configured": True,
+                "error": str(exc)[:200],
+                "results": [],
+            })
             return
         self._json(200, data)
 
@@ -1510,6 +1551,166 @@ def _collect_vault_summary() -> dict[str, Any]:
         "recent_decisions": _recent("Decisions"),
         "recent_learned": _recent("ShopAI/Learned"),
     }
+
+
+# Scan/Body caps so one monster note can't starve the search.
+_VAULT_SEARCH_MAX_FILES = 5000
+_VAULT_SEARCH_MAX_BODY_BYTES = 200_000
+_VAULT_SEARCH_SNIPPET_RADIUS = 80
+
+
+def _collect_vault_search(
+    query: str,
+    type_filter: str = "",
+    limit: int = 30,
+) -> dict[str, Any]:
+    """Rank notes in the vault by relevance to ``query``.
+
+    Scoring (cheap and predictable):
+
+    * title hit → +5 per occurrence
+    * tag / frontmatter field hit → +3
+    * body hit → +1 (capped at 10 per note)
+
+    With an empty query we fall through to an mtime-sorted listing so
+    the UI can still use this endpoint to browse by folder.
+    """
+    root = _vault_root()  # raises _VaultNotConfigured
+    q_lower = query.lower()
+
+    # Decide which subtree to walk. Unknown filters fall back to the
+    # whole vault — better than returning nothing and confusing the UI.
+    if type_filter and type_filter in _VAULT_FOLDERS_OF_INTEREST:
+        walk_root = root / type_filter
+        if not walk_root.is_dir():
+            return {"configured": True, "query": query, "type": type_filter,
+                    "total": 0, "results": []}
+    else:
+        walk_root = root
+        type_filter = ""
+
+    try:
+        from core.adapters.obsidian.parser import parse_note
+    except Exception:  # noqa: BLE001
+        parse_note = None
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    scanned = 0
+
+    for f in walk_root.rglob("*.md"):
+        if scanned >= _VAULT_SEARCH_MAX_FILES:
+            break
+        scanned += 1
+        try:
+            stat = f.stat()
+        except OSError:
+            continue
+
+        title = f.stem
+        tags: list[str] = []
+        frontmatter_blob = ""
+
+        # Best-effort frontmatter + tag extraction; fall back to the
+        # filename if the parser isn't available or chokes on the file.
+        if parse_note is not None:
+            try:
+                n = parse_note(f, root)
+                fm = n.get("frontmatter", {}) or {}
+                title = str(fm.get("title") or f.stem)
+                tags = [str(t) for t in (n.get("tags") or [])][:12]
+                # Concat a few structured fields for the "tag hit" bucket.
+                frontmatter_blob = " ".join([
+                    str(fm.get("title", "")),
+                    str(fm.get("date", "")),
+                    str(fm.get("action", "")),
+                    str(fm.get("severity", "")),
+                    " ".join(tags),
+                ]).lower()
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            body = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if len(body) > _VAULT_SEARCH_MAX_BODY_BYTES:
+            body = body[:_VAULT_SEARCH_MAX_BODY_BYTES]
+        body_lower = body.lower()
+
+        # Score the note. An empty query leaves everything at 0 and we
+        # fall back to mtime ordering at the end.
+        score = 0.0
+        if q_lower:
+            title_hits = title.lower().count(q_lower)
+            score += title_hits * 5
+            if frontmatter_blob:
+                score += frontmatter_blob.count(q_lower) * 3
+            body_hits = body_lower.count(q_lower)
+            score += min(body_hits, 10)
+            if score <= 0:
+                continue
+
+        try:
+            rel = f.relative_to(root).as_posix()
+        except ValueError:
+            rel = f.name
+        # Derive the folder label from the path — avoids duplicating
+        # our folder map in the response.
+        folder = rel.split("/", 1)[0] if "/" in rel else ""
+        if rel.startswith("ShopAI/"):
+            # Surface the two-segment prefix so the UI can pill-tag it.
+            folder = "ShopAI/" + rel.split("/", 2)[1] if "/" in rel[7:] else "ShopAI"
+
+        snippet = _vault_search_snippet(body, q_lower)
+
+        scored.append((score, {
+            "path": rel,
+            "title": title,
+            "folder": folder,
+            "mtime": stat.st_mtime,
+            "tags": tags,
+            "score": score,
+            "snippet": snippet,
+        }))
+
+    # Primary sort: score desc (0 when query empty). Secondary: mtime
+    # desc so "browse" mode always shows newest first.
+    scored.sort(key=lambda t: (t[0], t[1]["mtime"]), reverse=True)
+    results = [entry for _, entry in scored[:limit]]
+
+    return {
+        "configured": True,
+        "path": str(root),
+        "query": query,
+        "type": type_filter,
+        "total": len(scored),
+        "scanned": scanned,
+        "results": results,
+    }
+
+
+def _vault_search_snippet(body: str, q_lower: str) -> str:
+    """Return a ~160 char window around the first query hit.
+
+    Without a query we return the opening line or two — enough for the
+    UI to show some context in the result row.
+    """
+    if not body:
+        return ""
+    if not q_lower:
+        head = body.strip().splitlines()[:2]
+        return " ".join(head)[:160]
+    idx = body.lower().find(q_lower)
+    if idx < 0:
+        return body.strip()[:160]
+    start = max(0, idx - _VAULT_SEARCH_SNIPPET_RADIUS)
+    end = min(len(body), idx + len(q_lower) + _VAULT_SEARCH_SNIPPET_RADIUS)
+    chunk = body[start:end].replace("\n", " ").strip()
+    if start > 0:
+        chunk = "…" + chunk
+    if end < len(body):
+        chunk = chunk + "…"
+    return chunk
 
 
 def start(port: int = 3000) -> None:
