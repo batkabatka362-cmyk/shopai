@@ -602,6 +602,33 @@ class SmartRouter:
                 if health is not None:
                     score += (health - 0.5) * self._health_bonus_range
 
+            # Upgrade 1: learned route weight. The reflection
+            # synthesizer penalizes ``(adapter, capability)`` pairs
+            # whose promoted patterns named them as fault lines.
+            # A weight below 1.0 scales the score contribution so
+            # a historically-flaky pair is tried AFTER healthier
+            # candidates, but still remains eligible (floor: 0.05)
+            # so total exclusion stays the breaker's job.
+            try:
+                from core.adapters.route_weights import (
+                    get_route_weight_ledger,
+                )
+                cap_name = (
+                    capability.value
+                    if isinstance(capability, Capability)
+                    else str(capability)
+                )
+                weight = get_route_weight_ledger().get(
+                    adapter.name, cap_name,
+                )
+                if weight < 1.0:
+                    # Scale by the declared priority so a learned
+                    # penalty can demote — but not invert — the
+                    # operator's own prioritisation.
+                    score *= weight
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("route_weights lookup failed: %s", exc)
+
             scored.append((score, adapter))
 
         scored.sort(key=lambda pair: (-pair[0], pair[1].name))

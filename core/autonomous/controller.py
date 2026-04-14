@@ -1841,6 +1841,31 @@ class AutonomousController:
                 report.patterns_promoted, cycle_result.get("cycle_id"),
                 len(self._error_buffer),
             )
+            # Upgrade 1: close the loop — feed promoted patterns
+            # back into the router's learned-weight ledger. A
+            # pattern that names ``adapter`` + ``capability`` is
+            # exactly the signal "this pair is flakier than its
+            # declared priority implies; prefer alternatives".
+            try:
+                from core.adapters.route_weights import (
+                    get_route_weight_ledger,
+                )
+                applied = get_route_weight_ledger().apply_reflection_report(
+                    report,
+                )
+                if applied:
+                    cycle_result["reflection"]["route_weight_penalties"] = (
+                        applied
+                    )
+                    logger.info(
+                        "Route-weight ledger: %d (adapter, capability) "
+                        "pair(s) penalized from cycle %s",
+                        applied, cycle_result.get("cycle_id"),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "route_weight ledger update skipped: %s", exc,
+                )
 
         # Wave 6 #10: throttled auto-decay of stale learned rules.
         # We call decay at most once per ``_REFLECTION_DECAY_INTERVAL_SEC``
