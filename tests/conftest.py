@@ -177,6 +177,39 @@ def _isolate_reliability_state():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_learning_singletons():
+    """Upgrades 1-3: reset the three learned/rolling state
+    singletons (route weights, auto-replay coordinator, cost
+    forecaster) between tests so test ordering can't leak
+    baseline values."""
+    for name in (
+        "core.adapters.route_weights.reset_route_weight_ledger",
+        "core.adapters.auto_replay.reset_auto_replay_coordinator",
+        "core.adapters.cost_forecast.reset_cost_forecaster",
+    ):
+        try:
+            mod_path, fn = name.rsplit(".", 1)
+            import importlib
+            m = importlib.import_module(mod_path)
+            getattr(m, fn)()
+        except Exception:
+            pass
+    yield
+    for name in (
+        "core.adapters.route_weights.reset_route_weight_ledger",
+        "core.adapters.auto_replay.reset_auto_replay_coordinator",
+        "core.adapters.cost_forecast.reset_cost_forecaster",
+    ):
+        try:
+            mod_path, fn = name.rsplit(".", 1)
+            import importlib
+            m = importlib.import_module(mod_path)
+            getattr(m, fn)()
+        except Exception:
+            pass
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_reflection_synth(tmp_path_factory, monkeypatch):
     """Wave 6 #6: keep the process-wide default ReflectionSynthesizer
     out of the repo.

@@ -282,6 +282,45 @@ def _collect_cost() -> dict[str, Any]:
 # ── Public entrypoint ──────────────────────────────────────
 
 
+def _collect_forecast() -> dict[str, Any]:
+    """Sample the cost ledger and ask the forecaster for a short
+    projection. Upgrade 3.
+
+    We sample on every cycle so the ring buffer stays fresh even
+    for fast cycles; the forecaster throws old samples out via
+    its ``maxlen``-capped deque so memory stays flat.
+    """
+    try:
+        from core.adapters.cost_forecast import get_cost_forecaster
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("reliability: cost_forecast missing: %s", exc)
+        return {"samples": 0, "per_caller": [], "spikes": []}
+
+    try:
+        forecaster = get_cost_forecaster()
+        forecaster.sample()
+        # 24-hour horizon is a reasonable default; the dashboard
+        # can expose a selector later if operators ask for it.
+        report = forecaster.forecast(horizon_hours=24.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reliability: cost_forecast failed: %s", exc)
+        return {
+            "samples": 0, "per_caller": [], "spikes": [],
+            "error": str(exc),
+        }
+
+    return {
+        "samples": report.samples,
+        "horizon_hours": report.horizon_hours,
+        "per_caller": [f.to_dict() for f in report.per_caller[:5]],
+        "spikes": list(report.spikes),
+        "top_projected": (
+            report.per_caller[0].to_dict()
+            if report.per_caller else None
+        ),
+    }
+
+
 def collect_reliability_signal() -> dict[str, Any]:
     """Return a JSON-safe reliability snapshot for the current cycle.
 
@@ -292,6 +331,7 @@ def collect_reliability_signal() -> dict[str, Any]:
             "health":      {"totals": {...}, "unhealthy": [...], "degraded": [...]},
             "deadletter":  {"size": N, "total_records": N, "new_since_last": N, ...},
             "cost":        {"total_usd": F, "delta_usd": F, "top_caller": S, ...},
+            "forecast":    {"samples": N, "per_caller": [...], "spikes": [...]},
             "alerts":      [<str>, ...],   # non-empty triggers a phase_error
         }
 
@@ -303,6 +343,7 @@ def collect_reliability_signal() -> dict[str, Any]:
     health = _collect_health()
     deadletter = _collect_deadletter()
     cost = _collect_cost()
+    forecast = _collect_forecast()
     # Mark the baseline as primed AFTER both delta-consuming
     # collectors have run their first call. Subsequent calls
     # then compute real deltas against the stored baseline.
@@ -328,10 +369,22 @@ def collect_reliability_signal() -> dict[str, Any]:
             f"(top_caller={cost.get('top_caller') or '-'})"
         )
 
+    # Upgrade 3: trajectory-based forecast spikes. A caller
+    # whose short-window burn rate is >= 2× its long-window
+    # baseline fires a DISTINCT alert — cumulative delta may
+    # look normal this cycle while the trend is about to blow
+    # through a budget 24h from now.
+    for caller in forecast.get("spikes") or []:
+        alerts.append(
+            f"cost trajectory spike: caller={caller} "
+            f"(short-window burn >= 2× baseline)"
+        )
+
     return {
         "timestamp": time.time(),
         "health": health,
         "deadletter": deadletter,
         "cost": cost,
+        "forecast": forecast,
         "alerts": alerts,
     }
