@@ -570,7 +570,14 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         return self._chat_via_llm(message, history)
 
     def _chat_via_llm(self, message: str, history: list) -> str:
-        """Forward ``message`` + bounded history to the LLM router."""
+        """Forward ``message`` + bounded history to the LLM router.
+
+        Runs a one-shot tool-use loop: if the first response begins with
+        ``TOOL_CALL: {...}``, invoke the named tool, feed its JSON output
+        back as a synthetic assistant/system turn, and re-call the router
+        for the final answer. Loop is bounded to 2 iterations so a
+        mis-behaving LLM can't spin.
+        """
         try:
             from core.adapters import get_router
             from core.adapters.base import Capability
@@ -579,18 +586,39 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             system_prompt = self._build_system_prompt()
             messages = self._build_messages(history, message)
 
-            result = router.execute(
-                Capability.CHAT_COMPLETE,
-                {
-                    "system": system_prompt,
-                    "prompt": message,   # kept for adapters that only read .prompt
-                    "messages": messages,
-                    "max_tokens": 500,
-                    "temperature": 0.3,
-                },
-            )
-            if result.ok:
-                return result.data.get("text", "I processed your request.")
+            text = self._invoke_llm(router, Capability, system_prompt, messages)
+            if text is None:
+                raise RuntimeError("router returned no result")
+
+            # Tool-use loop: at most one follow-up after a tool result, so
+            # 2 LLM calls total. A mis-behaving LLM that re-emits TOOL_CALL
+            # after being told not to is ignored — its raw text stands.
+            for _ in range(1):
+                directive = self._parse_tool_directive(text)
+                if not directive:
+                    return text
+                tool_name = directive.get("tool", "")
+                tool_args = directive.get("args") or {}
+                tool_output = self._run_chat_tool(tool_name, tool_args)
+                # Feed the tool result back as an extra assistant turn +
+                # a user nudge so the LLM composes the final answer.
+                messages = messages + [
+                    {"role": "assistant", "content": text},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"TOOL_RESULT for {tool_name}:\n{tool_output}\n\n"
+                            "Using that data, answer my original question "
+                            "concisely. Do not issue another TOOL_CALL."
+                        ),
+                    },
+                ]
+                text = self._invoke_llm(
+                    router, Capability, system_prompt, messages,
+                )
+                if text is None:
+                    raise RuntimeError("router returned no follow-up")
+            return text
         except Exception as exc:  # noqa: BLE001
             logger.debug("LLM chat failed: %s", exc)
 
@@ -648,7 +676,212 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "\nThe user can also invoke slash commands (/status, /cycle, /vault, "
             "/health, /help); those are handled outside the LLM."
         )
+        lines.append("")
+        lines.append(
+            "TOOLS — if you need fresher/deeper data than CONTEXT provides, "
+            "you may issue exactly one tool call. To do so, respond with ONE "
+            "line containing ONLY:\n"
+            '  TOOL_CALL: {"tool": "<name>"}\n'
+            "Available tools:"
+        )
+        for name, meta in self._CHAT_TOOLS.items():
+            lines.append(f"- {name}: {meta['description']}")
+        lines.append(
+            "After you receive the TOOL_RESULT, answer directly — do not "
+            "chain another TOOL_CALL."
+        )
         return "\n".join(lines)
+
+    # ── LLM tool-calling ─────────────────────────────────
+
+    # Catalog of tools the LLM may self-invoke. Each entry binds a public
+    # tool name (used in the prompt) to the handler that collects the
+    # data. Handlers must be read-only and cheap — the LLM may call them
+    # repeatedly on the same turn if we ever lift the 2-iteration cap.
+    _CHAT_TOOLS: dict[str, dict[str, str]] = {
+        "get_adapter_status": {
+            "description": (
+                "Full adapter registry: total count, configured count, "
+                "per-category breakdown, each adapter's name and state."
+            ),
+        },
+        "get_cycle_summary": {
+            "description": (
+                "Latest autonomous cycle: id, store, duration, phase errors, "
+                "action count, top action, hook results."
+            ),
+        },
+        "get_vault_summary": {
+            "description": (
+                "Obsidian vault state: per-folder note counts and recent "
+                "entries across Wins/Errors/Decisions/Learned."
+            ),
+        },
+    }
+
+    def _invoke_llm(
+        self,
+        router,
+        capability_cls,
+        system_prompt: str,
+        messages: list[dict],
+    ) -> str | None:
+        """Thin router wrapper returning text or None on adapter miss."""
+        try:
+            result = router.execute(
+                capability_cls.CHAT_COMPLETE,
+                {
+                    "system": system_prompt,
+                    "prompt": messages[-1]["content"] if messages else "",
+                    "messages": messages,
+                    "max_tokens": 500,
+                    "temperature": 0.3,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("router.execute failed: %s", exc)
+            return None
+        if result and result.ok:
+            return result.data.get("text", "")
+        return None
+
+    @staticmethod
+    def _parse_tool_directive(text: str) -> dict | None:
+        """Return the JSON object from a ``TOOL_CALL: {...}`` line, or None.
+
+        Accepts the directive anywhere in the first non-empty line so
+        small-LLM preambles like "Sure, " don't defeat detection.
+        """
+        if not text:
+            return None
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            marker = line.find("TOOL_CALL:")
+            if marker < 0:
+                # Only scan the first non-empty line to avoid picking up
+                # quoted examples in a natural-language reply.
+                return None
+            json_blob = line[marker + len("TOOL_CALL:"):].strip()
+            # Trim anything after the first balanced JSON object.
+            if not json_blob.startswith("{"):
+                return None
+            depth = 0
+            end = -1
+            for i, ch in enumerate(json_blob):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            if end < 0:
+                return None
+            try:
+                obj = json.loads(json_blob[:end + 1])
+            except Exception:  # noqa: BLE001
+                return None
+            if not isinstance(obj, dict) or "tool" not in obj:
+                return None
+            return obj
+        return None
+
+    def _run_chat_tool(self, name: str, args: dict) -> str:
+        """Dispatch ``name`` to the matching ``_tool_*`` handler.
+
+        Returns a JSON string so the next LLM turn can consume it
+        verbatim. Unknown / failing tools return a structured error
+        so the LLM can still compose a graceful answer.
+        """
+        if name not in self._CHAT_TOOLS:
+            return json.dumps({"error": f"unknown tool: {name}"})
+        handler = getattr(self, f"_tool_{name}", None)
+        if handler is None:
+            return json.dumps({"error": f"handler missing: {name}"})
+        try:
+            output = handler(args or {})
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": f"tool {name} failed: {exc}"[:200]})
+        try:
+            return json.dumps(output, ensure_ascii=False, default=str)[:2000]
+        except Exception:  # noqa: BLE001
+            return json.dumps({"error": "tool output not JSON-serialisable"})
+
+    def _tool_get_adapter_status(self, _args: dict) -> dict:
+        snap = self._get_adapter_status() or {}
+        # _get_adapter_status returns categories as {cat_name: [ad dict, ...]}.
+        # Flatten into a compact [{name, category, configured}] shape plus a
+        # per-category count map so the LLM has both views to reason over.
+        category_counts: dict[str, int] = {}
+        adapters: list[dict] = []
+        for cat_name, ads in (snap.get("categories") or {}).items():
+            category_counts[cat_name] = len(ads)
+            for ad in ads:
+                adapters.append({
+                    "name": ad.get("name"),
+                    "category": cat_name,
+                    "configured": ad.get("configured"),
+                })
+        return {
+            "total": snap.get("total", 0),
+            "configured": snap.get("configured", 0),
+            "categories": category_counts,
+            "adapters": adapters[:40],
+        }
+
+    def _tool_get_cycle_summary(self, _args: dict) -> dict:
+        try:
+            from core.system.auto_scheduler import get_scheduler
+            sched = get_scheduler()
+            latest = sched.get_last_summary() or {}
+            status = sched.get_status()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"scheduler unavailable: {exc}"}
+        # Keep only the fields that matter for answering chat questions —
+        # full adapter_hooks payload is too chunky.
+        return {
+            "has_data": bool(latest),
+            "scheduler": {
+                "running": status.get("running"),
+                "busy": status.get("busy"),
+                "cycles_run": status.get("cycles_run"),
+                "last_error": status.get("last_error"),
+            },
+            "latest": {
+                "cycle_id": latest.get("cycle_id"),
+                "store_id": latest.get("store_id"),
+                "duration_s": latest.get("duration_s"),
+                "phase_error_count": latest.get("phase_error_count"),
+                "actions_proposed": latest.get("actions_proposed"),
+                "top_action": latest.get("top_action"),
+                "products": latest.get("products"),
+                "orders": latest.get("orders"),
+                "insights": latest.get("insights"),
+            },
+        }
+
+    def _tool_get_vault_summary(self, _args: dict) -> dict:
+        try:
+            snap = _collect_vault_summary() or {}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"vault unavailable: {exc}"}
+        # Flatten the recent_* lists into a single dict keyed by folder
+        # so the LLM gets a predictable shape. Trim to 5 per folder to
+        # keep the tool output compact.
+        recent = {
+            "wins": (snap.get("recent_wins") or [])[:5],
+            "errors": (snap.get("recent_errors") or [])[:5],
+            "decisions": (snap.get("recent_decisions") or [])[:5],
+            "learned": (snap.get("recent_learned") or [])[:5],
+        }
+        return {
+            "configured": snap.get("configured", False),
+            "path": snap.get("path", ""),
+            "totals": snap.get("totals", {}),
+            "recent": recent,
+        }
 
     def _build_chat_context(self) -> dict[str, Any]:
         """Gather a compact snapshot of live ShopAI state for the prompt.
