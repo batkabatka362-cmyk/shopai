@@ -14,20 +14,76 @@ const Reliability = {
   _timer: null,
 
   async refresh() {
-    const data = await App.fetch('/api/retries');
-    this.render(data || {});
+    const [retries, sla] = await Promise.all([
+      App.fetch('/api/retries'),
+      App.fetch('/api/sla'),
+    ]);
+    this.render(retries || {}, sla || {});
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'reliability') return;
-      const fresh = await App.fetch('/api/retries');
-      this.render(fresh || {});
+      const [fr, fs] = await Promise.all([
+        App.fetch('/api/retries'),
+        App.fetch('/api/sla'),
+      ]);
+      this.render(fr || {}, fs || {});
     }, 15000);
   },
 
-  render(data) {
+  render(data, sla) {
     this._renderMetrics(data.totals || {});
     this._renderBreakers(data.breakers || []);
     this._renderAdapters(data.per_adapter || []);
+    this._renderSLA(sla || {});
+  },
+
+  _renderSLA(sla) {
+    const body = document.getElementById('reliability-sla');
+    const badge = document.getElementById('reliability-sla-badge');
+    const rows = sla.rows || [];
+    const totals = sla.totals || {breach: 0, warn: 0, ok: 0};
+    if (badge) {
+      const label = `${totals.breach || 0} breach · ${totals.warn || 0} warn · ${totals.ok || 0} ok`;
+      badge.textContent = label;
+      badge.className = 'badge ' + (
+        totals.breach > 0 ? 'badge-red'
+        : totals.warn > 0 ? 'badge-orange'
+        : 'badge-green'
+      );
+    }
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = `<div class="empty-state muted">
+        No adapter calls yet. SLA grades appear once adapters have
+        accumulated enough samples to meet the monitor's
+        min-samples threshold.
+      </div>`;
+      return;
+    }
+    const items = rows.map(r => {
+      const grade = r.evaluated ? r.grade : 'warming';
+      const cls = grade === 'breach' ? 'badge-red'
+        : grade === 'warn' ? 'badge-orange'
+        : grade === 'ok' ? 'badge-green'
+        : 'badge-gray';
+      const label = r.evaluated ? grade : 'warming up';
+      const detail = r.evaluated
+        ? (r.violations.length
+            ? r.violations.join(' · ')
+            : (r.warnings.length
+                ? r.warnings.join(' · ')
+                : `p95 ${Math.round(r.p95_ms)}ms · p99 ${Math.round(r.p99_ms)}ms · ${Math.round((r.success_rate||0)*100)}% ok`))
+        : `${r.samples || 0} samples — need more data`;
+      return `
+        <div class="sla-row">
+          <div class="sla-name">${this._esc(r.adapter)}</div>
+          <div class="sla-grade">
+            <span class="badge ${cls}">${this._esc(label)}</span>
+          </div>
+          <div class="sla-detail muted">${this._esc(detail)}</div>
+        </div>`;
+    }).join('');
+    body.innerHTML = `<div class="sla-list">${items}</div>`;
   },
 
   _renderMetrics(totals) {

@@ -426,6 +426,20 @@
           </div>
         </div>
       </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Latency SLAs</h2>
+          <span class="badge" id="reliability-sla-badge">—</span>
+        </div>
+        <div class="panel-body" id="reliability-sla">
+          <div class="empty-state muted">
+            Per-adapter p95/p99 latency vs. the configured budget.
+            Rows grade green (ok), amber (warn — within 20% of the
+            budget), or red (breach). Adapters with too few samples
+            are listed as "warming up".
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Tab: Vault -->

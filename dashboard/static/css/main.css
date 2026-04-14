@@ -2141,3 +2141,30 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── SLA rows (Option S) ─────────────────────────────── */
+.sla-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sla-row {
+  display: grid;
+  grid-template-columns: 160px 110px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  background: var(--panel-bg, rgba(255, 255, 255, 0.02));
+}
+.sla-name {
+  font-weight: 600;
+  color: var(--text-primary, #e5e8ef);
+}
+.sla-detail {
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .sla-row { grid-template-columns: 1fr; }
+}

@@ -132,6 +132,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/feedback": self._api_feedback,
             "/api/lessons": self._api_lessons,
             "/api/retries": self._api_retries,
+            "/api/sla": self._api_sla,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -293,6 +294,27 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "totals": {"calls": 0, "retries": 0, "giveups": 0},
                 "per_adapter": [],
                 "breakers": [],
+                "timestamp": time.time(),
+                "error": str(exc)[:200],
+            }
+        self._json(200, data)
+
+    def _api_sla(self) -> None:
+        """SLA (latency + success-rate) dashboard — Option S.
+
+        Reads the process-wide ``AdapterMetricsCollector`` snapshot
+        and evaluates each adapter against the default SLA budget
+        catalog. Returns ``{"totals", "rows"}`` — ``totals`` is the
+        traffic-light rollup for the tab badge, ``rows`` is one
+        evaluated status per adapter (sorted breach → warn → ok).
+        """
+        try:
+            data = _collect_sla_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sla collector failed: %s", exc)
+            data = {
+                "totals": {"breach": 0, "warn": 0, "ok": 0},
+                "rows": [],
                 "timestamp": time.time(),
                 "error": str(exc)[:200],
             }
@@ -2056,6 +2078,48 @@ def _parse_lesson_frontmatter(body: str) -> dict[str, Any]:
         elif in_sources and stripped and not stripped.startswith("- "):
             in_sources = False
     return out
+
+
+def _collect_sla_snapshot() -> dict[str, Any]:
+    """Grade every adapter against its SLA budget.
+
+    Joins the ``AdapterMetricsCollector`` percentile samples with
+    the process-wide ``SLAMonitor`` default catalog. Cheap enough
+    for 15-second dashboard polling — the monitor evaluates in
+    memory, no vault or file I/O involved.
+    """
+    from core.adapters.metrics import get_metrics
+    from core.adapters.sla import SLAMonitor
+
+    snap = get_metrics().snapshot()
+    monitor = _get_sla_monitor()
+    rows = monitor.evaluate_all(snap)
+    totals = monitor.totals(rows)
+
+    return {
+        "timestamp": time.time(),
+        "totals": totals,
+        "rows": [r.to_dict() for r in rows],
+    }
+
+
+_SLA_MONITOR = None
+
+
+def _get_sla_monitor():
+    """Lazy singleton so tests can swap ``DEFAULT_BUDGETS`` before
+    first use without a module-import race."""
+    global _SLA_MONITOR
+    if _SLA_MONITOR is None:
+        from core.adapters.sla import SLAMonitor
+        _SLA_MONITOR = SLAMonitor()
+    return _SLA_MONITOR
+
+
+def _reset_sla_monitor() -> None:
+    """Test helper — clear the cached singleton."""
+    global _SLA_MONITOR
+    _SLA_MONITOR = None
 
 
 def _collect_retries_snapshot() -> dict[str, Any]:
