@@ -1654,6 +1654,58 @@ class AutonomousController:
         except Exception as exc:  # noqa: BLE001
             logger.debug("adapter hooks skipped: %s", exc)
 
+        # Option E: collect adapter-layer reliability signals
+        # (health / dead-letter / cost) and embed them on
+        # ``cycle_result["phases"]["reliability"]``. If any signal
+        # crosses a threshold, append a ``reliability_alert`` entry
+        # to ``phase_errors`` so the reflection synthesizer can
+        # mine recurring adapter-degradation patterns the same way
+        # it already mines phase exceptions.
+        #
+        # Every call inside ``collect_reliability_signal`` is
+        # wrapped in its own try/except — a missing SLA row or
+        # breaker snapshot can never break the cycle. The outer
+        # try here is belt-and-braces.
+        try:
+            from core.autonomous.reliability import (
+                collect_reliability_signal,
+            )
+            signal = collect_reliability_signal()
+            cycle_result["phases"]["reliability"] = {
+                "health_totals": signal["health"].get("totals", {}),
+                "unhealthy_adapters": signal["health"].get("unhealthy", []),
+                "degraded_adapters": signal["health"].get("degraded", []),
+                "deadletter_total": signal["deadletter"].get(
+                    "total_records", 0,
+                ),
+                "deadletter_new_since_last": signal["deadletter"].get(
+                    "new_since_last", 0,
+                ),
+                "cost_total_usd": signal["cost"].get("total_usd", 0.0),
+                "cost_delta_usd": signal["cost"].get("delta_usd", 0.0),
+                "cost_top_caller": signal["cost"].get("top_caller", ""),
+                "alerts": list(signal.get("alerts", [])),
+            }
+            for idx, alert in enumerate(signal.get("alerts", [])):
+                # Keep keys unique within ``phase_errors`` so
+                # reflection treats each one as its own signal.
+                key = (
+                    f"reliability_alert_{idx}" if idx
+                    else "reliability_alert"
+                )
+                phase_errors[key] = alert
+                cycle_result["phase_errors"][key] = alert
+            if signal.get("alerts"):
+                cycle_result["phase_error_count"] = len(
+                    cycle_result["phase_errors"]
+                )
+                logger.warning(
+                    "Reliability alerts for cycle %s: %s",
+                    cycle_id, "; ".join(signal["alerts"]),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reliability signal skipped: %s", exc)
+
         # Wave 2 #5: post-tick reflection hook. Mines the cycle's
         # error ledger for recurring patterns and, when confidence
         # is high enough, promotes them to SOFT rules on the

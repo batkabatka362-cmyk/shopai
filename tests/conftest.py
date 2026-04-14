@@ -156,6 +156,27 @@ def _isolate_default_cost_ledger():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_reliability_state():
+    """Option E: reset the autonomous reliability collector's
+    cross-cycle delta baseline between tests.
+
+    ``collect_reliability_signal()`` accumulates dead-letter and
+    cost totals across calls so each cycle can see "what happened
+    since my last look". Tests that assert exact delta values
+    would otherwise inherit the previous test's baseline and
+    flake — this fixture zeroes the state before every test.
+    """
+    try:
+        from core.autonomous.reliability import reset_reliability_state
+    except Exception:
+        yield
+        return
+    reset_reliability_state()
+    yield
+    reset_reliability_state()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_reflection_synth(tmp_path_factory, monkeypatch):
     """Wave 6 #6: keep the process-wide default ReflectionSynthesizer
     out of the repo.
