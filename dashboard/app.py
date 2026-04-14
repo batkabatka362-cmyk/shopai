@@ -56,6 +56,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/chat": self._handle_chat,
             "/api/chat/stream": self._handle_chat_stream,
             "/api/chat/feedback": self._handle_chat_feedback,
+            "/api/chat/session": self._handle_chat_session_save,
             "/api/scheduler/start": self._handle_scheduler_start,
             "/api/scheduler/stop": self._handle_scheduler_stop,
             "/api/scheduler/run-once": self._handle_scheduler_run_once,
@@ -66,10 +67,20 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             return
         handler(body)
 
+    def do_DELETE(self) -> None:
+        """Minimal DELETE plumbing — just the chat session endpoint for now."""
+        path = urlparse(self.path).path
+        if path.rstrip("/") == "/api/chat/session":
+            self._handle_chat_session_delete()
+            return
+        self._json(404, {"error": "not found"})
+
     def do_OPTIONS(self) -> None:
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS",
+        )
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -114,6 +125,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/cycle": self._api_cycle,
             "/api/vault": self._api_vault,
             "/api/vault/note": self._api_vault_note,
+            "/api/chat/sessions": self._api_chat_sessions_list,
+            "/api/chat/session": self._api_chat_session_get,
         }
         handler = routes.get(path.rstrip("/"))
         if handler:
@@ -418,6 +431,80 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "persisted": True,
             "path": str(path),
         })
+
+    # ── Chat session persistence (Option J) ───────────────
+
+    def _api_chat_sessions_list(self) -> None:
+        """Return summaries (id, title, turn count, timestamps) of every
+        stored chat session, newest first. No turn bodies — the sidebar
+        only needs labels."""
+        try:
+            from dashboard.chat_sessions import get_session_store
+            sessions = get_session_store().list()
+            self._json(200, {"sessions": sessions})
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("session list failed: %s", exc)
+            self._json(200, {"sessions": [], "error": str(exc)[:200]})
+
+    def _api_chat_session_get(self) -> None:
+        """Return the full turns of a single session. 404 on unknown id."""
+        from urllib.parse import parse_qs, urlparse
+        sid = (parse_qs(urlparse(self.path).query).get("id", [""])[0] or "").strip()
+        if not sid:
+            self._json(400, {"error": "id required"})
+            return
+        try:
+            from dashboard.chat_sessions import get_session_store
+            session = get_session_store().get(sid)
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {"error": str(exc)[:200]})
+            return
+        if session is None:
+            self._json(404, {"error": "session not found"})
+            return
+        self._json(200, session)
+
+    def _handle_chat_session_save(self, body: dict) -> None:
+        """Upsert a session. Body: ``{id?, turns, title?}``.
+
+        ``id`` is optional — omit to create a fresh session, pass the
+        existing id to update in place.
+        """
+        turns = body.get("turns")
+        if not isinstance(turns, list):
+            self._json(400, {"error": "turns must be a list"})
+            return
+        sid_raw = body.get("id")
+        sid = sid_raw.strip() if isinstance(sid_raw, str) else None
+        title_raw = body.get("title")
+        title = title_raw.strip() if isinstance(title_raw, str) else None
+        try:
+            from dashboard.chat_sessions import get_session_store
+            store = get_session_store()
+            stored_id = store.save(sid, turns, title)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("session save failed: %s", exc)
+            self._json(200, {"status": "error", "error": str(exc)[:200]})
+            return
+        self._json(200, {"status": "ok", "id": stored_id})
+
+    def _handle_chat_session_delete(self) -> None:
+        """Remove a session. Query: ``?id=sess-...``."""
+        from urllib.parse import parse_qs, urlparse
+        sid = (parse_qs(urlparse(self.path).query).get("id", [""])[0] or "").strip()
+        if not sid:
+            self._json(400, {"error": "id required"})
+            return
+        try:
+            from dashboard.chat_sessions import get_session_store
+            removed = get_session_store().delete(sid)
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {"status": "error", "error": str(exc)[:200]})
+            return
+        if not removed:
+            self._json(404, {"error": "session not found"})
+            return
+        self._json(200, {"status": "ok"})
 
     # ── Data collectors ────────────────────────────────────
 

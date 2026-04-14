@@ -190,33 +190,44 @@
 
     <!-- Tab 4: AI Assistant -->
     <section id="tab-assistant" class="tab-panel">
-      <div class="chat-container">
-        <div class="chat-toolbar">
-          <div class="chat-chips">
-            <button class="chat-chip" data-prompt="/status">/status</button>
-            <button class="chat-chip" data-prompt="/cycle">/cycle</button>
-            <button class="chat-chip" data-prompt="/vault">/vault</button>
-            <button class="chat-chip" data-prompt="/health">/health</button>
-            <button class="chat-chip" data-prompt="/help">/help</button>
+      <div class="chat-layout">
+        <aside class="chat-sidebar" id="chat-sidebar">
+          <div class="chat-sidebar-head">
+            <span>Conversations</span>
+            <button id="chat-new" class="chat-new-btn" title="Start a new chat">+ New</button>
           </div>
-          <button id="chat-clear" class="chat-clear-btn" title="Clear chat history">Clear</button>
-        </div>
-        <div class="chat-messages" id="chat-messages">
-          <div class="chat-msg bot">
-            <div class="chat-avatar">AI</div>
-            <div class="chat-bubble">
-              <p>Hello! I'm your <strong>ShopAI Assistant</strong>.</p>
-              <p>Ask me about adapter status, system health, store analytics, or use slash commands like <code>/status</code>, <code>/cycle</code>, <code>/vault</code>.</p>
+          <div class="chat-session-list" id="chat-session-list">
+            <div class="empty-state muted">No saved chats yet.</div>
+          </div>
+        </aside>
+        <div class="chat-container">
+          <div class="chat-toolbar">
+            <div class="chat-chips">
+              <button class="chat-chip" data-prompt="/status">/status</button>
+              <button class="chat-chip" data-prompt="/cycle">/cycle</button>
+              <button class="chat-chip" data-prompt="/vault">/vault</button>
+              <button class="chat-chip" data-prompt="/health">/health</button>
+              <button class="chat-chip" data-prompt="/help">/help</button>
+            </div>
+            <button id="chat-clear" class="chat-clear-btn" title="Clear chat history">Clear</button>
+          </div>
+          <div class="chat-messages" id="chat-messages">
+            <div class="chat-msg bot">
+              <div class="chat-avatar">AI</div>
+              <div class="chat-bubble">
+                <p>Hello! I'm your <strong>ShopAI Assistant</strong>.</p>
+                <p>Ask me about adapter status, system health, store analytics, or use slash commands like <code>/status</code>, <code>/cycle</code>, <code>/vault</code>.</p>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="chat-input-row">
-          <input type="text" id="chat-input" placeholder="Ask ShopAI anything..." autocomplete="off">
-          <button id="chat-send" class="btn-accent">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-              <path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/>
-            </svg>
-          </button>
+          <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Ask ShopAI anything..." autocomplete="off">
+            <button id="chat-send" class="btn-accent">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+                <path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </section>

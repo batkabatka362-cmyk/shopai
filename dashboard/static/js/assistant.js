@@ -1,22 +1,28 @@
 /* ── Tab 4: AI Assistant — Jarvis-style Chat ────────
  *
  * Client state:
- *   • Keeps `_history` in localStorage so refresh preserves the chat
- *   • Sends the last N turns to /api/chat as `history`, giving the
- *     LLM multi-turn context
+ *   • In-memory `_history` kept in sync with a server-side session
+ *     (Option J). `_sessionId` tracks which row we're editing.
+ *   • `localStorage` caches (a) the active session id so a hard refresh
+ *     reopens the same thread, and (b) a one-turn buffer so we don't
+ *     lose anything if the save round-trip is in flight.
  *
  * UX:
- *   • Suggestion chips seed common queries (/status, /cycle, /vault, /health)
- *   • Clear button wipes localStorage + the DOM
- *   • Slash commands (/foo) are routed server-side — no LLM round-trip
+ *   • Sidebar lists saved sessions — click to load, × to delete, + New
+ *     to start fresh.
+ *   • Suggestion chips seed common queries.
+ *   • Clear button wipes the current session (local + server).
+ *   • Slash commands (/foo) are routed server-side — no LLM round-trip.
  */
 
 const Assistant = {
-  _storageKey: 'shopai_chat_history',
+  _activeSessionKey: 'shopai_active_session_id',
   _maxHistory: 12,   // 6 user + 6 assistant turns, clamped by backend too
   _history: [],
+  _sessionId: null,
   _inited: false,
   _sending: false,
+  _saveTimer: null,
 
   init() {
     if (this._inited) return;
@@ -25,6 +31,7 @@ const Assistant = {
     const input = document.getElementById('chat-input');
     const sendBtn = document.getElementById('chat-send');
     const clearBtn = document.getElementById('chat-clear');
+    const newBtn = document.getElementById('chat-new');
 
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -34,6 +41,7 @@ const Assistant = {
     });
     sendBtn.addEventListener('click', () => this.send());
     if (clearBtn) clearBtn.addEventListener('click', () => this.clear());
+    if (newBtn) newBtn.addEventListener('click', () => this._startNewSession());
 
     // Chips — seed messages.
     document.querySelectorAll('.chat-chip').forEach(chip => {
@@ -43,29 +51,151 @@ const Assistant = {
       });
     });
 
-    // Restore persisted history into the DOM.
-    this._loadHistory();
+    // Session bootstrap: refresh the sidebar, then load the last
+    // active session (or start fresh if none).
+    this._loadActiveId();
+    this._refreshSidebar();
+    if (this._sessionId) {
+      this._loadSession(this._sessionId);
+    } else {
+      this._renderAll();
+    }
+  },
+
+  _loadActiveId() {
+    try {
+      this._sessionId = localStorage.getItem(this._activeSessionKey) || null;
+    } catch (e) {
+      this._sessionId = null;
+    }
+  },
+
+  _persistActiveId() {
+    try {
+      if (this._sessionId) {
+        localStorage.setItem(this._activeSessionKey, this._sessionId);
+      } else {
+        localStorage.removeItem(this._activeSessionKey);
+      }
+    } catch (e) { /* private mode / quota */ }
+  },
+
+  // ── Server-side session sync ────────────────────────
+
+  async _refreshSidebar() {
+    let sessions = [];
+    try {
+      const r = await fetch('/api/chat/sessions');
+      const data = await r.json();
+      sessions = (data.sessions || []);
+    } catch (e) { /* offline */ }
+    this._renderSidebar(sessions);
+  },
+
+  _renderSidebar(sessions) {
+    const list = document.getElementById('chat-session-list');
+    if (!list) return;
+    if (!sessions.length) {
+      list.innerHTML = `<div class="empty-state muted">No saved chats yet.</div>`;
+      return;
+    }
+    list.innerHTML = sessions.map(s => {
+      const active = s.id === this._sessionId ? ' active' : '';
+      const title = this._esc(s.title || 'Untitled');
+      const meta = `${s.turn_count} turn${s.turn_count === 1 ? '' : 's'} · ${this._relTime(s.updated_at)}`;
+      return `
+        <div class="chat-session${active}" data-id="${this._esc(s.id)}">
+          <div class="chat-session-title" title="${title}">${title}</div>
+          <div class="chat-session-meta muted">${meta}</div>
+          <button class="chat-session-del" data-id="${this._esc(s.id)}" title="Delete">×</button>
+        </div>`;
+    }).join('');
+    // Wire up click + delete — per-row because the list re-renders often.
+    list.querySelectorAll('.chat-session').forEach(el => {
+      el.addEventListener('click', (e) => {
+        if (e.target.classList.contains('chat-session-del')) return;
+        this._loadSession(el.dataset.id);
+      });
+    });
+    list.querySelectorAll('.chat-session-del').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._deleteSession(el.dataset.id);
+      });
+    });
+  },
+
+  async _loadSession(sid) {
+    if (!sid) return;
+    let session;
+    try {
+      const r = await fetch('/api/chat/session?id=' + encodeURIComponent(sid));
+      if (!r.ok) throw new Error('not found');
+      session = await r.json();
+    } catch (e) {
+      // The session disappeared server-side — fall back to a blank one.
+      this._startNewSession();
+      return;
+    }
+    this._sessionId = session.id;
+    this._history = (session.turns || []).map(t => ({
+      role: t.role, content: t.content,
+    }));
+    this._persistActiveId();
     this._renderAll();
+    this._refreshSidebar();
   },
 
-  _loadHistory() {
+  _startNewSession() {
+    this._sessionId = null;
+    this._history = [];
+    this._persistActiveId();
+    this._renderAll();
+    this._refreshSidebar();
+  },
+
+  async _deleteSession(sid) {
+    if (!sid) return;
+    if (!window.confirm('Delete this chat?')) return;
     try {
-      const raw = localStorage.getItem(this._storageKey);
-      this._history = raw ? JSON.parse(raw) : [];
-      if (!Array.isArray(this._history)) this._history = [];
-    } catch (e) {
-      this._history = [];
+      await fetch('/api/chat/session?id=' + encodeURIComponent(sid),
+                  { method: 'DELETE' });
+    } catch (e) { /* offline */ }
+    if (sid === this._sessionId) {
+      this._startNewSession();
+    } else {
+      this._refreshSidebar();
     }
   },
 
-  _saveHistory() {
+  // Debounced save — fires 400ms after the last mutation so a rapid
+  // user + assistant turn pair coalesces into one round-trip.
+  _scheduleSave() {
+    if (this._saveTimer) clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this._saveNow(), 400);
+  },
+
+  async _saveNow() {
+    this._saveTimer = null;
+    if (!this._history.length) return;
     try {
-      // Keep only the last N turns on disk.
-      const trimmed = this._history.slice(-this._maxHistory);
-      localStorage.setItem(this._storageKey, JSON.stringify(trimmed));
-    } catch (e) {
-      /* quota exceeded / disabled — best effort */
-    }
+      const r = await fetch('/api/chat/session', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          id: this._sessionId,
+          turns: this._history.map(t => ({
+            role: t.role, content: t.content,
+          })),
+        }),
+      });
+      const data = await r.json();
+      if (data.id && data.id !== this._sessionId) {
+        this._sessionId = data.id;
+        this._persistActiveId();
+      }
+      this._refreshSidebar();
+    } catch (e) { /* offline — client keeps the buffer */ }
   },
 
   _renderAll() {
@@ -231,16 +361,26 @@ const Assistant = {
     if (this._history.length > this._maxHistory) {
       this._history.splice(0, this._history.length - this._maxHistory);
     }
-    this._saveHistory();
+    this._scheduleSave();
   },
 
-  clear() {
+  async clear() {
+    // Wipe the current session on both ends — server and DOM.
+    const sid = this._sessionId;
     this._history = [];
-    try { localStorage.removeItem(this._storageKey); } catch (e) { /* noop */ }
+    this._sessionId = null;
+    this._persistActiveId();
     const container = document.getElementById('chat-messages');
     const keep = container.querySelector('.chat-msg.bot');
     container.innerHTML = '';
     if (keep) container.appendChild(keep);
+    if (sid) {
+      try {
+        await fetch('/api/chat/session?id=' + encodeURIComponent(sid),
+                    { method: 'DELETE' });
+      } catch (e) { /* offline */ }
+    }
+    this._refreshSidebar();
   },
 
   _appendMessage(role, text) {
@@ -355,6 +495,27 @@ const Assistant = {
   removeTyping() {
     const indicator = document.getElementById('typing-indicator');
     if (indicator) indicator.remove();
+  },
+
+  _esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  },
+
+  _relTime(ts) {
+    if (!ts) return '';
+    const now = Date.now() / 1000;
+    const diff = Math.max(0, now - Number(ts));
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
+    const d = new Date(Number(ts) * 1000);
+    return d.toLocaleDateString();
   },
 
   formatMarkdown(text) {
