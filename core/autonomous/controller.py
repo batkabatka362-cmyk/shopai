@@ -1654,6 +1654,29 @@ class AutonomousController:
         except Exception as exc:  # noqa: BLE001
             logger.debug("adapter hooks skipped: %s", exc)
 
+        # Upgrade 2: auto-replay coordinator scan. Classify any
+        # dead-letter entries whose adapters have since recovered
+        # (breaker closed, no strong route-weight penalty) as
+        # READY — the coordinator's registered callback (if any)
+        # performs the replay. We surface the counts regardless
+        # so operators can see "N entries could be retried now"
+        # without installing the callback.
+        try:
+            from core.adapters.auto_replay import (
+                get_auto_replay_coordinator,
+            )
+            replay_report = get_auto_replay_coordinator().scan()
+            cycle_result["phases"]["auto_replay"] = {
+                "ready": len(replay_report.ready),
+                "degraded": len(replay_report.degraded),
+                "replayed_already": len(replay_report.replayed),
+                "skipped_recent": replay_report.skipped_recent,
+                "callback_invocations": replay_report.callback_invocations,
+                "callback_failures": replay_report.callback_failures,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("auto_replay scan skipped: %s", exc)
+
         # Option E: collect adapter-layer reliability signals
         # (health / dead-letter / cost) and embed them on
         # ``cycle_result["phases"]["reliability"]``. If any signal
