@@ -982,6 +982,77 @@ body {
   color: var(--accent);
 }
 
+/* ── Scheduler controls ───────────────────────────── */
+
+.scheduler-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scheduler-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.scheduler-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.scheduler-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(0,212,255,0.06);
+}
+
+.scheduler-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scheduler-btn-accent {
+  background: rgba(0,212,255,0.12);
+  color: var(--accent);
+  border-color: rgba(0,212,255,0.3);
+}
+
+.scheduler-btn-accent:hover:not(:disabled) {
+  background: rgba(0,212,255,0.22);
+}
+
+.scheduler-input {
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text-bright);
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  width: 80px;
+  outline: none;
+}
+
+.scheduler-input:focus { border-color: var(--accent); }
+.scheduler-input-wide { width: 180px; }
+
+.scheduler-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 /* ── Vault tab ────────────────────────────────────── */
 
 .vault-banner-ok {

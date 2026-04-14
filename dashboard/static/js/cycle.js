@@ -11,8 +11,10 @@
 
 const Cycle = {
   _timer: null,
+  _controlsBound: false,
 
   async refresh() {
+    this._bindControls();
     const data = await App.fetch('/api/cycle');
     this.render(data || {});
     // Keep a gentle poll going while the tab is active.
@@ -26,9 +28,136 @@ const Cycle = {
 
   render(data) {
     this._renderMetrics(data);
+    this._renderControls(data);
     this._renderLatest(data);
     this._renderHooks(data);
     this._renderHistory(data);
+  },
+
+  // ── Scheduler controls ──────────────────────────
+
+  _bindControls() {
+    if (this._controlsBound) return;
+    this._controlsBound = true;
+    const start = document.getElementById('sched-start');
+    const stop = document.getElementById('sched-stop');
+    const runOnce = document.getElementById('sched-run-once');
+    if (start) start.addEventListener('click', () => this._schedStart());
+    if (stop) stop.addEventListener('click', () => this._schedStop());
+    if (runOnce) runOnce.addEventListener('click', () => this._schedRunOnce());
+  },
+
+  _renderControls(data) {
+    const sched = data.scheduler || {};
+    const badge = document.getElementById('cycle-controls-badge');
+    if (badge) {
+      let label = 'idle';
+      let cls = '';
+      if (sched.busy) { label = 'running cycle…'; cls = 'badge-red'; }
+      else if (sched.running) { label = 'loop on'; cls = 'badge-green'; }
+      else if (sched.last_error) { label = 'error'; cls = 'badge-red'; }
+      badge.textContent = label;
+      badge.className = 'badge ' + cls;
+    }
+    const startBtn = document.getElementById('sched-start');
+    const stopBtn = document.getElementById('sched-stop');
+    const runBtn = document.getElementById('sched-run-once');
+    if (startBtn) startBtn.disabled = !!sched.running;
+    if (stopBtn) stopBtn.disabled = !sched.running;
+    if (runBtn) runBtn.disabled = !!sched.busy;
+
+    // Seed the store input with the latest known store_id on first
+    // render so the operator doesn't have to retype it.
+    const storeInput = document.getElementById('sched-store');
+    if (storeInput && !storeInput.dataset.touched) {
+      const latestStore = data.latest && data.latest.store_id;
+      if (latestStore) storeInput.value = latestStore;
+    }
+    if (storeInput && !storeInput.dataset.wired) {
+      storeInput.dataset.wired = '1';
+      storeInput.addEventListener('input', () => {
+        storeInput.dataset.touched = '1';
+      });
+    }
+
+    // Surface scheduler errors inline.
+    const fb = document.getElementById('sched-feedback');
+    if (fb && sched.last_error && !fb.dataset.override) {
+      fb.textContent = `last error: ${sched.last_error}`;
+      fb.style.color = 'var(--red)';
+    }
+  },
+
+  _feedback(msg, tone = 'muted') {
+    const fb = document.getElementById('sched-feedback');
+    if (!fb) return;
+    fb.dataset.override = '1';
+    fb.textContent = msg;
+    fb.style.color = tone === 'red' ? 'var(--red)'
+                    : tone === 'green' ? 'var(--green)'
+                    : 'var(--text-dim)';
+    setTimeout(() => { delete fb.dataset.override; }, 3500);
+  },
+
+  async _schedStart() {
+    const intervalEl = document.getElementById('sched-interval');
+    const interval = parseInt(intervalEl && intervalEl.value, 10) || 600;
+    const storeEl = document.getElementById('sched-store');
+    const stores = storeEl && storeEl.value.trim()
+      ? [storeEl.value.trim()]
+      : null;
+    const body = { interval };
+    if (stores) body.stores = stores;
+    const res = await this._post('/api/scheduler/start', body);
+    if (!res) return;
+    if (res.status === 'already_running') {
+      this._feedback('Loop already running.', 'muted');
+    } else if (res.status === 'started') {
+      this._feedback(`Loop started — every ${res.interval}s.`, 'green');
+    } else if (res.error) {
+      this._feedback(`Start failed: ${res.error}`, 'red');
+    }
+    this.refresh();
+  },
+
+  async _schedStop() {
+    const res = await this._post('/api/scheduler/stop', {});
+    if (!res) return;
+    if (res.status === 'stopped') {
+      this._feedback(`Loop stopped after ${res.cycles_run} cycle(s).`, 'green');
+    } else if (res.error) {
+      this._feedback(`Stop failed: ${res.error}`, 'red');
+    }
+    this.refresh();
+  },
+
+  async _schedRunOnce() {
+    const storeEl = document.getElementById('sched-store');
+    const storeId = (storeEl && storeEl.value.trim()) || 'deguar';
+    const res = await this._post('/api/scheduler/run-once', {store_id: storeId});
+    if (!res) return;
+    if (res.status === 'queued') {
+      this._feedback(`Cycle queued for ${res.store_id}…`, 'green');
+    } else if (res.status === 'busy') {
+      this._feedback('Another cycle is still running.', 'red');
+    } else if (res.error) {
+      this._feedback(`Run-once failed: ${res.error}`, 'red');
+    }
+    this.refresh();
+  },
+
+  async _post(url, body) {
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body || {}),
+      });
+      return await r.json();
+    } catch (e) {
+      this._feedback('Network error.', 'red');
+      return null;
+    }
   },
 
   _renderMetrics(data) {

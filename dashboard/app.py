@@ -46,12 +46,23 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        body = self._read_body()
+        body = self._read_body() or {}
 
-        if path == "/api/chat":
-            self._handle_chat(body or {})
-        else:
+        # NOTE: No authentication. The dashboard is intended for a
+        # single operator on localhost; scheduler controls trigger real
+        # side effects against the configured stores. Do not expose
+        # this server on a public network.
+        routes = {
+            "/api/chat": self._handle_chat,
+            "/api/scheduler/start": self._handle_scheduler_start,
+            "/api/scheduler/stop": self._handle_scheduler_stop,
+            "/api/scheduler/run-once": self._handle_scheduler_run_once,
+        }
+        handler = routes.get(path.rstrip("/"))
+        if handler is None:
             self._json(404, {"error": "not found"})
+            return
+        handler(body)
 
     def do_OPTIONS(self) -> None:
         self.send_response(200)
@@ -149,9 +160,11 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "recent": recent,
                 "scheduler": {
                     "running": status.get("running", False),
+                    "busy": status.get("busy", False),
                     "cycles_run": status.get("cycles_run", 0),
                     "interval": status.get("interval", 0),
                     "stores": status.get("stores", []),
+                    "last_error": status.get("last_error", ""),
                 },
             })
         except Exception as exc:  # noqa: BLE001
@@ -166,6 +179,56 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
     def _api_vault(self) -> None:
         """Vault summary: folder counts + recent wins/errors/decisions."""
         self._json(200, _collect_vault_summary())
+
+    # ── Scheduler control (operator POSTs) ─────────────────
+
+    def _handle_scheduler_start(self, body: dict) -> None:
+        """Start the scheduler loop. Idempotent."""
+        try:
+            from core.system.auto_scheduler import get_scheduler
+            sched = get_scheduler()
+
+            stores = body.get("stores")
+            if not isinstance(stores, list) or not all(
+                isinstance(s, str) and s for s in stores
+            ):
+                stores = None  # fall back to scheduler default
+
+            interval = body.get("interval")
+            try:
+                interval = int(interval) if interval is not None else 600
+            except (TypeError, ValueError):
+                interval = 600
+            interval = max(60, min(interval, 24 * 3600))  # clamp 1m..24h
+
+            out = sched.start(stores=stores, interval_seconds=interval)
+            self._json(200, out)
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {"status": "error", "error": str(exc)[:200]})
+
+    def _handle_scheduler_stop(self, _body: dict) -> None:
+        try:
+            from core.system.auto_scheduler import get_scheduler
+            out = get_scheduler().stop()
+            self._json(200, out)
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {"status": "error", "error": str(exc)[:200]})
+
+    def _handle_scheduler_run_once(self, body: dict) -> None:
+        """Fire a single cycle on a background thread. Non-blocking."""
+        try:
+            from core.system.auto_scheduler import get_scheduler
+            store_id = body.get("store_id") or "deguar"
+            if not isinstance(store_id, str) or not store_id.strip():
+                self._json(400, {"status": "error",
+                                 "error": "store_id must be a non-empty string"})
+                return
+            out = get_scheduler().run_once_async(store_id.strip())
+            # 202 when queued, 200 when busy — both are informational.
+            status_code = 202 if out.get("status") == "queued" else 200
+            self._json(status_code, out)
+        except Exception as exc:  # noqa: BLE001
+            self._json(200, {"status": "error", "error": str(exc)[:200]})
 
     def _handle_chat(self, body: dict) -> None:
         message = body.get("message", "")

@@ -224,6 +224,31 @@
     <!-- Tab: Cycles -->
     <section id="tab-cycle" class="tab-panel">
       <div class="metrics-row" id="cycle-metrics"></div>
+      <div class="panel" id="cycle-controls-panel">
+        <div class="panel-header">
+          <h2>Scheduler Controls</h2>
+          <span class="badge" id="cycle-controls-badge">idle</span>
+        </div>
+        <div class="panel-body scheduler-controls">
+          <div class="scheduler-row">
+            <button id="sched-start" class="scheduler-btn">Start loop</button>
+            <button id="sched-stop" class="scheduler-btn">Stop loop</button>
+            <label class="scheduler-inline">
+              every
+              <input id="sched-interval" type="number" min="60" max="86400"
+                     value="600" class="scheduler-input"> s
+            </label>
+          </div>
+          <div class="scheduler-row">
+            <input id="sched-store" type="text" placeholder="store_id"
+                   value="deguar" class="scheduler-input scheduler-input-wide">
+            <button id="sched-run-once" class="scheduler-btn scheduler-btn-accent">
+              Run once
+            </button>
+            <span id="sched-feedback" class="muted"></span>
+          </div>
+        </div>
+      </div>
       <div class="panel" id="cycle-latest-panel">
         <div class="panel-header">
           <h2>Latest Cycle</h2>

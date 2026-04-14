@@ -61,6 +61,13 @@ class AutoScheduler:
         self._recent_summaries: deque = deque(maxlen=_RECENT_SUMMARIES_MAX)
         self._stores: list[str] = []
         self._on_cycle_complete = None
+        # Concurrency guard for ``run_once_async``. The dashboard may
+        # fire multiple "Run once" clicks in quick succession and
+        # AutonomousController is not thread-safe, so overlapping
+        # cycles would corrupt shared state.
+        self._busy_lock = threading.Lock()
+        self._cycle_busy = False
+        self._last_error: str = ""
 
     def start(self, stores: list[str] | None = None,
               interval_seconds: int = 600,
@@ -134,20 +141,60 @@ class AutoScheduler:
         return ac.run_cycle(store_id)
 
     def run_once(self, store_id: str = "deguar") -> dict:
-        """Run a single cycle immediately."""
+        """Run a single cycle immediately. Blocks the caller."""
         result = self._run_cycle(store_id)
         self._last_result = result
         self._recent_summaries.append(_compact_summary(result))
         self._cycles_run += 1
         return result
 
+    def run_once_async(self, store_id: str = "deguar") -> dict[str, Any]:
+        """Fire a single cycle on a background thread.
+
+        Returns immediately with ``{"status": "queued"}`` or, when
+        another cycle is still running, ``{"status": "busy"}``. The
+        dashboard polls ``/api/cycle`` to observe completion.
+        """
+        with self._busy_lock:
+            if self._cycle_busy:
+                return {"status": "busy", "store_id": store_id}
+            self._cycle_busy = True
+
+        def _worker() -> None:
+            try:
+                result = self._run_cycle(store_id)
+                self._last_result = result
+                self._recent_summaries.append(_compact_summary(result))
+                self._cycles_run += 1
+                self._last_error = ""
+                if self._on_cycle_complete:
+                    try:
+                        self._on_cycle_complete(result)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("on_cycle_complete hook failed: %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("run_once_async [%s] failed: %s", store_id, exc)
+                self._last_error = str(exc)[:200]
+            finally:
+                with self._busy_lock:
+                    self._cycle_busy = False
+
+        t = threading.Thread(
+            target=_worker, daemon=True,
+            name=f"shopai-run-once-{store_id}",
+        )
+        t.start()
+        return {"status": "queued", "store_id": store_id}
+
     def get_status(self) -> dict[str, Any]:
         return {
             "running": self._running,
+            "busy": self._cycle_busy,
             "cycles_run": self._cycles_run,
             "interval": self._interval,
             "stores": self._stores,
             "last_duration": self._last_result.get("duration_s", 0),
+            "last_error": self._last_error,
         }
 
     def get_last_summary(self) -> dict | None:
