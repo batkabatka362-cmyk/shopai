@@ -31,6 +31,7 @@ from .base import AdapterResult, BaseAdapter, Capability
 from .budget import BudgetEnforcer, get_budget_enforcer
 from .rate_limit import RateLimiter, get_rate_limiter
 from .idempotency import IdempotencyCache, get_idempotency_cache
+from .health import HealthScorer
 from .errors import (
     AdapterError,
     AdapterNotConfigured,
@@ -140,6 +141,8 @@ class SmartRouter:
         budget_enforcer: BudgetEnforcer | None = None,
         rate_limiter: RateLimiter | None = None,
         idempotency_cache: IdempotencyCache | None = None,
+        health_scorer: HealthScorer | None = None,
+        health_bonus_range: float = 30.0,
     ) -> None:
         self._registry = registry or get_registry()
         self._metrics = metrics or get_metrics()
@@ -171,6 +174,20 @@ class SmartRouter:
         # are never cached, so side-effecting ops (payments, sends)
         # cannot be accidentally deduplicated.
         self._idempotency = idempotency_cache or get_idempotency_cache()
+        # Health-aware routing (Option X). When set, the router
+        # consults the scorer during candidate ranking and adds a
+        # health-derived bonus to each base score in the interval
+        # ``[-health_bonus_range/2, +health_bonus_range/2]``. The
+        # hard gates (breaker / budget / rate-limit) are unchanged —
+        # the scorer only reorders adapters that are all otherwise
+        # eligible, so a borderline-unhealthy adapter still gets a
+        # chance if every alternative is unhealthy too. Default is
+        # ``None`` (disabled) so every existing test keeps its
+        # deterministic priority-based ordering.
+        self._health_scorer = health_scorer
+        if health_bonus_range < 0:
+            raise ValueError("health_bonus_range must be >= 0")
+        self._health_bonus_range = float(health_bonus_range)
         self._lock = threading.RLock()
 
     # ── Policy accessors ───────────────────────────────────────
@@ -206,6 +223,15 @@ class SmartRouter:
     def rate_limiter(self) -> RateLimiter:
         """Expose the attached per-adapter rate limiter (Option U)."""
         return self._rate_limiter
+
+    @property
+    def health_scorer(self) -> HealthScorer | None:
+        """Expose the attached health scorer (Option X).
+
+        ``None`` means health-aware ordering is disabled and
+        candidates are ranked by the priority-based score only.
+        """
+        return self._health_scorer
 
     @property
     def idempotency_cache(self) -> IdempotencyCache:
@@ -480,10 +506,130 @@ class SmartRouter:
             if stats and stats.get("success_rate", 1.0) < 0.5:
                 score -= 20.0
 
+            # Health-aware ordering (Option X). ``score_for_adapter``
+            # returns a composite health score in [0.0, 1.0] drawn from
+            # the router's own breaker + retry + rate-limit state plus
+            # the metrics collector's latency/success stats. Healthy
+            # adapters gain up to +range/2, unhealthy adapters lose up
+            # to -range/2. Adapters with no telemetry yet score neutral.
+            if self._health_scorer is not None:
+                health = self._score_for_adapter(adapter.name)
+                if health is not None:
+                    score += (health - 0.5) * self._health_bonus_range
+
             scored.append((score, adapter))
 
         scored.sort(key=lambda pair: (-pair[0], pair[1].name))
         return [adapter for _, adapter in scored]
+
+    def _score_for_adapter(self, name: str) -> float | None:
+        """Return the composite health score for one adapter, or
+        ``None`` when none of the underlying signals are available
+        (brand-new adapter with no breaker, no metrics, etc.).
+
+        This is a router-internal helper — the public ``HealthScorer``
+        API takes full telemetry snapshots, which is overkill when
+        we already hold the relevant state inside the router. We
+        build the minimal per-adapter rows the scorer needs and call
+        ``HealthScorer.score`` so the weighting + grade logic stays
+        in one place.
+        """
+        scorer = self._health_scorer
+        if scorer is None:
+            return None
+
+        # Breaker row — only present if we've ever touched this
+        # adapter through ``_breaker_for``.
+        breaker_snap: dict[str, Any] | None = None
+        with self._lock:
+            br = self._breakers.get(name)
+        if br is not None:
+            try:
+                breaker_snap = br.snapshot()
+            except Exception:  # noqa: BLE001
+                breaker_snap = None
+
+        # Rate-limit row — drawn from the limiter's full snapshot.
+        rate_row: dict[str, Any] | None = None
+        try:
+            for row in self._rate_limiter.snapshot():
+                if row.get("adapter") == name:
+                    rate_row = row
+                    break
+        except Exception:  # noqa: BLE001
+            rate_row = None
+
+        # Retry row — per_adapter map inside the telemetry snapshot.
+        retry_row: dict[str, Any] | None = None
+        try:
+            retry_snap = self._retry_telemetry.snapshot()
+            raw = retry_snap.get("per_adapter", {}).get(name)
+            if raw is not None:
+                retry_row = {
+                    "adapter": name,
+                    "calls": int(raw.get("calls", 0)),
+                    "retries": int(raw.get("retries", 0)),
+                    "giveups": int(raw.get("giveups", 0)),
+                    "successes": int(raw.get("successes", 0)),
+                }
+        except Exception:  # noqa: BLE001
+            retry_row = None
+
+        # SLA row — synthesised from the metrics collector so we
+        # don't need to instantiate a full ``SLAMonitor`` per call.
+        # The scorer only reads ``grade``, ``evaluated`` and the
+        # latency numbers; a simple success-rate + sample-count
+        # projection is enough for the tiebreaker use case.
+        sla_row: dict[str, Any] | None = None
+        try:
+            stats = self._metrics.stats_for(name)
+        except Exception:  # noqa: BLE001
+            stats = None
+        if stats:
+            samples = int(stats.get("calls_total", 0))
+            if samples >= 5:
+                sr = float(stats.get("success_rate", 1.0))
+                p95 = float(stats.get("latency_p95_ms", 0.0))
+                # Conservative projection: grade as "breach" only when
+                # the recent success rate is genuinely low. Latency
+                # breaches fall out of the retry/breaker side.
+                grade = "breach" if sr < 0.7 else (
+                    "warn" if sr < 0.9 else "ok"
+                )
+                sla_row = {
+                    "adapter": name,
+                    "evaluated": True,
+                    "grade": grade,
+                    "samples": samples,
+                    "p50_ms": float(stats.get("latency_p50_ms", 0.0)),
+                    "p95_ms": p95,
+                    "p99_ms": float(stats.get("latency_p99_ms", 0.0)),
+                    "success_rate": sr,
+                    "violations": [
+                        f"success {sr:.0%} < 0.70",
+                    ] if grade == "breach" else [],
+                    "warnings": [
+                        f"success {sr:.0%} near 0.90",
+                    ] if grade == "warn" else [],
+                }
+
+        if not any([breaker_snap, rate_row, retry_row, sla_row]):
+            return None
+
+        result = scorer.score(
+            name,
+            sla=sla_row,
+            breaker=breaker_snap,
+            rate_limit=rate_row,
+            retry=retry_row,
+        )
+        # Score is undefined (``unknown`` grade) when none of the
+        # components had data — the scorer returns 0.0 in that case,
+        # which we'd rather expose as ``None`` so the caller can
+        # short-circuit to neutral weighting.
+        if result.grade == "unknown":
+            return None
+        return result.score
 
     @staticmethod
     def _is_pii_safe(adapter: BaseAdapter) -> bool:
