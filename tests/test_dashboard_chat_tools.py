@@ -266,7 +266,7 @@ class TestVaultSummaryTool:
 class TestChatViaLLMToolLoop:
     def test_no_directive_returns_direct_answer(self, monkeypatch):
         h = _handler()
-        monkeypatch.setattr(h, "_build_system_prompt", lambda: "sys")
+        monkeypatch.setattr(h, "_build_system_prompt", lambda *a, **k: "sys")
         monkeypatch.setattr(h, "_build_messages",
                             lambda hist, msg: [{"role": "user", "content": msg}])
 
@@ -284,7 +284,7 @@ class TestChatViaLLMToolLoop:
 
     def test_directive_runs_tool_then_composes(self, monkeypatch):
         h = _handler()
-        monkeypatch.setattr(h, "_build_system_prompt", lambda: "sys")
+        monkeypatch.setattr(h, "_build_system_prompt", lambda *a, **k: "sys")
         monkeypatch.setattr(h, "_build_messages",
                             lambda hist, msg: [{"role": "user", "content": msg}])
 
@@ -320,7 +320,7 @@ class TestChatViaLLMToolLoop:
 
     def test_loop_capped_at_two_iterations(self, monkeypatch):
         h = _handler()
-        monkeypatch.setattr(h, "_build_system_prompt", lambda: "sys")
+        monkeypatch.setattr(h, "_build_system_prompt", lambda *a, **k: "sys")
         monkeypatch.setattr(h, "_build_messages",
                             lambda hist, msg: [{"role": "user", "content": msg}])
 

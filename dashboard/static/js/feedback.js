@@ -16,26 +16,69 @@ const Feedback = {
   _timer: null,
 
   async refresh() {
-    const data = await App.fetch('/api/feedback') || {};
-    this.render(data);
+    const [data, lessons] = await Promise.all([
+      App.fetch('/api/feedback'),
+      App.fetch('/api/lessons'),
+    ]);
+    this.render(data || {}, lessons || {});
     if (this._timer) clearInterval(this._timer);
     this._timer = setInterval(async () => {
       if (App.currentTab !== 'feedback') return;
-      const fresh = await App.fetch('/api/feedback');
-      this.render(fresh || {});
+      const [fresh, lf] = await Promise.all([
+        App.fetch('/api/feedback'),
+        App.fetch('/api/lessons'),
+      ]);
+      this.render(fresh || {}, lf || {});
     }, 15000);
   },
 
-  render(data) {
+  render(data, lessons) {
     this._renderMetrics(data);
     this._renderRatio(data);
     this._renderThemes(data);
     this._renderConfig(data);
     this._renderRecent(data);
+    this._renderLessons(lessons || {});
     const pathEl = document.getElementById('feedback-path');
     if (pathEl) {
       pathEl.textContent = data.path ? this._esc(data.path) : '';
     }
+  },
+
+  _renderLessons(data) {
+    const el = document.getElementById('lessons-body');
+    const countEl = document.getElementById('lessons-count');
+    if (!el) return;
+    const rows = data.lessons || [];
+    if (countEl) countEl.textContent = String(rows.length);
+    if (!rows.length) {
+      // Leave the default empty-state hint from the HTML in place.
+      return;
+    }
+    el.innerHTML = `
+      <ul class="lesson-list">
+        ${rows.map(r => `
+          <li class="lesson-item">
+            <div class="lesson-head">
+              <span class="lesson-theme">${this._esc(r.theme || r.title)}</span>
+              <span class="lesson-count">×${r.source_count}</span>
+              <span class="muted">updated ${this._esc(r.updated || '—')}</span>
+            </div>
+            <div class="lesson-body muted">
+              Flagged by ${(r.sources || []).length} feedback note(s).
+              Injected into chat context when the theme appears in a
+              user message.
+            </div>
+            ${(r.sources || []).length ? `
+              <details class="lesson-sources">
+                <summary class="muted">sources</summary>
+                <ul>
+                  ${r.sources.map(s => `<li><code>${this._esc(s)}</code></li>`).join('')}
+                </ul>
+              </details>
+            ` : ''}
+          </li>`).join('')}
+      </ul>`;
   },
 
   // ── Metric cards ──────────────────────────────────

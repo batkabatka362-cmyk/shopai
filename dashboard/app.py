@@ -130,6 +130,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "/api/cost": self._api_cost,
             "/api/stores": self._api_stores,
             "/api/feedback": self._api_feedback,
+            "/api/lessons": self._api_lessons,
             "/api/chat/sessions": self._api_chat_sessions_list,
             "/api/chat/session": self._api_chat_session_get,
         }
@@ -240,6 +241,34 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "configured": True,
                 "total": 0, "good": 0, "bad": 0,
                 "good_rate": 0.0, "recent": [], "themes": [],
+                "error": str(exc)[:200],
+            })
+            return
+        self._json(200, data)
+
+    def _api_lessons(self) -> None:
+        """Lessons auto-promoted by the Option P feedback learner.
+
+        Lives at ``vault/ShopAI/Learned/lessons/lesson-*.md``. Each
+        lesson's frontmatter carries theme, source_count, updated,
+        and a ``sources`` list linking back to the feedback notes
+        that triggered promotion. Never 500s — a missing vault
+        reports ``configured: False``.
+        """
+        try:
+            data = _collect_lessons_snapshot()
+        except _VaultNotConfigured as exc:
+            self._json(200, {
+                "configured": False,
+                "error": str(exc),
+                "count": 0, "lessons": [],
+            })
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("lessons collector failed: %s", exc)
+            self._json(200, {
+                "configured": True,
+                "count": 0, "lessons": [],
                 "error": str(exc)[:200],
             })
             return
@@ -915,7 +944,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             from core.adapters.base import Capability
             router = get_router()
 
-            system_prompt = self._build_system_prompt()
+            system_prompt = self._build_system_prompt(user_message=message)
             messages = self._build_messages(history, message)
 
             text = self._invoke_llm(router, Capability, system_prompt, messages)
@@ -983,10 +1012,15 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         clean.append({"role": "user", "content": message})
         return clean
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, user_message: str = "") -> str:
         """Assemble a context-aware system prompt so the LLM knows the
         shape of the running ShopAI instance (adapter counts, latest
         cycle, vault state) without us round-tripping for every turn.
+
+        When ``user_message`` is provided we also pull any
+        feedback-driven lessons (Option P) whose theme words appear in
+        the user's turn, so the assistant can avoid repeating past
+        mistakes on the same topic.
         """
         ctx = self._build_chat_context()
         lines = [
@@ -1004,6 +1038,18 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             lines.append(f"- latest cycle: {ctx['cycle_summary']}")
         if ctx["vault_summary"]:
             lines.append(f"- vault: {ctx['vault_summary']}")
+
+        # Option P — inject relevant lessons learned from past feedback.
+        lessons = self._retrieve_relevant_lessons(user_message)
+        if lessons:
+            lines.append("")
+            lines.append(
+                "LESSONS FROM PAST FEEDBACK — operators previously "
+                "flagged issues with these topics. Be extra careful:"
+            )
+            for theme, summary in lessons:
+                lines.append(f"- {theme}: {summary}")
+
         lines.append(
             "\nThe user can also invoke slash commands (/status, /cycle, /vault, "
             "/health, /help); those are handled outside the LLM."
@@ -1023,6 +1069,89 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "chain another TOOL_CALL."
         )
         return "\n".join(lines)
+
+    # ── Lesson retrieval (Option P phase 3) ──────────────
+
+    #: Max lessons we'll ever inject into a single turn. Each lesson
+    #: adds ~40 tokens to the system prompt, so we keep the cap tight.
+    _CHAT_MAX_LESSONS = 3
+
+    def _retrieve_relevant_lessons(
+        self, user_message: str,
+    ) -> list[tuple[str, str]]:
+        """Return ``[(theme, summary)]`` for lessons whose theme words
+        appear in ``user_message``.
+
+        Scans ``vault/ShopAI/Learned/lessons/lesson-*.md``. Each
+        lesson's frontmatter carries ``theme: <word>``; we match by
+        substring against the lowercased user message. Miss or empty
+        vault → empty list (no injection).
+        """
+        if not user_message:
+            return []
+        try:
+            from core.adapters.config import get_config
+            vault_raw = get_config().get("obsidian_vault_path")
+        except Exception:  # noqa: BLE001
+            return []
+        if not vault_raw:
+            return []
+        try:
+            lessons_dir = Path(vault_raw) / "ShopAI" / "Learned" / "lessons"
+            if not lessons_dir.is_dir():
+                return []
+            msg_lower = user_message.lower()
+            out: list[tuple[str, str]] = []
+            for f in sorted(lessons_dir.glob("lesson-*.md")):
+                try:
+                    body = f.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                theme = self._extract_lesson_theme(body)
+                if not theme or theme not in msg_lower:
+                    continue
+                summary = self._extract_lesson_summary(body, theme)
+                out.append((theme, summary))
+                if len(out) >= self._CHAT_MAX_LESSONS:
+                    break
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("lesson retrieval failed: %s", exc)
+            return []
+
+    @staticmethod
+    def _extract_lesson_theme(body: str) -> str:
+        """Pull the ``theme:`` line from lesson frontmatter."""
+        for line in body.splitlines()[:15]:
+            stripped = line.strip()
+            if stripped.lower().startswith("theme:"):
+                return stripped.split(":", 1)[1].strip().lower()
+        return ""
+
+    @staticmethod
+    def _extract_lesson_summary(body: str, theme: str) -> str:
+        """Return a short, operator-visible summary for the lesson.
+
+        We prefer the ``source_count`` frontmatter value + a fixed
+        advisory line over parsing the full body — keeps the prompt
+        compact and prevents us from surfacing freeform vault text
+        that could be surprising in the system prompt.
+        """
+        count = 0
+        for line in body.splitlines()[:15]:
+            stripped = line.strip()
+            if stripped.lower().startswith("source_count:"):
+                try:
+                    count = int(stripped.split(":", 1)[1].strip())
+                except ValueError:
+                    count = 0
+                break
+        if count:
+            return (
+                f"flagged in {count} past feedback note(s); "
+                "double-check before answering."
+            )
+        return "flagged in past feedback; double-check before answering."
 
     # ── LLM tool-calling ─────────────────────────────────
 
@@ -1810,6 +1939,99 @@ def _collect_feedback_snapshot(limit: int = 30) -> dict[str, Any]:
         "recent": items[:limit],
         "themes": themes,
     }
+
+
+def _collect_lessons_snapshot(limit: int = 30) -> dict[str, Any]:
+    """Aggregate the Option P lesson notes into a dashboard payload.
+
+    Lives at ``vault/ShopAI/Learned/lessons/lesson-*.md``. Each note's
+    frontmatter carries:
+      * ``theme`` — the word this lesson clusters around
+      * ``source_count`` — how many down-rated feedback notes promoted it
+      * ``updated`` — ISO timestamp of the most recent run
+      * ``sources`` — relative paths back to the originating feedback
+
+    Sorted by ``source_count`` desc so the most-flagged topics lead.
+    """
+    root = _vault_root()  # raises _VaultNotConfigured
+    lessons_dir = root / "ShopAI" / "Learned" / "lessons"
+    if not lessons_dir.is_dir():
+        return {
+            "configured": True,
+            "path": str(lessons_dir),
+            "count": 0,
+            "lessons": [],
+        }
+
+    items: list[dict[str, Any]] = []
+    for f in sorted(lessons_dir.glob("lesson-*.md")):
+        try:
+            body = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        meta = _parse_lesson_frontmatter(body)
+        try:
+            rel = f.relative_to(root).as_posix()
+        except ValueError:
+            rel = f.name
+        items.append({
+            "path": rel,
+            "title": f.stem,
+            "theme": meta.get("theme", ""),
+            "source_count": meta.get("source_count", 0),
+            "updated": meta.get("updated", ""),
+            "sources": meta.get("sources", []),
+            "mtime": f.stat().st_mtime,
+        })
+
+    items.sort(key=lambda x: x["source_count"], reverse=True)
+    sliced = items[:limit]
+    return {
+        "configured": True,
+        "path": str(lessons_dir),
+        "count": len(sliced),
+        "total": len(items),
+        "lessons": sliced,
+    }
+
+
+def _parse_lesson_frontmatter(body: str) -> dict[str, Any]:
+    """Minimal frontmatter parser for lesson notes.
+
+    We keep this local (rather than pulling the full obsidian parser)
+    so the dashboard doesn't hard-depend on the optional obsidian
+    package at import time.
+    """
+    out: dict[str, Any] = {
+        "theme": "", "source_count": 0, "updated": "", "sources": [],
+    }
+    lines = body.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return out
+    in_sources = False
+    for line in lines[1:60]:
+        stripped = line.strip()
+        if stripped == "---":
+            break
+        if stripped.startswith("theme:"):
+            out["theme"] = stripped.split(":", 1)[1].strip()
+            in_sources = False
+        elif stripped.startswith("source_count:"):
+            try:
+                out["source_count"] = int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+            in_sources = False
+        elif stripped.startswith("updated:"):
+            out["updated"] = stripped.split(":", 1)[1].strip()
+            in_sources = False
+        elif stripped.startswith("sources:"):
+            in_sources = True
+        elif in_sources and stripped.startswith("- "):
+            out["sources"].append(stripped[2:].strip().strip('"'))
+        elif in_sources and stripped and not stripped.startswith("- "):
+            in_sources = False
+    return out
 
 
 def _feedback_rating_from_body(body: str) -> str:

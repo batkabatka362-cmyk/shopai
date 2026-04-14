@@ -1808,6 +1808,13 @@ class AutonomousController:
         # missing adapter or write failure never breaks the cycle.
         self._maybe_export_to_vault(report)
 
+        # Wave 7 / Option P: mine the chat-feedback notes written by
+        # the dashboard's Option H handler and promote recurring
+        # complaint themes into ``ShopAI/Learned/lessons/``. Same
+        # best-effort contract as ``_maybe_export_to_vault`` — any
+        # failure is logged and swallowed.
+        self._maybe_learn_from_feedback(cycle_result)
+
     # ── Obsidian vault auto-export ──────────────────────────────
 
     def _maybe_export_to_vault(self, report: Any) -> None:
@@ -1835,6 +1842,38 @@ class AutonomousController:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Vault auto-export skipped: %s", exc)
+
+    def _maybe_learn_from_feedback(self, cycle_result: dict[str, Any]) -> None:
+        """Promote recurring chat-feedback complaints into lesson notes.
+
+        Reads ``vault/ShopAI/Feedback/*.md``, clusters down-rated notes
+        by word-frequency, and writes one lesson per recurring theme
+        to ``vault/ShopAI/Learned/lessons/``. The assistant can then
+        pull relevant lessons back into its system context on the
+        next turn (Option P phase 3).
+
+        Best-effort: a missing vault, unreadable note, or write
+        failure is logged and swallowed so feedback learning never
+        breaks the autonomous cycle.
+        """
+        try:
+            from core.adapters.config import get_config
+            vault_path = get_config().get("obsidian_vault_path")
+            if not vault_path:
+                return
+            from core.learning.feedback_learner import learn_from_feedback
+            report = learn_from_feedback(vault_path)
+            if report.lessons_written or report.themes_found:
+                cycle_result.setdefault("reflection", {})
+                cycle_result["reflection"]["feedback_learning"] = report.as_dict()
+                logger.info(
+                    "Feedback learner: %d lesson(s) written from "
+                    "%d down-rated note(s) across %d theme(s)",
+                    report.lessons_written, report.down_rated,
+                    report.themes_found,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Feedback learning skipped: %s", exc)
 
     def _log_cycle_to_vault(
         self,

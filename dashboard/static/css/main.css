@@ -2006,6 +2006,74 @@ body {
   font-family: ui-monospace, monospace;
 }
 
+.lesson-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lesson-item {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(255,165,0,0.03);
+  border-left: 3px solid var(--orange);
+}
+
+.lesson-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.lesson-theme {
+  font-weight: 700;
+  color: var(--orange);
+  font-size: 13px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.lesson-count {
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: rgba(255,165,0,0.12);
+  color: var(--orange);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lesson-body {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.lesson-sources {
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.lesson-sources summary {
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.lesson-sources ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.lesson-sources code {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 /* ── Responsive ───────────────────────────────────── */
 
 @media (max-width: 1100px) {
