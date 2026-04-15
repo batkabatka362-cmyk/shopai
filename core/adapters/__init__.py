@@ -45,6 +45,7 @@ from .errors import (
     AdapterTimeout,
     AdapterUnavailable,
     AdapterValidationError,
+    CaptchaDetected,
 )
 from .metrics import AdapterMetrics, MetricsCollector, get_metrics, reset_metrics
 from .registry import AdapterRegistry, get_registry, reset_registry
@@ -71,6 +72,7 @@ __all__ = [
     "AdapterTimeout",
     "AdapterUnavailable",
     "AdapterValidationError",
+    "CaptchaDetected",
     "NoAdapterAvailable",
     # Config
     "AdapterConfig",

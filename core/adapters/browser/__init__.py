@@ -17,5 +17,13 @@ Bootstrap::
     register_all()
 """
 from .playwright import PlaywrightAdapter
+from .session import BrowserSession
+from .stealth import detect_captcha, pick_user_agent, user_agent_pool
 
-__all__ = ["PlaywrightAdapter"]
+__all__ = [
+    "PlaywrightAdapter",
+    "BrowserSession",
+    "detect_captcha",
+    "pick_user_agent",
+    "user_agent_pool",
+]

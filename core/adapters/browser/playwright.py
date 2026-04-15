@@ -1,36 +1,48 @@
 """PlaywrightAdapter — headless browser automation via Playwright.
 
-Provides three capabilities the brain can route to:
+Provides six capabilities the brain can route to:
 
-  * ``SCRAPE_PAGE``        — navigate to a URL, wait for render,
-                             return the page's text content and
-                             optional CSS-selected snippets.
-  * ``BROWSER_SCREENSHOT`` — capture a full-page or viewport
-                             screenshot as a PNG file saved to a
-                             configurable output directory.
-  * ``BROWSER_EXTRACT``    — extract structured data from a
-                             rendered page using CSS selectors.
+  * ``SCRAPE_PAGE``           — navigate to a URL, wait for render,
+                                 return the page's text content.
+  * ``BROWSER_SCREENSHOT``    — capture a full-page or viewport
+                                 PNG saved to an output directory.
+  * ``BROWSER_EXTRACT``       — extract structured data from a
+                                 rendered page using CSS selectors.
+  * ``BROWSER_CLICK``         — click a selector on a page and
+                                 return the resulting URL/title.
+  * ``BROWSER_FILL``          — fill form fields by selector and
+                                 optionally submit.
+  * ``BROWSER_WAIT_SELECTOR`` — navigate + block until a selector
+                                 appears (or times out).
 
-Playwright runs in **headless Chromium** mode by default. No
-external service or API key is needed — the browser binary is
-bundled with ``playwright install chromium``.
+Backed by ``BrowserSession`` so Chromium is launched once and
+reused. Each call picks up a *profile* (default ``"default"``)
+whose cookies, UA, and storage persist across calls — the
+controller can crawl an auth-walled site without re-logging-in
+on every hit.
 
-The adapter is best-effort: if ``playwright`` is not installed,
-``is_configured()`` returns False and the router silently skips
-it. The controller never crashes.
+Every navigation is guarded by a captcha check: if the page looks
+like a Cloudflare / hCaptcha / reCAPTCHA challenge, the adapter
+raises ``CaptchaDetected`` instead of silently returning the
+challenge HTML as a "successful" scrape.
 
-Usage (by the brain, via the router)::
+Best-effort: if ``playwright`` is not installed, ``is_configured()``
+returns False and the router silently skips the adapter. The
+controller never crashes.
+
+Usage (via the router)::
 
     result = router.execute(
         Capability.SCRAPE_PAGE,
-        {"url": "https://example.com", "wait_for": "networkidle"},
+        {
+            "url": "https://example.com",
+            "profile": "shopify-main",
+            "timeout_ms": 30000,
+        },
     )
-
-Reference: https://playwright.dev/python/docs/api/class-browser
 """
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -48,28 +60,25 @@ from ..errors import (
     AdapterTimeout,
     AdapterUnavailable,
     AdapterValidationError,
+    CaptchaDetected,
 )
+from .session import BrowserSession
+from .stealth import detect_captcha
 
 try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+    from playwright.sync_api import TimeoutError as PwTimeout
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
-    sync_playwright = None  # type: ignore[assignment,misc]
     PwTimeout = None  # type: ignore[assignment,misc]
 
 logger = get_logger("adapters.browser.playwright")
 
 _DEFAULT_TIMEOUT_MS = 30_000
-_DEFAULT_VIEWPORT = {"width": 1920, "height": 1080}
-_DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
 
 
 class PlaywrightAdapter(BaseAdapter):
-    """Headless Chromium browser via Playwright."""
+    """Headless Chromium browser via Playwright + BrowserSession."""
 
     name = "playwright"
     category = AdapterCategory.BROWSER
@@ -77,6 +86,9 @@ class PlaywrightAdapter(BaseAdapter):
         Capability.SCRAPE_PAGE,
         Capability.BROWSER_SCREENSHOT,
         Capability.BROWSER_EXTRACT,
+        Capability.BROWSER_CLICK,
+        Capability.BROWSER_FILL,
+        Capability.BROWSER_WAIT_SELECTOR,
     }
 
     priority = 80
@@ -102,6 +114,12 @@ class PlaywrightAdapter(BaseAdapter):
             return self._do_screenshot(params)
         if capability == Capability.BROWSER_EXTRACT:
             return self._do_extract(params)
+        if capability == Capability.BROWSER_CLICK:
+            return self._do_click(params)
+        if capability == Capability.BROWSER_FILL:
+            return self._do_fill(params)
+        if capability == Capability.BROWSER_WAIT_SELECTOR:
+            return self._do_wait_selector(params)
         raise AdapterValidationError(
             self.name, f"unsupported capability: {capability.value}",
         )
@@ -114,7 +132,7 @@ class PlaywrightAdapter(BaseAdapter):
         wait_until = params.get("wait_for", "domcontentloaded")
 
         page_data = self._run_in_browser(
-            url, timeout, wait_until,
+            url, timeout, wait_until, params,
             action=lambda page: {
                 "url": page.url,
                 "title": page.title(),
@@ -150,7 +168,7 @@ class PlaywrightAdapter(BaseAdapter):
             }
 
         page_data = self._run_in_browser(
-            url, timeout, "domcontentloaded", action=take_shot,
+            url, timeout, "domcontentloaded", params, action=take_shot,
         )
         return AdapterResult.success(
             adapter=self.name,
@@ -192,11 +210,114 @@ class PlaywrightAdapter(BaseAdapter):
             }
 
         page_data = self._run_in_browser(
-            url, timeout, "domcontentloaded", action=extract,
+            url, timeout, "domcontentloaded", params, action=extract,
         )
         return AdapterResult.success(
             adapter=self.name,
             capability=Capability.BROWSER_EXTRACT.value,
+            data=page_data,
+        )
+
+    # ── BROWSER_CLICK ──────────────────────────────────────────
+
+    def _do_click(self, params: dict[str, Any]) -> AdapterResult:
+        url = self._require_url(params)
+        selector = self._require_str(params, "selector")
+        timeout = int(params.get("timeout_ms", _DEFAULT_TIMEOUT_MS))
+
+        def click(page):
+            page.wait_for_selector(selector, timeout=timeout)
+            page.click(selector, timeout=timeout)
+            # Give the resulting navigation/DOM change a beat to
+            # settle. The caller can override wait_for by passing
+            # "networkidle" in params["wait_after"].
+            wait_after = params.get("wait_after")
+            if wait_after:
+                page.wait_for_load_state(wait_after, timeout=timeout)
+            return {
+                "url": page.url,
+                "title": page.title(),
+                "clicked": selector,
+            }
+
+        page_data = self._run_in_browser(
+            url, timeout, "domcontentloaded", params, action=click,
+        )
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=Capability.BROWSER_CLICK.value,
+            data=page_data,
+        )
+
+    # ── BROWSER_FILL ───────────────────────────────────────────
+
+    def _do_fill(self, params: dict[str, Any]) -> AdapterResult:
+        url = self._require_url(params)
+        fields = params.get("fields")
+        if not isinstance(fields, dict) or not fields:
+            raise AdapterValidationError(
+                self.name,
+                "'fields' dict is required for BROWSER_FILL "
+                "(e.g. {\"#email\": \"a@b.com\", \"#password\": \"...\"})",
+            )
+        submit_selector = params.get("submit_selector")
+        timeout = int(params.get("timeout_ms", _DEFAULT_TIMEOUT_MS))
+
+        def fill(page):
+            filled: list[str] = []
+            for selector, value in fields.items():
+                page.wait_for_selector(str(selector), timeout=timeout)
+                page.fill(str(selector), str(value), timeout=timeout)
+                filled.append(str(selector))
+            if submit_selector:
+                page.click(str(submit_selector), timeout=timeout)
+                page.wait_for_load_state("domcontentloaded", timeout=timeout)
+            return {
+                "url": page.url,
+                "title": page.title(),
+                "filled": filled,
+                "submitted": bool(submit_selector),
+            }
+
+        page_data = self._run_in_browser(
+            url, timeout, "domcontentloaded", params, action=fill,
+        )
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=Capability.BROWSER_FILL.value,
+            data=page_data,
+        )
+
+    # ── BROWSER_WAIT_SELECTOR ──────────────────────────────────
+
+    def _do_wait_selector(self, params: dict[str, Any]) -> AdapterResult:
+        url = self._require_url(params)
+        selector = self._require_str(params, "selector")
+        state = params.get("state", "visible")
+        if state not in ("attached", "detached", "visible", "hidden"):
+            raise AdapterValidationError(
+                self.name,
+                f"'state' must be attached|detached|visible|hidden "
+                f"(got {state!r})",
+            )
+        timeout = int(params.get("timeout_ms", _DEFAULT_TIMEOUT_MS))
+
+        def wait(page):
+            page.wait_for_selector(selector, state=state, timeout=timeout)
+            return {
+                "url": page.url,
+                "title": page.title(),
+                "selector": selector,
+                "state": state,
+                "found": True,
+            }
+
+        page_data = self._run_in_browser(
+            url, timeout, "domcontentloaded", params, action=wait,
+        )
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=Capability.BROWSER_WAIT_SELECTOR.value,
             data=page_data,
         )
 
@@ -207,37 +328,54 @@ class PlaywrightAdapter(BaseAdapter):
         url: str,
         timeout_ms: int,
         wait_until: str,
+        params: dict[str, Any],
         *,
         action,
     ) -> dict[str, Any]:
-        """Launch a Chromium context, navigate to ``url``, execute
-        ``action(page)``, and return the result dict. The browser
-        is always closed on exit — no leaked processes.
+        """Acquire a page via ``BrowserSession``, navigate to
+        ``url``, check for captcha walls, run ``action(page)``,
+        and return the result dict.
 
         Raises typed adapter errors for timeout, unavailability,
-        and generic failures.
+        captcha, and generic failures.
         """
         if not _PLAYWRIGHT_AVAILABLE:
             raise AdapterUnavailable(
                 self.name, "playwright not installed",
             )
 
+        profile = str(params.get("profile") or "default")
+        user_agent = params.get("user_agent") or None
+        viewport = params.get("viewport") or None
+
+        session = BrowserSession.instance()
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True)
-                try:
-                    context = browser.new_context(
-                        viewport=_DEFAULT_VIEWPORT,
-                        user_agent=_DEFAULT_USER_AGENT,
-                    )
-                    page = context.new_page()
-                    page.set_default_timeout(timeout_ms)
-                    page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-                    result = action(page)
-                finally:
-                    browser.close()
-            return result
-        except PwTimeout as exc:
+            with session.acquire_page(
+                profile=profile,
+                user_agent=user_agent,
+                viewport=viewport,
+                timeout_ms=timeout_ms,
+            ) as page:
+                page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+
+                # Guard: did we land on a bot challenge page?
+                # Skip the check if caller explicitly expects one
+                # (e.g. a solver is wired in upstream).
+                if not params.get("allow_captcha"):
+                    provider = self._maybe_detect_captcha(page)
+                    if provider is not None:
+                        session.note_captcha()
+                        raise CaptchaDetected(
+                            self.name,
+                            f"bot challenge page: {provider}",
+                            provider=provider,
+                            url=page.url,
+                        )
+
+                return action(page)
+        except CaptchaDetected:
+            raise
+        except PwTimeout as exc:  # type: ignore[misc]
             raise AdapterTimeout(
                 self.name, f"page load timeout ({timeout_ms}ms): {exc}",
             ) from exc
@@ -249,7 +387,24 @@ class PlaywrightAdapter(BaseAdapter):
                 f"browser error: {type(exc).__name__}: {exc}",
             ) from exc
 
-    # ── Validation helper ──────────────────────────────────────
+    @staticmethod
+    def _maybe_detect_captcha(page) -> str | None:
+        """Defensive captcha probe — any error reading the page is
+        swallowed (we'd rather scrape than false-positive)."""
+        try:
+            title = page.title() or ""
+            url = page.url or ""
+            # Body content read is optional; some sites delay
+            # render past the initial DOM.
+            try:
+                html = page.content()
+            except Exception:  # noqa: BLE001
+                html = ""
+            return detect_captcha(title=title, html=html, url=url)
+        except Exception:  # noqa: BLE001
+            return None
+
+    # ── Validation helpers ─────────────────────────────────────
 
     @staticmethod
     def _require_url(params: dict[str, Any]) -> str:
@@ -264,3 +419,12 @@ class PlaywrightAdapter(BaseAdapter):
                 f"'url' must start with http:// or https:// (got {url!r})",
             )
         return url
+
+    @staticmethod
+    def _require_str(params: dict[str, Any], key: str) -> str:
+        value = params.get(key)
+        if not value or not isinstance(value, str):
+            raise AdapterValidationError(
+                "playwright", f"'{key}' is required (str)",
+            )
+        return value

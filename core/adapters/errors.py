@@ -83,3 +83,27 @@ class AdapterTimeout(AdapterError):
     """The vendor accepted the request but did not respond within
     the adapter's deadline. Treated like ``AdapterUnavailable``
     by the router."""
+
+
+class CaptchaDetected(AdapterError):
+    """The browser adapter hit a bot challenge page (Cloudflare,
+    hCaptcha, reCAPTCHA) that it cannot solve. Surfaces as a loud,
+    distinct failure so the controller can escalate instead of
+    burning retries against a wall that will never open.
+
+    Carries the provider label ("cloudflare" / "hcaptcha" /
+    "recaptcha" / "unknown") and the challenged URL so operators
+    can inspect what triggered it.
+    """
+
+    def __init__(
+        self,
+        adapter: str,
+        reason: str = "",
+        *,
+        provider: str = "unknown",
+        url: str | None = None,
+    ) -> None:
+        super().__init__(adapter, reason or f"captcha detected: {provider}")
+        self.provider = provider
+        self.url = url

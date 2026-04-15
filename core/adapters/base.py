@@ -137,6 +137,9 @@ class Capability(str, Enum):
     # ── Browser automation ────────────────
     BROWSER_SCREENSHOT = "browser_screenshot"
     BROWSER_EXTRACT = "browser_extract"
+    BROWSER_CLICK = "browser_click"
+    BROWSER_FILL = "browser_fill"
+    BROWSER_WAIT_SELECTOR = "browser_wait_selector"
 
     # ── Vector database ──────────────────
     VECTOR_STORE = "vector_store"

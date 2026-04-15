@@ -2010,10 +2010,24 @@ class AutonomousController:
         # the export (and to bump _last_vault_export_ts so any
         # racing cycle sees the updated timestamp). The slow
         # bridge.export_knowledge() call happens OUTSIDE the lock.
-        with self._vault_export_lock:
+        #
+        # Tests build a bare controller via ``__new__`` to exercise
+        # just the reflection path, skipping ``__init__``. Fall
+        # back to sensible defaults so the vault hook stays a
+        # no-op instead of crashing the reflection path.
+        lock = getattr(self, "_vault_export_lock", None)
+        if lock is None:
+            import threading
+            lock = threading.Lock()
+            self._vault_export_lock = lock
+        last_ts = float(getattr(self, "_last_vault_export_ts", 0.0) or 0.0)
+        interval = float(
+            getattr(self, "_vault_min_export_interval_sec", 3600.0) or 3600.0
+        )
+        with lock:
             now = time.time()
-            elapsed = now - self._last_vault_export_ts
-            due_for_sweep = elapsed >= self._vault_min_export_interval_sec
+            elapsed = now - last_ts
+            due_for_sweep = elapsed >= interval
             if promoted == 0 and not due_for_sweep:
                 return
             self._last_vault_export_ts = now
