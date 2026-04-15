@@ -72,7 +72,8 @@ query ListDiscounts($first: Int!, $after: String, $query: String) {
             appliesOncePerCustomer
             asyncUsageCount
             summary
-            codes(first: 1) {
+            codes(first: 50) {
+              pageInfo { hasNextPage }
               edges { node { code } }
             }
           }
@@ -84,7 +85,10 @@ query ListDiscounts($first: Int!, $after: String, $query: String) {
             usageLimit
             asyncUsageCount
             summary
-            codes(first: 1) { edges { node { code } } }
+            codes(first: 50) {
+              pageInfo { hasNextPage }
+              edges { node { code } }
+            }
           }
           ... on DiscountCodeFreeShipping {
             title
@@ -95,7 +99,23 @@ query ListDiscounts($first: Int!, $after: String, $query: String) {
             appliesOncePerCustomer
             asyncUsageCount
             summary
-            codes(first: 1) { edges { node { code } } }
+            codes(first: 50) {
+              pageInfo { hasNextPage }
+              edges { node { code } }
+            }
+          }
+          ... on DiscountCodeApp {
+            title
+            status
+            startsAt
+            endsAt
+            usageLimit
+            appliesOncePerCustomer
+            asyncUsageCount
+            codes(first: 50) {
+              pageInfo { hasNextPage }
+              edges { node { code } }
+            }
           }
         }
       }
@@ -103,6 +123,19 @@ query ListDiscounts($first: Int!, $after: String, $query: String) {
   }
 }
 """.strip()
+
+
+# Map Shopify's GraphQL typename to a stable, human- and
+# machine-readable slug. Callers use this to reason about
+# discount stacking ("don't stack percentage on percentage"),
+# so preserving the subclass taxonomy matters — a flat
+# lowercase typename loses that.
+_DISCOUNT_TYPE_SLUG = {
+    "DiscountCodeBasic": "basic",
+    "DiscountCodeBxgy": "bxgy",
+    "DiscountCodeFreeShipping": "free_shipping",
+    "DiscountCodeApp": "app",
+}
 
 
 class ShopifyDiscountReadAdapter(ShopifyBaseAdapter):
@@ -150,22 +183,31 @@ class ShopifyDiscountReadAdapter(ShopifyBaseAdapter):
         for edge in edges:
             node = edge.get("node") or {}
             cd = node.get("codeDiscount") or {}
-            # Extract the (first) code attached to the node. Every
-            # code node has at least one code in practice, but
-            # guard defensively so a malformed payload can't
-            # crash the whole list.
-            code_edges = (cd.get("codes") or {}).get("edges") or []
-            code_str = ""
-            if code_edges:
-                code_str = (
-                    (code_edges[0].get("node") or {}).get("code") or ""
-                )
+            codes_block = cd.get("codes") or {}
+            # Extract all attached codes (bulk-code promos can
+            # have thousands — we fetch 50 and surface a
+            # has_more_codes flag instead of silently showing
+            # just the first one).
+            code_edges = codes_block.get("edges") or []
+            codes_list: list[str] = []
+            for ce in code_edges:
+                c = (ce.get("node") or {}).get("code")
+                if c:
+                    codes_list.append(c)
+            has_more_codes = bool(
+                (codes_block.get("pageInfo") or {}).get("hasNextPage"),
+            )
+            code_str = codes_list[0] if codes_list else ""
 
+            typename = cd.get("__typename", "") or ""
             out.append({
                 "id": node.get("id", "") or "",
                 "code": code_str,
+                "codes": codes_list,
+                "has_more_codes": has_more_codes,
                 "title": cd.get("title", "") or "",
-                "type": (cd.get("__typename", "") or "").lower(),
+                "type": _DISCOUNT_TYPE_SLUG.get(typename, "unknown"),
+                "typename": typename,
                 "status": (cd.get("status", "") or "").lower(),
                 "starts_at": cd.get("startsAt", "") or "",
                 "ends_at": cd.get("endsAt", "") or "",

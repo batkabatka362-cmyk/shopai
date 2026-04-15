@@ -70,8 +70,8 @@ mutation UpdateCustomer($input: CustomerInput!) {
       phone
       firstName
       lastName
-      emailMarketingConsent { marketingState }
-      smsMarketingConsent { marketingState }
+      emailMarketingConsent { marketingState marketingOptInLevel }
+      smsMarketingConsent { marketingState marketingOptInLevel }
     }
     userErrors { field message code }
   }
@@ -79,17 +79,37 @@ mutation UpdateCustomer($input: CustomerInput!) {
 """.strip()
 
 
-_FETCH_TAGS_QUERY = """
-query CustomerTags($id: ID!) {
-  customer(id: $id) {
-    id
-    tags
+# Atomic tag-delta mutations — these avoid the read-then-write
+# lost-update race that plain customerUpdate(tags=[...]) suffers
+# when multiple agents (loyalty, CS, dunning) tag the same
+# customer concurrently. Shopify runs them server-side as
+# indivisible set-union / set-difference operations.
+_TAGS_ADD_MUTATION = """
+mutation TagsAdd($id: ID!, $tags: [String!]!) {
+  tagsAdd(id: $id, tags: $tags) {
+    node { ... on Customer { id tags } }
+    userErrors { field message }
+  }
+}
+""".strip()
+
+_TAGS_REMOVE_MUTATION = """
+mutation TagsRemove($id: ID!, $tags: [String!]!) {
+  tagsRemove(id: $id, tags: $tags) {
+    node { ... on Customer { id tags } }
+    userErrors { field message }
   }
 }
 """.strip()
 
 
-_MARKETING_STATES = {"subscribed", "unsubscribed", "pending", "not_subscribed"}
+# Only states the API allows callers to SET. ``pending`` and
+# ``redacted`` are server-controlled and get rejected if posted
+# by a client — reject them up front to avoid a round-trip.
+_MARKETING_STATES = {"subscribed", "unsubscribed", "not_subscribed"}
+_MARKETING_OPT_IN_LEVELS = {
+    "single_opt_in", "confirmed_opt_in", "unknown",
+}
 
 
 class ShopifyCustomerMutateAdapter(ShopifyBaseAdapter):
@@ -123,6 +143,27 @@ class ShopifyCustomerMutateAdapter(ShopifyBaseAdapter):
         add_tags = params.get("add_tags")
         remove_tags = params.get("remove_tags")
 
+        # add_tags + remove_tags with overlap is almost always a
+        # caller bug — "add 'vip' but also remove 'VIP'" makes no
+        # sense. Surface it instead of silently picking a winner.
+        if add_tags and remove_tags:
+            add_lc = {str(t).strip().lower() for t in (add_tags or [])}
+            rm_lc = {str(t).strip().lower() for t in (remove_tags or [])}
+            overlap = add_lc & rm_lc
+            if overlap:
+                raise AdapterValidationError(
+                    self.name,
+                    f"'add_tags' and 'remove_tags' overlap: {sorted(overlap)}",
+                )
+
+        # Deferred relative-edit plan. We execute these AFTER the
+        # main customerUpdate so the other field mutations can't
+        # be invalidated by a transient tags fetch, and so the
+        # tagsAdd/tagsRemove atomic deltas avoid the lost-update
+        # race that read-then-write had.
+        tags_add_list: list[str] = []
+        tags_remove_list: list[str] = []
+
         if tags_abs is not None:
             if not isinstance(tags_abs, list):
                 raise AdapterValidationError(
@@ -132,10 +173,6 @@ class ShopifyCustomerMutateAdapter(ShopifyBaseAdapter):
             input_payload["tags"] = cleaned
             updated_fields.append("tags")
         elif add_tags or remove_tags:
-            # Relative edit: read current tags, apply delta.
-            # We do this BEFORE the mutation (not inside) because
-            # Shopify's tags field is an absolute replace, not a
-            # delta.
             if add_tags is not None and not isinstance(add_tags, list):
                 raise AdapterValidationError(
                     self.name, "'add_tags' must be a list of strings",
@@ -144,15 +181,10 @@ class ShopifyCustomerMutateAdapter(ShopifyBaseAdapter):
                 raise AdapterValidationError(
                     self.name, "'remove_tags' must be a list of strings",
                 )
-            current = self._fetch_current_tags(gid)
-            merged = list(current)
-            for t in self._clean_tags(add_tags or []):
-                if t not in merged:
-                    merged.append(t)
-            remove_set = {t.lower() for t in self._clean_tags(remove_tags or [])}
-            merged = [t for t in merged if t.lower() not in remove_set]
-            input_payload["tags"] = merged
-            updated_fields.append("tags")
+            tags_add_list = self._clean_tags(add_tags or [])
+            tags_remove_list = self._clean_tags(remove_tags or [])
+            if tags_add_list or tags_remove_list:
+                updated_fields.append("tags")
 
         # ── Scalar fields ─────────────────────────────────────
         for local_key, remote_key in (
@@ -167,51 +199,82 @@ class ShopifyCustomerMutateAdapter(ShopifyBaseAdapter):
                 updated_fields.append(local_key)
 
         # ── Marketing consent ─────────────────────────────────
-        email_state = params.get("email_marketing_state")
-        if email_state is not None:
-            state = str(email_state).strip().lower()
-            if state not in _MARKETING_STATES:
-                raise AdapterValidationError(
-                    self.name,
-                    f"'email_marketing_state' must be one of "
-                    f"{sorted(_MARKETING_STATES)}",
-                )
-            input_payload["emailMarketingConsent"] = {
-                "marketingState": state.upper(),
-            }
+        # Shopify REQUIRES marketingOptInLevel when transitioning
+        # a subscription state to SUBSCRIBED — without it, the
+        # API returns userError "marketingOptInLevel can't be blank"
+        # and the whole update fails.
+        email_opt_in = params.get("email_marketing_opt_in_level")
+        email_consent = self._build_consent(
+            params.get("email_marketing_state"),
+            email_opt_in,
+            field_name="email_marketing_state",
+        )
+        if email_consent:
+            input_payload["emailMarketingConsent"] = email_consent
             updated_fields.append("email_marketing_state")
 
-        sms_state = params.get("sms_marketing_state")
-        if sms_state is not None:
-            state = str(sms_state).strip().lower()
-            if state not in _MARKETING_STATES:
-                raise AdapterValidationError(
-                    self.name,
-                    f"'sms_marketing_state' must be one of "
-                    f"{sorted(_MARKETING_STATES)}",
-                )
-            input_payload["smsMarketingConsent"] = {
-                "marketingState": state.upper(),
-            }
+        sms_opt_in = params.get("sms_marketing_opt_in_level")
+        sms_consent = self._build_consent(
+            params.get("sms_marketing_state"),
+            sms_opt_in,
+            field_name="sms_marketing_state",
+        )
+        if sms_consent:
+            input_payload["smsMarketingConsent"] = sms_consent
             updated_fields.append("sms_marketing_state")
 
         # Nothing to update → refuse rather than round-trip.
-        # customerUpdate with just {id} is a waste of quota and
-        # the caller's intent is almost certainly a bug.
-        if len(input_payload) == 1:
+        has_update_fields = len(input_payload) > 1
+        has_tag_delta = bool(tags_add_list or tags_remove_list)
+        if not has_update_fields and not has_tag_delta:
             raise AdapterValidationError(
                 self.name,
                 "no mutable fields provided (tags, note, email, phone, "
                 "first_name, last_name, *_marketing_state)",
             )
 
-        data = self._gql(
-            _CUSTOMER_UPDATE_MUTATION, {"input": input_payload},
-        )
-        self._check_user_errors(data, "customerUpdate")
+        # Run the main customerUpdate only if there's something
+        # for it to do. Pure relative-tag edits skip it entirely.
+        customer: dict[str, Any] = {}
+        if has_update_fields:
+            data = self._gql(
+                _CUSTOMER_UPDATE_MUTATION, {"input": input_payload},
+            )
+            self._check_user_errors(data, "customerUpdate")
+            payload = data.get("customerUpdate") or {}
+            customer = payload.get("customer") or {}
+            # Shopify returns customer: null on missing write_customers
+            # scope — with NO userErrors. Surface it loudly.
+            if not customer:
+                from ..errors import AdapterError
+                raise AdapterError(
+                    self.name,
+                    "customerUpdate returned a null customer — "
+                    "check that the access token has write_customers scope",
+                )
 
-        payload = data.get("customerUpdate") or {}
-        customer = payload.get("customer") or {}
+        # Atomic relative tag edits. tagsAdd and tagsRemove run
+        # server-side as set operations — no lost-update race
+        # even if a parallel agent is retagging the customer.
+        if tags_add_list:
+            add_data = self._gql(
+                _TAGS_ADD_MUTATION, {"id": gid, "tags": tags_add_list},
+            )
+            self._check_user_errors(add_data, "tagsAdd")
+            node = (add_data.get("tagsAdd") or {}).get("node") or {}
+            if node:
+                customer = customer or {}
+                customer["tags"] = list(node.get("tags") or customer.get("tags") or [])
+        if tags_remove_list:
+            rm_data = self._gql(
+                _TAGS_REMOVE_MUTATION, {"id": gid, "tags": tags_remove_list},
+            )
+            self._check_user_errors(rm_data, "tagsRemove")
+            node = (rm_data.get("tagsRemove") or {}).get("node") or {}
+            if node:
+                customer = customer or {}
+                customer["tags"] = list(node.get("tags") or customer.get("tags") or [])
+
         return self._success(
             Capability.SHOPIFY_UPDATE_CUSTOMER,
             data={
@@ -236,18 +299,48 @@ class ShopifyCustomerMutateAdapter(ShopifyBaseAdapter):
 
     # ── Helpers ────────────────────────────────────────────────
 
-    def _fetch_current_tags(self, gid: str) -> list[str]:
-        """Fetch the customer's current tags so relative
-        add/remove deltas can be applied without clobbering
-        unrelated tags. Raises AdapterValidationError if the
-        customer doesn't exist."""
-        data = self._gql(_FETCH_TAGS_QUERY, {"id": gid})
-        customer = data.get("customer")
-        if not customer:
+    def _build_consent(
+        self,
+        state: Any,
+        opt_in_level: Any,
+        *,
+        field_name: str,
+    ) -> dict[str, Any] | None:
+        """Validate and build a CustomerEmail/SmsMarketingConsentInput.
+
+        Returns ``None`` when the caller passed no state.
+
+        Shopify requires ``marketingOptInLevel`` when the
+        ``marketingState`` is ``SUBSCRIBED``; without it, every
+        subscribe mutation fails at userErrors. Opt-in-level is
+        optional for UNSUBSCRIBED / NOT_SUBSCRIBED.
+        """
+        if state is None:
+            return None
+        state_s = str(state).strip().lower()
+        if state_s not in _MARKETING_STATES:
             raise AdapterValidationError(
-                self.name, f"customer not found: {gid}",
+                self.name,
+                f"'{field_name}' must be one of {sorted(_MARKETING_STATES)}",
             )
-        return list(customer.get("tags") or [])
+        consent: dict[str, Any] = {"marketingState": state_s.upper()}
+        if opt_in_level is not None:
+            level_s = str(opt_in_level).strip().lower()
+            if level_s not in _MARKETING_OPT_IN_LEVELS:
+                raise AdapterValidationError(
+                    self.name,
+                    f"'{field_name}' opt-in level must be one of "
+                    f"{sorted(_MARKETING_OPT_IN_LEVELS)}",
+                )
+            consent["marketingOptInLevel"] = level_s.upper()
+        elif state_s == "subscribed":
+            raise AdapterValidationError(
+                self.name,
+                f"'{field_name}' = subscribed requires "
+                f"'{field_name.replace('_state', '_opt_in_level')}' "
+                f"(one of {sorted(_MARKETING_OPT_IN_LEVELS)})",
+            )
+        return consent
 
     @staticmethod
     def _clean_tags(tags: list[Any]) -> list[str]:

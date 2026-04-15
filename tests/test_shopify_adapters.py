@@ -1277,6 +1277,7 @@ class TestShopifyDiscountReadAdapter:
                                 "asyncUsageCount": 5,
                                 "summary": "15% off",
                                 "codes": {
+                                    "pageInfo": {"hasNextPage": False},
                                     "edges": [{"node": {"code": "SAVE15"}}],
                                 },
                             },
@@ -1295,8 +1296,11 @@ class TestShopifyDiscountReadAdapter:
         assert result.data["page_info"]["has_next_page"] is False
         d = result.data["discounts"][0]
         assert d["code"] == "SAVE15"
+        assert d["codes"] == ["SAVE15"]
+        assert d["has_more_codes"] is False
         assert d["title"] == "Spring"
-        assert d["type"] == "discountcodebasic"
+        assert d["type"] == "basic"
+        assert d["typename"] == "DiscountCodeBasic"
         assert d["status"] == "active"
         assert d["applies_once_per_customer"] is True
         assert d["async_usage_count"] == 5
@@ -1348,6 +1352,74 @@ class TestShopifyDiscountReadAdapter:
         )
         assert not result.ok
         assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_bulk_codes_flagged_has_more(self):
+        """Bulk-code discounts can have thousands of codes —
+        has_more_codes must surface when the inner connection
+        is truncated."""
+        from core.adapters.shopify.discount_read import (
+            ShopifyDiscountReadAdapter,
+        )
+        a = ShopifyDiscountReadAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "codeDiscountNodes": {
+                "pageInfo": {},
+                "edges": [{
+                    "node": {
+                        "id": "gid://shopify/DiscountCodeNode/9",
+                        "codeDiscount": {
+                            "__typename": "DiscountCodeBasic",
+                            "title": "Bulk Codes",
+                            "status": "ACTIVE",
+                            "codes": {
+                                "pageInfo": {"hasNextPage": True},
+                                "edges": [
+                                    {"node": {"code": "BULK001"}},
+                                    {"node": {"code": "BULK002"}},
+                                ],
+                            },
+                        },
+                    },
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_DISCOUNTS, {})
+        assert result.ok
+        d = result.data["discounts"][0]
+        assert d["has_more_codes"] is True
+        assert d["codes"] == ["BULK001", "BULK002"]
+
+    def test_list_discount_code_app_fragment(self):
+        """Shopify Function-based (app) discounts must not show
+        up as blank rows — they belong to the DiscountCodeApp
+        type and need their own fragment."""
+        from core.adapters.shopify.discount_read import (
+            ShopifyDiscountReadAdapter,
+        )
+        a = ShopifyDiscountReadAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "codeDiscountNodes": {
+                "pageInfo": {},
+                "edges": [{
+                    "node": {
+                        "id": "gid://shopify/DiscountCodeNode/app1",
+                        "codeDiscount": {
+                            "__typename": "DiscountCodeApp",
+                            "title": "App-powered",
+                            "status": "ACTIVE",
+                            "codes": {
+                                "edges": [{"node": {"code": "APPCODE"}}],
+                            },
+                        },
+                    },
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_DISCOUNTS, {})
+        assert result.ok
+        d = result.data["discounts"][0]
+        assert d["type"] == "app"
+        assert d["code"] == "APPCODE"
 
     def test_list_missing_codes_edge_is_safe(self):
         """A malformed node (no codes.edges) must NOT crash
@@ -1450,37 +1522,35 @@ class TestShopifyCustomerMutateAdapter:
         # id is the canonical GID
         assert captured["vars"]["input"]["id"] == "gid://shopify/Customer/1"
 
-    def test_update_add_remove_tags_merges(self):
-        """add_tags/remove_tags triggers a read-then-write dance
-        so unrelated tags aren't stomped."""
+    def test_update_add_remove_tags_uses_atomic_mutations(self):
+        """add_tags/remove_tags uses Shopify's tagsAdd / tagsRemove
+        mutations — atomic server-side deltas with no lost-update
+        race under concurrent tagging by other agents."""
         from core.adapters.shopify.customer_mutate import (
             ShopifyCustomerMutateAdapter,
         )
         a = ShopifyCustomerMutateAdapter(shop_url="s", access_token="t")
 
-        fetch_response = {
-            "customer": {
-                "id": "gid://shopify/Customer/2",
-                "tags": ["loyal", "inactive", "newsletter"],
-            },
-        }
-        update_response = {
-            "customerUpdate": {
-                "customer": {
-                    "id": "gid://shopify/Customer/2",
-                    "tags": ["loyal", "newsletter", "winback-2026"],
-                },
-                "userErrors": [],
-            },
-        }
-
         calls: list[tuple[str, dict]] = []
 
         def fake_gql(query, variables):
             calls.append((query, variables))
-            if "customer(id:" in query:
-                return fetch_response
-            return update_response
+            if "tagsAdd" in query:
+                return {"tagsAdd": {
+                    "node": {
+                        "id": "gid://shopify/Customer/2",
+                        "tags": ["loyal", "inactive", "newsletter",
+                                 "winback-2026"],
+                    },
+                    "userErrors": [],
+                }}
+            return {"tagsRemove": {
+                "node": {
+                    "id": "gid://shopify/Customer/2",
+                    "tags": ["loyal", "newsletter", "winback-2026"],
+                },
+                "userErrors": [],
+            }}
 
         with patch.object(a, "_gql", side_effect=fake_gql):
             result = a.execute(
@@ -1488,19 +1558,25 @@ class TestShopifyCustomerMutateAdapter:
                 {
                     "customer_id": "2",
                     "add_tags": ["winback-2026"],
-                    "remove_tags": ["INACTIVE"],  # case-insensitive
+                    "remove_tags": ["INACTIVE"],
                 },
             )
         assert result.ok
-        # The mutation payload must carry the merged tag list.
-        mutation_vars = calls[1][1]
-        assert mutation_vars["input"]["tags"] == [
+        # Exactly two calls — tagsAdd + tagsRemove (no fetch,
+        # no customerUpdate with only {id}).
+        assert len(calls) == 2
+        assert "tagsAdd" in calls[0][0]
+        assert calls[0][1]["tags"] == ["winback-2026"]
+        assert "tagsRemove" in calls[1][0]
+        assert calls[1][1]["tags"] == ["INACTIVE"]
+        # Final tags reflect the server-side state.
+        assert result.data["tags"] == [
             "loyal", "newsletter", "winback-2026",
         ]
 
-    def test_update_absolute_tags_overrides_deltas(self):
-        """When 'tags' is given alongside add/remove, the absolute
-        list wins and no read is performed."""
+    def test_update_absolute_tags_uses_customerUpdate(self):
+        """'tags' (absolute) goes through customerUpdate, NOT
+        the atomic delta mutations."""
         from core.adapters.shopify.customer_mutate import (
             ShopifyCustomerMutateAdapter,
         )
@@ -1525,13 +1601,30 @@ class TestShopifyCustomerMutateAdapter:
                 {
                     "customer_id": "3",
                     "tags": ["x"],
-                    "add_tags": ["never-used"],
-                    "remove_tags": ["never-used"],
                 },
             )
         assert result.ok
-        # No fetch call happened — only the mutation.
         assert len(calls) == 1
+        assert "customerUpdate" in calls[0]
+
+    def test_update_add_remove_overlap_rejected(self):
+        """Overlapping add_tags/remove_tags is a caller bug —
+        surface it instead of silently resolving one way."""
+        from core.adapters.shopify.customer_mutate import (
+            ShopifyCustomerMutateAdapter,
+        )
+        a = ShopifyCustomerMutateAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER,
+            {
+                "customer_id": "3",
+                "add_tags": ["vip"],
+                "remove_tags": ["VIP"],  # case-insensitive clash
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+        assert "overlap" in str(result.error).lower()
 
     def test_update_marketing_state(self):
         from core.adapters.shopify.customer_mutate import (
@@ -1622,20 +1715,73 @@ class TestShopifyCustomerMutateAdapter:
         assert isinstance(result.error, AdapterValidationError)
         assert "Email is invalid" in str(result.error)
 
-    def test_update_add_tags_on_missing_customer(self):
-        """Relative tag edit on a nonexistent customer must
-        raise a clear validation error, not a silent success."""
+    def test_update_null_customer_response_raises(self):
+        """Shopify returns customer=null (no userErrors) when the
+        access token lacks write_customers scope — surface it
+        loudly instead of returning ok=True with empty data."""
+        from core.adapters.shopify.customer_mutate import (
+            ShopifyCustomerMutateAdapter,
+        )
+        from core.adapters.errors import AdapterError
+        a = ShopifyCustomerMutateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customerUpdate": {"customer": None, "userErrors": []},
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CUSTOMER,
+                {"customer_id": "1", "note": "x"},
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterError)
+        assert "scope" in str(result.error).lower()
+
+    def test_update_subscribed_requires_opt_in_level(self):
+        """Email marketing SUBSCRIBED without opt-in-level used
+        to round-trip and fail at Shopify; reject up front."""
         from core.adapters.shopify.customer_mutate import (
             ShopifyCustomerMutateAdapter,
         )
         a = ShopifyCustomerMutateAdapter(shop_url="s", access_token="t")
-        with patch.object(a, "_gql", return_value={"customer": None}):
-            result = a.execute(
-                Capability.SHOPIFY_UPDATE_CUSTOMER,
-                {"customer_id": "404", "add_tags": ["x"]},
-            )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER,
+            {"customer_id": "1", "email_marketing_state": "subscribed"},
+        )
         assert not result.ok
         assert isinstance(result.error, AdapterValidationError)
+        assert "opt_in_level" in str(result.error)
+
+    def test_update_subscribed_with_opt_in_succeeds(self):
+        from core.adapters.shopify.customer_mutate import (
+            ShopifyCustomerMutateAdapter,
+        )
+        a = ShopifyCustomerMutateAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+        def fake_gql(query, variables):
+            captured["vars"] = variables
+            return {"customerUpdate": {
+                "customer": {
+                    "id": "gid://shopify/Customer/1",
+                    "tags": [],
+                    "emailMarketingConsent": {
+                        "marketingState": "SUBSCRIBED",
+                        "marketingOptInLevel": "SINGLE_OPT_IN",
+                    },
+                },
+                "userErrors": [],
+            }}
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CUSTOMER,
+                {
+                    "customer_id": "1",
+                    "email_marketing_state": "subscribed",
+                    "email_marketing_opt_in_level": "single_opt_in",
+                },
+            )
+        assert result.ok
+        consent = captured["vars"]["input"]["emailMarketingConsent"]
+        assert consent["marketingState"] == "SUBSCRIBED"
+        assert consent["marketingOptInLevel"] == "SINGLE_OPT_IN"
 
 
 # ── ShopifyRefundAdapter ─────────────────────────────────────
@@ -1870,6 +2016,289 @@ class TestShopifyRefundAdapter:
         assert result.ok
         mvars = calls[1][1]
         assert mvars["input"]["transactions"][0]["amount"] == "50.00"
+
+    def test_refund_full_plus_amount_rejected(self):
+        """refund_full and amount together is ambiguous — must
+        raise rather than silently preferring one branch."""
+        from core.adapters.shopify.refund import ShopifyRefundAdapter
+        a = ShopifyRefundAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_REFUND,
+            {
+                "order_id": "1",
+                "refund_full": True,
+                "amount": 5.0,
+                "currency": "USD",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+        assert "mutually exclusive" in str(result.error)
+
+    def test_refund_full_zero_outstanding_rejected(self):
+        """An already-fully-refunded order has outstanding=0.00
+        (a truthy string). A naive truthiness check would let
+        this through and fire a zero-dollar refund."""
+        from core.adapters.shopify.refund import ShopifyRefundAdapter
+        a = ShopifyRefundAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "currencyCode": "USD",
+                "totalOutstandingSet": {
+                    "shopMoney": {"amount": "0.00", "currencyCode": "USD"},
+                },
+                "transactions": [{
+                    "id": "gid://shopify/Transaction/cap",
+                    "kind": "CAPTURE", "status": "SUCCESS",
+                    "createdAt": "2026-04-14T12:00:00Z",
+                    "amountSet": {
+                        "shopMoney": {"amount": "10.00", "currencyCode": "USD"},
+                    },
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_REFUND,
+                {"order_id": "1", "refund_full": True},
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+        assert "outstanding" in str(result.error).lower()
+
+    def test_refund_uses_parent_gateway_not_hardcoded_manual(self):
+        """The refund transaction must inherit the parent's
+        gateway — Shopify rejects Stripe refunds tagged as
+        'manual' with 'gateway must match parent'."""
+        from core.adapters.shopify.refund import ShopifyRefundAdapter
+        a = ShopifyRefundAdapter(shop_url="s", access_token="t")
+
+        fetch = {
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "currencyCode": "USD",
+                "totalOutstandingSet": {
+                    "shopMoney": {"amount": "10.00", "currencyCode": "USD"},
+                },
+                "transactions": [{
+                    "id": "gid://shopify/Transaction/stripe_cap",
+                    "kind": "CAPTURE", "status": "SUCCESS",
+                    "gateway": "stripe",
+                    "createdAt": "2026-04-14T12:00:00Z",
+                    "amountSet": {
+                        "shopMoney": {"amount": "10.00", "currencyCode": "USD"},
+                    },
+                }],
+            },
+        }
+        mutate = {
+            "refundCreate": {
+                "refund": {
+                    "id": "gid://shopify/Refund/1",
+                    "totalRefundedSet": {
+                        "shopMoney": {
+                            "amount": "5.00", "currencyCode": "USD",
+                        },
+                    },
+                    "refundLineItems": {"edges": []},
+                    "createdAt": "", "note": "",
+                },
+                "order": {},
+                "userErrors": [],
+            },
+        }
+        calls: list = []
+        def fake_gql(query, variables):
+            calls.append((query, variables))
+            return fetch if "transactions(first" in query else mutate
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_REFUND,
+                {"order_id": "1", "amount": 5.0, "currency": "USD"},
+            )
+        assert result.ok
+        mvars = calls[1][1]
+        assert mvars["input"]["transactions"][0]["gateway"] == "stripe"
+
+    def test_refund_picks_most_recent_capture(self):
+        """Multi-capture orders (split-shipment) must refund
+        against the NEWEST capture, not the first one returned."""
+        from core.adapters.shopify.refund import ShopifyRefundAdapter
+        a = ShopifyRefundAdapter(shop_url="s", access_token="t")
+
+        fetch = {
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "currencyCode": "USD",
+                "totalOutstandingSet": {
+                    "shopMoney": {"amount": "20.00", "currencyCode": "USD"},
+                },
+                "transactions": [
+                    {
+                        "id": "gid://shopify/Transaction/old",
+                        "kind": "CAPTURE", "status": "SUCCESS",
+                        "gateway": "stripe",
+                        "createdAt": "2026-04-10T00:00:00Z",
+                        "amountSet": {"shopMoney": {
+                            "amount": "10.00", "currencyCode": "USD",
+                        }},
+                    },
+                    {
+                        "id": "gid://shopify/Transaction/new",
+                        "kind": "CAPTURE", "status": "SUCCESS",
+                        "gateway": "stripe",
+                        "createdAt": "2026-04-14T00:00:00Z",
+                        "amountSet": {"shopMoney": {
+                            "amount": "10.00", "currencyCode": "USD",
+                        }},
+                    },
+                ],
+            },
+        }
+        mutate = {
+            "refundCreate": {
+                "refund": {
+                    "id": "gid://shopify/Refund/1",
+                    "totalRefundedSet": {
+                        "shopMoney": {
+                            "amount": "5.00", "currencyCode": "USD",
+                        },
+                    },
+                    "refundLineItems": {"edges": []},
+                    "createdAt": "", "note": "",
+                },
+                "order": {}, "userErrors": [],
+            },
+        }
+        calls: list = []
+        def fake_gql(query, variables):
+            calls.append((query, variables))
+            return fetch if "transactions(first" in query else mutate
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_CREATE_REFUND,
+                {"order_id": "1", "amount": 5.0, "currency": "USD"},
+            )
+        mvars = calls[1][1]
+        assert mvars["input"]["transactions"][0]["parentId"] == (
+            "gid://shopify/Transaction/new"
+        )
+
+    def test_refund_currency_mismatch_rejected(self):
+        from core.adapters.shopify.refund import ShopifyRefundAdapter
+        a = ShopifyRefundAdapter(shop_url="s", access_token="t")
+
+        with patch.object(a, "_gql", return_value={
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "currencyCode": "USD",
+                "totalOutstandingSet": {
+                    "shopMoney": {"amount": "10.00", "currencyCode": "USD"},
+                },
+                "transactions": [{
+                    "id": "gid://shopify/Transaction/cap",
+                    "kind": "CAPTURE", "status": "SUCCESS",
+                    "gateway": "stripe",
+                    "createdAt": "2026-04-14T12:00:00Z",
+                    "amountSet": {
+                        "shopMoney": {"amount": "10.00", "currencyCode": "USD"},
+                    },
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_REFUND,
+                {"order_id": "1", "amount": 5.0, "currency": "EUR"},
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+        assert "currency" in str(result.error).lower()
+
+    def test_refund_hinted_parent_skips_fetch(self):
+        """When the caller passes parent_transaction_id, the
+        round-trip to fetch transactions is skipped."""
+        from core.adapters.shopify.refund import ShopifyRefundAdapter
+        a = ShopifyRefundAdapter(shop_url="s", access_token="t")
+        calls: list = []
+        def fake_gql(query, variables):
+            calls.append((query, variables))
+            return {
+                "refundCreate": {
+                    "refund": {
+                        "id": "gid://shopify/Refund/1",
+                        "totalRefundedSet": {
+                            "shopMoney": {
+                                "amount": "5.00", "currencyCode": "USD",
+                            },
+                        },
+                        "refundLineItems": {"edges": []},
+                        "createdAt": "", "note": "",
+                    },
+                    "order": {}, "userErrors": [],
+                },
+            }
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_REFUND,
+                {
+                    "order_id": "1",
+                    "amount": 5.0,
+                    "currency": "USD",
+                    "parent_transaction_id": "999",
+                    "gateway": "stripe",
+                },
+            )
+        assert result.ok
+        # Only one call — the refund mutation. No fetch.
+        assert len(calls) == 1
+        mvars = calls[0][1]
+        assert mvars["input"]["transactions"][0]["parentId"] == (
+            "gid://shopify/OrderTransaction/999"
+        )
+        assert mvars["input"]["transactions"][0]["gateway"] == "stripe"
+
+    def test_refund_null_refund_raises(self):
+        """refundCreate returning null (scope miss) must surface
+        loudly — not return ok=True with empty data."""
+        from core.adapters.shopify.refund import ShopifyRefundAdapter
+        from core.adapters.errors import AdapterError
+        a = ShopifyRefundAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "refundCreate": {
+                "refund": None,
+                "order": None,
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_REFUND,
+                {
+                    "order_id": "1",
+                    "refund_line_items": [{
+                        "line_item_id": "2", "quantity": 1,
+                    }],
+                },
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterError)
+        assert "scope" in str(result.error).lower()
+
+    def test_refund_shipping_no_op_rejected(self):
+        """refund_shipping={} or {"amount": 0} is a caller bug."""
+        from core.adapters.shopify.refund import ShopifyRefundAdapter
+        a = ShopifyRefundAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_REFUND,
+            {
+                "order_id": "1",
+                "refund_line_items": [
+                    {"line_item_id": "2", "quantity": 1},
+                ],
+                "refund_shipping": {"full_refund": False, "amount": 0},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
 
     def test_refund_fails_when_no_capture_exists(self):
         """An order with only an AUTH transaction cannot be
