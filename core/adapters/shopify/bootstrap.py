@@ -22,12 +22,15 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .customer_mutate import ShopifyCustomerMutateAdapter
 from .customers import ShopifyCustomersAdapter
 from .discount import ShopifyDiscountAdapter
+from .discount_read import ShopifyDiscountReadAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
 from .inventory import ShopifyInventoryAdapter
 from .metafield import ShopifyMetafieldAdapter
 from .orders import ShopifyOrdersAdapter
+from .refund import ShopifyRefundAdapter
 from .risk import ShopifyRiskAdapter
 from .segment import ShopifySegmentAdapter
 
@@ -41,7 +44,10 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMetafieldAdapter,
     ShopifyOrdersAdapter,
     ShopifyCustomersAdapter,
+    ShopifyCustomerMutateAdapter,
     ShopifyDiscountAdapter,
+    ShopifyDiscountReadAdapter,
+    ShopifyRefundAdapter,
     ShopifySegmentAdapter,
 )
 

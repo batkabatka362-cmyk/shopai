@@ -104,6 +104,9 @@ class Capability(str, Enum):
     SHOPIFY_ASSESS_RISK = "shopify_assess_risk"
     SHOPIFY_UPDATE_INVENTORY = "shopify_update_inventory"
     SHOPIFY_CREATE_DISCOUNT = "shopify_create_discount"
+    SHOPIFY_LIST_DISCOUNTS = "shopify_list_discounts"
+    SHOPIFY_UPDATE_CUSTOMER = "shopify_update_customer"
+    SHOPIFY_CREATE_REFUND = "shopify_create_refund"
     SHOPIFY_QUERY_SEGMENT = "shopify_query_segment"
     SHOPIFY_SET_METAFIELD = "shopify_set_metafield"
 
