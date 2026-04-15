@@ -602,6 +602,78 @@ class TestBootImport:
         monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
         reset_config()
 
+    def test_boot_import_is_idempotent(self, tmp_path, monkeypatch):
+        """Calling initialize() twice in one process must scan the
+        vault only once — the bridge still content-hashes, but we
+        shouldn't even pay the directory-walk cost on repeat boots."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        _seed_vault(vault)
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        controller = self._make_controller()
+
+        calls = {"n": 0}
+
+        class FakeMemory:
+            def ingest(self, *, category, data, source):
+                calls["n"] += 1
+
+        controller._unified_memory = FakeMemory()
+        r1 = controller._maybe_import_vault_on_boot()
+        assert r1["imported"] >= 1
+        first_calls = calls["n"]
+
+        # Second call must short-circuit.
+        r2 = controller._maybe_import_vault_on_boot()
+        assert r2 == {"imported": 0, "skipped": 0, "errors": 0}
+        assert calls["n"] == first_calls
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_boot_import_retries_after_failure(self, tmp_path, monkeypatch):
+        """A failed import (e.g. vault not yet mounted) must NOT
+        flip _vault_import_done — the next initialize() call
+        should try again."""
+        monkeypatch.setenv(
+            "OBSIDIAN_VAULT_PATH", str(tmp_path / "ghost-vault"),
+        )
+        from core.adapters.config import reset_config
+        reset_config()
+
+        controller = self._make_controller()
+        controller._unified_memory = object()  # would blow up if called
+
+        # Non-existent path → bridge.import_vault returns empty,
+        # not raises. Flag should still be set (clean empty run).
+        # But a true exception (e.g. vault_path=None-ish internal)
+        # must leave the flag untouched. Verify by injecting a
+        # broken bridge import that raises.
+        import core.adapters.obsidian.memory_bridge as mb
+        real = mb.VaultMemoryBridge
+
+        class BoomBridge:
+            def __init__(self, p):
+                raise RuntimeError("fs unavailable")
+
+        monkeypatch.setattr(mb, "VaultMemoryBridge", BoomBridge)
+        r1 = controller._maybe_import_vault_on_boot()
+        assert r1 == {"imported": 0, "skipped": 0, "errors": 0}
+        assert controller._vault_import_done is False
+
+        # Repair the bridge and retry — must not be short-circuited.
+        monkeypatch.setattr(mb, "VaultMemoryBridge", real)
+        tmp_path.joinpath("ghost-vault").mkdir()
+        r2 = controller._maybe_import_vault_on_boot()
+        assert controller._vault_import_done is True
+        assert isinstance(r2, dict)
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
     def test_boot_import_swallows_bridge_failure(
         self, tmp_path, monkeypatch,
     ):
@@ -639,10 +711,12 @@ class TestExportRateLimit:
     ``patterns_promoted > 0``."""
 
     def _make_controller(self, last_ts: float = 0.0):
+        import threading as _th
         from core.autonomous.controller import AutonomousController
         c = AutonomousController.__new__(AutonomousController)
         c._last_vault_export_ts = last_ts
         c._vault_min_export_interval_sec = 3600.0
+        c._vault_export_lock = _th.Lock()
         return c
 
     def test_no_export_when_no_patterns_and_not_due(self, tmp_path, monkeypatch):
@@ -695,6 +769,56 @@ class TestExportRateLimit:
         monkeypatch.setattr(mb, "VaultMemoryBridge", Spy)
         c._maybe_export_to_vault(report)
         assert called["n"] == 1
+
+        monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+        reset_config()
+
+    def test_concurrent_cycles_do_not_both_pass_the_gate(
+        self, tmp_path, monkeypatch,
+    ):
+        """Under concurrent cycle threads both seeing a stale
+        last_ts, the lock must ensure only ONE thread reserves the
+        slot — the other sees the updated ts and skips. We prove
+        this by stalling inside the mocked export long enough for
+        a second thread to hit the gate."""
+        import threading
+        import time as _t
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+        from core.adapters.config import reset_config
+        reset_config()
+
+        c = self._make_controller(last_ts=0.0)
+        report = type("R", (), {"patterns_promoted": 0})()
+
+        calls = {"n": 0}
+        started = threading.Event()
+        release = threading.Event()
+
+        from core.adapters.obsidian import memory_bridge as mb
+        real = mb.VaultMemoryBridge
+
+        class SlowSpy(real):  # type: ignore[misc,valid-type]
+            def export_knowledge(self, memory, **kw):
+                calls["n"] += 1
+                started.set()
+                release.wait(timeout=2.0)
+                return {"exported": 0, "skipped": 0}
+
+        monkeypatch.setattr(mb, "VaultMemoryBridge", SlowSpy)
+
+        t1 = threading.Thread(target=c._maybe_export_to_vault, args=(report,))
+        t1.start()
+        started.wait(timeout=2.0)
+        # At this point thread 1 is inside export_knowledge with
+        # _last_vault_export_ts already bumped. Thread 2 must see
+        # elapsed < interval and bail.
+        c._maybe_export_to_vault(report)
+        release.set()
+        t1.join(timeout=2.0)
+        assert calls["n"] == 1  # only ONE export fired
 
         monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
         reset_config()

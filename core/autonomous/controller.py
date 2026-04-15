@@ -162,6 +162,14 @@ class AutonomousController:
         # when no new patterns have been promoted, but still run an
         # opportunistic check once per hour to pick up out-of-band
         # learned records (e.g. manual memory ingests).
+        #
+        # The lock guards the check-and-update so two concurrent
+        # cycle threads can't both pass the rate gate on the same
+        # tick. We hold it ONLY across the check/reserve section —
+        # the actual bridge.export_knowledge() call happens outside
+        # the critical section so a slow export never blocks the
+        # other cycle's reflection hook.
+        self._vault_export_lock = threading.Lock()
         self._last_vault_export_ts: float = 0.0
         self._vault_import_done: bool = False
         self._vault_min_export_interval_sec: float = 3600.0
@@ -371,11 +379,21 @@ class AutonomousController:
         """Scan the configured Obsidian vault once on startup and
         ingest every ``.md`` note into UnifiedMemory.
 
+        Idempotent — once a successful import has run in this
+        process, subsequent calls return an empty report without
+        re-walking the vault. The bridge itself also skips notes
+        whose content hash hasn't changed, so even when operators
+        call ``initialize()`` multiple times the incremental cost
+        is O(0) after the first run.
+
         Returns the bridge's import report so callers/tests can
         inspect the counts. Silently returns an empty report when
-        the vault is unconfigured or unreachable.
+        the vault is unconfigured, unreachable, or already
+        imported in this process.
         """
         empty = {"imported": 0, "skipped": 0, "errors": 0}
+        if getattr(self, "_vault_import_done", False):
+            return empty
         try:
             from core.adapters.config import get_config
             vault_path = get_config().get("obsidian_vault_path")
@@ -386,6 +404,9 @@ class AutonomousController:
             from core.adapters.obsidian.memory_bridge import VaultMemoryBridge
             bridge = VaultMemoryBridge(vault_path)
             result = bridge.import_vault(self._unified_memory)
+            # Mark done only on a clean run so a transient failure
+            # (e.g. vault path was a symlink dangling at boot) gets
+            # another attempt next time initialize() is called.
             self._vault_import_done = True
             if result.get("imported", 0) or result.get("errors", 0):
                 logger.info(
@@ -1984,11 +2005,18 @@ class AutonomousController:
         write failure is silently logged — never breaks the cycle.
         """
         promoted = int(getattr(report, "patterns_promoted", 0) or 0)
-        now = time.time()
-        elapsed = now - self._last_vault_export_ts
-        due_for_sweep = elapsed >= self._vault_min_export_interval_sec
-        if promoted == 0 and not due_for_sweep:
-            return
+        # Thread-safe check-and-reserve: the lock is held only long
+        # enough to decide whether THIS cycle is the one that runs
+        # the export (and to bump _last_vault_export_ts so any
+        # racing cycle sees the updated timestamp). The slow
+        # bridge.export_knowledge() call happens OUTSIDE the lock.
+        with self._vault_export_lock:
+            now = time.time()
+            elapsed = now - self._last_vault_export_ts
+            due_for_sweep = elapsed >= self._vault_min_export_interval_sec
+            if promoted == 0 and not due_for_sweep:
+                return
+            self._last_vault_export_ts = now
         try:
             from core.adapters.config import get_config
             vault_path = get_config().get("obsidian_vault_path")
@@ -1998,7 +2026,6 @@ class AutonomousController:
             from core.memory.unified_memory import get_unified_memory
             bridge = VaultMemoryBridge(vault_path)
             result = bridge.export_knowledge(get_unified_memory(), limit=10)
-            self._last_vault_export_ts = now
             if result.get("exported", 0):
                 logger.info(
                     "Vault auto-export: %d notes written "
