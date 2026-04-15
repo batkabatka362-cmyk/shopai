@@ -63,6 +63,15 @@ class AdapterCategory(str, Enum):
     PAYMENT = "payment"                    # Payment processors
     LOGISTICS = "logistics"                # Shipping carrier APIs
     KNOWLEDGE_BASE = "knowledge_base"      # Obsidian / Notion / local vaults
+    BROWSER = "browser"                    # Browser automation (Playwright)
+    VECTOR_DB = "vector_db"                # Vector databases (Weaviate, Pinecone)
+    SUBSCRIPTION = "subscription"          # Subscription management (ReCharge)
+    VOICE = "voice"                        # Voice / TTS / speech APIs
+    AUTOMATION = "automation"              # Workflow automation (Zapier, n8n)
+    REVIEWS = "reviews"                    # Product reviews (Judge.me)
+    HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
+    CRM = "crm"                            # Customer relationship management (HubSpot)
+    SOURCING = "sourcing"                  # Dropshipping suppliers (CJ, AutoDS, Spocket)
     OTHER = "other"
 
 
@@ -96,6 +105,9 @@ class Capability(str, Enum):
     SHOPIFY_ASSESS_RISK = "shopify_assess_risk"
     SHOPIFY_UPDATE_INVENTORY = "shopify_update_inventory"
     SHOPIFY_CREATE_DISCOUNT = "shopify_create_discount"
+    SHOPIFY_LIST_DISCOUNTS = "shopify_list_discounts"
+    SHOPIFY_UPDATE_CUSTOMER = "shopify_update_customer"
+    SHOPIFY_CREATE_REFUND = "shopify_create_refund"
     SHOPIFY_QUERY_SEGMENT = "shopify_query_segment"
     SHOPIFY_SET_METAFIELD = "shopify_set_metafield"
 
@@ -126,10 +138,70 @@ class Capability(str, Enum):
     PAYMENT_CAPTURE = "payment_capture"
     PAYMENT_LIST_DISPUTES = "payment_list_disputes"
 
+    # ── Browser automation ────────────────
+    BROWSER_SCREENSHOT = "browser_screenshot"
+    BROWSER_EXTRACT = "browser_extract"
+    BROWSER_CLICK = "browser_click"
+    BROWSER_FILL = "browser_fill"
+    BROWSER_WAIT_SELECTOR = "browser_wait_selector"
+
+    # ── Vector database ──────────────────
+    VECTOR_STORE = "vector_store"
+    VECTOR_SEARCH = "vector_search"
+    VECTOR_DELETE = "vector_delete"
+
     # ── Knowledge base ────────────────────
     VAULT_READ_NOTES = "vault_read_notes"
     VAULT_SEARCH_NOTES = "vault_search_notes"
     VAULT_WRITE_NOTE = "vault_write_note"
+
+    # ── Advertising ───────────────────────
+    ADS_CREATE_CAMPAIGN = "ads_create_campaign"
+    ADS_GET_PERFORMANCE = "ads_get_performance"
+    ADS_UPDATE_BUDGET = "ads_update_budget"
+    ADS_PAUSE_CAMPAIGN = "ads_pause_campaign"
+    ADS_RESUME_CAMPAIGN = "ads_resume_campaign"
+
+    # ── Ads intelligence / spy ────────────
+    # Used to discover winning products already proven on
+    # competitor ad platforms. Every spy adapter (free scrapers
+    # and paid APIs like Minea, PiPiAds, BigSpy) returns the
+    # same normalised ad-record shape so the winning-product
+    # engine can rank across sources without vendor-specific code.
+    ADS_SPY_SEARCH = "ads_spy_search"            # Search ads by keyword/country
+    ADS_SPY_TOP_PRODUCTS = "ads_spy_top_products"  # Trending products by engagement
+    ADS_SPY_AD_DETAILS = "ads_spy_ad_details"      # Single ad deep-dive
+
+    # ── Voice / TTS ──────────────────────
+    VOICE_TEXT_TO_SPEECH = "voice_text_to_speech"
+    VOICE_LIST_VOICES = "voice_list_voices"
+
+    # ── Automation ────────────────────────
+    AUTOMATION_TRIGGER = "automation_trigger"
+    AUTOMATION_LIST_ZAPS = "automation_list_zaps"
+
+    # ── Helpdesk / Customer support ──────
+    HELPDESK_LIST_CONVERSATIONS = "helpdesk_list_conversations"
+    HELPDESK_SEND_REPLY = "helpdesk_send_reply"
+    HELPDESK_SEARCH_CONTACTS = "helpdesk_search_contacts"
+    HELPDESK_CREATE_TICKET = "helpdesk_create_ticket"
+
+    # ── Analytics ─────────────────────────
+    ANALYTICS_TRACK_EVENT = "analytics_track_event"
+    ANALYTICS_QUERY = "analytics_query"
+    ANALYTICS_IDENTIFY = "analytics_identify"
+
+    # ── CRM ──────────────────────────────
+    CRM_SEARCH_CONTACTS = "crm_search_contacts"
+    CRM_UPSERT_CONTACT = "crm_upsert_contact"
+    CRM_LIST_DEALS = "crm_list_deals"
+    CRM_CREATE_DEAL = "crm_create_deal"
+
+    # ── Sourcing / dropshipping ───────────
+    SOURCING_SEARCH_PRODUCTS = "sourcing_search_products"
+    SOURCING_GET_PRODUCT = "sourcing_get_product"
+    SOURCING_CREATE_ORDER = "sourcing_create_order"
+    SOURCING_GET_ORDER_STATUS = "sourcing_get_order_status"
 
 
 # ── Result envelope ────────────────────────────────────────────
