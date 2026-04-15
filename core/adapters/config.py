@@ -172,6 +172,27 @@ ENV_ALIASES: dict[str, str] = {
     # ── Voice / TTS ──────────────────────
     "elevenlabs":       "ELEVENLABS_API_KEY",
 
+    # ── Video generation / stock ──────────
+    # Pexels: free stock video search (requires free API key).
+    # Primary source for the "stock + voiceover" creative path —
+    # combines a Pexels clip with an ElevenLabs voiceover to
+    # produce ad creative at ~$0.20-0.50 per video.
+    "pexels":           "PEXELS_API_KEY",
+    # Pixabay: alternative free stock source (different library
+    # coverage). Used as a fallback when Pexels doesn't match the
+    # product niche.
+    "pixabay":          "PIXABAY_API_KEY",
+    # Higgsfield: AI video generator ($9/mo starter). Excels at
+    # product-in-scene / lifestyle shots. Primary AI-video source.
+    "higgsfield":       "HIGGSFIELD_API_KEY",
+    # Runway Gen-3: premium AI video ($15/mo). Better motion than
+    # Higgsfield for action-heavy creatives. Use when budget allows.
+    "runway":           "RUNWAY_API_KEY",
+    # Replicate: hosts many open AI video models (Wan, Mochi,
+    # CogVideoX). Pay-per-use; cheap fallback when dedicated
+    # providers are offline or unaffordable.
+    "replicate":        "REPLICATE_API_TOKEN",
+
     # ── Automation ────────────────────────
     "zapier_nla":       "ZAPIER_NLA_API_KEY",
     # n8n: workflow automation; self-hosted or cloud. Base URL

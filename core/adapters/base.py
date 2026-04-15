@@ -57,6 +57,7 @@ class AdapterCategory(str, Enum):
     SMS = "sms"                            # SMS / push notification
     IMAGE_GEN = "image_gen"                # Image generation (Pollinations, HF)
     IMAGE_CDN = "image_cdn"                # Image CDN / optimization
+    VIDEO_GEN = "video_gen"                # Video gen / stock video search (Pexels, Higgsfield)
     TRANSLATION = "translation"            # Translation services
     ANALYTICS = "analytics"                # Analytics ingestion / readout
     ADS = "ads"                            # Ad platform APIs
@@ -175,6 +176,17 @@ class Capability(str, Enum):
     # ── Voice / TTS ──────────────────────
     VOICE_TEXT_TO_SPEECH = "voice_text_to_speech"
     VOICE_LIST_VOICES = "voice_list_voices"
+
+    # ── Video generation / stock ─────────
+    # Hybrid strategy: stock-video libraries (Pexels) + AI video
+    # generators (Higgsfield/Sora/Veo) + simple slideshow fallback.
+    # Consumers call the capability; the router picks the best
+    # configured adapter. Every adapter returns a unified "clip"
+    # record so the ad_creative_generator engine can compose
+    # videos without vendor-specific code.
+    VIDEO_STOCK_SEARCH = "video_stock_search"    # Pexels / Pixabay: query → clips
+    VIDEO_GENERATE = "video_generate"            # AI text→video (Higgsfield/Sora/Veo)
+    VIDEO_GET_STATUS = "video_get_status"        # Poll async AI video job status
 
     # ── Automation ────────────────────────
     AUTOMATION_TRIGGER = "automation_trigger"
