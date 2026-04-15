@@ -256,6 +256,7 @@ class AutonomousController:
                 from core.adapters.reviews.bootstrap import register_all as register_reviews
                 from core.adapters.ads.bootstrap import register_all as register_ads
                 from core.adapters.ads_spy.bootstrap import register_all as register_ads_spy
+                from core.adapters.video_gen.bootstrap import register_all as register_video_gen
                 from core.adapters.subscription.bootstrap import register_all as register_subscription
                 from core.adapters.voice.bootstrap import register_all as register_voice
                 from core.adapters.automation.bootstrap import register_all as register_automation
@@ -277,6 +278,7 @@ class AutonomousController:
                 reviews_status = register_reviews()
                 ads_status = register_ads()
                 ads_spy_status = register_ads_spy()
+                video_gen_status = register_video_gen()
                 subscription_status = register_subscription()
                 voice_status = register_voice()
                 automation_status = register_automation()
@@ -292,6 +294,7 @@ class AutonomousController:
                     **vector_status, **scraper_status,
                     **reviews_status, **ads_status,
                     **ads_spy_status,
+                    **video_gen_status,
                     **subscription_status, **voice_status,
                     **automation_status, **helpdesk_status,
                     **analytics_status, **crm_status,
@@ -303,7 +306,7 @@ class AutonomousController:
                     "%d shipping, %d email, %d SMS, %d payment, "
                     "%d image, %d vault, %d browser, %d vector, "
                     "%d scraper, %d reviews, %d ads, %d ads_spy, "
-                    "%d subscription, %d voice, %d automation)",
+                    "%d video_gen, %d subscription, %d voice, %d automation)",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
                     len(llm_status),
@@ -321,6 +324,7 @@ class AutonomousController:
                     len(reviews_status),
                     len(ads_status),
                     len(ads_spy_status),
+                    len(video_gen_status),
                     len(subscription_status),
                     len(voice_status),
                     len(automation_status),

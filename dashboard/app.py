@@ -3011,6 +3011,11 @@ def start(port: int = 3000) -> None:
         except Exception:
             pass
         try:
+            from core.adapters.video_gen.bootstrap import register_all as reg_video_gen
+            reg_video_gen()
+        except Exception:
+            pass
+        try:
             from core.adapters.subscription.bootstrap import register_all as reg_sub
             reg_sub()
         except Exception:
