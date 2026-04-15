@@ -28,6 +28,60 @@ import tempfile
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _block_network(monkeypatch):
+    """``AutonomousController.run_cycle`` makes real HTTP calls
+    through two paths that would otherwise hang an offline test:
+
+      1. ``SyncService.sync_store`` → Shopify REST API (401 on
+         fake creds; 3 retries × 3 endpoints with backoff).
+      2. ``engines.auto_research`` → WEB_SEARCH adapter (DDGS
+         has no API key requirement so ``is_configured`` always
+         returns True; the router picks it and HTTP-scrapes
+         ``html.duckduckgo.com`` → seconds-to-minutes of wait).
+
+    Neither call is relevant to observing ``phase_errors`` — the
+    tests care that failures are captured into the dict, not that
+    network phases succeed. We stub both at the module level so
+    the cycle runs in-memory only."""
+    # Kill the Shopify sync path.
+    import data_pipeline.store.sync_service as sync_mod
+    monkeypatch.setattr(
+        sync_mod.SyncService, "sync_store",
+        lambda self, store_id: {"status": "skipped-in-test"},
+    )
+    # Kill the auto-research search path. The flow module caches
+    # ``execute_searches`` at import time, so patching both the
+    # source module and the flow's binding prevents the HTTP call.
+    import engines.auto_research.search_executor as se_mod
+    import engines.auto_research.flow as flow_mod
+    monkeypatch.setattr(se_mod, "execute_searches", lambda *a, **k: [])
+    monkeypatch.setattr(flow_mod, "execute_searches", lambda *a, **k: [])
+
+    # Kill the LLM layer. With no OLLAMA running the adapter's
+    # ``requests.post`` raises ConnectionError immediately, but
+    # the router retry policy waits ~30s before trying the next
+    # candidate. Across the cycle's ~5 LLM-dependent phases
+    # this dominates runtime (36s → 5s when bypassed). Stubbing
+    # ``LLMRouter.chat`` to a fixed response keeps the phases
+    # on the success path so nothing else silently degrades.
+    try:
+        import models.routing.model_router as mr_mod
+        _orig_chat = mr_mod.LLMRouter.chat
+        def _stub_chat(self, messages, **kwargs):
+            return {
+                "content": "", "text": "",
+                "model": "test-stub", "provider": "test",
+                "finish_reason": "stop",
+            }
+        monkeypatch.setattr(mr_mod.LLMRouter, "chat", _stub_chat)
+    except Exception:  # pragma: no cover
+        # If the router module shape changes, fall back to the
+        # un-stubbed slower path — tests still pass, just slower.
+        pass
+    yield
+
+
 def _make_controller():
     """Build an AutonomousController against a disposable DB
     with enough seed data to reach every phase."""

@@ -1707,7 +1707,7 @@ class AutonomousController:
         try:
             self._log_cycle_to_vault(cycle_result, phase_errors)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Vault cycle logging skipped: %s", exc)
+            _record("vault_cycle_log", exc)
 
         # Adapter-powered side effects: analytics events, CRM
         # upserts, helpdesk alerts, automation webhooks. Each hook
@@ -1723,7 +1723,7 @@ class AutonomousController:
             if hook_summary.get("enabled"):
                 cycle_result["phases"]["adapter_hooks"] = hook_summary
         except Exception as exc:  # noqa: BLE001
-            logger.debug("adapter hooks skipped: %s", exc)
+            _record("adapter_hooks", exc)
 
         # Upgrade 2: auto-replay coordinator scan. Classify any
         # dead-letter entries whose adapters have since recovered
@@ -1746,7 +1746,7 @@ class AutonomousController:
                 "callback_failures": replay_report.callback_failures,
             }
         except Exception as exc:  # noqa: BLE001
-            logger.debug("auto_replay scan skipped: %s", exc)
+            _record("auto_replay_scan", exc)
 
         # Option E: collect adapter-layer reliability signals
         # (health / dead-letter / cost) and embed them on
@@ -1798,7 +1798,7 @@ class AutonomousController:
                     cycle_id, "; ".join(signal["alerts"]),
                 )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("reliability signal skipped: %s", exc)
+            _record("reliability_signal", exc)
 
         # Wave 2 #5: post-tick reflection hook. Mines the cycle's
         # error ledger for recurring patterns and, when confidence
