@@ -137,33 +137,51 @@ def user_agent_pool() -> tuple[str, ...]:
 # ── Captcha / bot-wall detection ───────────────────────────────
 
 
-# Cheap HTML/title substring markers that indicate the page is a
-# challenge wall rather than the content the caller asked for.
-# Order matters — the first hit wins so put the most specific
-# markers first.
-_CAPTCHA_MARKERS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+# Surface-bound markers to avoid the false-positive trap of
+# matching "just a moment..." in a blog post or "g-recaptcha" in
+# a Shopify login page (that's the SDK, not a challenge page).
+#
+# Each marker is a (surface, needle) pair where surface is one of
+# ``{"title", "url", "html"}`` — the needle is ONLY matched on
+# that surface. That way the distinctive markers (Cloudflare's
+# cf-chl-bypass form, reCAPTCHA's challenge iframe URL) fire
+# while the ambiguous ones (the word "recaptcha" appearing
+# anywhere in HTML) no longer trip.
+_CAPTCHA_MARKERS: Final[tuple[tuple[str, tuple[tuple[str, str], ...]], ...]] = (
     ("cloudflare", (
-        'cf-chl-bypass',              # cloudflare challenge form
-        'cf-browser-verification',    # old variant
-        'challenge-platform',         # new variant (challenges.cloudflare.com)
-        'just a moment...',           # title text
-        '/cdn-cgi/challenge-platform',
+        ("html", "cf-chl-bypass"),              # challenge form
+        ("html", "cf-browser-verification"),    # old variant
+        ("html", "/cdn-cgi/challenge-platform"),
+        ("url", "challenges.cloudflare.com"),
+        # "Just a moment..." is the Cloudflare interstitial title;
+        # it's also a valid English phrase, so we only flag it
+        # when it's the ENTIRE title (not a substring of prose).
+        ("title_exact", "just a moment..."),
+        ("title_exact", "just a moment"),
     )),
     ("hcaptcha", (
-        'h-captcha',
-        'hcaptcha.com',
+        # hCaptcha challenge iframe lives at hcaptcha.com/captcha.
+        ("url", "hcaptcha.com/captcha"),
+        ("url", "newassets.hcaptcha.com"),
+        ("html", 'data-hcaptcha-widget-id'),   # live widget marker
+        ("html", 'class="h-captcha-challenge"'),
     )),
     ("recaptcha", (
-        'g-recaptcha',
-        'www.google.com/recaptcha',
+        # Only the interactive challenge iframe — NOT the invisible
+        # SDK include on ordinary login pages (that was the
+        # false-positive the audit caught).
+        ("url", "recaptcha/api2/bframe"),
+        ("url", "recaptcha/enterprise/bframe"),
     )),
     ("datadome", (
-        'datadome-',
-        'geo.captcha-delivery.com',
+        ("url", "geo.captcha-delivery.com"),
+        ("html", 'id="ddg-captcha-container"'),
     )),
     ("perimeterx", (
-        '_px3',
-        'px-captcha',
+        # "_px3" is too short → collides with random identifiers;
+        # rely on the full challenge-page marker instead.
+        ("html", 'px-captcha'),
+        ("url", "captcha.px-cdn.net"),
     )),
 )
 
@@ -172,19 +190,35 @@ def detect_captcha(*, title: str = "", html: str = "", url: str = "") -> str | N
     """Return the provider name if the page looks like a bot
     challenge, else ``None``.
 
-    The check is intentionally cheap: lowercase substring match
-    against the title, URL, and first 16 KB of HTML. False
-    positives on a pentest page with ``g-recaptcha`` in a docs
-    snippet are possible but rare — the wins (not hammering a
-    challenge loop for 30 retries) dominate.
+    Markers are bound to the surface where they actually appear:
+
+      * ``title``       — case-insensitive substring of the title
+      * ``title_exact`` — entire title equals the marker (used
+                          for short everyday phrases like "just a
+                          moment..." that collide with prose)
+      * ``url``         — case-insensitive substring of the URL
+      * ``html``        — case-insensitive substring of first 16 KB
+
+    The scan is intentionally cheap — if you need 100% accuracy
+    on an edge case, bypass with ``allow_captcha=True``.
     """
-    title_l = (title or "").lower()
+    title_raw = (title or "").strip()
+    title_l = title_raw.lower()
     url_l = (url or "").lower()
     html_l = (html or "")[:16_384].lower()
 
     for provider, markers in _CAPTCHA_MARKERS:
-        for marker in markers:
-            m = marker.lower()
-            if m in title_l or m in url_l or m in html_l:
+        for surface, needle in markers:
+            n = needle.lower()
+            hit = False
+            if surface == "title":
+                hit = n in title_l
+            elif surface == "title_exact":
+                hit = title_l == n
+            elif surface == "url":
+                hit = n in url_l
+            elif surface == "html":
+                hit = n in html_l
+            if hit:
                 return provider
     return None

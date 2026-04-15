@@ -152,6 +152,28 @@ class TestLaunchLifecycle:
         assert session._browser is None
         assert session._pw is None
         assert "p1" not in session._contexts
+        assert session._closed is True
+
+    def test_acquire_after_shutdown_raises(self, monkeypatch, tmp_path):
+        """Self-critique fix: once shutdown, any further
+        ``acquire_page`` must fail loudly instead of silently
+        re-launching Chromium on top of a closed session."""
+        _install_fake_playwright(monkeypatch)
+        session = BrowserSession.instance(cookie_dir=str(tmp_path))
+        session.shutdown()
+        with pytest.raises(AdapterUnavailable):
+            with session.acquire_page(profile="p1"):
+                pass
+
+    def test_shutdown_is_idempotent(self, monkeypatch, tmp_path):
+        _install_fake_playwright(monkeypatch)
+        session = BrowserSession.instance(cookie_dir=str(tmp_path))
+        with session.acquire_page(profile="p1"):
+            pass
+        session.shutdown()
+        # Second call must not raise.
+        session.shutdown()
+        assert session._closed is True
 
 
 # ── Context configuration ──────────────────────────────────
@@ -252,6 +274,34 @@ class TestCookiePersistence:
         for p in tmp_path.iterdir():
             assert p.parent == tmp_path
 
+    def test_corrupt_cookie_file_quarantined(self, monkeypatch, tmp_path):
+        """Self-critique fix: truncated/invalid JSON in the cookie
+        jar is renamed to .corrupt on load instead of being
+        silently dropped forever."""
+        _install_fake_playwright(monkeypatch)
+        bad = tmp_path / "p1.json"
+        bad.write_text("{not: valid json at all")
+        session = BrowserSession.instance(cookie_dir=str(tmp_path))
+        with session.acquire_page(profile="p1"):
+            pass
+        # Bad file renamed to .corrupt; fresh valid cookie file written.
+        assert not bad.exists() or bad.stat().st_size > 0
+        assert (tmp_path / "p1.json.corrupt").exists()
+
+    def test_save_is_atomic_via_tempfile(self, monkeypatch, tmp_path):
+        """Self-critique fix: cookie save uses a temp file +
+        os.replace so a crash mid-write can't truncate the jar.
+
+        We verify the temp file is no longer present after save
+        (replace moved it) — i.e. cleanup succeeded.
+        """
+        _install_fake_playwright(monkeypatch)
+        session = BrowserSession.instance(cookie_dir=str(tmp_path))
+        with session.acquire_page(profile="p1"):
+            pass
+        leftover = list(tmp_path.glob("*.tmp"))
+        assert leftover == []
+
 
 # ── Per-profile locking ────────────────────────────────────
 
@@ -293,7 +343,10 @@ class TestPerProfileLocking:
 
 
 class TestCaptchaDetection:
-    def test_detects_cloudflare_by_title(self):
+    def test_detects_cloudflare_by_exact_title(self):
+        # The bare interstitial title — Cloudflare returns exactly
+        # this, nothing else. Loose-substring matching would
+        # false-positive on prose like "Just a moment, let me…".
         assert stealth_mod.detect_captcha(
             title="Just a moment...",
             html="<html></html>",
@@ -304,13 +357,21 @@ class TestCaptchaDetection:
         html = '<form id="cf-chl-bypass"></form>'
         assert stealth_mod.detect_captcha(html=html) == "cloudflare"
 
-    def test_detects_hcaptcha(self):
-        html = '<div class="h-captcha" data-sitekey="abc"></div>'
-        assert stealth_mod.detect_captcha(html=html) == "hcaptcha"
+    def test_detects_cloudflare_by_cdn_cgi_path(self):
+        html = '<script src="/cdn-cgi/challenge-platform/x.js"></script>'
+        assert stealth_mod.detect_captcha(html=html) == "cloudflare"
 
-    def test_detects_recaptcha(self):
-        html = '<div class="g-recaptcha"></div>'
-        assert stealth_mod.detect_captcha(html=html) == "recaptcha"
+    def test_detects_hcaptcha_challenge_url(self):
+        # Only the live challenge iframe URL fires — the SDK
+        # embed on a regular login form does NOT.
+        url = "https://hcaptcha.com/captcha/xyz123"
+        assert stealth_mod.detect_captcha(url=url) == "hcaptcha"
+
+    def test_detects_recaptcha_challenge_iframe(self):
+        # Only the bframe URL fires (the interactive challenge),
+        # not the bare SDK include.
+        url = "https://www.google.com/recaptcha/api2/bframe?hl=en"
+        assert stealth_mod.detect_captcha(url=url) == "recaptcha"
 
     def test_detects_datadome(self):
         url = "https://geo.captcha-delivery.com/challenge"
@@ -323,10 +384,27 @@ class TestCaptchaDetection:
             url="https://shop.example.com/",
         ) is None
 
+    def test_no_false_positive_on_recaptcha_sdk_embed(self):
+        """A Shopify login page with the invisible-reCAPTCHA SDK
+        include should NOT be flagged as a challenge page."""
+        html = '''<html><body>
+            <form><input type="email"></form>
+            <div class="g-recaptcha" data-sitekey="xyz"></div>
+            <script src="https://www.google.com/recaptcha/api.js"></script>
+        </body></html>'''
+        assert stealth_mod.detect_captcha(html=html) is None
+
+    def test_no_false_positive_on_prose_containing_marker(self):
+        """The phrase 'just a moment' in blog prose (not as the
+        bare page title) must not trigger Cloudflare detection."""
+        html = "<p>Just a moment — we're thinking about your request.</p>"
+        title = "Product Update Blog Post"
+        assert stealth_mod.detect_captcha(title=title, html=html) is None
+
     def test_only_scans_first_16kb_of_html(self):
         # Marker buried past the first 16 KB should NOT match.
         padding = "a" * 20_000
-        html = padding + '<div class="g-recaptcha"></div>'
+        html = padding + '<form id="cf-chl-bypass"></form>'
         assert stealth_mod.detect_captcha(html=html) is None
 
 

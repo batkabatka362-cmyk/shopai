@@ -47,7 +47,10 @@ soft skip.
 """
 from __future__ import annotations
 
+import atexit
 import json
+import os
+import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -90,6 +93,7 @@ class BrowserSession:
         *,
         cookie_dir: str | None = None,
         headless: bool = True,
+        register_atexit: bool = True,
     ) -> None:
         self._cookie_dir = Path(cookie_dir or _DEFAULT_COOKIE_DIR)
         self._headless = headless
@@ -102,12 +106,24 @@ class BrowserSession:
         # Per-profile context + lock.
         self._contexts: dict[str, Any] = {}
         self._profile_locks: dict[str, threading.Lock] = {}
+        self._file_locks: dict[str, threading.Lock] = {}
         self._context_map_lock = threading.Lock()
+
+        # One-way lifecycle flag. Once True, all ``acquire_page``
+        # calls fail loudly instead of silently re-launching
+        # Chromium on top of a shutting-down session.
+        self._closed = False
 
         # Diagnostics.
         self._launch_count = 0
         self._acquire_count = 0
         self._captcha_count = 0
+
+        # Process-exit safety net: flush cookies + close the
+        # browser even if the caller forgets ``shutdown()``.
+        # Tests opt out to keep the pytest atexit registry clean.
+        if register_atexit:
+            atexit.register(self._atexit_shutdown)
 
     @classmethod
     def instance(
@@ -173,14 +189,23 @@ class BrowserSession:
     # ── Lifecycle ─────────────────────────────────────────────
 
     def _ensure_browser(self) -> None:
-        """Start playwright + launch Chromium if not already up."""
-        if self._browser is not None:
-            return
+        """Start playwright + launch Chromium if not already up.
+
+        Acquires ``_start_lock`` for the full check-and-launch so
+        a concurrent ``shutdown()`` can't nil ``_browser`` between
+        the fast-path check and the use-the-browser statement
+        above the caller. ``shutdown()`` also takes this lock, so
+        the two operations serialise.
+        """
         if not _PLAYWRIGHT_AVAILABLE:
             raise AdapterUnavailable(
                 "browser_session", "playwright not installed",
             )
         with self._start_lock:
+            if self._closed:
+                raise AdapterUnavailable(
+                    "browser_session", "session is closed",
+                )
             if self._browser is not None:
                 return
             # sync_playwright().start() is the manual variant of the
@@ -204,36 +229,59 @@ class BrowserSession:
         """Close every context + the browser + stop playwright.
 
         Saves each profile's cookies/storage_state to disk first.
-        Safe to call multiple times.
+        Safe to call multiple times. After shutdown, any further
+        ``acquire_page`` raises ``AdapterUnavailable`` — ``_closed``
+        is a one-way flag.
         """
-        # Snapshot profiles under the lock so iteration is safe.
-        with self._context_map_lock:
-            contexts = list(self._contexts.items())
-            self._contexts.clear()
-            self._profile_locks.clear()
+        # Take both locks so ``_ensure_browser`` cannot be racing
+        # with us. Order: start_lock first, context_map_lock
+        # second — same order as ``acquire_page`` never holds both
+        # simultaneously, so no deadlock path exists.
+        with self._start_lock:
+            already_closed = self._closed
+            self._closed = True
+            # Snapshot profiles under the map lock so a concurrent
+            # ``_get_or_create_context`` (which also takes it) is
+            # either fully done or fully blocked.
+            with self._context_map_lock:
+                contexts = list(self._contexts.items())
+                self._contexts.clear()
+                self._profile_locks.clear()
+                self._file_locks.clear()
 
-        for profile, ctx in contexts:
-            try:
-                self._save_storage_state(profile, ctx)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("save state for %s failed: %s", profile, exc)
-            try:
-                ctx.close()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("context close for %s failed: %s", profile, exc)
+            for profile, ctx in contexts:
+                try:
+                    self._save_storage_state(profile, ctx)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("save state for %s failed: %s", profile, exc)
+                try:
+                    ctx.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("context close for %s failed: %s", profile, exc)
 
-        if self._browser is not None:
-            try:
-                self._browser.close()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("browser close failed: %s", exc)
-            self._browser = None
-        if self._pw is not None:
-            try:
-                self._pw.stop()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("playwright stop failed: %s", exc)
-            self._pw = None
+            if self._browser is not None:
+                try:
+                    self._browser.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("browser close failed: %s", exc)
+                self._browser = None
+            if self._pw is not None:
+                try:
+                    self._pw.stop()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("playwright stop failed: %s", exc)
+                self._pw = None
+            if not already_closed:
+                logger.debug("BrowserSession: shutdown complete")
+
+    def _atexit_shutdown(self) -> None:
+        """Process-exit safety net. Swallows every error — by the
+        time atexit runs, the logger, socket, and even stderr may
+        already be torn down."""
+        try:
+            self.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
 
     # ── Profile / context management ──────────────────────────
 
@@ -247,6 +295,17 @@ class BrowserSession:
                 self._profile_locks[profile] = lock
             return lock
 
+    def _file_lock(self, profile: str) -> threading.Lock:
+        """Return the per-profile file-write lock. Protects
+        ``_save_storage_state`` from concurrent writes on the
+        same cookie file (shutdown vs. in-flight acquire)."""
+        with self._context_map_lock:
+            lock = self._file_locks.get(profile)
+            if lock is None:
+                lock = threading.Lock()
+                self._file_locks[profile] = lock
+            return lock
+
     def _get_or_create_context(
         self,
         profile: str,
@@ -255,14 +314,30 @@ class BrowserSession:
         viewport: dict[str, int] | None,
     ) -> Any:
         """Return the live context for *profile*, creating (and
-        loading cookies from disk) on first use."""
-        ctx = self._contexts.get(profile)
-        if ctx is not None:
-            return ctx
+        loading cookies from disk) on first use.
 
+        Thread-safe across profiles: all reads/writes to
+        ``self._contexts`` happen under ``_context_map_lock``, and
+        a double-checked-locking pattern ensures exactly one
+        context per profile even if two threads race past the
+        fast path. Tests use ``__new__`` bypass + monkeypatch so
+        this lock ordering stays test-friendly.
+        """
+        # Fast path — common case: context already exists.
+        with self._context_map_lock:
+            if self._closed:
+                raise AdapterUnavailable(
+                    "browser_session", "session is closed",
+                )
+            ctx = self._contexts.get(profile)
+            if ctx is not None:
+                return ctx
+
+        # Slow path — launch browser + build context OUTSIDE the
+        # map lock so the expensive I/O doesn't block other
+        # profiles. Re-check under the lock before installing to
+        # avoid "lost" contexts when two threads race.
         self._ensure_browser()
-
-        # Resolve identity bits.
         ua = user_agent or pick_user_agent(seed=profile)
         vp = viewport or _DEFAULT_VIEWPORT
         storage_state = self._load_storage_state(profile)
@@ -276,14 +351,33 @@ class BrowserSession:
         if storage_state is not None:
             kwargs["storage_state"] = storage_state
 
-        ctx = self._browser.new_context(**kwargs)
-        ctx.add_init_script(STEALTH_INIT_SCRIPT)
-        self._contexts[profile] = ctx
-        logger.debug(
-            "BrowserSession: created context profile=%s ua=%s",
-            profile, ua[:40],
-        )
-        return ctx
+        new_ctx = self._browser.new_context(**kwargs)
+        new_ctx.add_init_script(STEALTH_INIT_SCRIPT)
+
+        with self._context_map_lock:
+            if self._closed:
+                # Shutdown happened while we were building.
+                try:
+                    new_ctx.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise AdapterUnavailable(
+                    "browser_session", "session is closed",
+                )
+            existing = self._contexts.get(profile)
+            if existing is not None:
+                # Another thread beat us; discard our fresh ctx.
+                try:
+                    new_ctx.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                return existing
+            self._contexts[profile] = new_ctx
+            logger.debug(
+                "BrowserSession: created context profile=%s ua=%s",
+                profile, ua[:40],
+            )
+            return new_ctx
 
     def _cookie_file(self, profile: str) -> Path:
         """Disk path for a profile's cookie/storage state."""
@@ -296,7 +390,13 @@ class BrowserSession:
 
     def _load_storage_state(self, profile: str) -> dict[str, Any] | None:
         """Load cookies + localStorage for *profile* from disk, or
-        return None if there's no saved state yet."""
+        return None if there's no saved state yet.
+
+        A corrupted file (partial JSON, truncated write from a
+        previous crash) is renamed to ``<name>.corrupt`` and
+        treated as "no state" — so the next save writes a fresh
+        file instead of silently losing auth cookies forever.
+        """
         path = self._cookie_file(profile)
         if not path.exists():
             return None
@@ -305,12 +405,34 @@ class BrowserSession:
                 data = json.load(f)
             if isinstance(data, dict):
                 return data
-        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug(
+                "load_storage_state for %s: not a dict, quarantining",
+                profile,
+            )
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "load_storage_state for %s: corrupt JSON, "
+                "quarantining as .corrupt (%s)", profile, exc,
+            )
+        except OSError as exc:
             logger.debug("load_storage_state for %s failed: %s", profile, exc)
+            return None
+        # Quarantine the bad file so operators can inspect.
+        try:
+            path.rename(path.with_suffix(".json.corrupt"))
+        except OSError as exc:
+            logger.debug(
+                "quarantine rename failed for %s: %s", profile, exc,
+            )
         return None
 
     def _save_storage_state(self, profile: str, ctx: Any) -> None:
         """Dump cookies + localStorage for *profile* to disk.
+
+        Atomic: writes to a temp file and ``os.replace``s onto the
+        target so a crash mid-write never leaves a truncated
+        cookie jar. Per-profile file lock blocks concurrent writes
+        from shutdown vs. in-flight acquire.
 
         Called on shutdown and — cheaply — after each page acquire
         completes so a crash doesn't lose auth state.
@@ -321,12 +443,30 @@ class BrowserSession:
             logger.debug("storage_state() for %s failed: %s", profile, exc)
             return
         path = self._cookie_file(profile)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("w", encoding="utf-8") as f:
-                json.dump(state, f)
-        except OSError as exc:
-            logger.debug("save_storage_state for %s failed: %s", profile, exc)
+        lock = self._file_lock(profile)
+        with lock:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # tempfile in same dir → os.replace is atomic on POSIX.
+                fd, tmp_path = tempfile.mkstemp(
+                    prefix=path.name + ".", suffix=".tmp",
+                    dir=str(path.parent),
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(state, f)
+                    os.replace(tmp_path, path)
+                except Exception:
+                    # Clean up temp on any failure so /tmp doesn't fill.
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+            except OSError as exc:
+                logger.debug(
+                    "save_storage_state for %s failed: %s", profile, exc,
+                )
 
     # ── Acquire page (main API) ───────────────────────────────
 
@@ -353,6 +493,10 @@ class BrowserSession:
             raise AdapterUnavailable(
                 "browser_session", "playwright not installed",
             )
+        if self._closed:
+            raise AdapterUnavailable(
+                "browser_session", "session is closed",
+            )
 
         lock = self._profile_lock(profile)
         with lock:
@@ -365,17 +509,18 @@ class BrowserSession:
             try:
                 yield page
             finally:
-                # Always close the page; keep context alive.
-                try:
-                    page.close()
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("page close failed: %s", exc)
-                # Best-effort cookie flush. Failures shouldn't
-                # break the caller.
+                # Flush cookies FIRST so a concurrent
+                # ``clear_profile`` (or an exception in page.close)
+                # can't strand auth cookies set mid-redirect.
                 try:
                     self._save_storage_state(profile, ctx)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("cookie flush failed: %s", exc)
+                # Then close the page; keep context alive.
+                try:
+                    page.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("page close failed: %s", exc)
 
     def clear_profile(self, profile: str) -> None:
         """Drop *profile*'s context and delete its cookie file.

@@ -556,6 +556,93 @@ class TestCaptchaDetection:
 # ── BrowserSession integration ─────────────────────────────
 
 
+class TestResponseStatus:
+    """Self-critique fix: expose response_status/response_ok so
+    callers can tell 'scraped a 404 page' from 'scraped the real
+    thing'. Raise loudly when goto returns no response at all."""
+
+    def test_response_status_attached_to_data(self, monkeypatch):
+        from core.adapters.browser import playwright as pw_mod
+
+        page = _mock_page()
+        # Neutralise captcha detection (default mock html is clean
+        # but ensure no marker).
+        page.content.return_value = "<html><body>ok</body></html>"
+        response = MagicMock()
+        response.status = 200
+        response.ok = True
+        page.goto.return_value = response
+
+        class FakeCtxMgr:
+            def __enter__(self_inner):
+                return page
+
+            def __exit__(self_inner, *_):
+                return False
+
+        class FakeSession:
+            def acquire_page(self_inner, **_kwargs):
+                return FakeCtxMgr()
+
+            def note_captcha(self_inner):
+                pass
+
+        fake = FakeSession()
+        monkeypatch.setattr(
+            pw_mod.BrowserSession, "instance",
+            classmethod(lambda cls, **_: fake),
+        )
+        monkeypatch.setattr(pw_mod, "_PLAYWRIGHT_AVAILABLE", True)
+
+        a = _get_adapter_class()()
+        with patch.object(_get_adapter_class(), "is_configured", return_value=True):
+            result = a.execute(
+                Capability.SCRAPE_PAGE, {"url": "https://example.com"},
+            )
+        assert result.ok
+        assert result.data["response_status"] == 200
+        assert result.data["response_ok"] is True
+
+    def test_raises_when_goto_returns_none(self, monkeypatch):
+        """Playwright returns None on network-level failures (DNS
+        error, aborted redirect). Adapter must surface this as a
+        hard AdapterError instead of returning an empty scrape."""
+        from core.adapters.browser import playwright as pw_mod
+
+        page = _mock_page()
+        page.goto.return_value = None
+
+        class FakeCtxMgr:
+            def __enter__(self_inner):
+                return page
+
+            def __exit__(self_inner, *_):
+                return False
+
+        class FakeSession:
+            def acquire_page(self_inner, **_kwargs):
+                return FakeCtxMgr()
+
+            def note_captcha(self_inner):
+                pass
+
+        fake = FakeSession()
+        monkeypatch.setattr(
+            pw_mod.BrowserSession, "instance",
+            classmethod(lambda cls, **_: fake),
+        )
+        monkeypatch.setattr(pw_mod, "_PLAYWRIGHT_AVAILABLE", True)
+
+        a = _get_adapter_class()()
+        with patch.object(_get_adapter_class(), "is_configured", return_value=True):
+            result = a.execute(
+                Capability.SCRAPE_PAGE, {"url": "https://nowhere.example/"},
+            )
+        assert not result.ok
+        assert isinstance(result.error, AdapterError)
+        assert "no response" in result.error.reason
+
+
 class TestBrowserSessionIntegration:
     def test_profile_passed_to_session(self, monkeypatch):
         """Adapter forwards ``profile`` / ``user_agent`` / ``viewport``

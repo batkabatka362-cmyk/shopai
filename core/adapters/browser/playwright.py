@@ -70,7 +70,11 @@ try:
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _PLAYWRIGHT_AVAILABLE = False
-    PwTimeout = None  # type: ignore[assignment,misc]
+    # Sentinel class so ``except PwTimeout`` is always legal even
+    # when playwright isn't installed — the test harness may force
+    # _PLAYWRIGHT_AVAILABLE=True to exercise adapter code paths.
+    class PwTimeout(Exception):  # type: ignore[no-redef]
+        pass
 
 logger = get_logger("adapters.browser.playwright")
 
@@ -356,7 +360,21 @@ class PlaywrightAdapter(BaseAdapter):
                 viewport=viewport,
                 timeout_ms=timeout_ms,
             ) as page:
-                page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                response = page.goto(
+                    url, wait_until=wait_until, timeout=timeout_ms,
+                )
+
+                # Network-level failure: Playwright returns None if
+                # the navigation didn't produce a response at all
+                # (e.g. DNS failure, aborted redirect chain).
+                # Previously we silently returned the empty page,
+                # which the brain then treated as a successful
+                # scrape — loud failure is better.
+                if response is None:
+                    raise AdapterError(
+                        self.name,
+                        f"goto returned no response (url={url!r})",
+                    )
 
                 # Guard: did we land on a bot challenge page?
                 # Skip the check if caller explicitly expects one
@@ -372,7 +390,19 @@ class PlaywrightAdapter(BaseAdapter):
                             url=page.url,
                         )
 
-                return action(page)
+                result = action(page)
+                # Attach HTTP status so callers can distinguish
+                # "scraped a 404 page" from "scraped the real
+                # thing". We do NOT auto-raise on 4xx/5xx — a
+                # scraper legitimately wants to see 404 bodies
+                # sometimes (e.g. sitemap cleanup).
+                if isinstance(result, dict):
+                    try:
+                        result.setdefault("response_status", response.status)
+                        result.setdefault("response_ok", response.ok)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return result
         except CaptchaDetected:
             raise
         except PwTimeout as exc:  # type: ignore[misc]
