@@ -76,6 +76,10 @@ ENV_ALIASES: dict[str, str] = {
 
     # ── Media / scraping ──────────────────────
     "firecrawl":     "FIRECRAWL_API_KEY",
+    # Apify: actor-based scraping. Single token auths every
+    # actor; the adapter defaults to apify/website-content-crawler
+    # but callers can override via params["actor"].
+    "apify":         "APIFY_API_TOKEN",
     "imagekit_pub":  "IMAGEKIT_PUBLIC_KEY",
     "imagekit_priv": "IMAGEKIT_PRIVATE_KEY",
     "stability_ai":  "STABILITY_API_KEY",
@@ -121,6 +125,12 @@ ENV_ALIASES: dict[str, str] = {
     # Pinecone: managed vector DB. API key + environment.
     "pinecone":         "PINECONE_API_KEY",
     "pinecone_environment": "PINECONE_ENVIRONMENT",
+    # Qdrant: self-hosted (Docker) or Qdrant Cloud. URL points
+    # to the REST endpoint (e.g. http://localhost:6333). API key
+    # is only required for Cloud deployments.
+    "qdrant_url":        "QDRANT_URL",
+    "qdrant_api_key":    "QDRANT_API_KEY",
+    "qdrant_collection": "QDRANT_COLLECTION",
 
     # ── Advertising ──────────────────────
     # Google Ads: OAuth2 + developer token
@@ -165,6 +175,11 @@ ENV_ALIASES: dict[str, str] = {
     "posthog":          "POSTHOG_API_KEY",
     "posthog_host":     "POSTHOG_HOST",
     "mixpanel":         "MIXPANEL_TOKEN",
+    # Metabase: self-hosted or Metabase Cloud BI tool. The URL
+    # points to the Metabase instance; the API key is a
+    # Metabase 0.49+ static API key (X-API-KEY header).
+    "metabase_url":     "METABASE_URL",
+    "metabase_api_key": "METABASE_API_KEY",
 
     # ── Intelligence ──────────────────────
     "exa":              "EXA_API_KEY",

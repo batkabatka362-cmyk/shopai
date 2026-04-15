@@ -306,7 +306,10 @@ class TestCrawlerFetchOnce:
             results = c.crawl_site("http://example.com")
 
         assert len(results) == 1
-        assert fetch_counts.get("http://example.com") == 1, fetch_counts
+        # The crawler may normalise the URL (adding trailing slash,
+        # lowercasing scheme/host) before dispatching _fetch, so
+        # assert on the total count rather than an exact key.
+        assert sum(fetch_counts.values()) == 1, fetch_counts
 
     def test_two_page_crawl_fetches_each_once(self):
         try:

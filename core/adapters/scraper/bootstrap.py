@@ -22,6 +22,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .apify import ApifyAdapter
 from .firecrawl import FirecrawlAdapter
 
 logger = get_logger("adapters.scraper.bootstrap")
@@ -29,6 +30,7 @@ logger = get_logger("adapters.scraper.bootstrap")
 
 _SCRAPER_ADAPTER_CLASSES = (
     FirecrawlAdapter,
+    ApifyAdapter,
 )
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .metabase import MetabaseAdapter
 from .mixpanel import MixpanelAdapter
 from .posthog import PostHogAdapter
 
@@ -19,6 +20,7 @@ logger = get_logger("adapters.analytics.bootstrap")
 _ANALYTICS_ADAPTER_CLASSES = (
     PostHogAdapter,
     MixpanelAdapter,
+    MetabaseAdapter,
 )
 
 

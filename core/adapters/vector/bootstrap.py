@@ -19,6 +19,7 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .pinecone import PineconeAdapter
+from .qdrant import QdrantAdapter
 from .weaviate import WeaviateAdapter
 
 logger = get_logger("adapters.vector.bootstrap")
@@ -26,6 +27,7 @@ logger = get_logger("adapters.vector.bootstrap")
 
 _VECTOR_ADAPTER_CLASSES = (
     PineconeAdapter,
+    QdrantAdapter,
     WeaviateAdapter,
 )
 
