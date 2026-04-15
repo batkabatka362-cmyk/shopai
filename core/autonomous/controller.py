@@ -255,6 +255,7 @@ class AutonomousController:
                 from core.adapters.scraper.bootstrap import register_all as register_scraper
                 from core.adapters.reviews.bootstrap import register_all as register_reviews
                 from core.adapters.ads.bootstrap import register_all as register_ads
+                from core.adapters.ads_spy.bootstrap import register_all as register_ads_spy
                 from core.adapters.subscription.bootstrap import register_all as register_subscription
                 from core.adapters.voice.bootstrap import register_all as register_voice
                 from core.adapters.automation.bootstrap import register_all as register_automation
@@ -275,6 +276,7 @@ class AutonomousController:
                 scraper_status = register_scraper()
                 reviews_status = register_reviews()
                 ads_status = register_ads()
+                ads_spy_status = register_ads_spy()
                 subscription_status = register_subscription()
                 voice_status = register_voice()
                 automation_status = register_automation()
@@ -289,6 +291,7 @@ class AutonomousController:
                     **obsidian_status, **browser_status,
                     **vector_status, **scraper_status,
                     **reviews_status, **ads_status,
+                    **ads_spy_status,
                     **subscription_status, **voice_status,
                     **automation_status, **helpdesk_status,
                     **analytics_status, **crm_status,
@@ -299,8 +302,8 @@ class AutonomousController:
                     "%d configured (%d LLM, %d Shopify, %d search, "
                     "%d shipping, %d email, %d SMS, %d payment, "
                     "%d image, %d vault, %d browser, %d vector, "
-                    "%d scraper, %d reviews, %d ads, %d subscription, "
-                    "%d voice, %d automation)",
+                    "%d scraper, %d reviews, %d ads, %d ads_spy, "
+                    "%d subscription, %d voice, %d automation)",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
                     len(llm_status),
@@ -317,6 +320,7 @@ class AutonomousController:
                     len(scraper_status),
                     len(reviews_status),
                     len(ads_status),
+                    len(ads_spy_status),
                     len(subscription_status),
                     len(voice_status),
                     len(automation_status),

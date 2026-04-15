@@ -3006,6 +3006,11 @@ def start(port: int = 3000) -> None:
         except Exception:
             pass
         try:
+            from core.adapters.ads_spy.bootstrap import register_all as reg_spy
+            reg_spy()
+        except Exception:
+            pass
+        try:
             from core.adapters.subscription.bootstrap import register_all as reg_sub
             reg_sub()
         except Exception:

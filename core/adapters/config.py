@@ -143,6 +143,29 @@ ENV_ALIASES: dict[str, str] = {
     "meta_ads_access_token": "META_ADS_ACCESS_TOKEN",
     "meta_ads_account_id":   "META_ADS_ACCOUNT_ID",
 
+    # ── Ads intelligence / spy ──────────
+    # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
+    # product discovery across Meta, TikTok, Pinterest. Primary
+    # source when budget allows; API returns normalised ad
+    # records including days_running which is the strongest
+    # winning-product signal.
+    "minea":            "MINEA_API_KEY",
+    # PiPiAds: paid SaaS ($77/mo) — TikTok-focused ad spy.
+    # Complements Minea (Meta coverage) with deep TikTok
+    # Creative Center data that the free public endpoint exposes
+    # only partially.
+    "pipiads":          "PIPIADS_API_KEY",
+    # BigSpy: paid SaaS ($99/mo) — broad coverage (FB/IG/
+    # TikTok/YouTube/Twitter) with a free tier that imposes
+    # per-day query caps. Useful as a cross-validator.
+    "bigspy":           "BIGSPY_API_KEY",
+    # Facebook Ads Library: public endpoint requiring no key,
+    # but rate-limited per IP. A session access token (from a
+    # logged-in Meta account) bypasses the IP limit and unlocks
+    # the full JSON response shape. Optional: without the token
+    # the adapter falls back to the public HTML scrape path.
+    "fb_ads_library_token": "FB_ADS_LIBRARY_TOKEN",
+
     # ── Subscriptions ────────────────────
     "recharge":         "RECHARGE_API_TOKEN",
 

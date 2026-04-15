@@ -158,6 +158,18 @@ class Capability(str, Enum):
     ADS_CREATE_CAMPAIGN = "ads_create_campaign"
     ADS_GET_PERFORMANCE = "ads_get_performance"
     ADS_UPDATE_BUDGET = "ads_update_budget"
+    ADS_PAUSE_CAMPAIGN = "ads_pause_campaign"
+    ADS_RESUME_CAMPAIGN = "ads_resume_campaign"
+
+    # ── Ads intelligence / spy ────────────
+    # Used to discover winning products already proven on
+    # competitor ad platforms. Every spy adapter (free scrapers
+    # and paid APIs like Minea, PiPiAds, BigSpy) returns the
+    # same normalised ad-record shape so the winning-product
+    # engine can rank across sources without vendor-specific code.
+    ADS_SPY_SEARCH = "ads_spy_search"            # Search ads by keyword/country
+    ADS_SPY_TOP_PRODUCTS = "ads_spy_top_products"  # Trending products by engagement
+    ADS_SPY_AD_DETAILS = "ads_spy_ad_details"      # Single ad deep-dive
 
     # ── Voice / TTS ──────────────────────
     VOICE_TEXT_TO_SPEECH = "voice_text_to_speech"
