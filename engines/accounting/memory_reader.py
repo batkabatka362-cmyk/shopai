@@ -80,24 +80,16 @@ def read_ledger_state(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _load_records() -> list[dict[str, Any]]:
-    """Load all accounting records from the memory directory."""
-    if not os.path.isdir(_MEMORY_DIR):
-        return []
+def _load_records(max_files: int | None = None) -> list[dict[str, Any]]:
+    """Load records from the memory directory.
 
-    records: list[dict[str, Any]] = []
-    for fname in os.listdir(_MEMORY_DIR):
-        if not fname.endswith(".json"):
-            continue
-        fpath = os.path.join(_MEMORY_DIR, fname)
-        try:
-            with open(fpath, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-                if isinstance(data, dict):
-                    records.append(data)
-        except (json.JSONDecodeError, OSError):
-            continue
-    return records
+    Delegates to :func:`engines._memory_base.load_recent_records` so
+    every engine shares one optimised scandir walk instead of keeping
+    a near-identical O(N) copy. ``max_files`` caps the read to the
+    most-recently-modified N files — unset means "read everything".
+    """
+    from engines._memory_base import load_recent_records
+    return load_recent_records(_MEMORY_DIR, max_files=max_files)
 
 
 def _in_period(timestamp: str, start: str, end: str) -> bool:

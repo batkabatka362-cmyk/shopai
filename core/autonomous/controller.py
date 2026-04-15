@@ -417,7 +417,12 @@ class AutonomousController:
                 )
             return result
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Vault boot import skipped: %s", exc)
+            # Visible at default INFO/WARNING log level so operators
+            # don't silently lose vault-backed memory on boot. The
+            # "not configured" case short-circuits above — reaching
+            # this branch always signals a real failure (missing
+            # module, unreadable path, bridge error).
+            logger.warning("Vault boot import skipped: %s", exc)
             return empty
 
     # ── Single Cycle ─────────────────────────────────────────
@@ -2048,7 +2053,12 @@ class AutonomousController:
                     "yes" if due_for_sweep else "no",
                 )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Vault auto-export skipped: %s", exc)
+            # Promoted from debug → warning so operators see export
+            # failures at default log config. The vault-unconfigured
+            # path returns early inside the try body, so reaching
+            # here always means a real error (missing bridge module,
+            # write permission, adapter crash).
+            logger.warning("Vault auto-export skipped: %s", exc)
 
     def _maybe_learn_from_feedback(self, cycle_result: dict[str, Any]) -> None:
         """Promote recurring chat-feedback complaints into lesson notes.
@@ -2080,7 +2090,12 @@ class AutonomousController:
                     report.themes_found,
                 )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Feedback learning skipped: %s", exc)
+            # Promoted from debug → warning: learner failures were
+            # invisible at default log level so operators never knew
+            # their feedback wasn't being mined into lessons. The
+            # vault-unconfigured case returns early, so this branch
+            # only fires on real learner failures.
+            logger.warning("Feedback learning skipped: %s", exc)
 
     def _log_cycle_to_vault(
         self,
@@ -2267,7 +2282,13 @@ class AutonomousController:
             )
             logger.info("Vault: logged decision %s to Decisions/", title)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Vault decision logging skipped: %s", exc)
+            # Promoted from debug → warning so decision-log failures
+            # (e.g. read-only vault, write-permission error, bad
+            # frontmatter) surface at default log level instead of
+            # vanishing. Early-returns above handle "no top action"
+            # and "already logged today" so this branch only fires
+            # on a real write failure.
+            logger.warning("Vault decision logging skipped: %s", exc)
 
     # ── Wave 7c (GAP-4): standalone error ingestion ────────────
 

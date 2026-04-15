@@ -7,7 +7,7 @@ _MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory")
 
 def read_past_gift_card(limit: int = 10) -> dict[str, Any]:
     try:
-        records = _load_records()
+        records = _load_records(max_files=max(limit * 5, 50))
         records = sorted(records, key=lambda r: r.get("timestamp", ""), reverse=True)[:limit]
         return {"status": "success", "records": copy.deepcopy(records), "count": len(records)}
     except Exception as exc:
@@ -19,19 +19,13 @@ def compute_input_hash(input_data: dict[str, Any]) -> str:
     except Exception:
         return "unknown"
 
-def _load_records() -> list[dict[str, Any]]:
-    if not os.path.isdir(_MEMORY_DIR):
-        return []
-    records: list[dict[str, Any]] = []
-    for fname in os.listdir(_MEMORY_DIR):
-        if not fname.endswith(".json"):
-            continue
-        fpath = os.path.join(_MEMORY_DIR, fname)
-        try:
-            with open(fpath, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-                if isinstance(data, dict):
-                    records.append(data)
-        except (json.JSONDecodeError, OSError):
-            continue
-    return records
+def _load_records(max_files: int | None = None) -> list[dict[str, Any]]:
+    """Load records from the memory directory.
+
+    Delegates to :func:`engines._memory_base.load_recent_records` so
+    every engine shares one optimised scandir walk instead of keeping
+    a near-identical O(N) copy. ``max_files`` caps the read to the
+    most-recently-modified N files — unset means "read everything".
+    """
+    from engines._memory_base import load_recent_records
+    return load_recent_records(_MEMORY_DIR, max_files=max_files)

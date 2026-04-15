@@ -37,3 +37,7 @@ vault/ShopAI/Learned/*
 !vault/ShopAI/Learned/Example Learned Pattern.md
 !vault/ShopAI/Learned/How Auto-Export Works.md
 vault/.shopai_import_state.json
+
+# Adapter runtime state (dead-letter queue, per-adapter cache).
+# Runtime-generated — never committed.
+core/adapters/.state/
