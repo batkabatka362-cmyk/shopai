@@ -3016,6 +3016,11 @@ def start(port: int = 3000) -> None:
         except Exception:
             pass
         try:
+            from core.adapters.sourcing.bootstrap import register_all as reg_sourcing
+            reg_sourcing()
+        except Exception:
+            pass
+        try:
             from core.adapters.subscription.bootstrap import register_all as reg_sub
             reg_sub()
         except Exception:

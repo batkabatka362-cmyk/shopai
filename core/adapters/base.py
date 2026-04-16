@@ -72,6 +72,7 @@ class AdapterCategory(str, Enum):
     REVIEWS = "reviews"                    # Product reviews (Judge.me)
     HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
     CRM = "crm"                            # Customer relationship management (HubSpot)
+    SOURCING = "sourcing"                  # Dropshipping suppliers (CJ, AutoDS, Spocket)
     OTHER = "other"
 
 
@@ -207,6 +208,21 @@ class Capability(str, Enum):
     CRM_UPSERT_CONTACT = "crm_upsert_contact"
     CRM_LIST_DEALS = "crm_list_deals"
     CRM_CREATE_DEAL = "crm_create_deal"
+
+    # ── Sourcing / dropshipping suppliers ─
+    # Supplier-side API for dropshipping: browse catalog, fetch
+    # product detail (variants, supplier cost, shipping origin),
+    # place fulfillment orders when a buyer checks out on our
+    # Shopify / storefront, and poll order status + tracking.
+    # Every sourcing adapter (CJ Dropshipping, AutoDS, Spocket,
+    # Zendrop) returns the same normalised product + order shape
+    # so the product_launch orchestrator can import products and
+    # the fulfillment engine can push orders without vendor-
+    # specific code.
+    SOURCING_SEARCH_PRODUCTS = "sourcing_search_products"    # keyword → catalog listings
+    SOURCING_GET_PRODUCT = "sourcing_get_product"            # supplier_id → variants + cost
+    SOURCING_CREATE_ORDER = "sourcing_create_order"          # push fulfillment order
+    SOURCING_GET_ORDER_STATUS = "sourcing_get_order_status"  # poll supplier order state
 
 
 # ── Result envelope ────────────────────────────────────────────

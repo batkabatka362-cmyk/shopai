@@ -193,6 +193,14 @@ ENV_ALIASES: dict[str, str] = {
     # providers are offline or unaffordable.
     "replicate":        "REPLICATE_API_TOKEN",
 
+    # ── Sourcing / dropshipping suppliers ──
+    # CJ Dropshipping: free developer API (MN-friendly — no US
+    # entity required). Auth is email+password → access-token; the
+    # adapter swaps them for a token on first call and caches it.
+    # The token TTL is 7 days per CJ's docs.
+    "cj_email":         "CJ_DROPSHIPPING_EMAIL",
+    "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
+
     # ── Automation ────────────────────────
     "zapier_nla":       "ZAPIER_NLA_API_KEY",
     # n8n: workflow automation; self-hosted or cloud. Base URL
