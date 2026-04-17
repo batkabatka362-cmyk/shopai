@@ -7,27 +7,47 @@
 
 ## 1. ЗОРИЛГО (Mission)
 
-ShopAI бол **бүрэн бие даасан (autonomous) e-commerce AI** — Shopify дэлгүүрийг
-хүний оролцоогүйгээр ажиллуулж, суралцаж, **бодит мөнгө олно**.
+ShopAI бол **Goal-Driven Full-Cycle E-Commerce Executor** — өмчлөгч
+(owner) зорилго тавина, AI бүх pipeline-ийг хүнээс хурдан, 100%
+найдвартай гүйцэтгэнэ.
 
-Агентын хувьд энэ нь дараах зүйлүүдийг хийх ёстой гэсэн үг:
+```
+  Owner role:                 AI role:
+  ───────────                 ─────────────────────────────────
+  • Winner сонгох             • 1 product → Shopify live → Ads running 15 мин
+  • Goal тавих (budget, niche) • 20 алхамыг determinate execute
+  • Kill/Scale шийдэх          • Order webhook → ROAS track → pattern learn
+  • Хүний зөн совин           • LLM дэндэж ухаантай байхаа оролдохгүй
+```
 
-- **Z4 — Бодит мөнгө олох** хамгийн чухал. Code change бүр дараах асуултад
-  хариулах ёстой: *энэ өөрчлөлт борлуулалт нэмэх үү, ашиг нэмэх үү, зардал
-  бууруулах уу, эсвэл эдгээрийг боломжтой болгох уу?* Хэрэв "үгүй" бол
-  хийхгүй.
-- **Z1 — Autonomous loop.** Cycle 24/7 зогсолтгүй ажиллана. Хүн зөвшөөрөл
-  өгөхийг хүлээхгүй (`config/settings.json` дотор `auto_approve`, `enable_live_execution`
-  тохиргоо байгаа).
-- **Z2 — Суралцах.** Event → Pattern → Rule → Strategy pipeline нь memory-д
-  үргэлж бичигдэх ёстой. Шийдвэр гаргахаас өмнө memory-г заавал асууна.
-- **Z3 — Multi-store.** Нэг store-д сурсан rule-ийг бусдад автоматаар
-  түгээнэ (`core/multi_store/`).
-- **Z5 — Бүрэн Shopify хяналт.** Product / price / collection / content /
-  discount / webhook бүхнийг API-р удирдана (`execution/shopify/`,
-  `data_pipeline/ingestion/api/`).
+Owner жишээ goal: *"Энэ Alibaba URL-д байгаа бүтээгдэхүүн-г avtods-аар
+sync хийж, Shopify-д тавьж, видео хийж, Meta ads-д $20/өдөр launch
+хийж, 3 өдрийн дараа ROAS<1.5 байвал auto-kill хийгээрэй."* — AI-ийн
+ажил бол энэ 12 алхамыг нэг товчлуурт оруулах.
 
-Дэлгэрэнгүй vision-ийг `ARCHITECTURE.md` дахь *ЗОРИЛГО* хэсгээс харна уу.
+### ЯАЖ Энэ нь Revenue өгөх вэ
+
+- **Z-money:** owner-гийн таамаглалаар winner сонгогдож, AI execution-ийн
+  хурдаар олон SKU долоо хоногт launch хийгдэнэ
+- **Reward signal = Shopify order webhook** — AI ROAS/CVR reading-тэй
+  шийдвэр бүрийн outcome-ийг memory-д тэмдэглэнэ
+- **AGI-ийн зам:** 100 SKU × 10 хэв маяг launch хийгдсний дараа
+  pattern/rule/strategy pipeline автоматаар "winner looks like X" гэж
+  сурна. Үүнээс өмнө "AGI" гэж бодох хэрэггүй
+
+### Тодорхой зорилгууд (Z1-Z7)
+
+- **Z1 — Autonomous loop:** owner goal-гүйгээр ч 24/7 daemon cycle
+  хийнэ (monitoring, retention, churn prediction)
+- **Z2 — Learning:** Event → Pattern → Rule → Strategy pipeline нь
+  order webhook-аас ирсэн outcome-д үндэслэн promote хийнэ
+- **Z3 — Multi-store:** 1 store-д сурсан rule бусдад автомат түгээнэ
+- **Z4 — Revenue:** code change бүрийн асуулт: *"Энэ ROAS эсвэл CVR-ыг
+  нэмэх үү, ads зардлыг багасгах уу, AOV өсгөх үү?"* Үгүй бол хийхгүй
+- **Z5 — Shopify full control:** Product/price/collection/content/
+  discount/webhook бүхнийг API-р
+- **Z6 — Multi-platform:** Amazon, TikTok Shop руу scale (сар 5-6)
+- **Z7 — Competitive edge:** ads spy + winning products automation
 
 ---
 
@@ -165,28 +185,66 @@ PYTHONPATH=. pytest tests/test_intelligence_systems.py -v
 - Commit message: "why"-д төвлөрсөн 1-2 өгүүлбэр.
 - PR гаргахаас өмнө хэрэглэгчээс асуу (автоматаар гаргахгүй).
 
+### Research First — Build Second
+
+Шинэ feature хэрэгтэй болоход дараах эрэмбээр хай, **эцсийн сонголт л
+code бичих**:
+
+1. **Одоо байгаа adapter** — `core/adapters/` дотор хайх (~30 adapter)
+2. **Public API-тай SaaS** — Stripe, Klaviyo, Meta Ads, Shopify, Twilio —
+   эдгээр нь тогтсон, well-maintained
+3. **Open-source Python SDK** — `pip install`-ээр шийдэгдэх бол шийд
+4. **AI tools API** — Replicate, Groq, Higgsfield, Pexels — creative
+   generation-д бэлэн
+5. **No-code hook (Zapier/Make)** — 1-2 алхамт workflow-д ашиглаж болно
+6. **Playwright browser automation** — API байхгүй үед л ашигла
+7. **Scratch-аас бичих** — зөвхөн өмнөх сонголт ажиллахгүй үед
+
+ShopAI-ийн зорилго: *orchestrate существующие tools*, reinvent биш. Нэг
+adapter нэмэхэд 50 мөр, scratch бичихэд 5000 мөр — боломжтой үед
+орчим орчим байгаа байгаа API ашигла.
+
 ---
 
-## 5. LLM / MODEL ТОХИРГОО
+## 5. LLM / MODEL ТОХИРГОО (3-Agent Architecture)
 
-Орон нутгийн Ollama-г эхэлж үзнэ, амжилтгүй бол remote провайдерт шилжинэ:
+ShopAI-ийн brain нь 3 тусдаа LLM-ыг чиг үүрэгтэй:
 
+| Агент | Role | Санал болгож буй model | Яагаад |
+|---|---|---|---|
+| **Model 1** | Automation (execute) | Groq (Llama 3.3 70B) | хурд — 30 req/min free |
+| **Model 2** | Data/Memory (analyze) | Gemini 1.5 Flash | long context, multimodal |
+| **Model 3** | Research (reason) | DeepSeek V3 | deep reasoning, хямд |
+| Fallback | Local | Ollama (Mistral/Qwen/Llama) | offline, privacy |
+
+Remote chain `.env`-д:
 ```
-analyze   → Mistral       (data analysis, scoring)
-work      → Qwen 2.5      (structured output, execution)
-create    → Llama 3.x     (creative content)
-validate  → Mistral       (QA, output validation)
+GROQ_API_KEY=gsk_...          # Model 1
+GOOGLE_API_KEY=...            # Model 2 (Gemini)
+DEEPSEEK_API_KEY=sk-...       # Model 3
+OPENROUTER_API_KEY=...        # optional overflow
+HUGGINGFACE_API_TOKEN=hf_...  # optional
 ```
+
+(ANTHROPIC_API_KEY, OPENAI_API_KEY ашиглахгүй — бусад 6 адаптертай
+хангалттай.)
 
 Ollama байхгүй үед `SmartExecutor` дотор real business algorithm-ууд
 (Thompson Sampling, moving average, Jaccard...) fallback болж ажиллана —
 систем LLM-гүйгээр ч mathematical intelligence-тэй үлдэнэ.
 
-Remote fallback chain:
-```
-OPENAI_API_KEY      → gpt-4o-mini
-ANTHROPIC_API_KEY   → claude-haiku-4-5-20251001
-```
+### Memory — Obsidian Vault Bridge
+
+ShopAI-ийн memory-г Obsidian knowledge graph-тэй синхронжуулдаг:
+
+- `core/adapters/obsidian/vault.py` — note read/write
+- `core/adapters/obsidian/memory_bridge.py` — memory ↔ vault sync
+- `vault/` folder-т: `Concepts/`, `Decisions/`, `Errors/`, `Knowledge/`,
+  `Templates/`, `Wins/` гэсэн 6 категори
+- `.env`-д `OBSIDIAN_VAULT_PATH=./vault` (эсвэл өөрийн vault path)
+
+Pattern detect хийгдмэгц Obsidian-д markdown болж бичигддэг, хожим тэр
+note-ийг down-rate хийвэл `feedback_learner` авсансан байна.
 
 ---
 
