@@ -1,0 +1,1 @@
+"""Browser adapter package (stub)."""

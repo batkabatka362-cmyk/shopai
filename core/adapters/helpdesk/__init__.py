@@ -1,0 +1,1 @@
+"""Helpdesk adapter package (stub)."""
