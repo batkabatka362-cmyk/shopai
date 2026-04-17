@@ -169,3 +169,43 @@ class MetaAdsAdapter(AdsBaseAdapter):
             },
             raw=raw,
         )
+
+    # ── Pause campaign ────────────────────────────────────────
+
+    def _do_pause_campaign(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        if not params.get("campaign_id"):
+            raise AdapterValidationError(
+                self.name, "'campaign_id' is required",
+            )
+        campaign_id = params["campaign_id"]
+        url = f"{self.base_url}/{campaign_id}"
+        body = {"status": "PAUSED"}
+        raw = self._http_request("POST", url, body=body)
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=capability.value,
+            data={"campaign_id": campaign_id, "status": "PAUSED"},
+            raw=raw,
+        )
+
+    # ── Resume campaign ───────────────────────────────────────
+
+    def _do_resume_campaign(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        if not params.get("campaign_id"):
+            raise AdapterValidationError(
+                self.name, "'campaign_id' is required",
+            )
+        campaign_id = params["campaign_id"]
+        url = f"{self.base_url}/{campaign_id}"
+        body = {"status": "ACTIVE"}
+        raw = self._http_request("POST", url, body=body)
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=capability.value,
+            data={"campaign_id": campaign_id, "status": "ACTIVE"},
+            raw=raw,
+        )

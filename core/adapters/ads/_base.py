@@ -59,6 +59,8 @@ class AdsBaseAdapter(BaseAdapter):
         Capability.ADS_CREATE_CAMPAIGN,
         Capability.ADS_GET_PERFORMANCE,
         Capability.ADS_UPDATE_BUDGET,
+        Capability.ADS_PAUSE_CAMPAIGN,
+        Capability.ADS_RESUME_CAMPAIGN,
     }
 
     base_url: str = ""
@@ -97,6 +99,8 @@ class AdsBaseAdapter(BaseAdapter):
             Capability.ADS_GET_PERFORMANCE: self._do_get_performance,
             Capability.ADS_CREATE_CAMPAIGN: self._do_create_campaign,
             Capability.ADS_UPDATE_BUDGET: self._do_update_budget,
+            Capability.ADS_PAUSE_CAMPAIGN: self._do_pause_campaign,
+            Capability.ADS_RESUME_CAMPAIGN: self._do_resume_campaign,
         }
         handler = dispatch.get(capability)
         if handler is None:
@@ -118,6 +122,16 @@ class AdsBaseAdapter(BaseAdapter):
         raise NotImplementedError
 
     def _do_update_budget(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError
+
+    def _do_pause_campaign(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError
+
+    def _do_resume_campaign(
         self, capability: Capability, params: dict[str, Any],
     ) -> AdapterResult:
         raise NotImplementedError
