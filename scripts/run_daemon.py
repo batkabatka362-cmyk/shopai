@@ -41,7 +41,7 @@ signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
-def run_daemon(store_id="deguar", interval=600, max_cycles=0):
+def run_daemon(store_id="ts0efe-ih", interval=600, max_cycles=0):
     global _running
 
     print()
@@ -54,9 +54,27 @@ def run_daemon(store_id="deguar", interval=600, max_cycles=0):
     print("  Cycles:   {}".format(max_cycles if max_cycles else "unlimited"))
     print()
 
+    # Load runtime settings (auto_approve / live execution come from
+    # config/settings.json so operators don't have to thread CLI flags
+    # through every layer)
+    import json
+    settings_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config", "settings.json",
+    )
+    settings = {}
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+    auto_approve = bool(settings.get("auto_approve", False))
+    live = bool(settings.get("enable_live_execution", False))
+    print("  Mode:     auto_approve={} live={}".format(auto_approve, live))
+
     # Initialize once
     from core.autonomous.controller import AutonomousController
-    ac = AutonomousController(auto_approve=False)
+    ac = AutonomousController(auto_approve=auto_approve)
     ac.initialize()
 
     # Start dashboard
@@ -173,7 +191,7 @@ def run_daemon(store_id="deguar", interval=600, max_cycles=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ShopAI Autonomous Daemon")
-    parser.add_argument("--store", default="deguar", help="Store ID")
+    parser.add_argument("--store", default="ts0efe-ih", help="Store ID")
     parser.add_argument("--interval", type=int, default=600, help="Seconds between cycles")
     parser.add_argument("--cycles", type=int, default=0, help="Max cycles (0=unlimited)")
     args = parser.parse_args()

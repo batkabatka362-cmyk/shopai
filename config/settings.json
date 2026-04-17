@@ -1,10 +1,10 @@
 {
-  "store_id": "deguar",
+  "store_id": "ts0efe-ih",
   "cycle_interval_seconds": 600,
   "max_products_per_cycle": 15,
   "max_shopify_calls_per_second": 2,
-  "auto_approve": false,
-  "enable_live_execution": false,
+  "auto_approve": true,
+  "enable_live_execution": true,
   "enable_notifications": true,
   "dashboard_port": 8080,
   "dashboard_ui_port": 8082,
