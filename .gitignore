@@ -10,6 +10,7 @@ build/
 .backups/
 /data/
 !core/data/
+/logs/
 *.db
 *.db-shm
 *.db-wal
