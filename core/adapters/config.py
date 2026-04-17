@@ -54,13 +54,18 @@ ENV_ALIASES: dict[str, str] = {
     # ── Search ────────────────────────────────
     "serper":        "SERPER_API_KEY",
     "brave_search":  "BRAVE_SEARCH_API_KEY",
+    "perplexity":    "PERPLEXITY_API_KEY",
+    "tavily":        "TAVILY_API_KEY",
 
     # ── Email / SMS ───────────────────────────
     "resend":        "RESEND_API_KEY",
     "brevo":         "BREVO_API_KEY",
+    "sendgrid":      "SENDGRID_API_KEY",
     "klaviyo":       "KLAVIYO_API_KEY",
     "omnisend":      "OMNISEND_API_KEY",
+    "postmark":      "POSTMARK_SERVER_TOKEN",
     "postscript":    "POSTSCRIPT_API_KEY",
+    "messagebird":   "MESSAGEBIRD_API_KEY",
     # Twilio uses HTTP Basic auth: the Account SID is the
     # username and the Auth Token is the password. The "from"
     # number is tenant-wide so we keep it in config rather than
@@ -71,8 +76,14 @@ ENV_ALIASES: dict[str, str] = {
 
     # ── Media / scraping ──────────────────────
     "firecrawl":     "FIRECRAWL_API_KEY",
+    # Apify: actor-based scraping. Single token auths every
+    # actor; the adapter defaults to apify/website-content-crawler
+    # but callers can override via params["actor"].
+    "apify":         "APIFY_API_TOKEN",
     "imagekit_pub":  "IMAGEKIT_PUBLIC_KEY",
     "imagekit_priv": "IMAGEKIT_PRIVATE_KEY",
+    "stability_ai":  "STABILITY_API_KEY",
+    "removebg":      "REMOVEBG_API_KEY",
 
     # ── Translation ───────────────────────────
     # DeepL free-tier keys end in ":fx"; paid-tier keys do not.
@@ -94,6 +105,10 @@ ENV_ALIASES: dict[str, str] = {
     "paypal_client_id":     "PAYPAL_CLIENT_ID",
     "paypal_client_secret": "PAYPAL_CLIENT_SECRET",
     "paypal_env":           "PAYPAL_ENV",
+    # Stripe uses a single secret key. Live vs test is encoded in
+    # the key prefix (sk_live_ vs sk_test_) — no separate env var.
+    "stripe_secret_key":    "STRIPE_SECRET_KEY",
+    "stripe_api_version":   "STRIPE_API_VERSION",
 
     # ── Shopify (already handled by core/auth/shopify_auth) ──
     "shopify_url":   "SHOPAI_SHOPIFY_URL",
@@ -101,6 +116,135 @@ ENV_ALIASES: dict[str, str] = {
 
     # ── Knowledge base (Obsidian) ────────
     "obsidian_vault_path": "OBSIDIAN_VAULT_PATH",
+
+    # ── Vector databases ─────────────────
+    # Weaviate: self-hosted (Docker) or Weaviate Cloud. The URL
+    # points to the REST endpoint; gRPC port is inferred.
+    "weaviate_url":     "WEAVIATE_URL",
+    "weaviate_api_key": "WEAVIATE_API_KEY",
+    # Pinecone: managed vector DB. API key + environment.
+    "pinecone":         "PINECONE_API_KEY",
+    "pinecone_environment": "PINECONE_ENVIRONMENT",
+    # Qdrant: self-hosted (Docker) or Qdrant Cloud. URL points
+    # to the REST endpoint (e.g. http://localhost:6333). API key
+    # is only required for Cloud deployments.
+    "qdrant_url":        "QDRANT_URL",
+    "qdrant_api_key":    "QDRANT_API_KEY",
+    "qdrant_collection": "QDRANT_COLLECTION",
+
+    # ── Advertising ──────────────────────
+    # Google Ads: OAuth2 + developer token
+    "google_ads_developer_token": "GOOGLE_ADS_DEVELOPER_TOKEN",
+    "google_ads_client_id":       "GOOGLE_ADS_CLIENT_ID",
+    "google_ads_client_secret":   "GOOGLE_ADS_CLIENT_SECRET",
+    "google_ads_refresh_token":   "GOOGLE_ADS_REFRESH_TOKEN",
+    "google_ads_customer_id":     "GOOGLE_ADS_CUSTOMER_ID",
+    # Meta (Facebook) Ads: long-lived access token + ad account ID
+    "meta_ads_access_token": "META_ADS_ACCESS_TOKEN",
+    "meta_ads_account_id":   "META_ADS_ACCOUNT_ID",
+
+    # ── Ads intelligence / spy ──────────
+    # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
+    # product discovery across Meta, TikTok, Pinterest. Primary
+    # source when budget allows; API returns normalised ad
+    # records including days_running which is the strongest
+    # winning-product signal.
+    "minea":            "MINEA_API_KEY",
+    # PiPiAds: paid SaaS ($77/mo) — TikTok-focused ad spy.
+    # Complements Minea (Meta coverage) with deep TikTok
+    # Creative Center data that the free public endpoint exposes
+    # only partially.
+    "pipiads":          "PIPIADS_API_KEY",
+    # BigSpy: paid SaaS ($99/mo) — broad coverage (FB/IG/
+    # TikTok/YouTube/Twitter) with a free tier that imposes
+    # per-day query caps. Useful as a cross-validator.
+    "bigspy":           "BIGSPY_API_KEY",
+    # Facebook Ads Library: public endpoint requiring no key,
+    # but rate-limited per IP. A session access token (from a
+    # logged-in Meta account) bypasses the IP limit and unlocks
+    # the full JSON response shape. Optional: without the token
+    # the adapter falls back to the public HTML scrape path.
+    "fb_ads_library_token": "FB_ADS_LIBRARY_TOKEN",
+
+    # ── Subscriptions ────────────────────
+    "recharge":         "RECHARGE_API_TOKEN",
+
+    # ── Voice / TTS ──────────────────────
+    "elevenlabs":       "ELEVENLABS_API_KEY",
+
+    # ── Video generation / stock ──────────
+    # Pexels: free stock video search (requires free API key).
+    # Primary source for the "stock + voiceover" creative path —
+    # combines a Pexels clip with an ElevenLabs voiceover to
+    # produce ad creative at ~$0.20-0.50 per video.
+    "pexels":           "PEXELS_API_KEY",
+    # Pixabay: alternative free stock source (different library
+    # coverage). Used as a fallback when Pexels doesn't match the
+    # product niche.
+    "pixabay":          "PIXABAY_API_KEY",
+    # Higgsfield: AI video generator ($9/mo starter). Excels at
+    # product-in-scene / lifestyle shots. Primary AI-video source.
+    "higgsfield":       "HIGGSFIELD_API_KEY",
+    # Runway Gen-3: premium AI video ($15/mo). Better motion than
+    # Higgsfield for action-heavy creatives. Use when budget allows.
+    "runway":           "RUNWAY_API_KEY",
+    # Replicate: hosts many open AI video models (Wan, Mochi,
+    # CogVideoX). Pay-per-use; cheap fallback when dedicated
+    # providers are offline or unaffordable.
+    "replicate":        "REPLICATE_API_TOKEN",
+
+    # ── Sourcing / dropshipping suppliers ──
+    # CJ Dropshipping: free developer API (MN-friendly — no US
+    # entity required). Auth is email+password → access-token; the
+    # adapter swaps them for a token on first call and caches it.
+    # The token TTL is 7 days per CJ's docs.
+    "cj_email":         "CJ_DROPSHIPPING_EMAIL",
+    "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
+
+    # ── Automation ────────────────────────
+    "zapier_nla":       "ZAPIER_NLA_API_KEY",
+    # n8n: workflow automation; self-hosted or cloud. Base URL
+    # points to the instance (e.g. https://n8n.example.com), API
+    # key uses the X-N8N-API-KEY header.
+    "n8n_url":          "N8N_BASE_URL",
+    "n8n_api_key":      "N8N_API_KEY",
+
+    # ── Helpdesk / Customer support ──────
+    "intercom":         "INTERCOM_ACCESS_TOKEN",
+    # Zendesk uses HTTP Basic auth: "{email}/token:{api_token}".
+    # Subdomain identifies the tenant (e.g. "acme" →
+    # https://acme.zendesk.com).
+    "zendesk_subdomain": "ZENDESK_SUBDOMAIN",
+    "zendesk_email":     "ZENDESK_EMAIL",
+    "zendesk_api_token": "ZENDESK_API_TOKEN",
+    # Crisp uses HTTP Basic auth with identifier + key, plus a
+    # tier tag (default "plugin"). Website ID scopes every call.
+    "crisp_identifier":  "CRISP_IDENTIFIER",
+    "crisp_key":         "CRISP_KEY",
+    "crisp_website_id":  "CRISP_WEBSITE_ID",
+
+    # ── Analytics ─────────────────────────
+    "posthog":          "POSTHOG_API_KEY",
+    "posthog_host":     "POSTHOG_HOST",
+    "mixpanel":         "MIXPANEL_TOKEN",
+    # Metabase: self-hosted or Metabase Cloud BI tool. The URL
+    # points to the Metabase instance; the API key is a
+    # Metabase 0.49+ static API key (X-API-KEY header).
+    "metabase_url":     "METABASE_URL",
+    "metabase_api_key": "METABASE_API_KEY",
+
+    # ── Intelligence ──────────────────────
+    "exa":              "EXA_API_KEY",
+    "similarweb":       "SIMILARWEB_API_KEY",
+
+    # ── CRM ──────────────────────────────
+    # HubSpot uses a single private app access token (Bearer).
+    "hubspot":          "HUBSPOT_ACCESS_TOKEN",
+
+    # ── Sourcing ─────────────────────────
+    # CJ Dropshipping uses email + password → access token exchange.
+    "cj_email":         "CJ_DROPSHIPPING_EMAIL",
+    "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
 }
 
 

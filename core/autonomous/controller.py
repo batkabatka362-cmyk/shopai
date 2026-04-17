@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import time
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from utils.logger import get_logger
@@ -156,6 +157,23 @@ class AutonomousController:
         self._reflection_synth = None
         self._error_buffer = None
 
+        # Vault sync rate limiting — track the last auto-export
+        # timestamp so we don't hammer the filesystem every cycle
+        # when no new patterns have been promoted, but still run an
+        # opportunistic check once per hour to pick up out-of-band
+        # learned records (e.g. manual memory ingests).
+        #
+        # The lock guards the check-and-update so two concurrent
+        # cycle threads can't both pass the rate gate on the same
+        # tick. We hold it ONLY across the check/reserve section —
+        # the actual bridge.export_knowledge() call happens outside
+        # the critical section so a slow export never blocks the
+        # other cycle's reflection hook.
+        self._vault_export_lock = threading.Lock()
+        self._last_vault_export_ts: float = 0.0
+        self._vault_import_done: bool = False
+        self._vault_min_export_interval_sec: float = 3600.0
+
     def initialize(self, store_manager: Any = None) -> dict[str, Any]:
         """Initialize all components."""
         if store_manager:
@@ -193,19 +211,27 @@ class AutonomousController:
             self._agent_dispatcher = AgentDispatcher()
             self._agent_dispatcher.initialize()
 
-            # ── Adapter layer (Phase 1 LLM + Phase 2 Shopify + Phase 3 Search + Phase 4 Shipping + Phase 5 Email) ──
+            # ── Adapter layer ──
             #
             # Wire the brain to the universal adapter ecosystem.
-            # Five bootstrap calls register every available
-            # adapter into the process-wide ``AdapterRegistry``:
+            # Bootstrap calls register every available adapter into
+            # the process-wide ``AdapterRegistry``:
             #
             #   * LLM (Groq, Gemini, DeepSeek, Mistral, Ollama,
-            #     OpenRouter, HuggingFace)
+            #     OpenRouter, HuggingFace, OpenAI, Anthropic)
             #   * Shopify native (risk, inventory, fulfillment,
             #     metafield)
             #   * Web search (Brave, Serper, DDGS)
             #   * Shipping (EasyPost, Shippo)
-            #   * Email (Brevo, Resend)
+            #   * Email (Brevo, Resend, SendGrid, Klaviyo)
+            #   * SMS (Twilio)
+            #   * Payment (PayPal, Stripe)
+            #   * Image (DALL-E 3)
+            #   * Knowledge base (Obsidian)
+            #   * Browser (Playwright)
+            #   * Vector DB (Weaviate)
+            #   * Scraper (Firecrawl)
+            #   * Reviews (Judge.me)
             #
             # Adapters whose credentials are unset still register;
             # the smart router skips them via ``is_configured()``.
@@ -220,21 +246,73 @@ class AutonomousController:
                 from core.adapters.search.bootstrap import register_all as register_search
                 from core.adapters.shipping.bootstrap import register_all as register_shipping
                 from core.adapters.email.bootstrap import register_all as register_email
+                from core.adapters.sms.bootstrap import register_all as register_sms
+                from core.adapters.payment.bootstrap import register_all as register_payment
+                from core.adapters.image.bootstrap import register_all as register_image
+                from core.adapters.obsidian.bootstrap import register_all as register_obsidian
+                from core.adapters.browser.bootstrap import register_all as register_browser
+                from core.adapters.vector.bootstrap import register_all as register_vector
+                from core.adapters.scraper.bootstrap import register_all as register_scraper
+                from core.adapters.reviews.bootstrap import register_all as register_reviews
+                from core.adapters.ads.bootstrap import register_all as register_ads
+                from core.adapters.ads_spy.bootstrap import register_all as register_ads_spy
+                from core.adapters.video_gen.bootstrap import register_all as register_video_gen
+                from core.adapters.sourcing.bootstrap import register_all as register_sourcing
+                from core.adapters.subscription.bootstrap import register_all as register_subscription
+                from core.adapters.voice.bootstrap import register_all as register_voice
+                from core.adapters.automation.bootstrap import register_all as register_automation
+                from core.adapters.helpdesk.bootstrap import register_all as register_helpdesk
+                from core.adapters.analytics.bootstrap import register_all as register_analytics
+                from core.adapters.crm.bootstrap import register_all as register_crm
+                from core.adapters.sourcing.bootstrap import register_all as register_sourcing
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
                 shipping_status = register_shipping()
                 email_status = register_email()
+                sms_status = register_sms()
+                payment_status = register_payment()
+                image_status = register_image()
+                obsidian_status = register_obsidian()
+                browser_status = register_browser()
+                vector_status = register_vector()
+                scraper_status = register_scraper()
+                reviews_status = register_reviews()
+                ads_status = register_ads()
+                ads_spy_status = register_ads_spy()
+                video_gen_status = register_video_gen()
+                sourcing_status = register_sourcing()
+                subscription_status = register_subscription()
+                voice_status = register_voice()
+                automation_status = register_automation()
+                helpdesk_status = register_helpdesk()
+                analytics_status = register_analytics()
+                crm_status = register_crm()
+                sourcing_status = register_sourcing()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
-                    **email_status,
+                    **email_status, **sms_status,
+                    **payment_status, **image_status,
+                    **obsidian_status, **browser_status,
+                    **vector_status, **scraper_status,
+                    **reviews_status, **ads_status,
+                    **ads_spy_status,
+                    **video_gen_status,
+                    **sourcing_status,
+                    **subscription_status, **voice_status,
+                    **automation_status, **helpdesk_status,
+                    **analytics_status, **crm_status,
+                    **sourcing_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(
                     "Adapter layer initialised: %d adapters registered, "
-                    "%d configured (%d LLM, %d Shopify native, %d search, "
-                    "%d shipping, %d email)",
+                    "%d configured (%d LLM, %d Shopify, %d search, "
+                    "%d shipping, %d email, %d SMS, %d payment, "
+                    "%d image, %d vault, %d browser, %d vector, "
+                    "%d scraper, %d reviews, %d ads, %d ads_spy, "
+                    "%d video_gen, %d sourcing, %d subscription, %d voice, %d automation)",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
                     len(llm_status),
@@ -242,6 +320,21 @@ class AutonomousController:
                     len(search_status),
                     len(shipping_status),
                     len(email_status),
+                    len(sms_status),
+                    len(payment_status),
+                    len(image_status),
+                    len(obsidian_status),
+                    len(browser_status),
+                    len(vector_status),
+                    len(scraper_status),
+                    len(reviews_status),
+                    len(ads_status),
+                    len(ads_spy_status),
+                    len(video_gen_status),
+                    len(sourcing_status),
+                    len(subscription_status),
+                    len(voice_status),
+                    len(automation_status),
                 )
             except Exception as adapter_exc:  # noqa: BLE001
                 logger.warning(
@@ -285,8 +378,67 @@ class AutonomousController:
                 "error": self._init_error,
                 "auto_approve": self._auto_approve,
             }
+
+        # Obsidian vault — one-shot import on boot so hand-written
+        # notes in Concepts/Knowledge/Decisions land in UnifiedMemory
+        # before the first run_cycle. Best-effort: a missing vault
+        # or failing memory instance must never block initialisation.
+        self._maybe_import_vault_on_boot()
+
         logger.info("AutonomousController initialized")
         return {"status": "initialized", "auto_approve": self._auto_approve}
+
+    # ── Obsidian boot import ─────────────────────────────────
+
+    def _maybe_import_vault_on_boot(self) -> dict[str, Any]:
+        """Scan the configured Obsidian vault once on startup and
+        ingest every ``.md`` note into UnifiedMemory.
+
+        Idempotent — once a successful import has run in this
+        process, subsequent calls return an empty report without
+        re-walking the vault. The bridge itself also skips notes
+        whose content hash hasn't changed, so even when operators
+        call ``initialize()`` multiple times the incremental cost
+        is O(0) after the first run.
+
+        Returns the bridge's import report so callers/tests can
+        inspect the counts. Silently returns an empty report when
+        the vault is unconfigured, unreachable, or already
+        imported in this process.
+        """
+        empty = {"imported": 0, "skipped": 0, "errors": 0}
+        if getattr(self, "_vault_import_done", False):
+            return empty
+        try:
+            from core.adapters.config import get_config
+            vault_path = get_config().get("obsidian_vault_path")
+            if not vault_path:
+                return empty
+            if self._unified_memory is None:
+                return empty
+            from core.adapters.obsidian.memory_bridge import VaultMemoryBridge
+            bridge = VaultMemoryBridge(vault_path)
+            result = bridge.import_vault(self._unified_memory)
+            # Mark done only on a clean run so a transient failure
+            # (e.g. vault path was a symlink dangling at boot) gets
+            # another attempt next time initialize() is called.
+            self._vault_import_done = True
+            if result.get("imported", 0) or result.get("errors", 0):
+                logger.info(
+                    "Vault boot import: %d imported, %d skipped, %d errors",
+                    result.get("imported", 0),
+                    result.get("skipped", 0),
+                    result.get("errors", 0),
+                )
+            return result
+        except Exception as exc:  # noqa: BLE001
+            # Visible at default INFO/WARNING log level so operators
+            # don't silently lose vault-backed memory on boot. The
+            # "not configured" case short-circuits above — reaching
+            # this branch always signals a real failure (missing
+            # module, unreadable path, bridge error).
+            logger.warning("Vault boot import skipped: %s", exc)
+            return empty
 
     # ── Single Cycle ─────────────────────────────────────────
 
@@ -1569,6 +1721,105 @@ class AutonomousController:
                      cycle_result["phases"]["analysis"]["insights"],
                      cycle_result["phases"]["decisions"]["proposed"])
 
+        # Obsidian vault: log cycle outcome as a vault note so
+        # the operator can see the decision history in graph view.
+        # Best-effort — never blocks the cycle.
+        try:
+            self._log_cycle_to_vault(cycle_result, phase_errors)
+        except Exception as exc:  # noqa: BLE001
+            _record("vault_cycle_log", exc)
+
+        # Adapter-powered side effects: analytics events, CRM
+        # upserts, helpdesk alerts, automation webhooks. Each hook
+        # is a no-op when the relevant adapter isn't configured,
+        # so operators opt in by just setting the API key. The
+        # whole bundle is wrapped so a hook failure can never
+        # break the cycle loop.
+        try:
+            from core.autonomous.adapter_hooks import run_post_cycle_hooks
+            hook_summary = run_post_cycle_hooks(
+                self._adapter_router, cycle_result, data, phase_errors,
+            )
+            if hook_summary.get("enabled"):
+                cycle_result["phases"]["adapter_hooks"] = hook_summary
+        except Exception as exc:  # noqa: BLE001
+            _record("adapter_hooks", exc)
+
+        # Upgrade 2: auto-replay coordinator scan. Classify any
+        # dead-letter entries whose adapters have since recovered
+        # (breaker closed, no strong route-weight penalty) as
+        # READY — the coordinator's registered callback (if any)
+        # performs the replay. We surface the counts regardless
+        # so operators can see "N entries could be retried now"
+        # without installing the callback.
+        try:
+            from core.adapters.auto_replay import (
+                get_auto_replay_coordinator,
+            )
+            replay_report = get_auto_replay_coordinator().scan()
+            cycle_result["phases"]["auto_replay"] = {
+                "ready": len(replay_report.ready),
+                "degraded": len(replay_report.degraded),
+                "replayed_already": len(replay_report.replayed),
+                "skipped_recent": replay_report.skipped_recent,
+                "callback_invocations": replay_report.callback_invocations,
+                "callback_failures": replay_report.callback_failures,
+            }
+        except Exception as exc:  # noqa: BLE001
+            _record("auto_replay_scan", exc)
+
+        # Option E: collect adapter-layer reliability signals
+        # (health / dead-letter / cost) and embed them on
+        # ``cycle_result["phases"]["reliability"]``. If any signal
+        # crosses a threshold, append a ``reliability_alert`` entry
+        # to ``phase_errors`` so the reflection synthesizer can
+        # mine recurring adapter-degradation patterns the same way
+        # it already mines phase exceptions.
+        #
+        # Every call inside ``collect_reliability_signal`` is
+        # wrapped in its own try/except — a missing SLA row or
+        # breaker snapshot can never break the cycle. The outer
+        # try here is belt-and-braces.
+        try:
+            from core.autonomous.reliability import (
+                collect_reliability_signal,
+            )
+            signal = collect_reliability_signal()
+            cycle_result["phases"]["reliability"] = {
+                "health_totals": signal["health"].get("totals", {}),
+                "unhealthy_adapters": signal["health"].get("unhealthy", []),
+                "degraded_adapters": signal["health"].get("degraded", []),
+                "deadletter_total": signal["deadletter"].get(
+                    "total_records", 0,
+                ),
+                "deadletter_new_since_last": signal["deadletter"].get(
+                    "new_since_last", 0,
+                ),
+                "cost_total_usd": signal["cost"].get("total_usd", 0.0),
+                "cost_delta_usd": signal["cost"].get("delta_usd", 0.0),
+                "cost_top_caller": signal["cost"].get("top_caller", ""),
+                "alerts": list(signal.get("alerts", [])),
+            }
+            for idx, alert in enumerate(signal.get("alerts", [])):
+                # Keep keys unique within ``phase_errors`` so
+                # reflection treats each one as its own signal.
+                key = (
+                    f"reliability_alert_{idx}" if idx
+                    else "reliability_alert"
+                )
+                phase_errors[key] = alert
+                cycle_result["phase_errors"][key] = alert
+            if signal.get("alerts"):
+                cycle_result["phase_error_count"] = len(
+                    cycle_result["phase_errors"]
+                )
+                logger.warning(
+                    "Reliability alerts for cycle %s: %s",
+                    cycle_id, "; ".join(signal["alerts"]),
+                )
+        except Exception as exc:  # noqa: BLE001
+            _record("reliability_signal", exc)
+
         # Wave 2 #5: post-tick reflection hook. Mines the cycle's
         # error ledger for recurring patterns and, when confidence
         # is high enough, promotes them to SOFT rules on the
@@ -1704,6 +1955,31 @@ class AutonomousController:
                 report.patterns_promoted, cycle_result.get("cycle_id"),
                 len(self._error_buffer),
             )
+            # Upgrade 1: close the loop — feed promoted patterns
+            # back into the router's learned-weight ledger. A
+            # pattern that names ``adapter`` + ``capability`` is
+            # exactly the signal "this pair is flakier than its
+            # declared priority implies; prefer alternatives".
+            try:
+                from core.adapters.route_weights import (
+                    get_route_weight_ledger,
+                )
+                applied = get_route_weight_ledger().apply_reflection_report(
+                    report,
+                )
+                if applied:
+                    cycle_result["reflection"]["route_weight_penalties"] = (
+                        applied
+                    )
+                    logger.info(
+                        "Route-weight ledger: %d (adapter, capability) "
+                        "pair(s) penalized from cycle %s",
+                        applied, cycle_result.get("cycle_id"),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "route_weight ledger update skipped: %s", exc,
+                )
 
         # Wave 6 #10: throttled auto-decay of stale learned rules.
         # We call decay at most once per ``_REFLECTION_DECAY_INTERVAL_SEC``
@@ -1723,17 +1999,58 @@ class AutonomousController:
         # missing adapter or write failure never breaks the cycle.
         self._maybe_export_to_vault(report)
 
+        # Wave 7 / Option P: mine the chat-feedback notes written by
+        # the dashboard's Option H handler and promote recurring
+        # complaint themes into ``ShopAI/Learned/lessons/``. Same
+        # best-effort contract as ``_maybe_export_to_vault`` — any
+        # failure is logged and swallowed.
+        self._maybe_learn_from_feedback(cycle_result)
+
     # ── Obsidian vault auto-export ──────────────────────────────
 
     def _maybe_export_to_vault(self, report: Any) -> None:
         """Export learned knowledge to Obsidian vault if configured.
 
-        Called at the end of ``_run_reflection_hook``. Best-effort:
-        a missing adapter, unconfigured vault path, or write failure
-        is silently logged — never breaks the cycle.
+        Called at the end of ``_run_reflection_hook``. Exports run
+        unconditionally on every reflection cycle that PROMOTED
+        patterns, plus an opportunistic hourly sweep so any memory
+        record marked ``source="learned"`` reaches the vault even
+        if reflection found nothing new that cycle — previously we
+        gated export strictly on ``patterns_promoted > 0``, which
+        meant out-of-band ingests (manual memory loads, feedback
+        learner lessons) stayed invisible to the graph until the
+        next promotion.
+
+        Best-effort: a missing adapter, unconfigured vault path, or
+        write failure is silently logged — never breaks the cycle.
         """
-        if not getattr(report, "patterns_promoted", 0):
-            return
+        promoted = int(getattr(report, "patterns_promoted", 0) or 0)
+        # Thread-safe check-and-reserve: the lock is held only long
+        # enough to decide whether THIS cycle is the one that runs
+        # the export (and to bump _last_vault_export_ts so any
+        # racing cycle sees the updated timestamp). The slow
+        # bridge.export_knowledge() call happens OUTSIDE the lock.
+        #
+        # Tests build a bare controller via ``__new__`` to exercise
+        # just the reflection path, skipping ``__init__``. Fall
+        # back to sensible defaults so the vault hook stays a
+        # no-op instead of crashing the reflection path.
+        lock = getattr(self, "_vault_export_lock", None)
+        if lock is None:
+            import threading
+            lock = threading.Lock()
+            self._vault_export_lock = lock
+        last_ts = float(getattr(self, "_last_vault_export_ts", 0.0) or 0.0)
+        interval = float(
+            getattr(self, "_vault_min_export_interval_sec", 3600.0) or 3600.0
+        )
+        with lock:
+            now = time.time()
+            elapsed = now - last_ts
+            due_for_sweep = elapsed >= interval
+            if promoted == 0 and not due_for_sweep:
+                return
+            self._last_vault_export_ts = now
         try:
             from core.adapters.config import get_config
             vault_path = get_config().get("obsidian_vault_path")
@@ -1745,11 +2062,248 @@ class AutonomousController:
             result = bridge.export_knowledge(get_unified_memory(), limit=10)
             if result.get("exported", 0):
                 logger.info(
-                    "Vault auto-export: %d notes written",
-                    result["exported"],
+                    "Vault auto-export: %d notes written "
+                    "(promoted=%d, sweep=%s)",
+                    result["exported"], promoted,
+                    "yes" if due_for_sweep else "no",
                 )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Vault auto-export skipped: %s", exc)
+            # Promoted from debug → warning so operators see export
+            # failures at default log config. The vault-unconfigured
+            # path returns early inside the try body, so reaching
+            # here always means a real error (missing bridge module,
+            # write permission, adapter crash).
+            logger.warning("Vault auto-export skipped: %s", exc)
+
+    def _maybe_learn_from_feedback(self, cycle_result: dict[str, Any]) -> None:
+        """Promote recurring chat-feedback complaints into lesson notes.
+
+        Reads ``vault/ShopAI/Feedback/*.md``, clusters down-rated notes
+        by word-frequency, and writes one lesson per recurring theme
+        to ``vault/ShopAI/Learned/lessons/``. The assistant can then
+        pull relevant lessons back into its system context on the
+        next turn (Option P phase 3).
+
+        Best-effort: a missing vault, unreadable note, or write
+        failure is logged and swallowed so feedback learning never
+        breaks the autonomous cycle.
+        """
+        try:
+            from core.adapters.config import get_config
+            vault_path = get_config().get("obsidian_vault_path")
+            if not vault_path:
+                return
+            from core.learning.feedback_learner import learn_from_feedback
+            report = learn_from_feedback(vault_path)
+            if report.lessons_written or report.themes_found:
+                cycle_result.setdefault("reflection", {})
+                cycle_result["reflection"]["feedback_learning"] = report.as_dict()
+                logger.info(
+                    "Feedback learner: %d lesson(s) written from "
+                    "%d down-rated note(s) across %d theme(s)",
+                    report.lessons_written, report.down_rated,
+                    report.themes_found,
+                )
+        except Exception as exc:  # noqa: BLE001
+            # Promoted from debug → warning: learner failures were
+            # invisible at default log level so operators never knew
+            # their feedback wasn't being mined into lessons. The
+            # vault-unconfigured case returns early, so this branch
+            # only fires on real learner failures.
+            logger.warning("Feedback learning skipped: %s", exc)
+
+    def _log_cycle_to_vault(
+        self,
+        cycle_result: dict[str, Any],
+        phase_errors: dict[str, str],
+    ) -> None:
+        """Write a Win or Error note to the Obsidian vault after a cycle.
+
+        Determines outcome from ``phase_errors`` and key metrics in
+        ``cycle_result``, then writes a markdown note to either
+        ``Wins/`` or ``Errors/`` so the operator can browse the
+        decision history in Obsidian's graph view.
+
+        Best-effort: called inside a try/except in ``run_cycle``,
+        so failures here never break the autonomous loop.
+        """
+        from core.adapters.config import get_config
+
+        vault_path = get_config().get("obsidian_vault_path")
+        if not vault_path:
+            return
+
+        from pathlib import Path
+
+        vault = Path(vault_path)
+        if not vault.is_dir():
+            return
+
+        from core.adapters.obsidian.parser import write_note
+
+        cycle_id = cycle_result.get("cycle_id", "unknown")
+        store_id = cycle_result.get("store_id", "")
+        duration = cycle_result.get("duration_s", 0)
+        insights = (
+            cycle_result.get("phases", {})
+            .get("analysis", {})
+            .get("insights", 0)
+        )
+        proposed = (
+            cycle_result.get("phases", {})
+            .get("decisions", {})
+            .get("proposed", 0)
+        )
+        error_count = cycle_result.get("phase_error_count", 0)
+
+        # Decide Win vs Error: if >25% of phases failed, it's an error.
+        total_phases = max(len(cycle_result.get("phases", {})), 1)
+        is_error = error_count > 0 and (error_count / total_phases) > 0.25
+
+        if is_error:
+            folder = "Errors"
+            title = f"Cycle Error {cycle_id}"
+            tags = ["error", "cycle", "auto"]
+            error_lines = "\n".join(
+                f"- **{phase}**: {msg}"
+                for phase, msg in phase_errors.items()
+            )
+            body = (
+                f"# {title}\n\n"
+                f"## Тоймлол\n\n"
+                f"Store: `{store_id}` | Duration: {duration}s | "
+                f"Errors: {error_count}/{total_phases} phases\n\n"
+                f"## Алдаанууд\n\n{error_lines}\n\n"
+                f"## Контекст\n\n"
+                f"- Insights: {insights}\n"
+                f"- Actions proposed: {proposed}\n\n"
+                f"## Холбоотой\n\n"
+                f"- [[ShopAI Architecture]]\n"
+                f"- [[Example Error Pattern]]\n"
+            )
+        else:
+            folder = "Wins"
+            title = f"Cycle Win {cycle_id}"
+            tags = ["win", "cycle", "auto"]
+            body = (
+                f"# {title}\n\n"
+                f"## Тоймлол\n\n"
+                f"Store: `{store_id}` | Duration: {duration}s | "
+                f"Errors: {error_count}\n\n"
+                f"## Үр дүн\n\n"
+                f"- Insights: {insights}\n"
+                f"- Actions proposed: {proposed}\n"
+            )
+            # Add learning summary if reflection ran
+            reflection = cycle_result.get("reflection", {})
+            if reflection:
+                promoted = reflection.get("patterns_promoted", 0)
+                body += f"- Patterns promoted: {promoted}\n"
+            body += (
+                f"\n## Холбоотой\n\n"
+                f"- [[ShopAI Architecture]]\n"
+                f"- [[Obsidian Integration Complete]]\n"
+            )
+
+        frontmatter = {
+            "title": title,
+            "tags": tags,
+            "date": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d"),
+            "cycle_id": cycle_id,
+            "store_id": store_id,
+            "phase_error_count": error_count,
+        }
+
+        write_note(vault, title, body, frontmatter=frontmatter, folder=folder)
+        logger.info("Vault: logged %s to %s/", title, folder)
+
+        # Additional Decisions/ note when the cycle actually
+        # proposed or executed actions. The brain picks an action
+        # each tick; the operator benefits from seeing those
+        # decisions chained together in the graph view, separate
+        # from the Win/Error outcome split.
+        self._log_decision_to_vault(vault, cycle_result)
+
+    def _log_decision_to_vault(
+        self,
+        vault: Any,
+        cycle_result: dict[str, Any],
+    ) -> None:
+        """Write a markdown note to ``Decisions/`` for the cycle's
+        top decision, if one exists. Best-effort.
+
+        Creating a separate note per cycle would overwhelm the
+        vault, so we only write when the brain committed to an
+        action (``top_action`` or non-empty proposed list) AND
+        skip if a note with the same title already exists today
+        (idempotency across repeated cycles with identical state).
+        """
+        try:
+            from core.adapters.obsidian.parser import write_note
+            phases = cycle_result.get("phases", {}) or {}
+            brain = phases.get("brain", {}) or {}
+            decisions_phase = phases.get("decisions", {}) or {}
+            top_action = brain.get("top_action", "") or ""
+            if not top_action:
+                brain_decisions = cycle_result.get("_brain_decisions") or []
+                if brain_decisions and isinstance(brain_decisions[0], dict):
+                    top_action = brain_decisions[0].get("action", "") or ""
+            proposed = decisions_phase.get("proposed", 0)
+            if not top_action or proposed == 0:
+                return
+
+            cycle_id = cycle_result.get("cycle_id", "unknown")
+            store_id = cycle_result.get("store_id", "")
+            date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+            # Deduplicate same-action same-day so we don't write
+            # a Decision note for every tick that re-picks the
+            # identical action.
+            from pathlib import Path
+            target_file = (
+                Path(vault) / "Decisions"
+                / f"{date_str} - {top_action}.md"
+            )
+            if target_file.exists():
+                return
+
+            title = f"{date_str} - {top_action}"
+            body = (
+                f"# {title}\n\n"
+                f"## Шийдвэр\n\n"
+                f"Brain сонгосон үйлдэл: **{top_action}**\n\n"
+                f"## Контекст\n\n"
+                f"- Store: `{store_id}`\n"
+                f"- Cycle: `{cycle_id}`\n"
+                f"- Actions proposed: {proposed}\n"
+                f"- Health score: {brain.get('health_score', 'n/a')}\n"
+                f"- Confidence: {brain.get('confidence', 'n/a')}\n\n"
+                f"## Холбоотой\n\n"
+                f"- [[ShopAI Architecture]]\n"
+                f"- [[Cycle Win {cycle_id}]]\n"
+            )
+            frontmatter = {
+                "title": title,
+                "tags": ["decision", "auto", top_action.replace(" ", "_")],
+                "date": date_str,
+                "cycle_id": cycle_id,
+                "store_id": store_id,
+                "action": top_action,
+                "status": "proposed",
+            }
+            write_note(
+                vault, title, body,
+                frontmatter=frontmatter, folder="Decisions",
+            )
+            logger.info("Vault: logged decision %s to Decisions/", title)
+        except Exception as exc:  # noqa: BLE001
+            # Promoted from debug → warning so decision-log failures
+            # (e.g. read-only vault, write-permission error, bad
+            # frontmatter) surface at default log level instead of
+            # vanishing. Early-returns above handle "no top action"
+            # and "already logged today" so this branch only fires
+            # on a real write failure.
+            logger.warning("Vault decision logging skipped: %s", exc)
 
     # ── Wave 7c (GAP-4): standalone error ingestion ────────────
 
