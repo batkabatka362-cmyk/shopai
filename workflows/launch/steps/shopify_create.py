@@ -53,6 +53,17 @@ class ShopifyCreateStep(Step):
             "images": list(context.media.get("gallery", [])),
             "compare_at_price": compare_at,
             "inventory_quantity": 100,
+            # Stamp the launch_id directly on the product tag list so
+            # the order webhook can correlate orders back to the
+            # launch without a separate metafield fetch — one HTTP call
+            # instead of two per order. The tag is prefixed so it can
+            # be filtered out when producing public-facing tag strings.
+            "metafields": [{
+                "namespace": "shopai",
+                "key": "launch_id",
+                "value": context.launch_id,
+                "type": "single_line_text_field",
+            }],
         }
 
         from execution.shopify.product_creator import ProductCreator

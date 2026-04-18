@@ -21,6 +21,49 @@ from api.validation import (
 logger = get_logger("api.server")
 
 
+def _lookup_launch_ids(shop: str, product_ids: list[int]) -> list[str]:
+    """Return the ``shopai/launch_id`` metafield for each product that
+    has one. Used by the order webhook to tag revenue events with the
+    launch that produced them. Silently returns an empty list on any
+    failure — revenue signal must still land in memory even when the
+    correlation step fails.
+    """
+    import os
+    import urllib.error
+    import urllib.request
+
+    if not shop or not product_ids:
+        return []
+    token = os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+    if not token:
+        return []
+
+    launch_ids: list[str] = []
+    for pid in product_ids[:20]:  # cap for safety
+        url = (
+            f"https://{shop}/admin/api/2024-01/products/{pid}/metafields.json"
+            "?namespace=shopai&key=launch_id"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "X-Shopify-Access-Token": token,
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+            continue
+        for mf in data.get("metafields", []):
+            val = mf.get("value")
+            if val:
+                launch_ids.append(str(val))
+                break
+    return launch_ids
+
+
 class ShopAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for ShopAI API."""
 
@@ -281,14 +324,27 @@ class ShopAIHandler(BaseHTTPRequestHandler):
 
         # Reward-signal bridge: orders are the closing leg of the
         # decision → action → outcome loop the learning pipeline
-        # depends on. Record each order as a memory event so the
-        # ROAS / CVR phase can promote patterns from real revenue
-        # rather than mid-cycle insights.
+        # depends on. Record each order as a memory event tagged
+        # with the originating launch_id so pattern promotion
+        # aggregates rewards per-launch instead of globally.
         if "orders/create" in topic:
             try:
                 from core.memory.intelligence import get_memory_intelligence
                 line_items = body.get("line_items") or []
-                product_ids = [li.get("product_id") for li in line_items if li.get("product_id")]
+                product_ids = [
+                    li.get("product_id") for li in line_items if li.get("product_id")
+                ]
+                # Look up launch_id metafield for each product so the
+                # event is tagged with the launch that produced this
+                # order. Launch_id comes from workflows/launch/ —
+                # products created outside the launch pipeline stay
+                # unlabeled, which is fine.
+                launch_ids = _lookup_launch_ids(shop, product_ids)
+                tags = ["revenue", "order"]
+                if store_id:
+                    tags.append(store_id)
+                tags.extend(f"launch:{lid}" for lid in launch_ids)
+
                 get_memory_intelligence().create(
                     category="order",
                     content={
@@ -297,6 +353,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
                         "total_price": float(body.get("total_price", 0) or 0),
                         "currency": body.get("currency"),
                         "product_ids": product_ids,
+                        "launch_ids": launch_ids,
                         "line_count": len(line_items),
                         "customer_email": body.get("email"),
                         "source_name": body.get("source_name"),
@@ -304,7 +361,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
                     },
                     action="purchase",
                     score=5.0,  # orders = highest-fidelity reward signal
-                    tags=["revenue", "order", store_id] if store_id else ["revenue", "order"],
+                    tags=tags,
                 )
             except Exception as exc:
                 logger.debug("memory create failed: %s", exc)
