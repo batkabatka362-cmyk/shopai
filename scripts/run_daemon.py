@@ -117,11 +117,15 @@ def run_daemon(store_id="ts0efe-ih", interval=600, max_cycles=0):
             phases = len(result.get("phases", {}))
             layers = result.get("phases", {}).get("layers", {}).get("layers_run", 0)
             insights = result.get("phases", {}).get("layers", {}).get("total_insights", 0)
-            smart = result.get("phases", {}).get("smart_execution", {}).get("total", 0)
+            # Actions are accounted for under phases.execution.executed when
+            # auto_approve=True (the common case now); smart_execution is
+            # empty because nothing is left pending for the smart executor.
+            exec_phase = result.get("phases", {}).get("execution", {})
+            actions = exec_phase.get("executed", 0) + exec_phase.get("smart_executed", 0)
             score = result.get("phases", {}).get("learning", {}).get("brain_learning", {}).get("score", 0)
 
             total_insights += insights
-            total_actions += smart
+            total_actions += actions
 
             # Log
             from core.system.structured_logger import get_structured_logger
@@ -140,7 +144,7 @@ def run_daemon(store_id="ts0efe-ih", interval=600, max_cycles=0):
             # Print summary
             ts = time.strftime("%H:%M:%S")
             print("[{}] Cycle {:3d} | {:.1f}s | {}/12 layers | {} insights | {} actions | score {}".format(
-                ts, cycle_num, elapsed, layers, insights, smart, score))
+                ts, cycle_num, elapsed, layers, insights, actions, score))
 
             # Print alerts
             alerts = result.get("phases", {}).get("alerts", {})

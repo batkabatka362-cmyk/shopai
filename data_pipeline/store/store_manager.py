@@ -177,7 +177,22 @@ class StoreManager:
 
     @staticmethod
     def _resolve_token(creds: dict[str, str]) -> str:
-        """Resolve token — use OAuth if client_id/secret present, else static key."""
+        """Resolve token.
+
+        Priority:
+          1. Static admin API access token (``api_key``) — works for
+             custom apps installed via Admin → Develop apps. No refresh
+             ever needed, so prefer it to avoid pointless OAuth calls.
+          2. OAuth client_id + client_secret — refresh-based, for apps
+             installed via Partner Dashboard.
+        Pre-audit the OAuth branch was tried first even when a static
+        token was present, which spammed ``invalid_request`` errors
+        every cycle because client-credentials grant isn't a valid
+        Shopify OAuth flow (needs an ``authorization_code``).
+        """
+        api_key = creds.get("api_key", "")
+        if api_key:
+            return api_key
         if creds.get("client_id") and creds.get("client_secret"):
             try:
                 auth = _get_auth_instance(creds["shop_url"],
@@ -186,11 +201,17 @@ class StoreManager:
                 return auth.get_token()
             except Exception:
                 pass
-        return creds.get("api_key", "")
+        return ""
 
     @staticmethod
     def _resolve_env_token() -> str:
-        """Resolve token from env — OAuth or legacy."""
+        """Resolve token from env — static key wins over OAuth.
+
+        See ``_resolve_token`` for the priority rationale.
+        """
+        api_key = os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+        if api_key:
+            return api_key
         client_id = os.environ.get("SHOPAI_SHOPIFY_CLIENT_ID", "")
         client_secret = os.environ.get("SHOPAI_SHOPIFY_CLIENT_SECRET", "")
         shop_url = os.environ.get("SHOPAI_SHOPIFY_URL", "")
@@ -200,7 +221,7 @@ class StoreManager:
                 return auth.get_token()
             except Exception:
                 pass
-        return os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+        return ""
 
     def set_credentials(self, store_id: str, shop_url: str, api_key: str) -> None:
         if not isinstance(store_id, str) or not store_id:

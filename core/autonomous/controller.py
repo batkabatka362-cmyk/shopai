@@ -3190,9 +3190,9 @@ class LearningPipeline:
             from memory.long_term.persistent_store import PersistentStore
             store = PersistentStore()
             store.store(
-                f"learning_{cycle_id}",
-                learning,
                 namespace="learning_history",
+                key=f"learning_{cycle_id}",
+                value=learning,
                 metadata={"store_id": store_id, "cycle_id": cycle_id},
             )
         except Exception as exc:
