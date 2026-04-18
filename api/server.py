@@ -74,6 +74,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/workflow": self._run_workflow,
             "/api/auto/cycle": self._auto_cycle,
             "/api/store/sync": self._store_sync,
+            "/api/launch": self._launch_product,
         }
 
         handler = routes.get(path)
@@ -278,6 +279,36 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.debug("Webhook experience/cache: %s", exc)
 
+        # Reward-signal bridge: orders are the closing leg of the
+        # decision → action → outcome loop the learning pipeline
+        # depends on. Record each order as a memory event so the
+        # ROAS / CVR phase can promote patterns from real revenue
+        # rather than mid-cycle insights.
+        if "orders/create" in topic:
+            try:
+                from core.memory.intelligence import get_memory_intelligence
+                line_items = body.get("line_items") or []
+                product_ids = [li.get("product_id") for li in line_items if li.get("product_id")]
+                get_memory_intelligence().create(
+                    category="order",
+                    content={
+                        "shop": shop,
+                        "order_id": body.get("id"),
+                        "total_price": float(body.get("total_price", 0) or 0),
+                        "currency": body.get("currency"),
+                        "product_ids": product_ids,
+                        "line_count": len(line_items),
+                        "customer_email": body.get("email"),
+                        "source_name": body.get("source_name"),
+                        "landing_site": body.get("landing_site"),
+                    },
+                    action="purchase",
+                    score=5.0,  # orders = highest-fidelity reward signal
+                    tags=["revenue", "order", store_id] if store_id else ["revenue", "order"],
+                )
+            except Exception as exc:
+                logger.debug("memory create failed: %s", exc)
+
         self._json_response(200, result)
 
     def _auto_cycle(self, body: dict) -> None:
@@ -357,6 +388,60 @@ class ShopAIHandler(BaseHTTPRequestHandler):
 
         result = self.orchestrator.run_workflow(workflow, data)
         self._json_response(200, result)
+
+    def _launch_product(self, body: dict) -> None:
+        """Owner-facing endpoint that runs the Goal-Driven launch
+        pipeline. Body fields map 1:1 to LaunchGoal:
+
+            POST /api/launch
+            {
+              "alibaba_url": "https://...",          # optional
+              "spy_url": "https://minea.com/...",   # optional
+              "supplier_sku": "CJ-12345",            # optional
+              "manual_payload": {...},               # optional
+              "target_price": 29.99,
+              "ad_budget_day": 20.0,
+              "ad_kill_roas": 1.5,
+              "ad_kill_after_days": 3,
+              "niche": "pets",
+              "copy_tone": "urgent",
+              "store_id": "ts0efe-ih"
+            }
+        """
+        from workflows.launch import LaunchPipeline, LaunchGoal
+
+        try:
+            goal = LaunchGoal(
+                alibaba_url=body.get("alibaba_url"),
+                spy_url=body.get("spy_url"),
+                supplier_sku=body.get("supplier_sku"),
+                manual_payload=body.get("manual_payload"),
+                target_price=body.get("target_price"),
+                margin_floor=float(body.get("margin_floor", 0.30)),
+                ad_budget_day=float(body.get("ad_budget_day", 20.0)),
+                ad_kill_roas=float(body.get("ad_kill_roas", 1.5)),
+                ad_kill_after_days=int(body.get("ad_kill_after_days", 3)),
+                niche=body.get("niche", ""),
+                copy_tone=body.get("copy_tone", "friendly"),
+                store_id=body.get("store_id", ""),
+            )
+        except (TypeError, ValueError) as exc:
+            self._json_response(400, {"error": f"invalid goal: {exc}"})
+            return
+
+        # Reject if no source pointer at all
+        if goal.source_kind() == "manual" and not goal.manual_payload:
+            self._json_response(400, {
+                "error": "must supply one of: alibaba_url, spy_url, "
+                         "supplier_sku, manual_payload",
+            })
+            return
+
+        result = LaunchPipeline().run(goal)
+        status_code = 200 if result.status == "complete" else (
+            207 if result.status == "partial" else 422
+        )
+        self._json_response(status_code, result.as_dict())
 
     # --- Helpers ---
 

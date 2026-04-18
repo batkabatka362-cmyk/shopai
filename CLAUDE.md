@@ -206,6 +206,140 @@ adapter нэмэхэд 50 мөр, scratch бичихэд 5000 мөр — бол�
 
 ---
 
+## 4b. SENIOR ENGINEER DISCIPLINE
+
+ShopAI бол хобби биш — бодит мөнгө хөдөлгөдөг автоном систем. Доорх
+дүрмүүд senior AI engineer-ийн стандарт:
+
+### A. Determinism over intelligence (95/5 rule)
+
+LLM call хийхээсээ өмнө асуу: *"Энэ шийдвэрийг pure function болгож
+чадах уу?"* Боломжтой бол LLM хэрэглэхгүй.
+
+```
+✓ Determinism:  "ROAS < 1.5 after 3 days → kill"   (1 line, 0 token)
+✗ Intelligence: "Should we kill? Let me think..."   (LLM call, $0.001, 1.5s)
+```
+
+LLM-ийн зөвлөмж тохиолдохгүй газрууд: scoring, ranking, threshold check,
+arithmetic, аль ч state transition. LLM зөвхөн:
+- Free-form content generation (description, ad copy, email body)
+- Multimodal interpretation (image → tags)
+- Fuzzy classification (review sentiment) — мөн эхлээд keyword/rule-base туршиж үз
+
+### B. Closed-loop telemetry (хамгийн чухал)
+
+Шинэ шийдвэр гаргадаг хэсэг нэмбэл **outcome event-гүй deploy
+хийхгүй**. Хэв маяг:
+
+```python
+decision = brain.decide(...)
+action_id = executor.execute(decision)
+# ↓ заавал ↓
+memory.record_outcome(action_id, kpi="roas", value=measured_roas, source="meta_pixel")
+```
+
+Outcome event эргэн ирэхгүй бол learning pipeline статик. Code-review-ийн
+гол асуулт: *"Шинэ ROAS/CVR/conversion data энд хаашаа холбогдох вэ?"*
+
+### C. Cost / latency budget
+
+LLM-ийн дуудлага бүрт зориулсан **cost & latency cap** байх ёстой:
+
+| Хэрэглээ | Max cost/call | Max latency | Provider preset |
+|---|---|---|---|
+| Bulk classification | $0.0005 | 2s | Groq Llama 3.3 |
+| Product description | $0.005 | 8s | Gemini Flash |
+| Strategic reasoning | $0.05 | 30s | DeepSeek V3 |
+| Cycle-blocking call | **0** | **0** | LLM-гүйгээр шийд |
+
+Cycle бүрийн нийт LLM cost: **$0.10-аас бага** (өдөрт $14, сард $420
+хүчирхэг). Үүнээс хэтэрвэл архитектурыг эргэн харах.
+
+### D. Idempotency + Retry safety
+
+Shopify/Meta Ads/AutoDS-руу бичсэн ямар ч action нь дахин гүйцэтгэхэд
+**duplicate state үүсгэхгүй** байх ёстой:
+
+```
+✓ "Set product 12345 price to $29.99"     (idempotent — same end state)
+✗ "Increment campaign budget by $10"      (NOT idempotent — runs N times)
+```
+
+Counter / increment / decrement-ийг external API дээр **бүү ашигла**.
+Үргэлж "set X to absolute value Y" хэлбэрийг ашигла.
+
+### E. Failure isolation (cycle never dies)
+
+Adapter / phase / engine-ийн сэлэн бүхэнд:
+- `try/except` орчим, exception-ийг log + record + continue
+- Тэр нэг adapter-ийн алдаа cycle-ийг зогсоохгүй
+- Pattern: `core/autonomous/controller.py` дахь `_record(phase, exc)` хэлбэр
+- Circuit-breaker rate (3 алдаа дараалсан → 5 мин үл оролдох)
+
+### F. Schema-first data exchange
+
+Engine ↔ engine, adapter ↔ adapter дамжих data **dict шиддэг
+free-form биш**. Ашигла:
+- TypedDict эсвэл pydantic BaseModel `core/contracts/`-д
+- Контракт өөрчлөгдвөл version bump (`v1`, `v2`)
+- Test нь contract-ыг шалгана, implementation-ыг биш
+
+### G. Money-on-the-line code path: paranoid mode
+
+`enable_live_execution=true` тохиолдолд бичигдэх ямар ч action:
+1. Pre-flight check — credentials valid, store reachable
+2. Dry-run — request body log хийгдэх (бодит API дуудалгүй)
+3. Confirm — `auto_approve` эсвэл human approval
+4. Backup — `backup_before_shopify_changes` дуудна (current state snapshot)
+5. Execute — actual write
+6. Verify — post-write read-back, баталгаажуулна
+7. Record — outcome event memory-д
+
+Алхам алгасах нь = production алдаа. Жишээ pattern: `execution/smart_executor.py`.
+
+### H. Observability: every action explainable
+
+Cycle бүрт `result.narrative` гарах ёстой — хүний унших боломжтой:
+- Аль option сонгосон, яагаад
+- Аль memory-ийг ашигласан (rule_id-ийг trace-д)
+- Outcome score хэрхэн тооцсон
+
+`logger.info("Decision: X (because Y, score=Z, sources=[A,B])")` хэлбэрийг
+дагана. "Magic" decision гарахгүй — бүх шийдвэр replayable.
+
+### I. Test discipline
+
+- **Contract test**: adapter-ийн public API-ыг шалгах, implementation бус
+- **Property test**: invariant-ыг шалгах (`hypothesis` library)
+- **Integration test**: бодит pipeline run, mock-toi external API
+- **Snapshot test**: AI prompt + response-ийг snapshot-д хадгал, regression
+- **Smoke test**: `python main.py` 1 cycle алдаагүй гүйх
+
+Test mock-чилбал тэр mock жинхэнэ adapter-ийн contract-тэй үргэлж тэнцэх
+ёстой — fake-ыг бодит code-той sync-д барих.
+
+### J. PR / commit стандарт
+
+Commit message: *яагаад* (1 sentence) + *яаж* (1-2 sentence). Жишээ:
+
+```
+Auto-connect ShopifyBridge on first fetch so data actually loads
+
+CoreOrchestrator instantiated ShopifyBridge with credentials but never
+called connect(), so fetch_products always raised ShopifyBridgeUnavailable
+even with valid SHOPAI_SHOPIFY_URL/KEY. Lazily connect in fetch methods.
+```
+
+PR-д:
+- Test green-Эй
+- 200+ мөр change-д design note (workflow doc)
+- "Money-on-the-line" path-д extra reviewer
+
+---
+
+
+
 ## 5. LLM / MODEL ТОХИРГОО (3-Agent Architecture)
 
 ShopAI-ийн brain нь 3 тусдаа LLM-ыг чиг үүрэгтэй:
