@@ -1539,6 +1539,22 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_trend: TIME-SERIES TREND DETECTION — pulls the
+        # last 30 days of order / launch / competitor events, bins by
+        # series, runs rolling-window slope + z-score, persists
+        # inflection points as category=trend memories.
+        try:
+            from core.autonomous.trend_detector import detect as detect_trends
+            trend_report = detect_trends()
+            if trend_report.inflections or trend_report.series:
+                cycle_result["phases"]["trend_detector"] = {
+                    "series": len(trend_report.series),
+                    "inflections": len(trend_report.inflections),
+                    "recorded": trend_report.recorded,
+                }
+        except Exception as exc:
+            _record("trend_detector", exc)
+
         # Phase 8k2b_transfer: CROSS-NICHE TRANSFER LEARNING — mine
         # abstract feature combinations that won across ≥2 niches and
         # persist them as level-3 transfer_strategy memories. New
