@@ -59,6 +59,11 @@ class Snapshot:
     drift: dict[str, Any] = field(default_factory=dict)
     goals: dict[str, Any] = field(default_factory=dict)
     attention: dict[str, Any] = field(default_factory=dict)
+    owner: dict[str, Any] = field(default_factory=dict)
+    experiments: dict[str, Any] = field(default_factory=dict)
+    budgets: list[dict[str, Any]] = field(default_factory=list)
+    knowledge: dict[str, Any] = field(default_factory=dict)
+    uplift: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +87,11 @@ class Snapshot:
             "drift": self.drift,
             "goals": self.goals,
             "attention": self.attention,
+            "owner": self.owner,
+            "experiments": self.experiments,
+            "budgets": self.budgets,
+            "knowledge": self.knowledge,
+            "uplift": self.uplift,
         }
 
 
@@ -172,7 +182,147 @@ class BrainFacade:
         snap.drift = _safe(lambda: _drift_summary())
         snap.goals = _safe(lambda: _goal_summary())
         snap.attention = _safe(lambda: _attention_summary())
+        snap.owner = _safe(lambda: _owner_summary())
+        snap.experiments = _safe(lambda: _experiment_summary())
+        snap.budgets = _safe(lambda: _budget_summary())
+        snap.knowledge = _safe(lambda: _knowledge_summary())
+        snap.uplift = _safe(lambda: _uplift_summary())
         return snap
+
+    # ── v25: reasoning, safety, budget, experiments ──────
+
+    def owner_weights(self) -> dict[str, float]:
+        """Current owner preference weights for the utility blender."""
+        try:
+            return _owner_model().weights()
+        except Exception as exc:
+            logger.debug("owner_weights failed: %s", exc)
+            return {}
+
+    def record_owner_feedback(
+        self,
+        action_kind: str,
+        approved: bool,
+        *,
+        cost_usd: float = 0.0,
+        bold: bool = False,
+        latency_s: float = 0.0,
+    ) -> None:
+        try:
+            _owner_model().record(
+                action_kind=action_kind, approved=approved,
+                cost_usd=cost_usd, bold=bold, latency_s=latency_s,
+            )
+        except Exception as exc:
+            logger.debug("record_owner_feedback failed: %s", exc)
+
+    def safety_check(
+        self,
+        action: dict[str, Any],
+        *,
+        confidence: float = 1.0,
+    ) -> dict[str, Any]:
+        """Run the action safety guard: bright lines + blast + rollback."""
+        try:
+            return _safety_guard().evaluate(
+                action, confidence=confidence,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("safety_check failed: %s", exc)
+            return {"verdict": "allow", "reasons": ["guard_unavailable"]}
+
+    def reserve_budget(
+        self, category: str, amount_usd: float,
+    ) -> str | None:
+        try:
+            return _budget_ledger().reserve(
+                category, amount_usd,
+            ).id
+        except Exception as exc:
+            logger.debug("reserve_budget failed: %s", exc)
+            return None
+
+    def commit_budget(
+        self,
+        reservation_id: str,
+        actual_amount: float | None = None,
+    ) -> bool:
+        try:
+            _budget_ledger().commit(reservation_id, actual_amount)
+            return True
+        except Exception as exc:
+            logger.debug("commit_budget failed: %s", exc)
+            return False
+
+    def release_budget(self, reservation_id: str) -> bool:
+        try:
+            _budget_ledger().release(reservation_id)
+            return True
+        except Exception:
+            return False
+
+    def allocate_experiment(
+        self, name: str, unit_id: str,
+    ) -> str:
+        """Deterministically bucket a unit into a variant."""
+        try:
+            return _experiment_manager().allocate(name, unit_id)
+        except Exception as exc:
+            logger.debug("allocate_experiment failed: %s", exc)
+            return ""
+
+    def record_experiment_outcome(
+        self, name: str, unit_id: str, outcome: float,
+    ) -> None:
+        try:
+            _experiment_manager().observe(name, unit_id, outcome)
+        except Exception as exc:
+            logger.debug("record_experiment_outcome failed: %s", exc)
+
+    def ate(
+        self,
+        *,
+        treatment_value: str,
+        control_value: str,
+        outcome_key: str,
+        covariates_subset: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Estimate the average treatment effect from experience."""
+        try:
+            return _uplift_estimator().ate(
+                treatment_value=treatment_value,
+                control_value=control_value,
+                outcome_key=outcome_key,
+                covariates_subset=covariates_subset,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("ate failed: %s", exc)
+            return {}
+
+    def assert_fact(
+        self,
+        subject: str,
+        predicate: str,
+        obj: str,
+        *,
+        is_literal: bool = False,
+        confidence: float = 1.0,
+        source: str = "",
+    ) -> None:
+        try:
+            _knowledge_graph().assert_triple(
+                subject, predicate, obj,
+                is_literal=is_literal,
+                confidence=confidence, source=source,
+            )
+        except Exception as exc:
+            logger.debug("assert_fact failed: %s", exc)
+
+    def is_a(self, subject: str, target_class: str) -> bool:
+        try:
+            return _knowledge_graph().is_a(subject, target_class)
+        except Exception:
+            return False
 
     # ── v23: planning & reasoning ─────────────────────────
 
@@ -709,6 +859,116 @@ def _attention_filter():
 
 def _attention_summary() -> dict[str, Any]:
     return _attention_filter().stats()
+
+
+# ── v25 singletons ──────────────────────────────────────────
+
+_OWNER: Any = None
+_OWNER_LOCK = threading.Lock()
+
+
+def _owner_model():
+    global _OWNER
+    if _OWNER is None:
+        with _OWNER_LOCK:
+            if _OWNER is None:
+                from core.brain.owner_model import OwnerModel
+                _OWNER = OwnerModel()
+    return _OWNER
+
+
+def _owner_summary() -> dict[str, Any]:
+    return _owner_model().summary()
+
+
+_SAFETY_GUARD: Any = None
+_SAFETY_LOCK = threading.Lock()
+
+
+def _safety_guard():
+    global _SAFETY_GUARD
+    if _SAFETY_GUARD is None:
+        with _SAFETY_LOCK:
+            if _SAFETY_GUARD is None:
+                from core.brain.action_safety_guard import (
+                    ActionSafetyGuard,
+                )
+                _SAFETY_GUARD = ActionSafetyGuard()
+    return _SAFETY_GUARD
+
+
+_BUDGET_LEDGER: Any = None
+_BUDGET_LOCK = threading.Lock()
+
+
+def _budget_ledger():
+    global _BUDGET_LEDGER
+    if _BUDGET_LEDGER is None:
+        with _BUDGET_LOCK:
+            if _BUDGET_LEDGER is None:
+                from core.brain.budget_ledger import BudgetLedger
+                _BUDGET_LEDGER = BudgetLedger()
+    return _BUDGET_LEDGER
+
+
+def _budget_summary() -> list[dict[str, Any]]:
+    return [s.as_dict() for s in _budget_ledger().overview()]
+
+
+_EXPERIMENT_MANAGER: Any = None
+_EXP_LOCK = threading.Lock()
+
+
+def _experiment_manager():
+    global _EXPERIMENT_MANAGER
+    if _EXPERIMENT_MANAGER is None:
+        with _EXP_LOCK:
+            if _EXPERIMENT_MANAGER is None:
+                from core.brain.experiment_manager import (
+                    ExperimentManager,
+                )
+                _EXPERIMENT_MANAGER = ExperimentManager()
+    return _EXPERIMENT_MANAGER
+
+
+def _experiment_summary() -> dict[str, Any]:
+    return _experiment_manager().stats()
+
+
+_UPLIFT: Any = None
+_UPLIFT_LOCK = threading.Lock()
+
+
+def _uplift_estimator():
+    global _UPLIFT
+    if _UPLIFT is None:
+        with _UPLIFT_LOCK:
+            if _UPLIFT is None:
+                from core.brain.uplift_estimator import UpliftEstimator
+                _UPLIFT = UpliftEstimator()
+    return _UPLIFT
+
+
+def _uplift_summary() -> dict[str, Any]:
+    return _uplift_estimator().stats()
+
+
+_KNOWLEDGE_GRAPH: Any = None
+_KG_LOCK = threading.Lock()
+
+
+def _knowledge_graph():
+    global _KNOWLEDGE_GRAPH
+    if _KNOWLEDGE_GRAPH is None:
+        with _KG_LOCK:
+            if _KNOWLEDGE_GRAPH is None:
+                from core.memory.knowledge_graph import KnowledgeGraph
+                _KNOWLEDGE_GRAPH = KnowledgeGraph()
+    return _KNOWLEDGE_GRAPH
+
+
+def _knowledge_summary() -> dict[str, Any]:
+    return _knowledge_graph().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────

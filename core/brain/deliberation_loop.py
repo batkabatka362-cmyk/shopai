@@ -28,6 +28,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.deliberation_loop")
+
 
 ProposeFn = Callable[[dict[str, Any], list[dict[str, Any]]], dict[str, Any] | None]
 CritiqueFn = Callable[[dict[str, Any], dict[str, Any]], list[dict[str, Any]]]
@@ -214,9 +219,10 @@ def from_counter_argument_and_critic_panel(
                     "severity": rep.severity,
                     "note": rep.message,
                 })
-        except Exception:
-            # counter_argument schema varies — fall back silently
-            pass
+        except Exception as exc:
+            # counter_argument schema varies across versions; treat any
+            # failure as "no critiques from this source" and continue.
+            logger.debug("counter_argument unavailable: %s", exc)
         try:
             from core.brain import critic_panel as cp
             verdict = cp.evaluate(candidate, context=context)
@@ -226,8 +232,8 @@ def from_counter_argument_and_critic_panel(
                     "severity": c.severity,
                     "note": c.note,
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("critic_panel unavailable: %s", exc)
         if counter_arg_probes:
             for probe in counter_arg_probes:
                 try:
