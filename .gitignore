@@ -32,3 +32,8 @@ vault/.obsidian/themes/
 vault/.obsidian/hotkeys.json
 vault/ShopAI/Learned/
 vault/.shopai_import_state.json
+
+# Runtime-generated notes (pattern summarizer, cycle journal)
+vault/Knowledge/brain-summary-*.md
+vault/Decisions/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*.md
+vault/Wins/Cycle-Win-*.md
