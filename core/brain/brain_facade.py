@@ -57,6 +57,8 @@ class Snapshot:
     competence: dict[str, Any] = field(default_factory=dict)
     curiosity: dict[str, Any] = field(default_factory=dict)
     drift: dict[str, Any] = field(default_factory=dict)
+    goals: dict[str, Any] = field(default_factory=dict)
+    attention: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +80,8 @@ class Snapshot:
             "competence": self.competence,
             "curiosity": self.curiosity,
             "drift": self.drift,
+            "goals": self.goals,
+            "attention": self.attention,
         }
 
 
@@ -166,7 +170,84 @@ class BrainFacade:
         snap.competence = _safe(lambda: _competence_summary())
         snap.curiosity = _safe(lambda: _curiosity_summary())
         snap.drift = _safe(lambda: _drift_summary())
+        snap.goals = _safe(lambda: _goal_summary())
+        snap.attention = _safe(lambda: _attention_summary())
         return snap
+
+    # ── v23: planning & reasoning ─────────────────────────
+
+    def add_goal(
+        self,
+        description: str,
+        *,
+        parent_id: str | None = None,
+        due_at: float | None = None,
+        weight: float = 1.0,
+        tags: tuple[str, ...] = (),
+    ) -> str | None:
+        try:
+            return _goal_graph().add(
+                description, parent_id=parent_id,
+                due_at=due_at, weight=weight, tags=tags,
+            ).id
+        except Exception as exc:
+            logger.debug("add_goal failed: %s", exc)
+            return None
+
+    def advance_goal(
+        self, goal_id: str, progress: float,
+    ) -> dict[str, Any] | None:
+        try:
+            g = _goal_graph().advance(goal_id, progress)
+            return g.as_dict() if g else None
+        except Exception as exc:
+            logger.debug("advance_goal failed: %s", exc)
+            return None
+
+    def frontier(self) -> list[dict[str, Any]]:
+        """Actionable leaf goals right now."""
+        try:
+            return [g.as_dict() for g in _goal_graph().frontier()]
+        except Exception:
+            return []
+
+    def plan(
+        self,
+        start: dict[str, Any],
+        goal_state: dict[str, Any],
+        actions: list[Any],
+        *,
+        max_expansions: int = 1_000,
+    ) -> dict[str, Any] | None:
+        """Thin wrapper over plan_search for decision-path callers."""
+        try:
+            from core.brain import plan_search as ps
+            plan = ps.search(
+                start=start,
+                goal_fn=ps.predicate_goal(goal_state),
+                actions=actions,
+                heuristic=ps.delta_heuristic(goal_state),
+                max_expansions=max_expansions,
+            )
+            return plan.as_dict() if plan else None
+        except Exception as exc:
+            logger.debug("plan failed: %s", exc)
+            return None
+
+    def rank_by_attention(
+        self,
+        events: list[dict[str, Any]],
+        *, k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Score events by salience, return top-k."""
+        try:
+            return [
+                s.as_dict()
+                for s in _attention_filter().top_k(events, k=k)
+            ]
+        except Exception as exc:
+            logger.debug("rank_by_attention failed: %s", exc)
+            return []
 
     # ── v22: learning beyond outcomes ─────────────────────
 
@@ -590,6 +671,44 @@ def _drift_detector():
 
 def _drift_summary() -> dict[str, Any]:
     return _drift_detector().summary()
+
+
+# ── v23 singletons ──────────────────────────────────────────
+
+_GOAL_GRAPH: Any = None
+_GOAL_LOCK = threading.Lock()
+
+
+def _goal_graph():
+    global _GOAL_GRAPH
+    if _GOAL_GRAPH is None:
+        with _GOAL_LOCK:
+            if _GOAL_GRAPH is None:
+                from core.brain.goal_graph import GoalGraph
+                _GOAL_GRAPH = GoalGraph()
+    return _GOAL_GRAPH
+
+
+def _goal_summary() -> dict[str, Any]:
+    return _goal_graph().stats()
+
+
+_ATTENTION: Any = None
+_ATTENTION_LOCK = threading.Lock()
+
+
+def _attention_filter():
+    global _ATTENTION
+    if _ATTENTION is None:
+        with _ATTENTION_LOCK:
+            if _ATTENTION is None:
+                from core.brain.attention_filter import AttentionFilter
+                _ATTENTION = AttentionFilter()
+    return _ATTENTION
+
+
+def _attention_summary() -> dict[str, Any]:
+    return _attention_filter().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
