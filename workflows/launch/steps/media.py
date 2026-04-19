@@ -42,6 +42,8 @@ class MediaStep(Step):
                 "cannot list product without imagery"
             )
 
+        quality = self._score_primary(gallery[0])
+
         return {
             "primary_image": gallery[0],
             "gallery": gallery[:8],
@@ -52,7 +54,23 @@ class MediaStep(Step):
             ],
             "enhanced": False,
             "cdn_uploaded": False,
+            "primary_quality_score": quality.get("quality", 0),
+            "primary_hero_suitable": quality.get("hero_suitable", False),
+            "primary_issues": quality.get("issues", []),
+            "primary_description": quality.get("description", ""),
         }
+
+    @staticmethod
+    def _score_primary(url: str) -> dict[str, Any]:
+        """Run the vision analyser on the primary image. Returns {} if
+        Gemini is unconfigured so downstream keeps working."""
+        try:
+            from core.adapters.image import vision
+            if not vision.is_configured():
+                return {}
+            return vision.analyze(url)
+        except Exception:  # noqa: BLE001
+            return {}
 
     @staticmethod
     def _fetch_pexels(context: LaunchContext) -> list[dict[str, Any]]:
