@@ -64,6 +64,12 @@ class Snapshot:
     budgets: list[dict[str, Any]] = field(default_factory=list)
     knowledge: dict[str, Any] = field(default_factory=dict)
     uplift: dict[str, Any] = field(default_factory=dict)
+    causal: dict[str, Any] = field(default_factory=dict)
+    macros: list[dict[str, Any]] = field(default_factory=list)
+    forecasts: dict[str, Any] = field(default_factory=dict)
+    invariants: dict[str, Any] = field(default_factory=dict)
+    self_debug: dict[str, Any] = field(default_factory=dict)
+    credit: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +98,12 @@ class Snapshot:
             "budgets": self.budgets,
             "knowledge": self.knowledge,
             "uplift": self.uplift,
+            "causal": self.causal,
+            "macros": self.macros,
+            "forecasts": self.forecasts,
+            "invariants": self.invariants,
+            "self_debug": self.self_debug,
+            "credit": self.credit,
         }
 
 
@@ -187,7 +199,155 @@ class BrainFacade:
         snap.budgets = _safe(lambda: _budget_summary())
         snap.knowledge = _safe(lambda: _knowledge_summary())
         snap.uplift = _safe(lambda: _uplift_summary())
+        snap.causal = _safe(lambda: _causal_summary())
+        snap.macros = _safe(lambda: _macro_summary())
+        snap.forecasts = _safe(lambda: _forecaster_summary())
+        snap.invariants = _safe(lambda: _invariant_summary())
+        snap.self_debug = _safe(lambda: _self_debug_summary())
+        snap.credit = _safe(lambda: _credit_summary())
         return snap
+
+    # ── v26: causality, composition, forecast, safety-nets ──
+
+    def observe_causal(
+        self,
+        features: dict[str, Any],
+        kpi: str,
+        value: float,
+    ) -> None:
+        try:
+            _causal_graph().observe(features, kpi, value)
+        except Exception as exc:
+            logger.debug("observe_causal failed: %s", exc)
+
+    def drivers_of(self, kpi: str) -> list[str]:
+        try:
+            return _causal_graph().drivers(kpi)
+        except Exception:
+            return []
+
+    def observe_kpi(
+        self,
+        kpi: str,
+        value: float,
+        *,
+        ts: float | None = None,
+    ) -> None:
+        try:
+            _forecaster().observe(kpi, value, ts=ts)
+        except Exception as exc:
+            logger.debug("observe_kpi failed: %s", exc)
+
+    def forecast(
+        self,
+        kpi: str,
+        *,
+        horizon_steps: int = 1,
+    ) -> dict[str, Any]:
+        try:
+            return _forecaster().forecast(
+                kpi, horizon_steps=horizon_steps,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("forecast failed: %s", exc)
+            return {}
+
+    def check_invariants(
+        self, snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return _invariant_monitor().check(snapshot).as_dict()
+        except Exception as exc:
+            logger.debug("check_invariants failed: %s", exc)
+            return {"breaches": [], "alerts": []}
+
+    def note_failure(
+        self, phase: str, error: str,
+    ) -> dict[str, Any] | None:
+        try:
+            case = _self_debugger().note(phase, error)
+            return case.as_dict() if case else None
+        except Exception as exc:
+            logger.debug("note_failure failed: %s", exc)
+            return None
+
+    def diagnose_failure(
+        self, phase: str, error: str,
+    ) -> dict[str, Any] | None:
+        try:
+            debugger = _self_debugger()
+            case = debugger.note(phase, error)
+            if case is None:
+                return None
+            diag = debugger.diagnose(case)
+            return diag.as_dict() if diag else None
+        except Exception as exc:
+            logger.debug("diagnose_failure failed: %s", exc)
+            return None
+
+    def narrate(
+        self,
+        cycle_id: str,
+        *,
+        lookback: int = 1,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.narrative_generator import generate_narrative
+            return generate_narrative(
+                cycle_id, lookback=lookback,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("narrate failed: %s", exc)
+            return {
+                "cycle_id": cycle_id, "headline": "",
+                "body": "", "warnings": [],
+            }
+
+    def note_decision_for_credit(
+        self,
+        *,
+        decision_id: str | None = None,
+        ts: float | None = None,
+        claimed_kpis: tuple[str, ...] = (),
+    ) -> str:
+        try:
+            return _credit_assigner().note_decision(
+                decision_id=decision_id, ts=ts,
+                claimed_kpis=claimed_kpis,
+            )
+        except Exception as exc:
+            logger.debug("note_decision_for_credit failed: %s", exc)
+            return ""
+
+    def note_outcome_for_credit(
+        self,
+        *,
+        kpi: str,
+        value: float,
+        outcome_id: str | None = None,
+        ts: float | None = None,
+    ) -> str:
+        try:
+            return _credit_assigner().note_outcome(
+                kpi=kpi, value=value,
+                outcome_id=outcome_id, ts=ts,
+            )
+        except Exception as exc:
+            logger.debug("note_outcome_for_credit failed: %s", exc)
+            return ""
+
+    def top_credited_decisions(
+        self,
+        *,
+        kpi: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple[str, float]]:
+        try:
+            return _credit_assigner().top_decisions(
+                kpi=kpi, limit=limit,
+            )
+        except Exception:
+            return []
 
     # ── v25: reasoning, safety, budget, experiments ──────
 
@@ -969,6 +1129,118 @@ def _knowledge_graph():
 
 def _knowledge_summary() -> dict[str, Any]:
     return _knowledge_graph().stats()
+
+
+# ── v26 singletons ──────────────────────────────────────────
+
+_CAUSAL: Any = None
+_CAUSAL_LOCK = threading.Lock()
+
+
+def _causal_graph():
+    global _CAUSAL
+    if _CAUSAL is None:
+        with _CAUSAL_LOCK:
+            if _CAUSAL is None:
+                from core.brain.causal_graph import CausalGraph
+                _CAUSAL = CausalGraph()
+    return _CAUSAL
+
+
+def _causal_summary() -> dict[str, Any]:
+    return _causal_graph().stats()
+
+
+_COMPOSER: Any = None
+_COMPOSER_LOCK = threading.Lock()
+
+
+def _skill_composer():
+    global _COMPOSER
+    if _COMPOSER is None:
+        with _COMPOSER_LOCK:
+            if _COMPOSER is None:
+                from core.brain.skill_composer import SkillComposer
+                _COMPOSER = SkillComposer()
+    return _COMPOSER
+
+
+def _macro_summary() -> list[dict[str, Any]]:
+    return _skill_composer().rank(min_support=3)
+
+
+_FORECASTER: Any = None
+_FORECASTER_LOCK = threading.Lock()
+
+
+def _forecaster():
+    global _FORECASTER
+    if _FORECASTER is None:
+        with _FORECASTER_LOCK:
+            if _FORECASTER is None:
+                from core.brain.forecaster import Forecaster
+                _FORECASTER = Forecaster()
+    return _FORECASTER
+
+
+def _forecaster_summary() -> dict[str, Any]:
+    return _forecaster().stats()
+
+
+_INVARIANT: Any = None
+_INVARIANT_LOCK = threading.Lock()
+
+
+def _invariant_monitor():
+    global _INVARIANT
+    if _INVARIANT is None:
+        with _INVARIANT_LOCK:
+            if _INVARIANT is None:
+                from core.brain.invariant_monitor import InvariantMonitor
+                _INVARIANT = InvariantMonitor()
+    return _INVARIANT
+
+
+def _invariant_summary() -> dict[str, Any]:
+    return _invariant_monitor().stats()
+
+
+_SELF_DEBUGGER: Any = None
+_SELF_DEBUG_LOCK = threading.Lock()
+
+
+def _self_debugger():
+    global _SELF_DEBUGGER
+    if _SELF_DEBUGGER is None:
+        with _SELF_DEBUG_LOCK:
+            if _SELF_DEBUGGER is None:
+                from core.brain.self_debugger import SelfDebugger
+                dbg = SelfDebugger()
+                dbg.register_defaults()
+                _SELF_DEBUGGER = dbg
+    return _SELF_DEBUGGER
+
+
+def _self_debug_summary() -> dict[str, Any]:
+    return _self_debugger().stats()
+
+
+_CREDIT: Any = None
+_CREDIT_LOCK = threading.Lock()
+
+
+def _credit_assigner():
+    global _CREDIT
+    if _CREDIT is None:
+        with _CREDIT_LOCK:
+            if _CREDIT is None:
+                from core.brain.credit_assigner import CreditAssigner
+                _CREDIT = CreditAssigner()
+    return _CREDIT
+
+
+def _credit_summary() -> dict[str, Any]:
+    return _credit_assigner().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
