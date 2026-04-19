@@ -106,6 +106,15 @@ class Snapshot:
     clarifications: dict[str, Any] = field(default_factory=dict)
     assumptions: dict[str, Any] = field(default_factory=dict)
     funnel: dict[str, Any] = field(default_factory=dict)
+    # v34: metacognition + imitation + decomposition + error learn +
+    # proposal arbitration + world drift + insight synthesis
+    meta_reasoning: dict[str, Any] = field(default_factory=dict)
+    imitation: dict[str, Any] = field(default_factory=dict)
+    decomposition: dict[str, Any] = field(default_factory=dict)
+    error_patterns: dict[str, Any] = field(default_factory=dict)
+    arbitration: dict[str, Any] = field(default_factory=dict)
+    world_drift: dict[str, Any] = field(default_factory=dict)
+    insights: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -173,6 +182,13 @@ class Snapshot:
             "clarifications": self.clarifications,
             "assumptions": self.assumptions,
             "funnel": self.funnel,
+            "meta_reasoning": self.meta_reasoning,
+            "imitation": self.imitation,
+            "decomposition": self.decomposition,
+            "error_patterns": self.error_patterns,
+            "arbitration": self.arbitration,
+            "world_drift": self.world_drift,
+            "insights": self.insights,
         }
 
 
@@ -311,6 +327,19 @@ class BrainFacade:
         )
         snap.assumptions = _safe(lambda: _assumption_ledger_summary())
         snap.funnel = _safe(lambda: _revenue_funnel_summary())
+        snap.meta_reasoning = _safe(lambda: _meta_reasoner_summary())
+        snap.imitation = _safe(lambda: _imitation_learner_summary())
+        snap.decomposition = _safe(
+            lambda: _goal_decomposer_summary(),
+        )
+        snap.error_patterns = _safe(
+            lambda: _error_pattern_library_summary(),
+        )
+        snap.arbitration = _safe(lambda: _proposal_arbiter_summary())
+        snap.world_drift = _safe(
+            lambda: _world_model_updater_summary(),
+        )
+        snap.insights = _safe(lambda: _insight_synthesizer_summary())
         return snap
 
     # ── v32: integration + divergence + journal ─────────
@@ -737,6 +766,236 @@ class BrainFacade:
                 "stages": [], "biggest_leak": None,
                 "overall_conversion": 0.0,
             }
+
+    # ── v34: meta-reasoning, imitation, decomposition, error
+    #          learning, arbitration, drift, insight synthesis ──
+
+    def record_calibration(
+        self,
+        *,
+        decision_id: str,
+        claimed_confidence: float,
+        outcome_positive: bool,
+    ) -> bool:
+        try:
+            _meta_reasoner().record(
+                decision_id=decision_id,
+                claimed_confidence=claimed_confidence,
+                outcome_positive=outcome_positive,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("record_calibration failed: %s", exc)
+            return False
+
+    def record_signal_use(
+        self,
+        *,
+        decision_id: str,
+        signals: list[str],
+        outcome_positive: bool,
+    ) -> int:
+        try:
+            return _meta_reasoner().record_signal_use(
+                decision_id=decision_id,
+                signals=signals,
+                outcome_positive=outcome_positive,
+            )
+        except Exception as exc:
+            logger.debug("record_signal_use failed: %s", exc)
+            return 0
+
+    def calibration_report(self) -> dict[str, Any]:
+        try:
+            return _meta_reasoner().calibrate().as_dict()
+        except Exception as exc:
+            logger.debug("calibration_report failed: %s", exc)
+            return {"calibration_error": 0.0, "n_total": 0}
+
+    def adjusted_confidence(self, claimed: float) -> float:
+        try:
+            return _meta_reasoner().adjusted_confidence(claimed)
+        except Exception as exc:
+            logger.debug("adjusted_confidence failed: %s", exc)
+            return float(claimed)
+
+    def observe_demonstration(
+        self,
+        *,
+        situation_fields: dict[str, Any],
+        action_sequence: list[dict[str, Any]],
+        outcome_quality: float,
+        source: str = "self",
+    ) -> dict[str, Any]:
+        try:
+            tpl = _imitation_learner().observe(
+                situation_fields=situation_fields,
+                action_sequence=action_sequence,
+                outcome_quality=outcome_quality,
+                source=source,
+            )
+            return tpl.as_dict()
+        except Exception as exc:
+            logger.debug("observe_demonstration failed: %s", exc)
+            return {"count_observed": 0, "error": str(exc)}
+
+    def match_imitation(
+        self,
+        situation: dict[str, Any],
+        *,
+        min_count: int = 1,
+        min_quality: float = 0.0,
+    ) -> dict[str, Any] | None:
+        try:
+            m = _imitation_learner().match(
+                situation,
+                min_count=min_count,
+                min_quality=min_quality,
+            )
+            return m.as_dict() if m else None
+        except Exception as exc:
+            logger.debug("match_imitation failed: %s", exc)
+            return None
+
+    def decompose_goal(
+        self,
+        goal_text: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            plan = _goal_decomposer().decompose(
+                goal_text, params=params,
+            )
+            return plan.as_dict()
+        except Exception as exc:
+            logger.debug("decompose_goal failed: %s", exc)
+            return {
+                "goal_text": goal_text, "subgoals": [],
+                "order": [], "rule_id": "",
+            }
+
+    def observe_error(
+        self,
+        *,
+        signature: str,
+        context: dict[str, Any] | None = None,
+        remedy: str,
+        worked: bool,
+    ) -> bool:
+        try:
+            _error_pattern_library().observe(
+                signature=signature, context=context,
+                remedy=remedy, worked=worked,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("observe_error failed: %s", exc)
+            return False
+
+    def suggest_remedy(
+        self,
+        signature: str,
+        *,
+        context: dict[str, Any] | None = None,
+        min_attempts: int = 1,
+    ) -> dict[str, Any] | None:
+        try:
+            s = _error_pattern_library().suggest(
+                signature, context=context,
+                min_attempts=min_attempts,
+            )
+            return s.as_dict() if s else None
+        except Exception as exc:
+            logger.debug("suggest_remedy failed: %s", exc)
+            return None
+
+    def arbitrate_proposals(
+        self,
+        target: str,
+        proposals: list[dict[str, Any]],
+        *,
+        current_value: Any = None,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.proposal_arbiter import Proposal
+            converted: list[Proposal] = []
+            for p in proposals:
+                converted.append(Proposal(
+                    id=str(p.get("id", "")),
+                    target=str(p.get("target", target)),
+                    new_value=p.get("new_value"),
+                    evidence_score=float(
+                        p.get("evidence_score", 0.5),
+                    ),
+                    proposer=str(p.get("proposer", "")),
+                    ts=float(p.get("ts", 0.0)),
+                ))
+            outcome = _proposal_arbiter().arbitrate(
+                target, converted, current_value=current_value,
+            )
+            return outcome.as_dict()
+        except Exception as exc:
+            logger.debug("arbitrate_proposals failed: %s", exc)
+            return {"verdict": "reject_all", "winner_id": ""}
+
+    def record_prediction(
+        self,
+        *,
+        predictor_id: str,
+        predicted: float,
+        observed: float,
+    ) -> bool:
+        try:
+            _world_model_updater().record(
+                predictor_id=predictor_id,
+                predicted=predicted,
+                observed=observed,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("record_prediction failed: %s", exc)
+            return False
+
+    def detect_world_drift(self) -> list[dict[str, Any]]:
+        try:
+            alerts = _world_model_updater().detect_alerts()
+            return [a.as_dict() for a in alerts]
+        except Exception as exc:
+            logger.debug("detect_world_drift failed: %s", exc)
+            return []
+
+    def synthesise_insights(
+        self,
+        *,
+        calibration_report: dict[str, Any] | None = None,
+        drift_alerts: list[dict[str, Any]] | None = None,
+        assumption_stats: dict[str, Any] | None = None,
+        funnel_snapshot: dict[str, Any] | None = None,
+        pre_breach_alerts: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            out = _insight_synthesizer().synthesise(
+                calibration_report=calibration_report,
+                drift_alerts=drift_alerts,
+                assumption_stats=assumption_stats,
+                funnel_snapshot=funnel_snapshot,
+                pre_breach_alerts=pre_breach_alerts,
+            )
+            return [i.as_dict() for i in out]
+        except Exception as exc:
+            logger.debug("synthesise_insights failed: %s", exc)
+            return []
+
+    def active_insights(
+        self, *, limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            out = _insight_synthesizer().active(limit=limit)
+            return [i.as_dict() for i in out]
+        except Exception as exc:
+            logger.debug("active_insights failed: %s", exc)
+            return []
 
     # ── v31: simulation, prioritization, transfer, self-test ──
 
@@ -3476,6 +3735,144 @@ def _revenue_funnel():
 
 def _revenue_funnel_summary() -> dict[str, Any]:
     return _revenue_funnel().stats()
+
+
+# ── v34 singletons ───────────────────────────────────────────
+
+_META_REASONER: Any = None
+_MR_LOCK = threading.Lock()
+
+
+def _meta_reasoner():
+    global _META_REASONER
+    if _META_REASONER is None:
+        with _MR_LOCK:
+            if _META_REASONER is None:
+                from core.brain.meta_reasoner import MetaReasoner
+                _META_REASONER = MetaReasoner()
+    return _META_REASONER
+
+
+def _meta_reasoner_summary() -> dict[str, Any]:
+    return _meta_reasoner().stats()
+
+
+_IMITATION_LEARNER: Any = None
+_IL_LOCK = threading.Lock()
+
+
+def _imitation_learner():
+    global _IMITATION_LEARNER
+    if _IMITATION_LEARNER is None:
+        with _IL_LOCK:
+            if _IMITATION_LEARNER is None:
+                from core.brain.imitation_learner import (
+                    ImitationLearner,
+                )
+                _IMITATION_LEARNER = ImitationLearner()
+    return _IMITATION_LEARNER
+
+
+def _imitation_learner_summary() -> dict[str, Any]:
+    return _imitation_learner().stats()
+
+
+_GOAL_DECOMPOSER: Any = None
+_GD_LOCK = threading.Lock()
+
+
+def _goal_decomposer():
+    global _GOAL_DECOMPOSER
+    if _GOAL_DECOMPOSER is None:
+        with _GD_LOCK:
+            if _GOAL_DECOMPOSER is None:
+                from core.brain.goal_decomposer import GoalDecomposer
+                _GOAL_DECOMPOSER = GoalDecomposer()
+    return _GOAL_DECOMPOSER
+
+
+def _goal_decomposer_summary() -> dict[str, Any]:
+    return _goal_decomposer().stats()
+
+
+_ERROR_PATTERN_LIBRARY: Any = None
+_EPL_LOCK = threading.Lock()
+
+
+def _error_pattern_library():
+    global _ERROR_PATTERN_LIBRARY
+    if _ERROR_PATTERN_LIBRARY is None:
+        with _EPL_LOCK:
+            if _ERROR_PATTERN_LIBRARY is None:
+                from core.brain.error_pattern_library import (
+                    ErrorPatternLibrary,
+                )
+                _ERROR_PATTERN_LIBRARY = ErrorPatternLibrary()
+    return _ERROR_PATTERN_LIBRARY
+
+
+def _error_pattern_library_summary() -> dict[str, Any]:
+    return _error_pattern_library().stats()
+
+
+_PROPOSAL_ARBITER: Any = None
+_PRA_LOCK = threading.Lock()
+
+
+def _proposal_arbiter():
+    global _PROPOSAL_ARBITER
+    if _PROPOSAL_ARBITER is None:
+        with _PRA_LOCK:
+            if _PROPOSAL_ARBITER is None:
+                from core.brain.proposal_arbiter import (
+                    ProposalArbiter,
+                )
+                _PROPOSAL_ARBITER = ProposalArbiter()
+    return _PROPOSAL_ARBITER
+
+
+def _proposal_arbiter_summary() -> dict[str, Any]:
+    return _proposal_arbiter().stats()
+
+
+_WORLD_MODEL_UPDATER: Any = None
+_WMU_LOCK = threading.Lock()
+
+
+def _world_model_updater():
+    global _WORLD_MODEL_UPDATER
+    if _WORLD_MODEL_UPDATER is None:
+        with _WMU_LOCK:
+            if _WORLD_MODEL_UPDATER is None:
+                from core.brain.world_model_updater import (
+                    WorldModelUpdater,
+                )
+                _WORLD_MODEL_UPDATER = WorldModelUpdater()
+    return _WORLD_MODEL_UPDATER
+
+
+def _world_model_updater_summary() -> dict[str, Any]:
+    return _world_model_updater().stats()
+
+
+_INSIGHT_SYNTHESIZER: Any = None
+_INS_LOCK = threading.Lock()
+
+
+def _insight_synthesizer():
+    global _INSIGHT_SYNTHESIZER
+    if _INSIGHT_SYNTHESIZER is None:
+        with _INS_LOCK:
+            if _INSIGHT_SYNTHESIZER is None:
+                from core.brain.insight_synthesizer import (
+                    InsightSynthesizer,
+                )
+                _INSIGHT_SYNTHESIZER = InsightSynthesizer()
+    return _INSIGHT_SYNTHESIZER
+
+
+def _insight_synthesizer_summary() -> dict[str, Any]:
+    return _insight_synthesizer().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
