@@ -74,6 +74,10 @@ class Snapshot:
     federation: dict[str, Any] = field(default_factory=dict)
     queue: dict[str, Any] = field(default_factory=dict)
     explore: dict[str, Any] = field(default_factory=dict)
+    dialog: dict[str, Any] = field(default_factory=dict)
+    elasticity: dict[str, Any] = field(default_factory=dict)
+    ltv: dict[str, Any] = field(default_factory=dict)
+    schedule: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +116,10 @@ class Snapshot:
             "federation": self.federation,
             "queue": self.queue,
             "explore": self.explore,
+            "dialog": self.dialog,
+            "elasticity": self.elasticity,
+            "ltv": self.ltv,
+            "schedule": self.schedule,
         }
 
 
@@ -217,7 +225,143 @@ class BrainFacade:
         snap.federation = _safe(lambda: _federation_summary())
         snap.queue = _safe(lambda: _queue_summary())
         snap.explore = _safe(lambda: _explore_summary())
+        snap.dialog = _safe(lambda: _dialog_summary())
+        snap.elasticity = _safe(lambda: _elasticity_summary())
+        snap.ltv = _safe(lambda: _ltv_summary())
+        snap.schedule = _safe(lambda: _schedule_summary())
         return snap
+
+    # ── v28: dialog, elasticity, LTV, scheduling, audit ──
+
+    def dialog_record(
+        self,
+        session_id: str,
+        role: str,
+        text: str,
+    ) -> dict[str, Any] | None:
+        try:
+            t = _dialog_memory().record(
+                session_id, role, text,
+            )
+            return t.as_dict()
+        except Exception as exc:
+            logger.debug("dialog_record failed: %s", exc)
+            return None
+
+    def dialog_open_intent(
+        self, session_id: str,
+    ) -> str | None:
+        try:
+            return _dialog_memory().open_intent(session_id)
+        except Exception:
+            return None
+
+    def observe_price_point(
+        self,
+        segment: str,
+        *,
+        price: float,
+        units: float,
+    ) -> None:
+        try:
+            _price_elasticity().observe(
+                segment, price=price, units=units,
+            )
+        except Exception as exc:
+            logger.debug("observe_price_point failed: %s", exc)
+
+    def predict_demand(
+        self,
+        segment: str,
+        *,
+        price: float,
+    ) -> dict[str, Any] | None:
+        try:
+            pred = _price_elasticity().predict(
+                segment, price=price,
+            )
+            return pred.as_dict() if pred else None
+        except Exception as exc:
+            logger.debug("predict_demand failed: %s", exc)
+            return None
+
+    def observe_customer_order(
+        self,
+        customer_id: str,
+        *,
+        order_value: float,
+        refund_value: float = 0.0,
+        cohort_keys: dict[str, str] | None = None,
+    ) -> None:
+        try:
+            _customer_ltv().observe(
+                customer_id,
+                order_value=order_value,
+                refund_value=refund_value,
+                cohort_keys=cohort_keys or {},
+            )
+        except Exception as exc:
+            logger.debug("observe_customer_order failed: %s", exc)
+
+    def predict_ltv(
+        self,
+        customer_id: str,
+        *,
+        horizon_weeks: int = 52,
+    ) -> dict[str, Any] | None:
+        try:
+            est = _customer_ltv().predict(
+                customer_id, horizon_weeks=horizon_weeks,
+            )
+            return est.as_dict() if est else None
+        except Exception as exc:
+            logger.debug("predict_ltv failed: %s", exc)
+            return None
+
+    def weekly_digest(
+        self, *, period_days: int = 7,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.weekly_digest import generate_digest
+            return generate_digest(period_days=period_days).as_dict()
+        except Exception as exc:
+            logger.debug("weekly_digest failed: %s", exc)
+            return {"period_days": period_days, "headline": "", "body": ""}
+
+    def schedule_register_daily(
+        self,
+        name: str, *, hour: int, minute: int = 0,
+    ) -> None:
+        try:
+            _scheduler().register_daily(
+                name, hour=hour, minute=minute,
+            )
+        except Exception as exc:
+            logger.debug("schedule_register_daily failed: %s", exc)
+
+    def schedule_due(self) -> list[dict[str, Any]]:
+        try:
+            return [s.as_dict() for s in _scheduler().due()]
+        except Exception:
+            return []
+
+    def schedule_mark_ran(self, name: str) -> bool:
+        try:
+            return _scheduler().mark_ran(name)
+        except Exception:
+            return False
+
+    def audit_decision(self, decision_id: str) -> dict[str, Any]:
+        try:
+            from core.brain.decision_audit_trail import DecisionAuditor
+            return DecisionAuditor().build(decision_id).as_dict()
+        except Exception as exc:
+            logger.debug("audit_decision failed: %s", exc)
+            return {
+                "decision_id": decision_id,
+                "verdict": "unknown",
+                "contributors": [],
+            }
 
     # ── v27: meta-learning, NL goals, queue, exploration ──
 
@@ -1509,6 +1653,80 @@ def _exploration_manager():
 
 def _explore_summary() -> dict[str, Any]:
     return _exploration_manager().stats()
+
+
+# ── v28 singletons ──────────────────────────────────────────
+
+_DIALOG: Any = None
+_DIALOG_LOCK = threading.Lock()
+
+
+def _dialog_memory():
+    global _DIALOG
+    if _DIALOG is None:
+        with _DIALOG_LOCK:
+            if _DIALOG is None:
+                from core.brain.dialog_memory import DialogMemory
+                _DIALOG = DialogMemory()
+    return _DIALOG
+
+
+def _dialog_summary() -> dict[str, Any]:
+    return _dialog_memory().stats()
+
+
+_PRICE_ELASTICITY: Any = None
+_PE_LOCK = threading.Lock()
+
+
+def _price_elasticity():
+    global _PRICE_ELASTICITY
+    if _PRICE_ELASTICITY is None:
+        with _PE_LOCK:
+            if _PRICE_ELASTICITY is None:
+                from core.brain.price_elasticity import PriceElasticity
+                _PRICE_ELASTICITY = PriceElasticity()
+    return _PRICE_ELASTICITY
+
+
+def _elasticity_summary() -> dict[str, Any]:
+    return _price_elasticity().stats()
+
+
+_LTV: Any = None
+_LTV_LOCK = threading.Lock()
+
+
+def _customer_ltv():
+    global _LTV
+    if _LTV is None:
+        with _LTV_LOCK:
+            if _LTV is None:
+                from core.brain.customer_ltv import CustomerLTV
+                _LTV = CustomerLTV()
+    return _LTV
+
+
+def _ltv_summary() -> dict[str, Any]:
+    return _customer_ltv().stats()
+
+
+_SCHEDULER: Any = None
+_SCHED_LOCK = threading.Lock()
+
+
+def _scheduler():
+    global _SCHEDULER
+    if _SCHEDULER is None:
+        with _SCHED_LOCK:
+            if _SCHEDULER is None:
+                from core.brain.time_scheduler import TimeScheduler
+                _SCHEDULER = TimeScheduler()
+    return _SCHEDULER
+
+
+def _schedule_summary() -> dict[str, Any]:
+    return _scheduler().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
