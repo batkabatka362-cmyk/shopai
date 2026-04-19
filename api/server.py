@@ -83,6 +83,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/experience": self._get_experience,
             "/api/webhooks": self._list_webhooks,
             "/api/stores": self._list_stores,
+            "/api/launches": self._list_launches,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -205,6 +206,26 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.warning("store listing failed: %s", exc)
             self._json_response(200, {"stores": [], "error": str(exc)})
+
+    def _list_launches(self) -> None:
+        """Dashboard endpoint — per-launch KPIs + kill/scale verdicts.
+
+        Cheap call: pure aggregation over the memory store, no
+        external API. Returns the evaluator report plus a compact
+        summary counts block for the UI.
+        """
+        from core.autonomous.launch_evaluator import evaluate
+        report = evaluate()
+        self._json_response(200, {
+            "summary": {
+                "tracked": report.launches_tracked,
+                "evaluated": report.launches_evaluated,
+                "kill": len(report.kill_recommendations),
+                "scale": len(report.scale_recommendations),
+                "monitor": len(report.monitor_recommendations),
+            },
+            "report": report.as_dict(),
+        })
 
     # --- POST handlers ---
 

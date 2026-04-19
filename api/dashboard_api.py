@@ -72,6 +72,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
             limit = self._parse_limit(limit_raw, default=50, maximum=500)
             self._json_response(self._get_belief_snapshot(limit=limit))
+        elif path == "/api/launches":
+            self._json_response(self._get_launches())
         elif path == "/api/reflection":
             limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
             limit = self._parse_limit(limit_raw, default=50, maximum=500)
@@ -82,7 +84,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "/api/alerts", "/api/report", "/api/memory",
                 "/api/metrics/adapters", "/api/cognitive",
                 "/api/memory/satellites", "/api/policy/audit",
-                "/api/beliefs", "/api/reflection",
+                "/api/beliefs", "/api/reflection", "/api/launches",
             ]}, 404)
 
     def do_POST(self):
@@ -457,6 +459,31 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "half_life_seconds": half_life_seconds,
             "timestamp":         now,
         }
+
+    @staticmethod
+    def _get_launches() -> dict:
+        """Return per-launch KPIs + kill / scale / monitor verdicts.
+
+        Backed by :func:`core.autonomous.launch_evaluator.evaluate` —
+        a pure aggregation over MemoryIntelligence events, safe to
+        call frequently (no external HTTP).
+        """
+        try:
+            from core.autonomous.launch_evaluator import evaluate
+            report = evaluate()
+            return {
+                "summary": {
+                    "tracked": report.launches_tracked,
+                    "evaluated": report.launches_evaluated,
+                    "kill": len(report.kill_recommendations),
+                    "scale": len(report.scale_recommendations),
+                    "monitor": len(report.monitor_recommendations),
+                },
+                "report": report.as_dict(),
+            }
+        except Exception as exc:
+            logger.debug("launch evaluator failed: %s", exc)
+            return {"summary": {"tracked": 0}, "error": str(exc)[:200]}
 
     @staticmethod
     def _get_reflection_snapshot(limit: int = 50) -> dict:
