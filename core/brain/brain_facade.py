@@ -70,6 +70,10 @@ class Snapshot:
     invariants: dict[str, Any] = field(default_factory=dict)
     self_debug: dict[str, Any] = field(default_factory=dict)
     credit: dict[str, Any] = field(default_factory=dict)
+    hp_tuner: dict[str, Any] = field(default_factory=dict)
+    federation: dict[str, Any] = field(default_factory=dict)
+    queue: dict[str, Any] = field(default_factory=dict)
+    explore: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +108,10 @@ class Snapshot:
             "invariants": self.invariants,
             "self_debug": self.self_debug,
             "credit": self.credit,
+            "hp_tuner": self.hp_tuner,
+            "federation": self.federation,
+            "queue": self.queue,
+            "explore": self.explore,
         }
 
 
@@ -205,7 +213,193 @@ class BrainFacade:
         snap.invariants = _safe(lambda: _invariant_summary())
         snap.self_debug = _safe(lambda: _self_debug_summary())
         snap.credit = _safe(lambda: _credit_summary())
+        snap.hp_tuner = _safe(lambda: _hp_tuner_summary())
+        snap.federation = _safe(lambda: _federation_summary())
+        snap.queue = _safe(lambda: _queue_summary())
+        snap.explore = _safe(lambda: _explore_summary())
         return snap
+
+    # ── v27: meta-learning, NL goals, queue, exploration ──
+
+    def tune_register(
+        self,
+        name: str,
+        arms: tuple[Any, ...],
+        *,
+        description: str = "",
+    ) -> None:
+        try:
+            _hp_tuner().register(
+                name, arms=list(arms), description=description,
+            )
+        except ValueError as exc:
+            # Already-registered is benign; log at debug for traceability.
+            logger.debug("tune_register skipped: %s", exc)
+        except Exception as exc:
+            logger.debug("tune_register failed: %s", exc)
+
+    def tune_suggest(self, name: str) -> Any:
+        try:
+            return _hp_tuner().suggest(name)
+        except Exception as exc:
+            logger.debug("tune_suggest failed: %s", exc)
+            return None
+
+    def tune_observe(
+        self,
+        name: str, arm: Any,
+        *,
+        reward: float = 0.0,
+        success: bool = True,
+    ) -> None:
+        try:
+            _hp_tuner().observe(
+                name, arm, reward=reward, success=success,
+            )
+        except Exception as exc:
+            logger.debug("tune_observe failed: %s", exc)
+
+    def compile_goal(self, text: str) -> dict[str, Any]:
+        try:
+            from core.brain.goal_compiler import compile_goal as _cg
+            return _cg(text).as_dict()
+        except Exception as exc:
+            logger.debug("compile_goal failed: %s", exc)
+            return {"raw": text, "subgoals": [], "kpis": []}
+
+    def replay_outcomes(
+        self,
+        policy: Any,
+        *,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.memory_replayer import MemoryReplayer
+            return MemoryReplayer().replay_outcomes(
+                policy, limit=limit,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("replay_outcomes failed: %s", exc)
+            return {}
+
+    def find_missed_patterns(
+        self,
+        *,
+        min_support: int = 5,
+        wrong_threshold: float = 0.6,
+    ) -> list[dict[str, Any]]:
+        try:
+            from core.brain.memory_replayer import MemoryReplayer
+            patterns = MemoryReplayer().find_missed_patterns(
+                min_support=min_support,
+                wrong_threshold=wrong_threshold,
+            )
+            return [p.as_dict() for p in patterns]
+        except Exception as exc:
+            logger.debug("find_missed_patterns failed: %s", exc)
+            return []
+
+    def federate_rule(
+        self,
+        target_store: str,
+        rule_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return _federator().federated_score(
+                target_store, rule_id,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("federate_rule failed: %s", exc)
+            return {}
+
+    def enqueue_action(
+        self,
+        kind: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        priority: int = 0,
+        delay_s: float = 0.0,
+        depends_on: tuple[str, ...] = (),
+        retries: int = 0,
+    ) -> str:
+        try:
+            return _action_queue().enqueue(
+                kind, payload=payload or {},
+                priority=priority, delay_s=delay_s,
+                depends_on=depends_on, retries=retries,
+            ).id
+        except Exception as exc:
+            logger.debug("enqueue_action failed: %s", exc)
+            return ""
+
+    def next_due_actions(
+        self, limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        try:
+            return [
+                a.as_dict()
+                for a in _action_queue().next_due(limit=limit)
+            ]
+        except Exception:
+            return []
+
+    def explore_register(
+        self,
+        bandit: str,
+        arms: tuple[str, ...],
+        *,
+        strategy: str = "thompson",
+    ) -> None:
+        try:
+            _exploration_manager().register(
+                bandit, arms=list(arms), strategy=strategy,
+            )
+        except Exception as exc:
+            logger.debug("explore_register failed: %s", exc)
+
+    def explore_pick(self, bandit: str) -> str:
+        try:
+            return _exploration_manager().pick(bandit)
+        except Exception as exc:
+            logger.debug("explore_pick failed: %s", exc)
+            return ""
+
+    def explore_observe(
+        self, bandit: str, arm: str,
+        *, success: bool,
+    ) -> None:
+        try:
+            _exploration_manager().observe(
+                bandit, arm, success=success,
+            )
+        except Exception as exc:
+            logger.debug("explore_observe failed: %s", exc)
+
+    def distill_skills(
+        self,
+        *,
+        signature_keys: tuple[str, ...] | None = None,
+        min_support: int = 5,
+        min_score: float = 3.0,
+        promote: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.skill_distiller import SkillDistiller
+            distiller = SkillDistiller()
+            report = distiller.distill(
+                signature_keys=list(signature_keys or []) or None,
+                min_support=min_support,
+                min_score=min_score,
+            )
+            promoted = (
+                distiller.promote_all(report) if promote else 0
+            )
+            d = report.as_dict()
+            d["promoted"] = promoted
+            return d
+        except Exception as exc:
+            logger.debug("distill_skills failed: %s", exc)
+            return {"inspected": 0, "candidates": [], "promoted": 0}
 
     # ── v26: causality, composition, forecast, safety-nets ──
 
@@ -1241,6 +1435,80 @@ def _credit_assigner():
 
 def _credit_summary() -> dict[str, Any]:
     return _credit_assigner().stats()
+
+
+# ── v27 singletons ──────────────────────────────────────────
+
+_HP_TUNER: Any = None
+_HP_TUNER_LOCK = threading.Lock()
+
+
+def _hp_tuner():
+    global _HP_TUNER
+    if _HP_TUNER is None:
+        with _HP_TUNER_LOCK:
+            if _HP_TUNER is None:
+                from core.brain.hyperparameter_tuner import HyperparameterTuner
+                _HP_TUNER = HyperparameterTuner()
+    return _HP_TUNER
+
+
+def _hp_tuner_summary() -> dict[str, Any]:
+    return _hp_tuner().stats()
+
+
+_FEDERATOR: Any = None
+_FED_LOCK = threading.Lock()
+
+
+def _federator():
+    global _FEDERATOR
+    if _FEDERATOR is None:
+        with _FED_LOCK:
+            if _FEDERATOR is None:
+                from core.brain.multi_store_federator import MultiStoreFederator
+                _FEDERATOR = MultiStoreFederator()
+    return _FEDERATOR
+
+
+def _federation_summary() -> dict[str, Any]:
+    return _federator().stats()
+
+
+_ACTION_QUEUE: Any = None
+_QUEUE_LOCK = threading.Lock()
+
+
+def _action_queue():
+    global _ACTION_QUEUE
+    if _ACTION_QUEUE is None:
+        with _QUEUE_LOCK:
+            if _ACTION_QUEUE is None:
+                from core.brain.action_queue import ActionQueue
+                _ACTION_QUEUE = ActionQueue()
+    return _ACTION_QUEUE
+
+
+def _queue_summary() -> dict[str, Any]:
+    return _action_queue().stats()
+
+
+_EXPLORATION: Any = None
+_EXPLORATION_LOCK = threading.Lock()
+
+
+def _exploration_manager():
+    global _EXPLORATION
+    if _EXPLORATION is None:
+        with _EXPLORATION_LOCK:
+            if _EXPLORATION is None:
+                from core.brain.exploration_manager import ExplorationManager
+                _EXPLORATION = ExplorationManager()
+    return _EXPLORATION
+
+
+def _explore_summary() -> dict[str, Any]:
+    return _exploration_manager().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
