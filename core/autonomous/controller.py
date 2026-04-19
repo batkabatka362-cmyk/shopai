@@ -1539,6 +1539,22 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_creative: CREATIVE A/B ORCHESTRATOR — ranks each
+        # launch's ad variants by Bayesian ROAS, promotes winners
+        # and flags losers for replacement.
+        try:
+            from core.brain.creative_orchestrator import orchestrate
+            creative_report = orchestrate()
+            if creative_report.variants:
+                cycle_result["phases"]["creative_orchestrator"] = {
+                    "variants": len(creative_report.variants),
+                    "promotes": len(creative_report.promotes),
+                    "prunes": len(creative_report.prunes),
+                    "refresh_slots": len(creative_report.refresh_slots),
+                }
+        except Exception as exc:
+            _record("creative_orchestrator", exc)
+
         # Phase 8k2b_anomaly: ANOMALY DETECTION — z-score every
         # active launch against its niche baseline, persist deviations
         # ≥ |2σ| as category=anomaly events.
