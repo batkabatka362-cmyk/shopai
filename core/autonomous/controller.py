@@ -1539,6 +1539,22 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_transfer: CROSS-NICHE TRANSFER LEARNING — mine
+        # abstract feature combinations that won across ≥2 niches and
+        # persist them as level-3 transfer_strategy memories. New
+        # niches can lean on these to pick tone / price-band without
+        # waiting for local evidence to accumulate.
+        try:
+            from core.brain.transfer_learner import extract as transfer_extract
+            transfer_report = transfer_extract()
+            if transfer_report.promoted > 0:
+                cycle_result["phases"]["transfer_learner"] = {
+                    "examined": transfer_report.examined,
+                    "promoted": transfer_report.promoted,
+                }
+        except Exception as exc:
+            _record("transfer_learner", exc)
+
         # Phase 8k2b_critique: SELF-CRITIQUE — recompute per-niche
         # kill/scale thresholds from observed ROAS distribution and
         # persist the overrides so the next evaluator pass uses them.
