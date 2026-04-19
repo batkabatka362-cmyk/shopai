@@ -1539,6 +1539,25 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_metacog: META-COGNITIVE REFLECTION — brain checks
+        # whether it's actually learning, whether it's over-confident,
+        # whether owner feedback is trending negative. Cheap — a few
+        # SQL aggregations per cycle.
+        try:
+            from core.brain.metacognition import reflect
+            reflection = reflect()
+            cycle_result["phases"]["metacognition"] = {
+                "health": reflection.health,
+                "findings": len(reflection.findings),
+                "worst": max(
+                    (f.level for f in reflection.findings),
+                    default="ok",
+                    key=lambda l: {"ok": 0, "warning": 1, "critical": 2}.get(l, 0),
+                ),
+            }
+        except Exception as exc:
+            _record("metacognition", exc)
+
         # Phase 8k2b_scout: OPPORTUNITY SCOUT — once per calendar day,
         # run the proactive digest so the owner sees a ranked list of
         # actionable signals without having to ask.
