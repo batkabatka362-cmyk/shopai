@@ -92,6 +92,11 @@ class Snapshot:
     self_test: dict[str, Any] = field(default_factory=dict)
     counterfactuals: dict[str, Any] = field(default_factory=dict)
     signal_noise: dict[str, Any] = field(default_factory=dict)
+    # v32: integration + divergence tracking
+    decision_stack: dict[str, Any] = field(default_factory=dict)
+    shadow: dict[str, Any] = field(default_factory=dict)
+    traces: dict[str, Any] = field(default_factory=dict)
+    revisions: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +153,10 @@ class Snapshot:
             "self_test": self.self_test,
             "counterfactuals": self.counterfactuals,
             "signal_noise": self.signal_noise,
+            "decision_stack": self.decision_stack,
+            "shadow": self.shadow,
+            "traces": self.traces,
+            "revisions": self.revisions,
         }
 
 
@@ -271,7 +280,214 @@ class BrainFacade:
         snap.self_test = _safe(lambda: _self_test_summary())
         snap.counterfactuals = _safe(lambda: _counterfactual_summary())
         snap.signal_noise = _safe(lambda: _signal_noise_summary())
+        snap.decision_stack = _safe(lambda: _decision_stack_summary())
+        snap.shadow = _safe(lambda: _shadow_divergence_summary())
+        snap.traces = _safe(lambda: _reasoning_trace_summary())
+        snap.revisions = _safe(lambda: _revision_journal_summary())
         return snap
+
+    # ── v32: integration + divergence + journal ─────────
+
+    def run_decision_stack(
+        self,
+        observation: dict[str, Any],
+        *,
+        candidate_action: dict[str, Any] | None = None,
+        stakes: float = 0.3,
+    ) -> dict[str, Any]:
+        """Pass through attention → evidence → deliberate →
+        safety → feasibility → utility. Stage handlers are wired to
+        the existing subsystem singletons."""
+        try:
+            from core.brain.decision_stack import (
+                DecisionStack, StageCallables,
+            )
+            stack = DecisionStack(stages=_default_stage_callables())
+            return stack.decide(
+                observation=observation,
+                candidate_action=candidate_action,
+                stakes=stakes,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("run_decision_stack failed: %s", exc)
+            return {
+                "observation": observation,
+                "final_action": candidate_action,
+                "block_reason": "stack_unavailable",
+            }
+
+    def record_shadow_divergence(
+        self,
+        *,
+        context_summary: dict[str, Any],
+        legacy_action: dict[str, Any] | None,
+        facade_action: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        try:
+            div = _shadow_divergence().record(
+                context_summary=context_summary,
+                legacy_action=legacy_action,
+                facade_action=facade_action,
+            )
+            return div.as_dict()
+        except Exception as exc:
+            logger.debug(
+                "record_shadow_divergence failed: %s", exc,
+            )
+            return {"verdict": "both_empty"}
+
+    def shadow_summary(
+        self, *, lookback_s: float | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return _shadow_divergence().summary(
+                lookback_s=lookback_s,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("shadow_summary failed: %s", exc)
+            return {"total": 0, "agreement_rate": 0.0}
+
+    def compact_context(
+        self,
+        context: dict[str, Any],
+        *,
+        priority_fields: tuple[str, ...] = (),
+        max_bytes: int = 4096,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.context_compactor import compact
+            return compact(
+                context,
+                priority_fields=priority_fields,
+                max_bytes=max_bytes,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("compact_context failed: %s", exc)
+            return {"fields": {}, "truncated": False}
+
+    def start_trace(
+        self, question: str,
+        *, trace_id: str | None = None,
+    ) -> str:
+        try:
+            return _reasoning_tracer().start(
+                question, trace_id=trace_id,
+            )
+        except Exception as exc:
+            logger.debug("start_trace failed: %s", exc)
+            return ""
+
+    def trace_add(
+        self,
+        trace_id: str,
+        *,
+        subsystem: str,
+        note: str,
+        output: dict[str, Any] | None = None,
+        weight: float = 1.0,
+    ) -> None:
+        try:
+            _reasoning_tracer().add(
+                trace_id,
+                subsystem=subsystem,
+                note=note,
+                output=output,
+                weight=weight,
+            )
+        except Exception as exc:
+            logger.debug("trace_add failed: %s", exc)
+
+    def trace_commit(
+        self,
+        trace_id: str,
+        *,
+        verdict: str,
+        action: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            trace = _reasoning_tracer().commit(
+                trace_id, verdict=verdict, action=action,
+            )
+            return trace.as_dict()
+        except Exception as exc:
+            logger.debug("trace_commit failed: %s", exc)
+            return {"trace_id": trace_id, "nodes": []}
+
+    def propose_revision(
+        self,
+        *,
+        kind: str,
+        target: str,
+        old_value: Any,
+        new_value: Any,
+        reason: str,
+        evidence_score: float = 0.5,
+    ) -> str:
+        try:
+            rev = _revision_journal().propose(
+                kind=kind,  # type: ignore[arg-type]
+                target=target,
+                old_value=old_value,
+                new_value=new_value,
+                reason=reason,
+                evidence_score=evidence_score,
+            )
+            return rev.id
+        except Exception as exc:
+            logger.debug("propose_revision failed: %s", exc)
+            return ""
+
+    def bundle(
+        self,
+        name: str,
+        actions: list[dict[str, Any]],
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute a transactional all-or-nothing action group.
+
+        actions is a list of dicts carrying ``name``, ``execute``
+        (callable), optional ``compensate`` (callable), and
+        ``optional`` (bool)."""
+        try:
+            from core.brain.action_bundle import (
+                ActionBundle, BundleAction,
+            )
+            bundle = ActionBundle(name)
+            for a in actions:
+                bundle.add(BundleAction(
+                    name=str(a["name"]),
+                    execute=a["execute"],
+                    compensate=a.get("compensate"),
+                    optional=bool(a.get("optional", False)),
+                    payload=dict(a.get("payload", {}) or {}),
+                ))
+            return bundle.run(context).as_dict()
+        except Exception as exc:
+            logger.debug("bundle failed: %s", exc)
+            return {
+                "bundle_name": name,
+                "success": False,
+                "error": str(exc),
+                "steps": [],
+            }
+
+    def evaluate_skill_gym(
+        self,
+        skill_name: str,
+        scenarios: list[Any],
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.skill_gym import SkillGym
+            return SkillGym().evaluate(
+                skill_name, scenarios,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("evaluate_skill_gym failed: %s", exc)
+            return {
+                "skill_name": skill_name,
+                "recommendation": "reject",
+            }
 
     # ── v31: simulation, prioritization, transfer, self-test ──
 
@@ -2673,6 +2889,208 @@ def _signal_noise_separator():
 
 def _signal_noise_summary() -> dict[str, Any]:
     return _signal_noise_separator().stats()
+
+
+# ── v32 singletons ──────────────────────────────────────────
+
+def _default_stage_callables() -> Any:
+    """Wire the 6 decision stages to the existing brain subsystems.
+
+    Each stage is a thin adapter that returns ``{"status": ...,
+    "note": ..., "payload": ...}`` per decision_stack's contract.
+    """
+    from core.brain.decision_stack import StageCallables
+
+    def attention_stage(ctx: dict[str, Any]) -> dict[str, Any]:
+        # Attention: rank the observation against the salience filter.
+        obs = ctx.get("observation") or {}
+        if not obs:
+            return {"status": "skipped", "note": "no observation"}
+        try:
+            top = _attention_filter().top_k([obs], k=1)
+            score = top[0].score if top else 0.0
+        except Exception as exc:
+            return {
+                "status": "skipped",
+                "note": f"attention unavailable: {exc}",
+            }
+        return {
+            "status": "ok",
+            "note": f"attention_score={score:.3f}",
+            "payload": {"attention_score": score},
+        }
+
+    def evidence_stage(ctx: dict[str, Any]) -> dict[str, Any]:
+        # No injected evidence list by default; mark skipped.
+        return {
+            "status": "skipped",
+            "note": "no evidence list supplied",
+        }
+
+    def deliberate_stage(ctx: dict[str, Any]) -> dict[str, Any]:
+        candidate = ctx.get("candidate_action")
+        if not candidate:
+            return {
+                "status": "skipped",
+                "note": "no candidate to deliberate on",
+            }
+        # Default deliberation just passes the candidate through;
+        # callers who want the full chain should call
+        # brain().deliberate() explicitly.
+        return {
+            "status": "ok",
+            "note": "candidate accepted as-is",
+            "payload": {"candidate": candidate},
+        }
+
+    def safety_stage(ctx: dict[str, Any]) -> dict[str, Any]:
+        candidate = ctx.get("candidate_action")
+        if not candidate:
+            return {"status": "skipped", "note": "no candidate"}
+        try:
+            v = _safety_guard().evaluate(
+                candidate,
+                confidence=float(ctx.get("stakes", 0.3)),
+            )
+        except Exception as exc:
+            return {
+                "status": "skipped",
+                "note": f"safety_guard unavailable: {exc}",
+            }
+        if v.verdict == "block":
+            return {
+                "status": "blocked",
+                "note": ";".join(v.reasons),
+                "payload": v.as_dict(),
+            }
+        return {
+            "status": "ok",
+            "note": v.verdict,
+            "payload": v.as_dict(),
+        }
+
+    def feasibility_stage(ctx: dict[str, Any]) -> dict[str, Any]:
+        candidate = ctx.get("candidate_action")
+        if not candidate:
+            return {"status": "skipped", "note": "no candidate"}
+        try:
+            from core.brain.feasibility_gate import FeasibilityGate
+            v = FeasibilityGate().evaluate(candidate)
+        except Exception as exc:
+            return {
+                "status": "skipped",
+                "note": f"feasibility_gate unavailable: {exc}",
+            }
+        if not v.feasible:
+            return {
+                "status": "blocked",
+                "note": ";".join(
+                    vx.constraint for vx in v.violations
+                ),
+                "payload": v.as_dict(),
+            }
+        return {
+            "status": "ok",
+            "note": "feasible",
+            "payload": v.as_dict(),
+        }
+
+    def utility_stage(ctx: dict[str, Any]) -> dict[str, Any]:
+        candidate = ctx.get("candidate_action")
+        if not candidate:
+            return {"status": "skipped", "note": "no candidate"}
+        return {
+            "status": "ok",
+            "note": "utility stage passthrough",
+            "payload": {"candidate": candidate},
+        }
+
+    return StageCallables(
+        attention=attention_stage,
+        evidence=evidence_stage,
+        deliberate=deliberate_stage,
+        safety=safety_stage,
+        feasibility=feasibility_stage,
+        utility=utility_stage,
+    )
+
+
+_DECISION_STACK: Any = None
+_DS_LOCK = threading.Lock()
+
+
+def _decision_stack():
+    global _DECISION_STACK
+    if _DECISION_STACK is None:
+        with _DS_LOCK:
+            if _DECISION_STACK is None:
+                from core.brain.decision_stack import DecisionStack
+                _DECISION_STACK = DecisionStack(
+                    stages=_default_stage_callables(),
+                )
+    return _DECISION_STACK
+
+
+def _decision_stack_summary() -> dict[str, Any]:
+    return _decision_stack().stats()
+
+
+_SHADOW_DIVERGENCE: Any = None
+_SD_LOCK = threading.Lock()
+
+
+def _shadow_divergence():
+    global _SHADOW_DIVERGENCE
+    if _SHADOW_DIVERGENCE is None:
+        with _SD_LOCK:
+            if _SHADOW_DIVERGENCE is None:
+                from core.brain.shadow_divergence import (
+                    ShadowDivergence,
+                )
+                _SHADOW_DIVERGENCE = ShadowDivergence()
+    return _SHADOW_DIVERGENCE
+
+
+def _shadow_divergence_summary() -> dict[str, Any]:
+    return _shadow_divergence().stats()
+
+
+_REASONING_TRACER: Any = None
+_RT_LOCK = threading.Lock()
+
+
+def _reasoning_tracer():
+    global _REASONING_TRACER
+    if _REASONING_TRACER is None:
+        with _RT_LOCK:
+            if _REASONING_TRACER is None:
+                from core.brain.reasoning_trace import ReasoningTracer
+                _REASONING_TRACER = ReasoningTracer()
+    return _REASONING_TRACER
+
+
+def _reasoning_trace_summary() -> dict[str, Any]:
+    return _reasoning_tracer().stats()
+
+
+_REVISION_JOURNAL: Any = None
+_RJ_LOCK = threading.Lock()
+
+
+def _revision_journal():
+    global _REVISION_JOURNAL
+    if _REVISION_JOURNAL is None:
+        with _RJ_LOCK:
+            if _REVISION_JOURNAL is None:
+                from core.brain.self_revision_journal import (
+                    SelfRevisionJournal,
+                )
+                _REVISION_JOURNAL = SelfRevisionJournal()
+    return _REVISION_JOURNAL
+
+
+def _revision_journal_summary() -> dict[str, Any]:
+    return _revision_journal().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────

@@ -2142,12 +2142,38 @@ class AutonomousController:
                         ),
                     },
                 )
+                facade_action = shadow.get("chosen_action") or None
                 cycle_result["phases"]["brain_shadow"] = {
                     "stages": len(shadow.get("stages", [])),
                     "chosen_kind": (
-                        (shadow.get("chosen_action") or {}).get("kind", "")
+                        (facade_action or {}).get("kind", "")
                     ),
                 }
+                # v32: record divergence between legacy brain.think
+                # output (from the brain_think phase) and facade.
+                legacy_think = (
+                    cycle_result.get("phases", {}).get(
+                        "brain_think", {},
+                    )
+                )
+                legacy_action = None
+                plan = legacy_think.get("action_plan") or []
+                if plan:
+                    first = plan[0]
+                    if isinstance(first, dict):
+                        legacy_action = {
+                            "kind": str(first.get("action", "")),
+                        }
+                _brain().record_shadow_divergence(
+                    context_summary={
+                        "cycle_id": cycle_id,
+                        "phase_errors": cycle_result.get(
+                            "phase_error_count", 0,
+                        ),
+                    },
+                    legacy_action=legacy_action,
+                    facade_action=facade_action,
+                )
             except Exception as exc:
                 _record("brain_shadow", exc)
 
