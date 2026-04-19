@@ -82,6 +82,9 @@ class Snapshot:
     router: dict[str, Any] = field(default_factory=dict)
     recovery: dict[str, Any] = field(default_factory=dict)
     curriculum: dict[str, Any] = field(default_factory=dict)
+    fusion: dict[str, Any] = field(default_factory=dict)
+    plan_mon: dict[str, Any] = field(default_factory=dict)
+    risk: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +131,9 @@ class Snapshot:
             "router": self.router,
             "recovery": self.recovery,
             "curriculum": self.curriculum,
+            "fusion": self.fusion,
+            "plan_mon": self.plan_mon,
+            "risk": self.risk,
         }
 
 
@@ -241,7 +247,102 @@ class BrainFacade:
         snap.router = _safe(lambda: _router_summary())
         snap.recovery = _safe(lambda: _recovery_summary())
         snap.curriculum = _safe(lambda: _curriculum_summary())
+        snap.fusion = _safe(lambda: _fusion_summary())
+        snap.plan_mon = _safe(lambda: _plan_monitor_summary())
+        snap.risk = _safe(lambda: _risk_summary())
         return snap
+
+    # ── v30: observation, monitoring, intent, risk ───────
+
+    def report_observation(
+        self,
+        *,
+        source: str,
+        fusion_key: str,
+        payload: dict[str, Any],
+        confidence: float = 1.0,
+    ) -> None:
+        try:
+            _observation_fuser().report(
+                source=source, fusion_key=fusion_key,
+                payload=payload, confidence=confidence,
+            )
+        except Exception as exc:
+            logger.debug("report_observation failed: %s", exc)
+
+    def fuse_observation(
+        self, fusion_key: str,
+    ) -> dict[str, Any] | None:
+        try:
+            fo = _observation_fuser().fuse(fusion_key)
+            return fo.as_dict() if fo else None
+        except Exception as exc:
+            logger.debug("fuse_observation failed: %s", exc)
+            return None
+
+    def decode_intent(self, text: str) -> dict[str, Any]:
+        try:
+            from core.brain.intention_decoder import decode
+            return decode(text).as_dict()
+        except Exception as exc:
+            logger.debug("decode_intent failed: %s", exc)
+            return {"raw": text, "sub_intents": [], "ambiguous": True}
+
+    def reserve_risk(
+        self,
+        category: str,
+        units: float,
+        *,
+        reason: str = "",
+    ) -> str | None:
+        try:
+            return _risk_budget().reserve(
+                category, units, reason=reason,
+            ).id
+        except Exception as exc:
+            logger.debug("reserve_risk failed: %s", exc)
+            return None
+
+    def commit_risk(
+        self,
+        reservation_id: str,
+        *,
+        actual_units: float | None = None,
+    ) -> bool:
+        try:
+            _risk_budget().commit(
+                reservation_id, actual_units=actual_units,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("commit_risk failed: %s", exc)
+            return False
+
+    def release_risk(self, reservation_id: str) -> bool:
+        try:
+            _risk_budget().release(reservation_id)
+            return True
+        except Exception:
+            return False
+
+    def detect_knowledge_gaps(self) -> dict[str, Any]:
+        """Invoke the gap detector with all currently-wired providers
+        (belief_propagator isn't stateful so we skip it here — owners
+        who want that signal should feed it via the constructor)."""
+        try:
+            from core.brain.knowledge_gap_detector import KnowledgeGapDetector
+            detector = KnowledgeGapDetector(
+                repeated_probes_provider=lambda: (
+                    _curiosity_engine().peek(k=50)
+                ),
+            )
+            return detector.detect().as_dict()
+        except Exception as exc:
+            logger.debug("detect_knowledge_gaps failed: %s", exc)
+            return {
+                "gaps": [], "total": 0,
+                "critical_count": 0, "warning_count": 0,
+            }
 
     # ── v29: episodes, belief, routing, safety nets ─────
 
@@ -1935,6 +2036,62 @@ def _curriculum_planner():
 
 def _curriculum_summary() -> dict[str, Any]:
     return _curriculum_planner().stats()
+
+
+# ── v30 singletons ──────────────────────────────────────────
+
+_OBSERVATION_FUSER: Any = None
+_OF_LOCK = threading.Lock()
+
+
+def _observation_fuser():
+    global _OBSERVATION_FUSER
+    if _OBSERVATION_FUSER is None:
+        with _OF_LOCK:
+            if _OBSERVATION_FUSER is None:
+                from core.memory.observation_fuser import ObservationFuser
+                _OBSERVATION_FUSER = ObservationFuser()
+    return _OBSERVATION_FUSER
+
+
+def _fusion_summary() -> dict[str, Any]:
+    return _observation_fuser().stats()
+
+
+_PLAN_MONITOR: Any = None
+_PM_LOCK = threading.Lock()
+
+
+def _plan_monitor():
+    global _PLAN_MONITOR
+    if _PLAN_MONITOR is None:
+        with _PM_LOCK:
+            if _PLAN_MONITOR is None:
+                from core.brain.plan_monitor import PlanMonitor
+                _PLAN_MONITOR = PlanMonitor()
+    return _PLAN_MONITOR
+
+
+def _plan_monitor_summary() -> dict[str, Any]:
+    return _plan_monitor().stats()
+
+
+_RISK_BUDGET: Any = None
+_RB_LOCK = threading.Lock()
+
+
+def _risk_budget():
+    global _RISK_BUDGET
+    if _RISK_BUDGET is None:
+        with _RB_LOCK:
+            if _RISK_BUDGET is None:
+                from core.brain.risk_budget import RiskBudget
+                _RISK_BUDGET = RiskBudget()
+    return _RISK_BUDGET
+
+
+def _risk_summary() -> list[dict[str, Any]]:
+    return [s.as_dict() for s in _risk_budget().overview()]
 
 
 # ── Singleton ────────────────────────────────────────────────
