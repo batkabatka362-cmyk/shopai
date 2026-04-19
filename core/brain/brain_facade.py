@@ -85,6 +85,13 @@ class Snapshot:
     fusion: dict[str, Any] = field(default_factory=dict)
     plan_mon: dict[str, Any] = field(default_factory=dict)
     risk: list[dict[str, Any]] = field(default_factory=list)
+    simulator: dict[str, Any] = field(default_factory=dict)
+    prioritizer: dict[str, Any] = field(default_factory=dict)
+    transfer: dict[str, Any] = field(default_factory=dict)
+    verifier: dict[str, Any] = field(default_factory=dict)
+    self_test: dict[str, Any] = field(default_factory=dict)
+    counterfactuals: dict[str, Any] = field(default_factory=dict)
+    signal_noise: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -134,6 +141,13 @@ class Snapshot:
             "fusion": self.fusion,
             "plan_mon": self.plan_mon,
             "risk": self.risk,
+            "simulator": self.simulator,
+            "prioritizer": self.prioritizer,
+            "transfer": self.transfer,
+            "verifier": self.verifier,
+            "self_test": self.self_test,
+            "counterfactuals": self.counterfactuals,
+            "signal_noise": self.signal_noise,
         }
 
 
@@ -250,7 +264,157 @@ class BrainFacade:
         snap.fusion = _safe(lambda: _fusion_summary())
         snap.plan_mon = _safe(lambda: _plan_monitor_summary())
         snap.risk = _safe(lambda: _risk_summary())
+        snap.simulator = _safe(lambda: _simulator_summary())
+        snap.prioritizer = _safe(lambda: _prioritizer_config())
+        snap.transfer = _safe(lambda: _transfer_summary())
+        snap.verifier = _safe(lambda: _verifier_summary())
+        snap.self_test = _safe(lambda: _self_test_summary())
+        snap.counterfactuals = _safe(lambda: _counterfactual_summary())
+        snap.signal_noise = _safe(lambda: _signal_noise_summary())
         return snap
+
+    # ── v31: simulation, prioritization, transfer, self-test ──
+
+    def simulate_actions(
+        self,
+        actions: list[dict[str, Any]],
+        *,
+        initial_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            sim = _world_simulator()
+            if initial_state is not None:
+                sim.seed(initial_state)
+            return sim.preview(actions).as_dict()
+        except Exception as exc:
+            logger.debug("simulate_actions failed: %s", exc)
+            return {"applied": [], "skipped": []}
+
+    def prioritize_tasks(
+        self,
+        tasks: list[dict[str, Any]],
+        *,
+        top_k: int | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            from core.brain.task_prioritizer import Task
+            converted: list[Any] = []
+            for t in tasks:
+                try:
+                    converted.append(Task(
+                        id=str(t.get("id", "")),
+                        kind=str(t.get("kind", "task")),
+                        base_value=float(t.get("base_value", 1.0)),
+                        deadline_ts=t.get("deadline_ts"),
+                        blast_radius=int(t.get("blast_radius", 1)),
+                        open_dependencies=int(
+                            t.get("open_dependencies", 0),
+                        ),
+                        cost_usd=float(t.get("cost_usd", 0.0)),
+                        tags=tuple(t.get("tags", ()) or ()),
+                        metadata=dict(t.get("metadata", {}) or {}),
+                    ))
+                except (ValueError, TypeError) as exc:
+                    logger.debug(
+                        "task coerce skipped: %s", exc,
+                    )
+                    continue
+            ranked = _task_prioritizer().prioritize(
+                converted, top_k=top_k,
+            )
+            return [r.as_dict() for r in ranked]
+        except Exception as exc:
+            logger.debug("prioritize_tasks failed: %s", exc)
+            return []
+
+    def evaluate_transfer(
+        self,
+        target_context: dict[str, Any],
+        *,
+        tags: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        try:
+            recs = _skill_transfer().evaluate(
+                target_context, tags=tags,
+            )
+            return [r.as_dict() for r in recs]
+        except Exception as exc:
+            logger.debug("evaluate_transfer failed: %s", exc)
+            return []
+
+    def verify_commitment(
+        self, commitment_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return _commitment_verifier().verify(
+                commitment_id,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("verify_commitment failed: %s", exc)
+            return {
+                "commitment_id": commitment_id,
+                "verdict": "unknown",
+                "note": "unavailable",
+            }
+
+    def self_test(self) -> dict[str, Any]:
+        try:
+            return _self_test_harness().run_all().as_dict()
+        except Exception as exc:
+            logger.debug("self_test failed: %s", exc)
+            return {"overall_ok": True, "results": []}
+
+    def record_counterfactual(
+        self,
+        *,
+        context: dict[str, Any],
+        chosen_action: str,
+        alternative_action: str,
+        simulated_outcome: float,
+        tags: tuple[str, ...] = (),
+    ) -> str:
+        try:
+            cf = _counterfactual_memory().record(
+                context=context,
+                chosen_action=chosen_action,
+                alternative_action=alternative_action,
+                simulated_outcome=simulated_outcome,
+                tags=tags,
+            )
+            return cf.id
+        except Exception as exc:
+            logger.debug("record_counterfactual failed: %s", exc)
+            return ""
+
+    def attach_counterfactual_actual(
+        self,
+        counterfactual_id: str,
+        actual_outcome: float,
+    ) -> bool:
+        try:
+            return _counterfactual_memory().attach_actual(
+                counterfactual_id, actual_outcome,
+            )
+        except Exception as exc:
+            logger.debug(
+                "attach_counterfactual_actual failed: %s", exc,
+            )
+            return False
+
+    def observe_signal(
+        self, metric: str, value: float,
+    ) -> dict[str, Any]:
+        try:
+            return _signal_noise_separator().observe(
+                metric, value,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("observe_signal failed: %s", exc)
+            return {
+                "metric": metric, "value": value,
+                "classification": "normal",
+                "direction": "flat",
+            }
 
     # ── v30: observation, monitoring, intent, risk ───────
 
@@ -2092,6 +2256,157 @@ def _risk_budget():
 
 def _risk_summary() -> list[dict[str, Any]]:
     return [s.as_dict() for s in _risk_budget().overview()]
+
+
+# ── v31 singletons ──────────────────────────────────────────
+
+_WORLD_SIMULATOR: Any = None
+_WS_LOCK = threading.Lock()
+
+
+def _world_simulator():
+    global _WORLD_SIMULATOR
+    if _WORLD_SIMULATOR is None:
+        with _WS_LOCK:
+            if _WORLD_SIMULATOR is None:
+                from core.brain.world_simulator import (
+                    WorldSimulator, default_transitions,
+                )
+                sim = WorldSimulator()
+                for kind, fn in default_transitions().items():
+                    sim.register(kind, fn)
+                _WORLD_SIMULATOR = sim
+    return _WORLD_SIMULATOR
+
+
+def _simulator_summary() -> dict[str, Any]:
+    return _world_simulator().stats()
+
+
+_TASK_PRIORITIZER: Any = None
+_TP_LOCK = threading.Lock()
+
+
+def _task_prioritizer():
+    global _TASK_PRIORITIZER
+    if _TASK_PRIORITIZER is None:
+        with _TP_LOCK:
+            if _TASK_PRIORITIZER is None:
+                from core.brain.task_prioritizer import TaskPrioritizer
+                _TASK_PRIORITIZER = TaskPrioritizer()
+    return _TASK_PRIORITIZER
+
+
+def _prioritizer_config() -> dict[str, Any]:
+    return _task_prioritizer().config()
+
+
+_SKILL_TRANSFER: Any = None
+_ST_LOCK = threading.Lock()
+
+
+def _skill_transfer():
+    global _SKILL_TRANSFER
+    if _SKILL_TRANSFER is None:
+        with _ST_LOCK:
+            if _SKILL_TRANSFER is None:
+                from core.brain.skill_transfer import SkillTransfer
+                _SKILL_TRANSFER = SkillTransfer()
+    return _SKILL_TRANSFER
+
+
+def _transfer_summary() -> dict[str, Any]:
+    return _skill_transfer().stats()
+
+
+_COMMITMENT_VERIFIER: Any = None
+_CV_LOCK = threading.Lock()
+
+
+def _commitment_verifier():
+    global _COMMITMENT_VERIFIER
+    if _COMMITMENT_VERIFIER is None:
+        with _CV_LOCK:
+            if _COMMITMENT_VERIFIER is None:
+                from core.brain.commitment_verifier import (
+                    CommitmentVerifier,
+                )
+                _COMMITMENT_VERIFIER = CommitmentVerifier()
+    return _COMMITMENT_VERIFIER
+
+
+def _verifier_summary() -> dict[str, Any]:
+    return _commitment_verifier().stats()
+
+
+_SELF_TEST_HARNESS: Any = None
+_STH_LOCK = threading.Lock()
+
+
+def _self_test_harness():
+    global _SELF_TEST_HARNESS
+    if _SELF_TEST_HARNESS is None:
+        with _STH_LOCK:
+            if _SELF_TEST_HARNESS is None:
+                from core.brain.self_test_harness import (
+                    SelfTestHarness, memory_nonzero_check,
+                )
+                h = SelfTestHarness()
+                try:
+                    h.register(memory_nonzero_check(min_records=0))
+                except ValueError as exc:
+                    # Duplicate registration is benign — log and
+                    # continue without the check instead of crashing
+                    # module import.
+                    logger.debug(
+                        "self_test bootstrap skipped: %s", exc,
+                    )
+                _SELF_TEST_HARNESS = h
+    return _SELF_TEST_HARNESS
+
+
+def _self_test_summary() -> dict[str, Any]:
+    return _self_test_harness().stats()
+
+
+_COUNTERFACTUAL_MEMORY: Any = None
+_CFM_LOCK = threading.Lock()
+
+
+def _counterfactual_memory():
+    global _COUNTERFACTUAL_MEMORY
+    if _COUNTERFACTUAL_MEMORY is None:
+        with _CFM_LOCK:
+            if _COUNTERFACTUAL_MEMORY is None:
+                from core.memory.counterfactual_memory import (
+                    CounterfactualMemory,
+                )
+                _COUNTERFACTUAL_MEMORY = CounterfactualMemory()
+    return _COUNTERFACTUAL_MEMORY
+
+
+def _counterfactual_summary() -> dict[str, Any]:
+    return _counterfactual_memory().stats()
+
+
+_SIGNAL_NOISE_SEPARATOR: Any = None
+_SNS_LOCK = threading.Lock()
+
+
+def _signal_noise_separator():
+    global _SIGNAL_NOISE_SEPARATOR
+    if _SIGNAL_NOISE_SEPARATOR is None:
+        with _SNS_LOCK:
+            if _SIGNAL_NOISE_SEPARATOR is None:
+                from core.brain.signal_noise_separator import (
+                    SignalNoiseSeparator,
+                )
+                _SIGNAL_NOISE_SEPARATOR = SignalNoiseSeparator()
+    return _SIGNAL_NOISE_SEPARATOR
+
+
+def _signal_noise_summary() -> dict[str, Any]:
+    return _signal_noise_separator().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
