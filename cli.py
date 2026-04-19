@@ -242,6 +242,13 @@ def build_parser() -> argparse.ArgumentParser:
     ask_p.add_argument("--json", action="store_true",
                        help="Emit raw JSON instead of human text")
 
+    # ── Daily opportunity scout ─────────────────────────────
+    digest_p = sub.add_parser("digest",
+                              help="Run the proactive opportunity scout")
+    digest_p.add_argument("--narrative", action="store_true",
+                          help="Also generate an LLM narrative")
+    digest_p.add_argument("--json", action="store_true")
+
     # ── Causal inference ────────────────────────────────────
     why_p = sub.add_parser("why",
                            help="Investigate likely causes for a launch outcome")
@@ -1461,6 +1468,34 @@ def _cmd_ask(args) -> None:
           f"{a.duration_s:.1f}s via {a.adapter}/{a.model}")
 
 
+def _cmd_digest(args) -> None:
+    """Run the proactive opportunity scout."""
+    if args.narrative:
+        from core.adapters.llm.bootstrap import register_all as _reg
+        _reg()
+    from core.autonomous.opportunity_scout import scout
+    report = scout(include_narrative=args.narrative)
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(f"\nDIGEST {report.date}  ({len(report.opportunities)} opportunities)")
+    if not report.opportunities:
+        print("  (brain is quiet — no proactive signals this pass)")
+        return
+    by_kind: dict[str, int] = {}
+    for o in report.opportunities:
+        by_kind[o.kind] = by_kind.get(o.kind, 0) + 1
+    print("  counts: " + ", ".join(f"{k}={v}" for k, v in by_kind.items()))
+    print()
+    for o in report.opportunities[:12]:
+        print(f"  [{o.kind:12s}] score={o.score:5.2f}  {o.headline}")
+        if o.detail:
+            print(f"               {o.detail[:100]}")
+    if report.narrative:
+        print("\n-- Morning brief --\n")
+        print(report.narrative)
+
+
 def _cmd_why(args) -> None:
     """Run the causal-inference engine on a launch and print the
     ranked list of candidate root causes."""
@@ -1904,6 +1939,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "why":
         _cmd_why(args)
+        return
+
+    if args.command == "digest":
+        _cmd_digest(args)
         return
 
     if args.command == "similar":

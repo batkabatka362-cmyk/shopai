@@ -1539,6 +1539,29 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_scout: OPPORTUNITY SCOUT — once per calendar day,
+        # run the proactive digest so the owner sees a ranked list of
+        # actionable signals without having to ask.
+        try:
+            import datetime as _dt, os as _os
+            from pathlib import Path as _Path
+            vault = _Path(_os.environ.get("OBSIDIAN_VAULT_PATH", "./vault"))
+            digest_stamp = _Path("data/.digest_stamp")
+            today_iso = _dt.date.today().isoformat()
+            prev = digest_stamp.read_text(encoding="utf-8").strip() if digest_stamp.exists() else ""
+            if prev != today_iso:
+                from core.autonomous.opportunity_scout import scout as _scout
+                digest = _scout(include_narrative=False)
+                cycle_result["phases"]["opportunity_scout"] = {
+                    "date": digest.date,
+                    "opportunities": len(digest.opportunities),
+                    "counts": digest._counts_by_kind(),
+                }
+                digest_stamp.parent.mkdir(parents=True, exist_ok=True)
+                digest_stamp.write_text(today_iso, encoding="utf-8")
+        except Exception as exc:
+            _record("opportunity_scout", exc)
+
         # Phase 8k2b_creative: CREATIVE A/B ORCHESTRATOR — ranks each
         # launch's ad variants by Bayesian ROAS, promotes winners
         # and flags losers for replacement.
