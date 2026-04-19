@@ -38,13 +38,27 @@ class SourceStep(Step):
             return self._normalize(payload)
 
         if kind == "alibaba":
-            # TODO(brain): wire core/adapters/browser/ Playwright adapter
-            # to scrape Alibaba product detail pages. Until then surface
-            # a placeholder so downstream steps can be exercised.
-            raise StepSkip(
-                "alibaba scraper not implemented "
-                "(needs core/adapters/browser/playwright bootstrap)"
-            )
+            from core.adapters.browser import alibaba
+            if not alibaba.is_configured():
+                raise StepSkip(
+                    "alibaba scraper unavailable — install playwright "
+                    "or point PLAYWRIGHT_CHROMIUM_EXECUTABLE at a binary"
+                )
+            scraped = alibaba.scrape(context.goal.alibaba_url or "")
+            if not scraped.get("title"):
+                raise StepSkip(
+                    f"alibaba scrape returned no title "
+                    f"(url={context.goal.alibaba_url})"
+                )
+            payload = {
+                "title": scraped.get("title", ""),
+                "price_usd": float(scraped.get("price_usd", 0)),
+                "supplier_url": scraped.get("supplier_url", context.goal.alibaba_url or ""),
+                "gallery_urls": list(scraped.get("gallery_urls") or []),
+                "attributes": dict(scraped.get("attributes") or {}),
+                "_source_kind": "alibaba",
+            }
+            return payload
 
         if kind == "spy_url":
             raise StepSkip(
