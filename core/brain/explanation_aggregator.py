@@ -30,6 +30,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.explanation")
+
 
 @dataclass
 class Highlight:
@@ -212,8 +217,8 @@ def aggregate(
             polished = polisher(summary)
             if polished:
                 summary = polished
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("polisher raised: %s", exc)
 
     return Explanation(
         decision_id=decision_id,

@@ -37,6 +37,11 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.context_compiler")
+
 
 _DEFAULTS: dict[str, Any] = {
     "niche": "unknown",
@@ -154,8 +159,8 @@ def compile_context(obs: dict[str, Any]) -> CompiledContext:
             margin_band=canon["margin_band"],
             copy_tone=canon["copy_tone"],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("world_context compile failed: %s", exc)
     try:
         from core.brain.tree_search import State as TState
         tree_state = TState(
@@ -167,8 +172,8 @@ def compile_context(obs: dict[str, Any]) -> CompiledContext:
             margin_band=canon["margin_band"],
             copy_tone=canon["copy_tone"],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("tree_state compile failed: %s", exc)
     try:
         from core.brain.self_prompt import Situation
         situation = Situation(
@@ -178,8 +183,8 @@ def compile_context(obs: dict[str, Any]) -> CompiledContext:
                 canon.get("calibration_hit_rate", 0.7),
             ),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("situation compile failed: %s", exc)
 
     return CompiledContext(
         features=_features(canon),
