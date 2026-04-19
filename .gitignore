@@ -37,3 +37,10 @@ vault/.shopai_import_state.json
 vault/Knowledge/brain-summary-*.md
 vault/Decisions/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*.md
 vault/Wins/Cycle-Win-*.md
+
+# v24 experience_recorder runtime mirrors
+vault/Decisions/Decision-*.md
+vault/Decisions/Decision *.md
+vault/Assessments/
+vault/LLM/
+vault/Cycle Plans/

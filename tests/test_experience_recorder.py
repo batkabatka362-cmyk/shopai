@@ -11,14 +11,21 @@ from core.brain import experience_recorder as er
 
 
 class TestSetup(unittest.TestCase):
-    """Point the recorder at a temp SQLite file for every test."""
+    """Point the recorder at a temp SQLite file AND a temp vault
+    for every test — never write into the real repo vault/."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
+        self._vault = tempfile.TemporaryDirectory()
         self._patch_db = patch.object(
             er, "_DB_PATH", Path(self._tmp.name) / "exp.db",
         )
+        self._patch_vault = patch.dict(
+            os.environ,
+            {"OBSIDIAN_VAULT_PATH": self._vault.name},
+        )
         self._patch_db.start()
+        self._patch_vault.start()
         # Force a fresh connection for this test
         er._CONN = None
 
@@ -29,7 +36,9 @@ class TestSetup(unittest.TestCase):
             except Exception:
                 pass
             er._CONN = None
+        self._patch_vault.stop()
         self._patch_db.stop()
+        self._vault.cleanup()
         self._tmp.cleanup()
 
 
