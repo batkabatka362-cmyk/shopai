@@ -219,6 +219,16 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Force-kill a launch regardless of ROAS")
     kill_p.add_argument("launch_id", help="launch_<id> to kill")
 
+    # ── Semantic memory ─────────────────────────────────────
+    similar_p = sub.add_parser("similar",
+                               help="Find memories semantically close to a query")
+    similar_p.add_argument("query", help="Free-text query")
+    similar_p.add_argument("--k", type=int, default=5, help="Top K (default 5)")
+    similar_p.add_argument("--level", type=int, default=0,
+                           help="Min level (0=event, 1=pattern, 2=rule, 3=strategy)")
+    similar_p.add_argument("--category", default=None,
+                           help="Filter by memory category")
+
     # ── Competitor monitoring ───────────────────────────────
     comp_p = sub.add_parser("competitor",
                             help="Track a competitor product URL")
@@ -1351,6 +1361,30 @@ def _cmd_kill(launch_id: str) -> None:
         sys.exit(1)
 
 
+def _cmd_similar(args) -> None:
+    """Semantic search over the memory store."""
+    from core.memory.semantic_index import retrieve_similar, stats
+    idx = stats()
+    if not idx.get("configured"):
+        print("ERR: embedding client unconfigured "
+              "(set GEMINI_API_KEY or GOOGLE_API_KEY)", file=sys.stderr)
+        sys.exit(2)
+    if idx["indexed"] == 0:
+        print("WARN: memory index is empty — run the daemon for a cycle "
+              "or call core.memory.semantic_index.index_pending()")
+    hits = retrieve_similar(args.query, k=args.k, level_min=args.level,
+                            category=args.category)
+    if not hits:
+        print("(no matches)")
+        return
+    print(f"Top {len(hits)} matches for: {args.query!r}")
+    print(f"  {'SIM':>6s}  LVL  {'CATEGORY':18s}  {'ACTION':16s}  ID")
+    for h in hits:
+        m = h["memory"]
+        print(f"  {h['score']:>6.3f}   {m['level']}   "
+              f"{m['category']:18s}  {m['action']:16s}  {m['id']}")
+
+
 def _cmd_competitor(args) -> None:
     """Manage the competitor price tracker."""
     from core.autonomous import competitor_monitor as cm
@@ -1685,6 +1719,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "kill":
         _cmd_kill(args.launch_id)
+        return
+
+    if args.command == "similar":
+        _cmd_similar(args)
         return
 
     if args.command == "competitor":

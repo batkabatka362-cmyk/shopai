@@ -74,6 +74,15 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             self._json_response(self._get_belief_snapshot(limit=limit))
         elif path == "/api/launches":
             self._json_response(self._get_launches())
+        elif path == "/api/similar":
+            # /api/similar?q=...&k=5&level=1&category=launch
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            q = (params.get("q") or [""])[0]
+            k = int((params.get("k") or ["5"])[0])
+            level = int((params.get("level") or ["0"])[0])
+            cat = (params.get("category") or [None])[0]
+            self._json_response(self._get_similar(q, k, level, cat))
         elif path == "/api/reflection":
             limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
             limit = self._parse_limit(limit_raw, default=50, maximum=500)
@@ -459,6 +468,24 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "half_life_seconds": half_life_seconds,
             "timestamp":         now,
         }
+
+    @staticmethod
+    def _get_similar(query: str, k: int, level_min: int, category: str | None) -> dict:
+        """Semantic retrieval endpoint — cosine over Gemini embeddings."""
+        try:
+            from core.memory.semantic_index import retrieve_similar, stats
+            hits = retrieve_similar(
+                query=query, k=max(1, min(k, 20)),
+                level_min=level_min, category=category,
+            )
+            return {
+                "query": query,
+                "k": k, "level_min": level_min, "category": category,
+                "hits": hits,
+                "index": stats(),
+            }
+        except Exception as exc:
+            return {"query": query, "hits": [], "error": str(exc)[:200]}
 
     @staticmethod
     def _get_launches() -> dict:

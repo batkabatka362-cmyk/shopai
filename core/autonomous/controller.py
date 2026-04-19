@@ -1539,6 +1539,17 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_embed: SEMANTIC INDEXING — embed up to 15 recent
+        # level≥1 memories per cycle so the similarity retriever has
+        # fresh coverage. Caps the Gemini free-tier quota since each
+        # index call is one embedContent round trip.
+        try:
+            from core.memory.semantic_index import index_pending
+            embed_summary = index_pending(limit=15, level_min=1)
+            cycle_result["phases"]["semantic_index"] = embed_summary
+        except Exception as exc:
+            _record("semantic_index", exc)
+
         # Phase 8k2c: PATTERN SUMMARY — once per calendar day, ask
         # the research LLM to narrate the brain's top rules and write
         # the result to the Obsidian vault. Skipped quickly when a
