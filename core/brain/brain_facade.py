@@ -115,6 +115,15 @@ class Snapshot:
     arbitration: dict[str, Any] = field(default_factory=dict)
     world_drift: dict[str, Any] = field(default_factory=dict)
     insights: dict[str, Any] = field(default_factory=dict)
+    # v35: hypothesis generation, reversals, principles, freshness,
+    # coherence, episodes, salience
+    generated_hypotheses: dict[str, Any] = field(default_factory=dict)
+    reversals: dict[str, Any] = field(default_factory=dict)
+    principles: dict[str, Any] = field(default_factory=dict)
+    freshness: dict[str, Any] = field(default_factory=dict)
+    coherence: dict[str, Any] = field(default_factory=dict)
+    episode_summaries: dict[str, Any] = field(default_factory=dict)
+    salience: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +198,13 @@ class Snapshot:
             "arbitration": self.arbitration,
             "world_drift": self.world_drift,
             "insights": self.insights,
+            "generated_hypotheses": self.generated_hypotheses,
+            "reversals": self.reversals,
+            "principles": self.principles,
+            "freshness": self.freshness,
+            "coherence": self.coherence,
+            "episode_summaries": self.episode_summaries,
+            "salience": self.salience,
         }
 
 
@@ -340,6 +356,25 @@ class BrainFacade:
             lambda: _world_model_updater_summary(),
         )
         snap.insights = _safe(lambda: _insight_synthesizer_summary())
+        snap.generated_hypotheses = _safe(
+            lambda: _hypothesis_generator_summary(),
+        )
+        snap.reversals = _safe(
+            lambda: _decision_reversal_detector_summary(),
+        )
+        snap.principles = _safe(
+            lambda: _principle_extractor_summary(),
+        )
+        snap.freshness = _safe(
+            lambda: _knowledge_freshness_summary(),
+        )
+        snap.coherence = _safe(
+            lambda: _coherence_checker_summary(),
+        )
+        snap.episode_summaries = _safe(
+            lambda: _episode_summariser_summary(),
+        )
+        snap.salience = _safe(lambda: _salience_tuner_summary())
         return snap
 
     # ── v32: integration + divergence + journal ─────────
@@ -996,6 +1031,212 @@ class BrainFacade:
         except Exception as exc:
             logger.debug("active_insights failed: %s", exc)
             return []
+
+    # ── v35: hypothesis gen, reversals, principles, freshness,
+    #         coherence, episodes, salience ─────────────────
+
+    def generate_hypothesis(
+        self, event: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        try:
+            h = _hypothesis_generator().generate(event)
+            return h.as_dict() if h else None
+        except Exception as exc:
+            logger.debug("generate_hypothesis failed: %s", exc)
+            return None
+
+    def record_decision(
+        self,
+        *,
+        target: str,
+        action: str,
+        rationale: str = "",
+    ) -> dict[str, Any] | None:
+        try:
+            alert = _decision_reversal_detector().record(
+                target=target, action=action,
+                rationale=rationale,
+            )
+            return alert.as_dict() if alert else None
+        except Exception as exc:
+            logger.debug("record_decision failed: %s", exc)
+            return None
+
+    def churn_rate(self, target: str) -> float:
+        try:
+            return _decision_reversal_detector().churn_rate(target)
+        except Exception as exc:
+            logger.debug("churn_rate failed: %s", exc)
+            return 0.0
+
+    def extract_principles(
+        self,
+        rules: list[dict[str, Any]],
+        *,
+        min_rules: int = 2,
+        similarity_threshold: float = 0.5,
+    ) -> list[dict[str, Any]]:
+        try:
+            from core.brain.principle_extractor import (
+                PrincipleExtractor, Rule,
+            )
+            converted: list[Rule] = []
+            for r in rules:
+                try:
+                    converted.append(Rule(
+                        id=str(r.get("id", "")),
+                        antecedent=str(r.get("antecedent", "")),
+                        consequent=str(r.get("consequent", "")),
+                        support=int(r.get("support", 1)),
+                        confidence=float(r.get("confidence", 0.5)),
+                    ))
+                except (ValueError, TypeError) as exc:
+                    logger.debug("rule coerce skipped: %s", exc)
+                    continue
+            extractor = PrincipleExtractor(
+                min_rules=min_rules,
+                similarity_threshold=similarity_threshold,
+            )
+            principles = extractor.extract(converted)
+            return [p.as_dict() for p in principles]
+        except Exception as exc:
+            logger.debug("extract_principles failed: %s", exc)
+            return []
+
+    def register_knowledge(
+        self,
+        *,
+        key: str,
+        kind: str = "belief",
+        half_life_seconds: float | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        try:
+            item = _knowledge_freshness().register(
+                key=key, kind=kind,
+                half_life_seconds=half_life_seconds,
+                note=note,
+            )
+            return item.as_dict()
+        except Exception as exc:
+            logger.debug("register_knowledge failed: %s", exc)
+            return {"key": key, "error": str(exc)}
+
+    def refresh_knowledge(
+        self, key: str, *, confirm: bool = True,
+    ) -> bool:
+        try:
+            _knowledge_freshness().refresh(key, confirm=confirm)
+            return True
+        except Exception as exc:
+            logger.debug("refresh_knowledge failed: %s", exc)
+            return False
+
+    def stale_knowledge(
+        self, *, cutoff: float = 0.3,
+    ) -> list[dict[str, Any]]:
+        try:
+            items = _knowledge_freshness().stale(cutoff=cutoff)
+            return [i.as_dict() for i in items]
+        except Exception as exc:
+            logger.debug("stale_knowledge failed: %s", exc)
+            return []
+
+    def assert_belief(
+        self,
+        *,
+        predicate: str,
+        subject: str,
+        polarity: str = "asserts",
+        evidence_score: float = 0.6,
+        source: str = "",
+    ) -> dict[str, Any]:
+        try:
+            b = _coherence_checker().assert_belief(
+                predicate=predicate, subject=subject,
+                polarity=polarity,
+                evidence_score=evidence_score,
+                source=source,
+            )
+            return b.as_dict()
+        except Exception as exc:
+            logger.debug("assert_belief failed: %s", exc)
+            return {"error": str(exc)}
+
+    def check_coherence(
+        self, claims: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        try:
+            from core.brain.coherence_checker import Claim
+            converted: list[Claim] = []
+            for c in claims:
+                try:
+                    converted.append(Claim(
+                        predicate=str(c["predicate"]),
+                        subject=str(c["subject"]),
+                        polarity=c.get("polarity", "asserts"),
+                        confidence=float(c.get("confidence", 0.5)),
+                        note=str(c.get("note", "")),
+                    ))
+                except (KeyError, ValueError) as exc:
+                    logger.debug("claim coerce skipped: %s", exc)
+                    continue
+            found = _coherence_checker().check(converted)
+            return [f.as_dict() for f in found]
+        except Exception as exc:
+            logger.debug("check_coherence failed: %s", exc)
+            return []
+
+    def summarise_episode(
+        self,
+        *,
+        title_hint: str,
+        situation: dict[str, Any] | None = None,
+        winning_action: str,
+        alternatives: list[str] | None = None,
+        outcome_score: float | None = None,
+        lesson: str = "",
+        evidence_keys: list[str] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            s = _episode_summariser().summarise(
+                title_hint=title_hint,
+                situation=situation,
+                winning_action=winning_action,
+                alternatives=alternatives or [],
+                outcome_score=outcome_score,
+                lesson=lesson,
+                evidence_keys=evidence_keys or [],
+            )
+            return s.as_dict()
+        except Exception as exc:
+            logger.debug("summarise_episode failed: %s", exc)
+            return {
+                "title_hint": title_hint, "error": str(exc),
+            }
+
+    def tune_salience(
+        self,
+        *,
+        features: dict[str, float],
+        outcome_importance: float,
+    ) -> bool:
+        try:
+            _salience_tuner().observe(
+                features=features,
+                outcome_importance=outcome_importance,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("tune_salience failed: %s", exc)
+            return False
+
+    def salience_weights(self) -> dict[str, float]:
+        try:
+            return _salience_tuner().weights()
+        except Exception as exc:
+            logger.debug("salience_weights failed: %s", exc)
+            return {}
 
     # ── v31: simulation, prioritization, transfer, self-test ──
 
@@ -3873,6 +4114,136 @@ def _insight_synthesizer():
 
 def _insight_synthesizer_summary() -> dict[str, Any]:
     return _insight_synthesizer().stats()
+
+
+# ── v35 singletons ───────────────────────────────────────────
+
+_HYPOTHESIS_GENERATOR: Any = None
+_HG_LOCK = threading.Lock()
+
+
+def _hypothesis_generator():
+    global _HYPOTHESIS_GENERATOR
+    if _HYPOTHESIS_GENERATOR is None:
+        with _HG_LOCK:
+            if _HYPOTHESIS_GENERATOR is None:
+                from core.brain.hypothesis_generator import (
+                    HypothesisGenerator,
+                )
+                _HYPOTHESIS_GENERATOR = HypothesisGenerator()
+    return _HYPOTHESIS_GENERATOR
+
+
+def _hypothesis_generator_summary() -> dict[str, Any]:
+    return _hypothesis_generator().stats()
+
+
+_DECISION_REVERSAL_DETECTOR: Any = None
+_DRD_LOCK = threading.Lock()
+
+
+def _decision_reversal_detector():
+    global _DECISION_REVERSAL_DETECTOR
+    if _DECISION_REVERSAL_DETECTOR is None:
+        with _DRD_LOCK:
+            if _DECISION_REVERSAL_DETECTOR is None:
+                from core.brain.decision_reversal_detector import (
+                    DecisionReversalDetector,
+                )
+                _DECISION_REVERSAL_DETECTOR = (
+                    DecisionReversalDetector()
+                )
+    return _DECISION_REVERSAL_DETECTOR
+
+
+def _decision_reversal_detector_summary() -> dict[str, Any]:
+    return _decision_reversal_detector().stats()
+
+
+def _principle_extractor_summary() -> dict[str, Any]:
+    # Principle extractor is stateless; snapshot reports config.
+    from core.brain.principle_extractor import PrincipleExtractor
+    return PrincipleExtractor().stats()
+
+
+_KNOWLEDGE_FRESHNESS: Any = None
+_KF_LOCK = threading.Lock()
+
+
+def _knowledge_freshness():
+    global _KNOWLEDGE_FRESHNESS
+    if _KNOWLEDGE_FRESHNESS is None:
+        with _KF_LOCK:
+            if _KNOWLEDGE_FRESHNESS is None:
+                from core.memory.knowledge_freshness_tracker import (
+                    KnowledgeFreshnessTracker,
+                )
+                _KNOWLEDGE_FRESHNESS = (
+                    KnowledgeFreshnessTracker()
+                )
+    return _KNOWLEDGE_FRESHNESS
+
+
+def _knowledge_freshness_summary() -> dict[str, Any]:
+    return _knowledge_freshness().stats()
+
+
+_COHERENCE_CHECKER: Any = None
+_CC_LOCK = threading.Lock()
+
+
+def _coherence_checker():
+    global _COHERENCE_CHECKER
+    if _COHERENCE_CHECKER is None:
+        with _CC_LOCK:
+            if _COHERENCE_CHECKER is None:
+                from core.brain.coherence_checker import (
+                    CoherenceChecker,
+                )
+                _COHERENCE_CHECKER = CoherenceChecker()
+    return _COHERENCE_CHECKER
+
+
+def _coherence_checker_summary() -> dict[str, Any]:
+    return _coherence_checker().stats()
+
+
+_EPISODE_SUMMARISER: Any = None
+_ES_LOCK = threading.Lock()
+
+
+def _episode_summariser():
+    global _EPISODE_SUMMARISER
+    if _EPISODE_SUMMARISER is None:
+        with _ES_LOCK:
+            if _EPISODE_SUMMARISER is None:
+                from core.memory.episode_summarizer import (
+                    EpisodeSummariser,
+                )
+                _EPISODE_SUMMARISER = EpisodeSummariser()
+    return _EPISODE_SUMMARISER
+
+
+def _episode_summariser_summary() -> dict[str, Any]:
+    return _episode_summariser().stats()
+
+
+_SALIENCE_TUNER: Any = None
+_ST_LOCK = threading.Lock()
+
+
+def _salience_tuner():
+    global _SALIENCE_TUNER
+    if _SALIENCE_TUNER is None:
+        with _ST_LOCK:
+            if _SALIENCE_TUNER is None:
+                from core.brain.salience_tuner import SalienceTuner
+                _SALIENCE_TUNER = SalienceTuner()
+    return _SALIENCE_TUNER
+
+
+def _salience_tuner_summary() -> dict[str, Any]:
+    return _salience_tuner().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
