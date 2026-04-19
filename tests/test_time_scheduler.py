@@ -164,7 +164,10 @@ class TestCron(unittest.TestCase):
     def test_dedupe_within_minute(self) -> None:
         s = ts.TimeScheduler()
         s.register_cron("each_min", pattern="* * *")
-        now = time.time()
+        # Use a fixed epoch rounded to a minute boundary so
+        # now+5 and now are guaranteed to share the same minute
+        # bucket (avoiding wall-clock flakiness near XX:YY:58 etc.).
+        now = 1_760_000_000.0   # exactly on a minute boundary
         s.mark_ran("each_min", ts=now)
         # Same minute — should NOT be due
         self.assertEqual(s.due(now=now + 5), [])
