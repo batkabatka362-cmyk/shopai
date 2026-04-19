@@ -47,10 +47,20 @@ class Step(ABC):
 
     def run(self, context: LaunchContext) -> StepResult:
         start = time.monotonic()
+        skill_name = f"launch.{self.name}"
+        try:
+            from core.brain.skills import registry as _skills
+        except Exception:
+            _skills = None
         try:
             output = self.execute(context)
             elapsed = time.monotonic() - start
             logger.info("Step %s OK in %.2fs", self.name, elapsed)
+            if _skills is not None:
+                try:
+                    _skills().record(skill_name, success=True)
+                except Exception:
+                    pass
             return StepResult(
                 name=self.name, status="ok",
                 duration_s=elapsed, output=output or {},
@@ -58,6 +68,7 @@ class Step(ABC):
         except StepSkip as exc:
             elapsed = time.monotonic() - start
             logger.info("Step %s SKIPPED: %s", self.name, exc)
+            # Skips don't count as failures — they're "not applicable"
             return StepResult(
                 name=self.name, status="skipped",
                 duration_s=elapsed, error=str(exc),
@@ -67,6 +78,11 @@ class Step(ABC):
             logger.error(
                 "Step %s FAILED in %.2fs: %s", self.name, elapsed, exc,
             )
+            if _skills is not None:
+                try:
+                    _skills().record(skill_name, success=False)
+                except Exception:
+                    pass
             return StepResult(
                 name=self.name, status="failed",
                 duration_s=elapsed, error=f"{type(exc).__name__}: {exc}",

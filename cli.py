@@ -242,6 +242,16 @@ def build_parser() -> argparse.ArgumentParser:
     ask_p.add_argument("--json", action="store_true",
                        help="Emit raw JSON instead of human text")
 
+    # ── Skills ──────────────────────────────────────────────
+    skills_p = sub.add_parser("skills",
+                              help="View the brain's skill tree")
+    skills_p.add_argument("--category", default=None,
+                          help="Filter by category")
+    skills_p.add_argument("--min-conf", type=float, default=None,
+                          dest="min_conf",
+                          help="Filter by minimum confidence")
+    skills_p.add_argument("--json", action="store_true")
+
     # ── Human feedback ──────────────────────────────────────
     feedback_p = sub.add_parser("feedback",
                                 help="Up/down vote a memory to steer the brain")
@@ -1478,6 +1488,26 @@ def _cmd_ask(args) -> None:
           f"{a.duration_s:.1f}s via {a.adapter}/{a.model}")
 
 
+def _cmd_skills(args) -> None:
+    """List the skill tree with confidence + use counts."""
+    from core.brain.skills import registry
+    skills = registry().list_all(
+        category=args.category,
+        min_confidence=args.min_conf,
+    )
+    if args.json:
+        print(json.dumps([s.as_dict() for s in skills], indent=2))
+        return
+    if not skills:
+        print("(no skills registered — run the launch pipeline once)")
+        return
+    print(f"  {'CONF':>6s}  {'±':>5s}  {'USES':>5s}  {'WINS':>5s}  "
+          f"{'CATEGORY':12s}  NAME")
+    for s in sorted(skills, key=lambda x: (-x.confidence, -x.uses)):
+        print(f"  {s.confidence:>6.2f}  {s.uncertainty:>5.2f}  "
+              f"{s.uses:>5d}  {s.wins:>5d}  {s.category:12s}  {s.name}")
+
+
 def _cmd_feedback(args) -> None:
     """Up/down-vote a memory id and record the reason as a
     ``category=feedback`` event."""
@@ -1980,6 +2010,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "feedback":
         _cmd_feedback(args)
+        return
+
+    if args.command == "skills":
+        _cmd_skills(args)
         return
 
     if args.command == "similar":
