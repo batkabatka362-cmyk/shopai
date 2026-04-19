@@ -233,6 +233,15 @@ def build_parser() -> argparse.ArgumentParser:
     reason_p.add_argument("--json", action="store_true",
                           help="Emit raw JSON instead of a narrative")
 
+    # ── Ask the oracle ─────────────────────────────────────
+    ask_p = sub.add_parser("ask",
+                            help="Ask the brain a question (one-shot Q&A)")
+    ask_p.add_argument("question", help="Free-text question")
+    ask_p.add_argument("--k", type=int, default=8,
+                       help="Memory rows to consider (default 8)")
+    ask_p.add_argument("--json", action="store_true",
+                       help="Emit raw JSON instead of human text")
+
     # ── Semantic memory ─────────────────────────────────────
     similar_p = sub.add_parser("similar",
                                help="Find memories semantically close to a query")
@@ -1417,6 +1426,21 @@ def _cmd_reason(args) -> None:
             print(f"       → {h['rationale']}")
 
 
+def _cmd_ask(args) -> None:
+    """One-shot Q&A over the memory + LLM chain."""
+    from core.adapters.llm.bootstrap import register_all as _reg
+    _reg()
+    from core.brain.oracle import ask
+    a = ask(args.question, k_memories=args.k)
+    if args.json:
+        print(json.dumps(a.as_dict(), indent=2))
+        return
+    print(f"\n{a.text}\n")
+    print(f"  — cited {len(a.cited_ids)} memories, "
+          f"confidence {a.confidence:.0%}, "
+          f"{a.duration_s:.1f}s via {a.adapter}/{a.model}")
+
+
 def _cmd_similar(args) -> None:
     """Semantic search over the memory store."""
     from core.memory.semantic_index import retrieve_similar, stats
@@ -1779,6 +1803,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "reason":
         _cmd_reason(args)
+        return
+
+    if args.command == "ask":
+        _cmd_ask(args)
         return
 
     if args.command == "similar":

@@ -74,6 +74,11 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             self._json_response(self._get_belief_snapshot(limit=limit))
         elif path == "/api/launches":
             self._json_response(self._get_launches())
+        elif path == "/api/ask":
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            q = (params.get("q") or [""])[0]
+            self._json_response(self._get_ask(q))
         elif path == "/api/reason":
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
@@ -473,6 +478,17 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "half_life_seconds": half_life_seconds,
             "timestamp":         now,
         }
+
+    @staticmethod
+    def _get_ask(query: str) -> dict:
+        """One-shot conversational Q&A backed by memory + LLM."""
+        if not query:
+            return {"error": "query string ?q=... required"}
+        try:
+            from core.brain.oracle import ask
+            return ask(query).as_dict()
+        except Exception as exc:
+            return {"error": str(exc)[:200]}
 
     @staticmethod
     def _get_reason(query: str) -> dict:
