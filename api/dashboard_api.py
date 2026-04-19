@@ -74,6 +74,11 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             self._json_response(self._get_belief_snapshot(limit=limit))
         elif path == "/api/launches":
             self._json_response(self._get_launches())
+        elif path == "/api/reason":
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            q = (params.get("q") or [""])[0]
+            self._json_response(self._get_reason(q))
         elif path == "/api/similar":
             # /api/similar?q=...&k=5&level=1&category=launch
             from urllib.parse import urlparse, parse_qs
@@ -468,6 +473,18 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "half_life_seconds": half_life_seconds,
             "timestamp":         now,
         }
+
+    @staticmethod
+    def _get_reason(query: str) -> dict:
+        """Four-phase research → hypothesize → test → evaluate chain.
+        Returns the ranked plan + step telemetry. Blocking: ~3-8 s."""
+        if not query:
+            return {"error": "query string ?q=... required"}
+        try:
+            from core.brain.reasoner import reason
+            return reason(query).as_dict()
+        except Exception as exc:
+            return {"error": str(exc)[:200]}
 
     @staticmethod
     def _get_similar(query: str, k: int, level_min: int, category: str | None) -> dict:

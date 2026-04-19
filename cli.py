@@ -224,6 +224,15 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Force-kill a launch regardless of ROAS")
     kill_p.add_argument("launch_id", help="launch_<id> to kill")
 
+    # ── Reasoning ───────────────────────────────────────────
+    reason_p = sub.add_parser("reason",
+                              help="Multi-step reasoning chain over memory")
+    reason_p.add_argument("question", help="Free-text question")
+    reason_p.add_argument("--k", type=int, default=6,
+                          help="Number of memories to pull (default 6)")
+    reason_p.add_argument("--json", action="store_true",
+                          help="Emit raw JSON instead of a narrative")
+
     # ── Semantic memory ─────────────────────────────────────
     similar_p = sub.add_parser("similar",
                                help="Find memories semantically close to a query")
@@ -1380,6 +1389,34 @@ def _cmd_kill(launch_id: str) -> None:
         sys.exit(1)
 
 
+def _cmd_reason(args) -> None:
+    """Run the 4-phase reasoning chain."""
+    from core.adapters.llm.bootstrap import register_all as _reg
+    _reg()
+    from core.brain.reasoner import reason
+    result = reason(args.question, k_memories=args.k)
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    print(f"\nQUESTION: {result.question}")
+    print(f"  duration: {result.duration_s:.1f}s  "
+          f"memories: {len(result.memory_ids)}")
+    print(f"\n-- Research summary --")
+    print(result.summary or "(empty)")
+    print(f"\n-- Hypotheses ({len(result.hypotheses)}) --")
+    for h in result.hypotheses:
+        print(f"  [{h.get('impact', '?'):>4s}] {h['id']}: {h['claim']}")
+        if h.get("test"):
+            print(f"         test: {h['test']}  "
+                  f"(signal: {h.get('signal', '?')}, "
+                  f"cost ${h.get('cost_usd', 0):.0f})")
+    print(f"\n-- Ranked plan --")
+    for h in result.ranked:
+        print(f"  #{h.get('rank', 99)}  {h['claim']}")
+        if h.get("rationale"):
+            print(f"       → {h['rationale']}")
+
+
 def _cmd_similar(args) -> None:
     """Semantic search over the memory store."""
     from core.memory.semantic_index import retrieve_similar, stats
@@ -1738,6 +1775,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "kill":
         _cmd_kill(args.launch_id)
+        return
+
+    if args.command == "reason":
+        _cmd_reason(args)
         return
 
     if args.command == "similar":
