@@ -1539,6 +1539,28 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2c: PATTERN SUMMARY — once per calendar day, ask
+        # the research LLM to narrate the brain's top rules and write
+        # the result to the Obsidian vault. Skipped quickly when a
+        # note already exists for today, so cycle-time stays flat.
+        try:
+            import datetime as _dt
+            import os as _os
+            from pathlib import Path as _Path
+            vault = _Path(_os.environ.get("OBSIDIAN_VAULT_PATH", "./vault"))
+            today_note = vault / "Knowledge" / f"brain-summary-{_dt.date.today().isoformat()}.md"
+            if vault.exists() and not today_note.exists():
+                from core.autonomous.pattern_summarizer import summarise
+                summary = summarise()
+                cycle_result["phases"]["pattern_summary"] = {
+                    "status": summary.get("status"),
+                    "note": summary.get("note"),
+                    "rule_count": summary.get("rule_count", 0),
+                    "strategy_count": summary.get("strategy_count", 0),
+                }
+        except Exception as exc:
+            _record("pattern_summary", exc)
+
         # Phase 8k3: SEO ANALYSIS
         try:
             from core.system.seo_analyzer import get_seo_analyzer
