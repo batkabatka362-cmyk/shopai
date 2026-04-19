@@ -31,6 +31,8 @@ _ADVISORY_ACTIONS = frozenset({
     "marketing_push",           # email/ad campaign trigger
     "promote_high_margin",     # feature high-margin SKUs in collections
     "add_products",             # sourcing queue
+    "kill_launch",              # ROAS bucketer → kill advisory
+    "scale_launch",             # ROAS bucketer → scale advisory
 })
 
 

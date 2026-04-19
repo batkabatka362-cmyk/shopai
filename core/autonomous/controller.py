@@ -1491,6 +1491,54 @@ class AutonomousController:
             except Exception as exc:
                 _record("revenue_strategy", exc)
 
+        # Phase 8k2b: LAUNCH EVALUATOR — aggregate per-launch ROAS
+        # and surface kill / scale advisories so the autonomous
+        # cycle can act on the reward loop the order webhook feeds.
+        # Deterministic aggregation over MemoryIntelligence (no LLM).
+        try:
+            from core.autonomous.launch_evaluator import evaluate
+            launch_report = evaluate()
+            cycle_result["phases"]["launch_evaluator"] = {
+                "tracked": launch_report.launches_tracked,
+                "evaluated": launch_report.launches_evaluated,
+                "kill": len(launch_report.kill_recommendations),
+                "scale": len(launch_report.scale_recommendations),
+                "monitor": len(launch_report.monitor_recommendations),
+                "kill_ids": [s.launch_id for s in launch_report.kill_recommendations],
+                "scale_ids": [s.launch_id for s in launch_report.scale_recommendations],
+            }
+            # Emit each kill / scale verdict as an advisory action so
+            # the brain's memory picks up the recommendation and the
+            # Meta Ads step (once credentialed) has a todo queue.
+            if self._action_executor:
+                for s in launch_report.kill_recommendations:
+                    self._action_executor.propose_action({
+                        "type": "kill_launch",
+                        "store_id": store_id,
+                        "engine": "launch_evaluator",
+                        "confidence": 0.9,
+                        "reason": s.reason[:120],
+                        "params": {
+                            "launch_id": s.launch_id,
+                            "ad_campaign_id": None,
+                            "shopify_product_id": s.shopify_product_id,
+                        },
+                    })
+                for s in launch_report.scale_recommendations:
+                    self._action_executor.propose_action({
+                        "type": "scale_launch",
+                        "store_id": store_id,
+                        "engine": "launch_evaluator",
+                        "confidence": 0.85,
+                        "reason": s.reason[:120],
+                        "params": {
+                            "launch_id": s.launch_id,
+                            "scale_factor": 2.0,
+                        },
+                    })
+        except Exception as exc:
+            _record("launch_evaluator", exc)
+
         # Phase 8k3: SEO ANALYSIS
         try:
             from core.system.seo_analyzer import get_seo_analyzer
