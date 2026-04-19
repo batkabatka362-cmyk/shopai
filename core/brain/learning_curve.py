@@ -115,21 +115,22 @@ class LearningCurveTracker:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS points (
-                subsystem TEXT NOT NULL,
-                metric    TEXT NOT NULL,
-                value     REAL NOT NULL,
-                cycle     INTEGER NOT NULL,
-                ts        REAL NOT NULL
+        with self._lock:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS points (
+                    subsystem TEXT NOT NULL,
+                    metric    TEXT NOT NULL,
+                    value     REAL NOT NULL,
+                    cycle     INTEGER NOT NULL,
+                    ts        REAL NOT NULL
+                )
+            """)
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sm_cycle "
+                "ON points(subsystem, metric, cycle)"
             )
-        """)
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sm_cycle "
-            "ON points(subsystem, metric, cycle)"
-        )
-        self._conn.commit()
+            self._conn.commit()
 
     def record(
         self,

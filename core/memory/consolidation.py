@@ -32,8 +32,10 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,28 @@ from utils.logger import get_logger
 logger = get_logger("memory.consolidation")
 
 _DB_PATH = Path("data/memory_intelligence.db")
+
+# Serialises the whole consolidation pass so two daemons can't
+# double-decay or double-dissolve the same rows.
+_PASS_LOCK = threading.Lock()
+
+
+@contextmanager
+def _open(mode: str = "read"):
+    """Yield a SQLite connection with sensible defaults.
+
+    mode="write" begins an IMMEDIATE transaction so concurrent writers
+    serialise at connection time rather than at first UPDATE.
+    """
+    conn = sqlite3.connect(str(_DB_PATH))
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        if mode == "write":
+            conn.execute("BEGIN IMMEDIATE")
+        yield conn
+    finally:
+        conn.close()
 
 _OLD_THRESHOLD_S = 30 * 86_400          # 30 days
 _COMPRESS_SCORE_CEILING = 2.5
@@ -80,6 +104,11 @@ def consolidate() -> ConsolidationReport:
     report = ConsolidationReport(ts=time.time())
     if not _DB_PATH.exists():
         return report
+    # Skip overlapping passes rather than queue — if one is in-flight,
+    # a second pass 10 seconds later isn't useful.
+    if not _PASS_LOCK.acquire(blocking=False):
+        logger.debug("consolidation already in progress; skipping")
+        return report
     try:
         report.distilled_patterns = _distill_events()
         report.events_compressed, report.events_dissolved = _compress_old_events()
@@ -88,6 +117,8 @@ def consolidate() -> ConsolidationReport:
         _persist(report)
     except Exception as exc:
         logger.debug("consolidation pass failed: %s", exc)
+    finally:
+        _PASS_LOCK.release()
     return report
 
 
@@ -170,8 +201,7 @@ def _has_matching_pattern(category: str, action: str) -> bool:
 
 def _compress_old_events() -> tuple[int, int]:
     cutoff = time.time() - _OLD_THRESHOLD_S
-    conn = sqlite3.connect(str(_DB_PATH))
-    try:
+    with _open("write") as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT id, score FROM memories "
@@ -194,8 +224,6 @@ def _compress_old_events() -> tuple[int, int]:
                 )
                 compressed += 1
         conn.commit()
-    finally:
-        conn.close()
     return compressed, dissolved
 
 
@@ -261,8 +289,7 @@ def _detect_contradictions() -> int:
 # ── Reinforcement ───────────────────────────────────────────
 
 def _reinforce_well_travelled() -> int:
-    conn = sqlite3.connect(str(_DB_PATH))
-    try:
+    with _open("write") as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT id, score, use_count, success_count FROM memories "
@@ -281,8 +308,6 @@ def _reinforce_well_travelled() -> int:
             )
             reinforced += 1
         conn.commit()
-    finally:
-        conn.close()
     return reinforced
 
 

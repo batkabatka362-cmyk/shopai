@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -43,9 +44,17 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
 CREATE INDEX IF NOT EXISTS idx_me_updated ON memory_embeddings(updated_at);
 """
 
+# Module-level write lock. SQLite itself serialises writers, but under
+# contention it raises SQLITE_BUSY rather than waiting — the lock keeps
+# concurrent index() callers from stepping on each other and lets readers
+# proceed via WAL.
+_WRITE_LOCK = threading.Lock()
+
 
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(_DB_PATH))
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
     return conn
 
@@ -89,16 +98,17 @@ def index(memory_id: int, text: str) -> bool:
     vec = emb.embed(text)
     if not vec:
         return False
-    conn = _conn()
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO memory_embeddings "
-            "(memory_id, dim, embedding, updated_at) VALUES (?, ?, ?, ?)",
-            (int(memory_id), len(vec), emb.encode_blob(vec), time.time()),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    with _WRITE_LOCK:
+        conn = _conn()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_embeddings "
+                "(memory_id, dim, embedding, updated_at) VALUES (?, ?, ?, ?)",
+                (int(memory_id), len(vec), emb.encode_blob(vec), time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     return True
 
 

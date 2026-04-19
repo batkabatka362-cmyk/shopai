@@ -30,6 +30,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.facade")
+
 
 @dataclass
 class Snapshot:
@@ -45,6 +50,8 @@ class Snapshot:
     self_improvement: dict[str, Any] = field(default_factory=dict)
     surprise: dict[str, Any] = field(default_factory=dict)
     regret: dict[str, Any] = field(default_factory=dict)
+    commitments: dict[str, Any] = field(default_factory=dict)
+    learning: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +66,8 @@ class Snapshot:
             "self_improvement": self.self_improvement,
             "surprise": self.surprise,
             "regret": self.regret,
+            "commitments": self.commitments,
+            "learning": self.learning,
         }
 
 
@@ -140,7 +149,79 @@ class BrainFacade:
         snap.self_improvement = _safe(lambda: _si_summary())
         snap.surprise = _safe(lambda: _surprise_summary())
         snap.regret = _safe(lambda: _regret_summary())
+        snap.commitments = _safe(lambda: _commitments_summary())
+        snap.learning = _safe(lambda: _learning_summary())
         return snap
+
+    # ── commit / keep-your-word ────────────────────────────
+
+    def commit(
+        self,
+        promise: str,
+        owner: str,
+        due_at: float,
+        *,
+        fulfillment_test: Any | None = None,
+    ) -> str | None:
+        """Register a durable promise. Returns commitment id or None."""
+        try:
+            return _commitment_register().register(
+                promise=promise, owner=owner, due_at=due_at,
+                fulfillment_test=fulfillment_test,
+            ).id
+        except Exception:
+            return None
+
+    # ── track subsystem improvement rate ───────────────────
+
+    def track(
+        self,
+        subsystem: str,
+        metric: str,
+        value: float,
+        *,
+        cycle: int | None = None,
+    ) -> None:
+        """Log a subsystem metric so learning_curve can spot drift."""
+        try:
+            _learning_tracker().record(
+                subsystem, metric, value, cycle=cycle,
+            )
+        except Exception as exc:
+            logger.debug("track(%s, %s) failed: %s", subsystem, metric, exc)
+
+    # ── evidence gate ──────────────────────────────────────
+
+    def evidence_ready(
+        self,
+        facts: list[dict[str, Any]],
+        *,
+        min_sources: int = 2,
+        min_volume: float = 1.0,
+    ) -> dict[str, Any]:
+        """Ask: do we have enough to answer, or should we gather more?"""
+        try:
+            from core.brain.evidence_sufficiency import check
+            return check(
+                facts=facts,
+                min_sources=min_sources,
+                min_volume=min_volume,
+            ).as_dict()
+        except Exception:
+            return {"verdict": "decide", "note": "module_unavailable"}
+
+    # ── claim conflict check ───────────────────────────────
+
+    def validate_claims(
+        self, claims: list[Any],
+    ) -> dict[str, Any]:
+        """Run knowledge_validator over a batch of (subject, predicate,
+        object, source, confidence) claims."""
+        try:
+            from core.memory.knowledge_validator import KnowledgeValidator
+            return KnowledgeValidator().validate(claims).as_dict()
+        except Exception:
+            return {"conflicts": [], "claims_examined": 0}
 
     # ── explain ────────────────────────────────────────────
 
@@ -241,6 +322,64 @@ def _surprise_summary() -> dict[str, Any]:
 def _regret_summary() -> dict[str, Any]:
     from core.brain.regret_minimizer import minimizer
     return minimizer().summary()
+
+
+_COMMIT_REG: Any = None
+_COMMIT_LOCK = threading.Lock()
+
+
+def _commitment_register():
+    """Lazy singleton so every caller goes to the same SQLite file."""
+    global _COMMIT_REG
+    if _COMMIT_REG is None:
+        with _COMMIT_LOCK:
+            if _COMMIT_REG is None:
+                from core.brain.commitment_register import CommitmentRegister
+                _COMMIT_REG = CommitmentRegister()
+    return _COMMIT_REG
+
+
+def _commitments_summary() -> dict[str, Any]:
+    r = _commitment_register()
+    pending = r.pending()
+    urgent = r.urgent(hours_ahead=24.0)
+    return {
+        "pending": len(pending),
+        "urgent_24h": len(urgent),
+        "next_due_at": (
+            min((c.due_at for c in pending), default=None)
+            if pending else None
+        ),
+    }
+
+
+_LEARNING_TRACKER: Any = None
+_LEARNING_LOCK = threading.Lock()
+
+
+def _learning_tracker():
+    """Lazy singleton LearningCurveTracker instance so every subsystem
+    writes to the same SQLite file."""
+    global _LEARNING_TRACKER
+    if _LEARNING_TRACKER is None:
+        with _LEARNING_LOCK:
+            if _LEARNING_TRACKER is None:
+                from core.brain.learning_curve import LearningCurveTracker
+                _LEARNING_TRACKER = LearningCurveTracker()
+    return _LEARNING_TRACKER
+
+
+def _learning_summary() -> list[dict[str, Any]]:
+    from core.brain.learning_curve import LearningCurveTracker
+    t = _learning_tracker()
+    # Rank the few metrics we care most about. Missing ones just skip.
+    out: list[dict[str, Any]] = []
+    for metric in ("roas", "cvr", "acc", "f1"):
+        curves = t.rank(metric, window=50, top_n=3)
+        for c in curves:
+            if c.trend != "insufficient":
+                out.append(c.as_dict())
+    return out
 
 
 # ── Singleton ────────────────────────────────────────────────
