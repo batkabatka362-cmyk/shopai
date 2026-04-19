@@ -120,14 +120,16 @@ def ask(question: str, k_memories: int = 8) -> Answer:
 # ── Retrieval + prompt helpers ───────────────────────────────
 
 def _pull_memories(question: str, k: int) -> list[dict[str, Any]]:
-    """Blend semantic retrieval with the top transfer strategies. The
-    transfer layer gives the oracle cross-niche intuition even when
-    the question targets a niche with no local evidence."""
+    """Blend semantic retrieval with the top transfer strategies and
+    any structured facts whose subject appears verbatim in the
+    question. Facts give the oracle crisp citations for static
+    questions ("what's the Shopify rate limit?") that semantic memory
+    can only approximate."""
     rows: list[dict[str, Any]] = []
     seen: set[int] = set()
     try:
         from core.memory.semantic_index import retrieve_similar
-        for h in retrieve_similar(question, k=max(1, int(k * 0.7)), level_min=0):
+        for h in retrieve_similar(question, k=max(1, int(k * 0.6)), level_min=0):
             m = h["memory"]
             if m["id"] in seen:
                 continue
@@ -138,9 +140,7 @@ def _pull_memories(question: str, k: int) -> list[dict[str, Any]]:
 
     try:
         from core.brain.transfer_learner import retrieve_for_niche
-        # Niche is embedded in the question text; just pull the global
-        # top-K transfer strategies here.
-        transfer = retrieve_for_niche(niche="", k=max(1, int(k * 0.3)))
+        transfer = retrieve_for_niche(niche="", k=max(1, int(k * 0.2)))
         for t in transfer:
             tid = t.get("id") or -1
             if tid in seen:
@@ -156,6 +156,35 @@ def _pull_memories(question: str, k: int) -> list[dict[str, Any]]:
             seen.add(tid)
     except Exception as exc:
         logger.debug("transfer retrieval failed: %s", exc)
+
+    try:
+        from core.memory.knowledge_base import knowledge_base
+        kb = knowledge_base()
+        q_lower = question.lower()
+        for subject in kb.list_subjects():
+            if subject.lower() in q_lower:
+                facts = kb.recall(subject)
+                if isinstance(facts, list):
+                    for f in facts[:max(1, int(k * 0.2))]:
+                        marker_id = -(10_000 + f.id)   # sidestep int id collisions
+                        if marker_id in seen:
+                            continue
+                        rows.append({
+                            "id": marker_id,
+                            "level": 3,
+                            "category": "fact",
+                            "action": f.predicate,
+                            "content": {
+                                "subject": f.subject,
+                                "predicate": f.predicate,
+                                "object": f.object,
+                                "source": f.source,
+                            },
+                            "score": 5.0,
+                        })
+                        seen.add(marker_id)
+    except Exception as exc:
+        logger.debug("knowledge_base retrieval failed: %s", exc)
 
     return rows[:k]
 
