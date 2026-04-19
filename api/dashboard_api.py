@@ -79,6 +79,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             params = parse_qs(urlparse(self.path).query)
             q = (params.get("q") or [""])[0]
             self._json_response(self._get_ask(q))
+        elif path == "/api/chat/sessions":
+            self._json_response(self._get_chat_sessions())
         elif path == "/api/reason":
             from urllib.parse import urlparse, parse_qs
             params = parse_qs(urlparse(self.path).query)
@@ -108,6 +110,20 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        if path == "/api/chat/send":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                self._json_response({"error": "bad json"}, 400)
+                return
+            from core.brain.chat_session import send
+            self._json_response(send(
+                payload.get("session_id"),
+                payload.get("question", ""),
+            ))
+            return
         if path == "/api/webhook":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b"{}"
@@ -478,6 +494,14 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "half_life_seconds": half_life_seconds,
             "timestamp":         now,
         }
+
+    @staticmethod
+    def _get_chat_sessions() -> dict:
+        try:
+            from core.brain.chat_session import ChatStore
+            return {"sessions": ChatStore.list_ids(limit=20)}
+        except Exception as exc:
+            return {"sessions": [], "error": str(exc)[:200]}
 
     @staticmethod
     def _get_ask(query: str) -> dict:

@@ -242,6 +242,18 @@ def build_parser() -> argparse.ArgumentParser:
     ask_p.add_argument("--json", action="store_true",
                        help="Emit raw JSON instead of human text")
 
+    # ── Multi-turn chat ─────────────────────────────────────
+    chat_p = sub.add_parser("chat",
+                            help="Multi-turn conversation with the brain")
+    chat_sub = chat_p.add_subparsers(dest="chat_action")
+    say_p = chat_sub.add_parser("say", help="Send one turn to a session")
+    say_p.add_argument("question", help="Free-text message")
+    say_p.add_argument("--session", default="", help="Session id (new if empty)")
+    say_p.add_argument("--json", action="store_true")
+    chat_sub.add_parser("list", help="List recent sessions")
+    show_p = chat_sub.add_parser("show", help="Show a session transcript")
+    show_p.add_argument("session_id")
+
     # ── Semantic memory ─────────────────────────────────────
     similar_p = sub.add_parser("similar",
                                help="Find memories semantically close to a query")
@@ -1441,6 +1453,52 @@ def _cmd_ask(args) -> None:
           f"{a.duration_s:.1f}s via {a.adapter}/{a.model}")
 
 
+def _cmd_chat(args) -> None:
+    """Multi-turn chat backed by ChatSession persistence."""
+    from core.adapters.llm.bootstrap import register_all as _reg
+    _reg()
+    from core.brain.chat_session import send, ChatStore
+
+    action = getattr(args, "chat_action", None)
+    if action == "list":
+        rows = ChatStore.list_ids(limit=20)
+        if not rows:
+            print("(no chat sessions — start one with `shopai chat say`)")
+            return
+        print(f"  {'SESSION':24s}  {'TURNS':>5s}  TITLE")
+        for r in rows:
+            print(f"  {r['id']:24s}  {r['turn_count']:>5d}  {r['title'][:80]}")
+        return
+    if action == "show":
+        session = ChatStore.get(args.session_id)
+        if session is None:
+            print(f"ERR: unknown session {args.session_id}", file=sys.stderr)
+            sys.exit(2)
+        print(f"Session {session.id}  ({len(session.turns)} turns)")
+        for t in session.turns:
+            prefix = "USER" if t.role == "user" else "ORACLE"
+            print(f"\n[{prefix}] {t.text}")
+            if t.cited_ids:
+                print(f"       cites: {t.cited_ids}")
+        return
+    if action == "say":
+        out = send(args.session or None, args.question)
+        if args.json:
+            print(json.dumps(out, indent=2))
+            return
+        if "error" in out:
+            print(f"ERR: {out['error']}", file=sys.stderr)
+            sys.exit(3)
+        print(f"\n{out['answer']}\n")
+        print(f"  — session {out['session_id']} (turn {out['turn_count']}), "
+              f"cites {out['cited_ids']}, "
+              f"{out['memories_used']} memories, "
+              f"via {out['adapter']}/{out['model']}")
+        return
+    print("ERR: use `shopai chat say|list|show`", file=sys.stderr)
+    sys.exit(2)
+
+
 def _cmd_similar(args) -> None:
     """Semantic search over the memory store."""
     from core.memory.semantic_index import retrieve_similar, stats
@@ -1807,6 +1865,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "ask":
         _cmd_ask(args)
+        return
+
+    if args.command == "chat":
+        _cmd_chat(args)
         return
 
     if args.command == "similar":
