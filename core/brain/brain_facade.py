@@ -78,6 +78,10 @@ class Snapshot:
     elasticity: dict[str, Any] = field(default_factory=dict)
     ltv: dict[str, Any] = field(default_factory=dict)
     schedule: dict[str, Any] = field(default_factory=dict)
+    episodes: dict[str, Any] = field(default_factory=dict)
+    router: dict[str, Any] = field(default_factory=dict)
+    recovery: dict[str, Any] = field(default_factory=dict)
+    curriculum: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +124,10 @@ class Snapshot:
             "elasticity": self.elasticity,
             "ltv": self.ltv,
             "schedule": self.schedule,
+            "episodes": self.episodes,
+            "router": self.router,
+            "recovery": self.recovery,
+            "curriculum": self.curriculum,
         }
 
 
@@ -229,7 +237,133 @@ class BrainFacade:
         snap.elasticity = _safe(lambda: _elasticity_summary())
         snap.ltv = _safe(lambda: _ltv_summary())
         snap.schedule = _safe(lambda: _schedule_summary())
+        snap.episodes = _safe(lambda: _episodes_summary())
+        snap.router = _safe(lambda: _router_summary())
+        snap.recovery = _safe(lambda: _recovery_summary())
+        snap.curriculum = _safe(lambda: _curriculum_summary())
         return snap
+
+    # ── v29: episodes, belief, routing, safety nets ─────
+
+    def record_episode(
+        self,
+        situation: dict[str, Any],
+        timeline: list[dict[str, Any]] | None = None,
+        *,
+        tags: tuple[str, ...] = (),
+        outcome_sign: str = "unknown",
+        source: str = "",
+    ) -> str:
+        try:
+            ep = _episode_retriever().record(
+                situation=situation,
+                timeline=timeline or [],
+                tags=tags,
+                outcome_sign=outcome_sign,   # type: ignore[arg-type]
+                source=source,
+            )
+            return ep.id
+        except Exception as exc:
+            logger.debug("record_episode failed: %s", exc)
+            return ""
+
+    def find_similar_episodes(
+        self,
+        situation: dict[str, Any],
+        *,
+        k: int = 5,
+        tags: tuple[str, ...] = (),
+        outcome_sign: str | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            matches = _episode_retriever().find_similar(
+                query_situation=situation,
+                k=k, tags=tags,
+                outcome_sign=outcome_sign,   # type: ignore[arg-type]
+            )
+            return [m.as_dict() for m in matches]
+        except Exception as exc:
+            logger.debug("find_similar_episodes failed: %s", exc)
+            return []
+
+    def merge_claims(
+        self,
+        claims: list[dict[str, Any]],
+        *,
+        trust_fn: Any = None,
+    ) -> dict[str, Any] | None:
+        try:
+            from core.memory.belief_propagator import BeliefPropagator
+            b = BeliefPropagator().merge(claims, trust_fn=trust_fn)
+            return b.as_dict() if b else None
+        except Exception as exc:
+            logger.debug("merge_claims failed: %s", exc)
+            return None
+
+    def route_task(
+        self,
+        capability: str,
+        *,
+        budget: float | None = None,
+        deadline_ms: float | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            decision = _meta_router().best(
+                capability,
+                budget=budget,
+                deadline_ms=deadline_ms,
+            )
+            return decision.as_dict() if decision else None
+        except Exception as exc:
+            logger.debug("route_task failed: %s", exc)
+            return None
+
+    def recovery_for(
+        self,
+        invariant: str,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            best = _recovery_planner().best_for_breach(
+                invariant, context=context,
+            )
+            return best.as_dict() if best else None
+        except Exception as exc:
+            logger.debug("recovery_for failed: %s", exc)
+            return None
+
+    def self_narrative(self) -> dict[str, Any]:
+        try:
+            from core.brain.self_narrative import SelfNarrator
+            # Build providers from already-wired singletons
+            narrator = SelfNarrator(
+                competence_provider=lambda: _competence_model()
+                    .strengths_weaknesses(min_support=3),
+                owner_weights_provider=lambda: _owner_model().weights(),
+                learning_provider=_learning_summary,
+                load_provider=lambda: {
+                    "commitments": _commitment_register()
+                        .pending().__len__(),
+                    "queue": _action_queue().stats()
+                        .get("pending", 0),
+                },
+                memory_size_provider=lambda: _episode_retriever()
+                    .stats().get("total", 0),
+            )
+            return narrator.narrate().as_dict()
+        except Exception as exc:
+            logger.debug("self_narrative failed: %s", exc)
+            return {"identity_line": "ShopAI commerce executor"}
+
+    def curriculum_next_skill(
+        self, goal: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return _curriculum_planner().next_skill(goal=goal).as_dict()
+        except Exception as exc:
+            logger.debug("curriculum_next_skill failed: %s", exc)
+            return {"recommended": None, "why": "unavailable"}
 
     # ── v28: dialog, elasticity, LTV, scheduling, audit ──
 
@@ -1727,6 +1861,80 @@ def _scheduler():
 
 def _schedule_summary() -> dict[str, Any]:
     return _scheduler().stats()
+
+
+# ── v29 singletons ──────────────────────────────────────────
+
+_EPISODE_RETRIEVER: Any = None
+_EPR_LOCK = threading.Lock()
+
+
+def _episode_retriever():
+    global _EPISODE_RETRIEVER
+    if _EPISODE_RETRIEVER is None:
+        with _EPR_LOCK:
+            if _EPISODE_RETRIEVER is None:
+                from core.memory.episode_retriever import EpisodeRetriever
+                _EPISODE_RETRIEVER = EpisodeRetriever()
+    return _EPISODE_RETRIEVER
+
+
+def _episodes_summary() -> dict[str, Any]:
+    return _episode_retriever().stats()
+
+
+_META_ROUTER: Any = None
+_MR_LOCK = threading.Lock()
+
+
+def _meta_router():
+    global _META_ROUTER
+    if _META_ROUTER is None:
+        with _MR_LOCK:
+            if _META_ROUTER is None:
+                from core.brain.meta_router import MetaRouter
+                _META_ROUTER = MetaRouter()
+    return _META_ROUTER
+
+
+def _router_summary() -> dict[str, Any]:
+    return _meta_router().stats()
+
+
+_RECOVERY_PLANNER: Any = None
+_RP_LOCK = threading.Lock()
+
+
+def _recovery_planner():
+    global _RECOVERY_PLANNER
+    if _RECOVERY_PLANNER is None:
+        with _RP_LOCK:
+            if _RECOVERY_PLANNER is None:
+                from core.brain.recovery_planner import RecoveryPlanner
+                _RECOVERY_PLANNER = RecoveryPlanner()
+    return _RECOVERY_PLANNER
+
+
+def _recovery_summary() -> dict[str, Any]:
+    return _recovery_planner().stats()
+
+
+_CURRICULUM_PLANNER: Any = None
+_CP_LOCK = threading.Lock()
+
+
+def _curriculum_planner():
+    global _CURRICULUM_PLANNER
+    if _CURRICULUM_PLANNER is None:
+        with _CP_LOCK:
+            if _CURRICULUM_PLANNER is None:
+                from core.brain.curriculum_planner import CurriculumPlanner
+                _CURRICULUM_PLANNER = CurriculumPlanner()
+    return _CURRICULUM_PLANNER
+
+
+def _curriculum_summary() -> dict[str, Any]:
+    return _curriculum_planner().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
