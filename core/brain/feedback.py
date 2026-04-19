@@ -119,6 +119,20 @@ def record(memory_id: int, sign: int, note: str = "") -> FeedbackResult:
     except Exception:
         pass
 
+    # Imitation-learning bridge: a feedback is an owner demonstration
+    # of the form before={score: prior} → after={score: new}. Mining
+    # picks up the pattern even when the owner never explicitly teaches.
+    try:
+        from core.brain.imitation import record_demonstration
+        record_demonstration(
+            kind="up_vote" if sign > 0 else "down_vote",
+            before={"score": result.prior_score},
+            after={"score": result.new_score},
+            context={"target_memory_id": int(memory_id)},
+        )
+    except Exception:
+        pass
+
     return result
 
 
