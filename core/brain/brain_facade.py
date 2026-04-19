@@ -52,6 +52,11 @@ class Snapshot:
     regret: dict[str, Any] = field(default_factory=dict)
     commitments: dict[str, Any] = field(default_factory=dict)
     learning: list[dict[str, Any]] = field(default_factory=list)
+    cases: dict[str, Any] = field(default_factory=dict)
+    skills: list[dict[str, Any]] = field(default_factory=list)
+    competence: dict[str, Any] = field(default_factory=dict)
+    curiosity: dict[str, Any] = field(default_factory=dict)
+    drift: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +73,11 @@ class Snapshot:
             "regret": self.regret,
             "commitments": self.commitments,
             "learning": self.learning,
+            "cases": self.cases,
+            "skills": self.skills,
+            "competence": self.competence,
+            "curiosity": self.curiosity,
+            "drift": self.drift,
         }
 
 
@@ -151,7 +161,115 @@ class BrainFacade:
         snap.regret = _safe(lambda: _regret_summary())
         snap.commitments = _safe(lambda: _commitments_summary())
         snap.learning = _safe(lambda: _learning_summary())
+        snap.cases = _safe(lambda: _case_base_summary())
+        snap.skills = _safe(lambda: _skill_rank_summary())
+        snap.competence = _safe(lambda: _competence_summary())
+        snap.curiosity = _safe(lambda: _curiosity_summary())
+        snap.drift = _safe(lambda: _drift_summary())
         return snap
+
+    # ── v22: learning beyond outcomes ─────────────────────
+
+    def recall_case(
+        self,
+        situation: dict[str, Any],
+        *, k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Find the top-k most similar past cases to a situation."""
+        try:
+            matches = _case_base().recall(situation, k=k)
+            return [m.as_dict() for m in matches]
+        except Exception as exc:
+            logger.debug("recall_case failed: %s", exc)
+            return []
+
+    def record_case(
+        self,
+        situation: dict[str, Any],
+        action: str,
+        outcome_score: float,
+        tags: tuple[str, ...] = (),
+    ) -> str | None:
+        try:
+            return _case_base().add(
+                situation=situation, action=action,
+                outcome_score=outcome_score, tags=tags,
+            )
+        except Exception as exc:
+            logger.debug("record_case failed: %s", exc)
+            return None
+
+    def assess_competence(
+        self, task_class: str,
+    ) -> dict[str, Any]:
+        try:
+            return _competence_model().competence(task_class).as_dict()
+        except Exception as exc:
+            logger.debug("assess_competence failed: %s", exc)
+            return {}
+
+    def should_defer(
+        self,
+        task_class: str,
+        *, threshold: float = 0.6, min_support: int = 5,
+    ) -> bool:
+        try:
+            return _competence_model().should_defer(
+                task_class, threshold=threshold,
+                min_support=min_support,
+            )
+        except Exception:
+            return False
+
+    def record_task_outcome(
+        self,
+        task_class: str,
+        success: bool,
+        stated_confidence: float | None = None,
+    ) -> None:
+        try:
+            _competence_model().record(
+                task_class, success=success,
+                stated_confidence=stated_confidence,
+            )
+        except Exception as exc:
+            logger.debug("record_task_outcome failed: %s", exc)
+
+    def note_surprise(
+        self,
+        observation_id: str,
+        predicted: float,
+        actual: float,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Feed the curiosity engine a prediction error."""
+        try:
+            item = _curiosity_engine().note(
+                observation_id=observation_id,
+                predicted=predicted, actual=actual,
+                context=context or {},
+            )
+            return item.as_dict() if item is not None else None
+        except Exception as exc:
+            logger.debug("note_surprise failed: %s", exc)
+            return None
+
+    def observe_feature(
+        self,
+        feature: str,
+        value: Any,
+        *, phase: str = "recent",
+        kind: str = "numeric",
+    ) -> None:
+        """Feed the drift detector a feature observation."""
+        try:
+            d = _drift_detector()
+            if kind == "categorical":
+                d.observe_categorical(feature, str(value), phase=phase)
+            else:
+                d.observe_numeric(feature, float(value), phase=phase)
+        except Exception as exc:
+            logger.debug("observe_feature failed: %s", exc)
 
     # ── commit / keep-your-word ────────────────────────────
 
@@ -380,6 +498,98 @@ def _learning_summary() -> list[dict[str, Any]]:
             if c.trend != "insufficient":
                 out.append(c.as_dict())
     return out
+
+
+# ── v22 singletons ──────────────────────────────────────────
+
+_CASE_BASE: Any = None
+_CASE_LOCK = threading.Lock()
+
+
+def _case_base():
+    global _CASE_BASE
+    if _CASE_BASE is None:
+        with _CASE_LOCK:
+            if _CASE_BASE is None:
+                from core.memory.case_based_reasoner import CaseBasedReasoner
+                _CASE_BASE = CaseBasedReasoner()
+    return _CASE_BASE
+
+
+def _case_base_summary() -> dict[str, Any]:
+    return _case_base().stats()
+
+
+_SKILL_LIB: Any = None
+_SKILL_LOCK = threading.Lock()
+
+
+def _skill_library():
+    global _SKILL_LIB
+    if _SKILL_LIB is None:
+        with _SKILL_LOCK:
+            if _SKILL_LIB is None:
+                from core.brain.skill_library import SkillLibrary
+                _SKILL_LIB = SkillLibrary()
+    return _SKILL_LIB
+
+
+def _skill_rank_summary() -> list[dict[str, Any]]:
+    return [s.as_dict() for s in _skill_library().rank(min_support=3)][:5]
+
+
+_COMPETENCE: Any = None
+_COMPETENCE_LOCK = threading.Lock()
+
+
+def _competence_model():
+    global _COMPETENCE
+    if _COMPETENCE is None:
+        with _COMPETENCE_LOCK:
+            if _COMPETENCE is None:
+                from core.brain.competence_model import CompetenceModel
+                _COMPETENCE = CompetenceModel()
+    return _COMPETENCE
+
+
+def _competence_summary() -> dict[str, Any]:
+    return _competence_model().summary()
+
+
+_CURIOSITY: Any = None
+_CURIOSITY_LOCK = threading.Lock()
+
+
+def _curiosity_engine():
+    global _CURIOSITY
+    if _CURIOSITY is None:
+        with _CURIOSITY_LOCK:
+            if _CURIOSITY is None:
+                from core.brain.curiosity_engine import CuriosityEngine
+                _CURIOSITY = CuriosityEngine()
+    return _CURIOSITY
+
+
+def _curiosity_summary() -> dict[str, Any]:
+    return _curiosity_engine().stats()
+
+
+_DRIFT: Any = None
+_DRIFT_LOCK = threading.Lock()
+
+
+def _drift_detector():
+    global _DRIFT
+    if _DRIFT is None:
+        with _DRIFT_LOCK:
+            if _DRIFT is None:
+                from core.memory.concept_drift_detector import ConceptDriftDetector
+                _DRIFT = ConceptDriftDetector()
+    return _DRIFT
+
+
+def _drift_summary() -> dict[str, Any]:
+    return _drift_detector().summary()
 
 
 # ── Singleton ────────────────────────────────────────────────
