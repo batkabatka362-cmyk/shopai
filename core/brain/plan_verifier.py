@@ -1,5 +1,18 @@
 """Plan verifier — simulate a plan against preconditions + invariants.
 
+**When to use (vs plan_monitor / plan_repair / recovery_planner)**:
+  • ``plan_verifier`` — STATIC, BEFORE execution. Walks a proposed
+    plan through a simulated state to catch dead-on-arrival plans
+    without hitting the real world. Call this from the decision
+    path, not the executor.
+  • ``plan_monitor`` — DYNAMIC, DURING execution. Executor feeds it
+    per-step events; it compares against expected duration /
+    mutations / invariants and emits abort verdicts mid-flight.
+  • ``plan_repair`` — STEP-LEVEL, WHEN a step fails. Retry /
+    substitute / skip / abort recipes for individual broken steps.
+  • ``recovery_planner`` — BREACH-LEVEL, WHEN an invariant fires.
+    Ranked playbooks keyed by invariant name, not by failed step.
+
 plan_search and workflow_dag produce plans. action_safety_guard gates
 a single action. plan_verifier sits in between: before executing a
 multi-step plan, it walks through the steps *in order*, simulates

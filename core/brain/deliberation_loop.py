@@ -1,5 +1,13 @@
 """Deliberation loop — multi-step think → critique → revise → commit.
 
+**Use this instead of calling counter_argument / critic_panel
+directly.** counter_argument is the red-team probe; critic_panel is
+the role-player critics. deliberation_loop orchestrates both across
+multiple rounds so blockers accumulate and the proposer sees
+previously-excluded patterns. A direct call to counter_argument or
+critic_panel is almost never what you want — use
+``deliberate(...)`` and inspect the returned DeliberationTrace.
+
 A single pass of ``brain().think()`` is shallow. AGI-level reasoning
 requires the brain to *talk to itself*: propose → challenge → revise →
 commit. That is the deliberation loop.

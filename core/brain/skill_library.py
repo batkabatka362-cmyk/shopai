@@ -1,5 +1,17 @@
 """Skill library — named, composable skills with observed win rate.
 
+**When to use (vs skill_composer / skill_distiller / skill_transfer)**:
+  • ``skill_library`` — REGISTER + RUN single atomic skills in the
+    current context. Tracks per-skill win rate.
+  • ``skill_composer`` — CHAIN atomic skills into macro-skills
+    (sequence / fallback / parallel). Tracks macro-level win rate
+    separately.
+  • ``skill_distiller`` — DISCOVER new skills from case clusters
+    (promotes (situation, action) patterns with high win rate into
+    a named Skill).
+  • ``skill_transfer`` — PORT a skill learned in store/niche A to
+    store/niche B, discounted by trait similarity.
+
 Intelligence scattered across ``engines/`` is brittle: the caller
 must know which engine to invoke, what inputs it wants, how to
 interpret the output. A *skill* packages (name, preconditions,

@@ -1,5 +1,19 @@
 """Case-based reasoner — learn by recalling similar past situations.
 
+**When to use (vs episode_retriever / analogy_mapper)**:
+  • ``case_based_reasoner`` — ATOMIC (situation, action, outcome) KNN.
+    Use when you want "given this situation, which action worked best
+    for me before?" and need a quick suggestion backed by k-nearest
+    historical cases.
+  • ``episode_retriever`` — RICHER *episodes* (situation + timeline +
+    tags + outcome_sign). Use when you want the narrative context
+    ("here's what happened the last 5 times we launched audio"), not
+    just an action vote.
+  • ``analogy_mapper`` — STRUCTURAL (relational-shape) match, not
+    feature-similarity. Use when you want to transfer a playbook
+    because two situations share the same RELATIONSHIP graph, not
+    because their field values are close.
+
 Classical outcome learning asks *"did this action succeed?"* and
 bumps a counter. But real decisions don't show up identically twice;
 you need to match the *shape* of the situation and reuse what worked.

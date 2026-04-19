@@ -1,5 +1,16 @@
 """Action safety guard — holistic pre-flight for money-moving actions.
 
+**Where this sits in the pipeline** (run in this order):
+  1. ``safety_envelope`` — bound the PLANNER'S search space (range +
+     allowed-values). Keeps the planner from even considering a
+     $99/day ad test.
+  2. ``feasibility_gate`` — per-action constraint satisfaction
+     (budget cap, SLA cap, inventory floor). Hard/soft verdicts.
+  3. ``action_safety_guard`` (this module) — HOLISTIC pre-flight
+     for the final action: bright lines + blast radius + rollback.
+  4. ``invariant_monitor`` — CONTINUOUS background check of system
+     state after the action fires.
+
 The existing ``safety_envelope`` constrains the planner's search space
 (numeric ranges, allowed values). The *action safety guard* sits later
 in the pipeline: for every individual action about to fire on a live

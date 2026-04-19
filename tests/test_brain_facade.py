@@ -152,5 +152,119 @@ class TestHousekeep(unittest.TestCase):
         )
 
 
+class TestOrphanRescue(unittest.TestCase):
+    """v32 / A+B+C+D: 16 modules previously unreachable from any
+    production runtime path now have facade entry points. These
+    tests pin those entry points so they can't regress to ORPHAN
+    again without CI screaming."""
+
+    def test_deliberate_wires_counter_argument_and_critic_panel(
+        self,
+    ) -> None:
+        b = bf.brain()
+        trace = b.deliberate(
+            "q1", {},
+            propose=lambda ctx, hist: {"action": "noop"},
+        )
+        self.assertIn("winner", trace)
+
+    def test_verify_plan(self) -> None:
+        b = bf.brain()
+        self.assertEqual(
+            b.verify_plan({}, []).get("verdict"), "ok",
+        )
+
+    def test_repair_step(self) -> None:
+        b = bf.brain()
+        d = b.repair_step("fetch", RuntimeError("x"))
+        self.assertIn("strategy", d)
+
+    def test_gate_action(self) -> None:
+        b = bf.brain()
+        self.assertIn(
+            "feasible", b.gate_action({"kind": "x"}),
+        )
+
+    def test_blend_utility(self) -> None:
+        b = bf.brain()
+        self.assertIn("score", b.blend_utility({"x": 1.0}))
+
+    def test_workflow_from_template(self) -> None:
+        b = bf.brain()
+        dag = b.workflow_from_template(
+            "daily_kill_sweep",
+            fetch_metrics=lambda c, i: {},
+            decide_kill=lambda c, i: {},
+            execute_kill=lambda c, i: {},
+            notify=lambda c, i: {},
+        )
+        self.assertIsNotNone(dag)
+
+    def test_ask_llm_cycle_block_refuses(self) -> None:
+        b = bf.brain()
+        self.assertFalse(
+            b.ask_llm("x", purpose="cycle_block")["ok"],
+        )
+
+    def test_plan_next_cycle(self) -> None:
+        b = bf.brain()
+        self.assertIn("focus_areas", b.plan_next_cycle())
+
+    def test_analogy_match_empty_templates(self) -> None:
+        b = bf.brain()
+        self.assertIsNone(b.analogy_match({"roles": ()}, []))
+
+    def test_detect_bias(self) -> None:
+        b = bf.brain()
+        result = b.detect_bias(
+            [{"niche": "audio"}, {"niche": "audio"}],
+            attribute="niche",
+        )
+        self.assertEqual(result["total"], 2)
+
+    def test_progress_estimate(self) -> None:
+        b = bf.brain()
+        self.assertIn(
+            "goal_id", b.progress_estimate("g", []),
+        )
+
+    def test_recommend_intervention_empty(self) -> None:
+        b = bf.brain()
+        self.assertEqual(
+            b.recommend_intervention([], kpi="roas"),
+            [],
+        )
+
+    def test_resolve_ambiguity(self) -> None:
+        b = bf.brain()
+        result = b.resolve_ambiguity([])
+        self.assertIsNone(result["best"])
+
+    def test_simulate_counterfactual(self) -> None:
+        b = bf.brain()
+        self.assertEqual(
+            b.simulate_counterfactual(
+                {}, [],
+                transition=lambda s, a: (s, 0.0),
+                policy=lambda s, r: None,
+            ),
+            [],
+        )
+
+    def test_run_behaviour_tree(self) -> None:
+        b = bf.brain()
+        from core.brain.behaviour_tree import (
+            Action, BTStatus, BehaviourTree,
+        )
+        tree = BehaviourTree(
+            "t",
+            root=Action("a", lambda c: BTStatus.SUCCESS),
+        )
+        self.assertEqual(
+            b.run_behaviour_tree(tree, {}),
+            "success",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

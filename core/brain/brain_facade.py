@@ -1505,6 +1505,272 @@ class BrainFacade:
 
     # ── housekeep ──────────────────────────────────────────
 
+    # ── v32 orphan-rescue entry points ─────────────────────
+
+    def deliberate(
+        self,
+        question_id: str,
+        context: dict[str, Any],
+        propose: Any,
+        *,
+        seed_candidate: dict[str, Any] | None = None,
+        max_rounds: int = 5,
+    ) -> dict[str, Any]:
+        """Bounded think→critique→revise loop. Wraps
+        ``deliberation_loop`` and chains counter_argument +
+        critic_panel internally."""
+        try:
+            from core.brain import deliberation_loop as dl
+            critique = dl.from_counter_argument_and_critic_panel()
+            trace = dl.deliberate(
+                question_id=question_id,
+                context=context,
+                propose=propose,
+                critique=critique,
+                seed_candidate=seed_candidate,
+                max_rounds=max_rounds,
+            )
+            return trace.as_dict()
+        except Exception as exc:
+            logger.debug("deliberate failed: %s", exc)
+            return {"question_id": question_id, "winner": None}
+
+    def verify_plan(
+        self,
+        start: dict[str, Any],
+        steps: list[Any],
+    ) -> dict[str, Any]:
+        """Static pre-flight of a plan via plan_verifier."""
+        try:
+            from core.brain.plan_verifier import PlanVerifier
+            return PlanVerifier().verify(start, steps).as_dict()
+        except Exception as exc:
+            logger.debug("verify_plan failed: %s", exc)
+            return {"verdict": "ok", "violations": [], "steps": []}
+
+    def repair_step(
+        self,
+        step: str,
+        exc: BaseException,
+        *,
+        remaining_steps: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Pick retry / substitute / skip / abort for a failed step."""
+        try:
+            from core.brain.plan_repair import PlanRepairer
+            return PlanRepairer().decide(
+                step=step, exc=exc,
+                remaining_steps=remaining_steps,
+            ).as_dict()
+        except Exception as e:
+            logger.debug("repair_step failed: %s", e)
+            return {"strategy": "abort", "reason": "unavailable"}
+
+    def gate_action(
+        self,
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run feasibility_gate — hard/soft constraint check."""
+        try:
+            from core.brain.feasibility_gate import FeasibilityGate
+            return FeasibilityGate().evaluate(action).as_dict()
+        except Exception as exc:
+            logger.debug("gate_action failed: %s", exc)
+            return {"feasible": True, "violations": []}
+
+    def blend_utility(
+        self,
+        values: dict[str, float],
+    ) -> dict[str, Any]:
+        """Score a candidate across registered objectives."""
+        try:
+            from core.brain.utility_blender import UtilityBlender
+            return UtilityBlender().score(values).as_dict()
+        except Exception as exc:
+            logger.debug("blend_utility failed: %s", exc)
+            return {"score": 0.0}
+
+    def workflow_from_template(
+        self,
+        template_name: str,
+        **params: Any,
+    ) -> Any:
+        """Instantiate a named workflow template."""
+        try:
+            from core.brain.workflow_templater import registry
+            return registry().instantiate(
+                template_name, **params,
+            )
+        except Exception as exc:
+            logger.debug("workflow_from_template failed: %s", exc)
+            return None
+
+    def ask_llm(
+        self,
+        prompt: str,
+        *,
+        purpose: str = "reasoning",
+        max_cost: float | None = None,
+    ) -> dict[str, Any]:
+        """Route an LLM call through the central gateway."""
+        try:
+            from core import llm_gateway
+            return llm_gateway.ask(
+                prompt, purpose=purpose,  # type: ignore[arg-type]
+                max_cost=max_cost,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("ask_llm failed: %s", exc)
+            return {
+                "ok": False,
+                "error": "gateway_unavailable",
+                "text": "",
+            }
+
+    def plan_next_cycle(self) -> dict[str, Any]:
+        """Produce the cycle plan (focus / avoid / retry / kpis)."""
+        try:
+            from core.brain.cycle_planner import plan_next_cycle as pnc
+            return pnc().as_dict()
+        except Exception as exc:
+            logger.debug("plan_next_cycle failed: %s", exc)
+            return {"focus_areas": [], "avoid_areas": []}
+
+    def analogy_match(
+        self,
+        situation: dict[str, Any],
+        templates: list[Any],
+    ) -> dict[str, Any] | None:
+        """Structural (relational) match against registered templates."""
+        try:
+            from core.brain.analogy_mapper import AnalogyMapper, Situation
+            mapper = AnalogyMapper()
+            for t in templates:
+                mapper.register(t)
+            sit = situation if isinstance(situation, Situation) else (
+                Situation(
+                    roles=tuple(situation.get("roles", ())),
+                    relations=list(situation.get("relations", [])),
+                )
+            )
+            m = mapper.best_match(sit)
+            return m.as_dict() if m else None
+        except Exception as exc:
+            logger.debug("analogy_match failed: %s", exc)
+            return None
+
+    def detect_bias(
+        self,
+        records: list[dict[str, Any]],
+        attribute: str,
+        *,
+        baseline: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        """Over-representation check for a decision attribute."""
+        try:
+            from core.brain.bias_detector import measure
+            return measure(records, attribute, baseline=baseline).as_dict()
+        except Exception as exc:
+            logger.debug("detect_bias failed: %s", exc)
+            return {"attribute": attribute, "total": 0, "slices": []}
+
+    def progress_estimate(
+        self,
+        goal_id: str,
+        milestones: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Estimate % complete + pace + ETA + health for a goal."""
+        try:
+            from core.brain.progress_estimator import estimate
+            return estimate(goal_id, milestones).as_dict()
+        except Exception as exc:
+            logger.debug("progress_estimate failed: %s", exc)
+            return {"goal_id": goal_id}
+
+    def recommend_intervention(
+        self,
+        interventions: list[Any],
+        *,
+        kpi: str,
+        direction: str = "up",
+        driver_weight_fn: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Rank interventions by expected causal impact."""
+        try:
+            from core.brain.causal_intervention_recommender import (
+                CausalInterventionRecommender,
+            )
+            r = CausalInterventionRecommender(
+                driver_weight_fn=driver_weight_fn,
+            )
+            return [
+                rec.as_dict() for rec in r.recommend(
+                    interventions,
+                    kpi=kpi,
+                    direction=direction,  # type: ignore[arg-type]
+                )
+            ]
+        except Exception as exc:
+            logger.debug("recommend_intervention failed: %s", exc)
+            return []
+
+    def resolve_ambiguity(
+        self,
+        candidates: list[Any],
+        *,
+        evaluators: list[Any] = (),
+    ) -> dict[str, Any]:
+        """Pick best candidate interpretation when signal is unclear."""
+        try:
+            from core.brain.ambiguity_resolver import AmbiguityResolver
+            return AmbiguityResolver().resolve(
+                candidates, evaluators=evaluators,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("resolve_ambiguity failed: %s", exc)
+            return {"best": None, "confident": False}
+
+    def simulate_counterfactual(
+        self,
+        start: dict[str, Any],
+        alternatives: list[str],
+        transition: Any,
+        policy: Any,
+        *,
+        horizon: int = 5,
+        trials: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Monte-Carlo rollout comparison of first-action alternatives."""
+        try:
+            from core.brain.counterfactual_simulator import (
+                compare_alternatives,
+            )
+            reports = compare_alternatives(
+                start=start,
+                alternatives=alternatives,
+                transition=transition,
+                policy=policy,
+                horizon=horizon,
+                trials=trials,
+            )
+            return [r.as_dict() for r in reports]
+        except Exception as exc:
+            logger.debug("simulate_counterfactual failed: %s", exc)
+            return []
+
+    def run_behaviour_tree(
+        self,
+        tree: Any,
+        context: dict[str, Any],
+    ) -> str:
+        """Tick a pre-built BehaviourTree and return its status."""
+        try:
+            status = tree.tick(context)
+            return str(getattr(status, "value", status))
+        except Exception as exc:
+            logger.debug("run_behaviour_tree failed: %s", exc)
+            return "failure"
+
     def housekeep(self) -> dict[str, Any]:
         try:
             from core.memory.data_housekeeper import DataHousekeeper
