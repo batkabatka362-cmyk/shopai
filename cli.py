@@ -242,6 +242,16 @@ def build_parser() -> argparse.ArgumentParser:
     ask_p.add_argument("--json", action="store_true",
                        help="Emit raw JSON instead of human text")
 
+    # ── Human feedback ──────────────────────────────────────
+    feedback_p = sub.add_parser("feedback",
+                                help="Up/down vote a memory to steer the brain")
+    feedback_p.add_argument("memory_id", type=int,
+                            help="ID of the memory to rate")
+    feedback_p.add_argument("sign", type=str,
+                            help="+1 / up / +, or -1 / down / -")
+    feedback_p.add_argument("note", nargs="?", default="",
+                            help="Optional note explaining your rating")
+
     # ── Daily opportunity scout ─────────────────────────────
     digest_p = sub.add_parser("digest",
                               help="Run the proactive opportunity scout")
@@ -1468,6 +1478,29 @@ def _cmd_ask(args) -> None:
           f"{a.duration_s:.1f}s via {a.adapter}/{a.model}")
 
 
+def _cmd_feedback(args) -> None:
+    """Up/down-vote a memory id and record the reason as a
+    ``category=feedback`` event."""
+    raw = args.sign.strip().lower()
+    if raw in ("+1", "up", "+", "1"):
+        sign = 1
+    elif raw in ("-1", "down", "-"):
+        sign = -1
+    else:
+        print(f"ERR: sign must be +1/-1/up/down (got {args.sign!r})",
+              file=sys.stderr)
+        sys.exit(2)
+    from core.brain.feedback import record
+    result = record(args.memory_id, sign, args.note)
+    if result.feedback_memory_id is None and result.new_score == 0.0:
+        print(f"ERR: memory {args.memory_id} not found", file=sys.stderr)
+        sys.exit(3)
+    arrow = "↑" if sign > 0 else "↓"
+    print(f"Feedback recorded {arrow}  memory #{result.memory_id} "
+          f"{result.prior_score:.2f} → {result.new_score:.2f}  "
+          f"(feedback id #{result.feedback_memory_id})")
+
+
 def _cmd_digest(args) -> None:
     """Run the proactive opportunity scout."""
     if args.narrative:
@@ -1943,6 +1976,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "digest":
         _cmd_digest(args)
+        return
+
+    if args.command == "feedback":
+        _cmd_feedback(args)
         return
 
     if args.command == "similar":
