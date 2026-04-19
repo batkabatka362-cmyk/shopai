@@ -210,6 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
                           default="friendly")
     launch_p.add_argument("--dry-run", action="store_true",
                           help="Print the goal without running the pipeline")
+    launch_p.add_argument("--min-win-prob", type=float, default=0.0,
+                          help="Abort launch if predictor win_probability "
+                               "is below this (0.0-1.0, default 0.0)")
+    launch_p.add_argument("--predict-only", action="store_true",
+                          help="Run the pre-launch predictor and exit")
 
     launches_p = sub.add_parser("launches", help="List active launches + verdicts")
     launches_p.add_argument("--json", action="store_true",
@@ -1290,6 +1295,20 @@ def _cmd_launch(args) -> None:
         print("ERR: supply --alibaba-url OR --title (and --price / --gallery)",
               file=sys.stderr)
         sys.exit(2)
+
+    # Pre-launch prediction — honours --predict-only + --min-win-prob
+    if getattr(args, "predict_only", False) or getattr(args, "min_win_prob", 0) > 0:
+        from core.autonomous.launch_predictor import predict as _predict
+        pred = _predict(goal).as_dict()
+        print(f"\nPREDICTION  grade={pred['grade']}  "
+              f"win_probability={pred['win_probability']:.2f}")
+        for r in pred.get("rationale", []):
+            print(f"  • {r}")
+        if args.predict_only:
+            return
+        if pred["win_probability"] < args.min_win_prob:
+            print(f"\n  ABORTED — below --min-win-prob {args.min_win_prob}")
+            sys.exit(4)
 
     result = LaunchPipeline().run(goal)
     print(f"\n[{result.status.upper()}] {result.launch_id}  "

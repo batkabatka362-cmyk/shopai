@@ -63,6 +63,7 @@ class LaunchContext:
     started_at: float = field(default_factory=time.time)
 
     # Step outputs (populated as pipeline runs)
+    prediction: dict[str, Any] = field(default_factory=dict)     # pre-launch
     source: dict[str, Any] = field(default_factory=dict)         # raw scrape
     supplier: dict[str, Any] = field(default_factory=dict)       # CJ/AutoDS
     media: dict[str, Any] = field(default_factory=dict)          # image urls
@@ -80,7 +81,7 @@ class LaunchContext:
 @dataclass
 class LaunchResult:
     launch_id: str
-    status: Literal["complete", "partial", "failed"]
+    status: Literal["complete", "partial", "failed", "aborted"]
     duration_s: float
     steps: list[StepResult]
     shopify_product_id: int | None = None
@@ -89,6 +90,7 @@ class LaunchResult:
     ad_campaign_url: str | None = None
     failed_step: str | None = None
     failure_reason: str | None = None
+    prediction: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +103,7 @@ class LaunchResult:
             "ad_campaign_url": self.ad_campaign_url,
             "failed_step": self.failed_step,
             "failure_reason": self.failure_reason,
+            "prediction": self.prediction,
             "steps": [
                 {
                     "name": s.name,

@@ -69,6 +69,21 @@ class LaunchPipeline:
         context = LaunchContext(goal=goal, launch_id=launch_id)
         started = time.monotonic()
 
+        # Pre-launch prediction (~200 ms with embeddings, 5 ms without).
+        # Stored on context so any downstream step can read it;
+        # min_win_prob is enforced at the CLI layer when set.
+        try:
+            from core.autonomous.launch_predictor import predict
+            context.prediction = predict(goal).as_dict()
+            logger.info(
+                "Launch %s prediction: win_prob=%.2f grade=%s",
+                launch_id,
+                context.prediction.get("win_probability", 0),
+                context.prediction.get("grade", "?"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("predictor failed: %s", exc)
+
         logger.info(
             "Launch %s starting (source_kind=%s, store=%s)",
             launch_id, goal.source_kind(), goal.store_id or "<default>",
@@ -119,4 +134,5 @@ class LaunchPipeline:
             ad_campaign_url=context.ad_campaign.get("admin_url"),
             failed_step=failed_step,
             failure_reason=failure_reason,
+            prediction=context.prediction,
         )
