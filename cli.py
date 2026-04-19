@@ -242,6 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
     ask_p.add_argument("--json", action="store_true",
                        help="Emit raw JSON instead of human text")
 
+    # ── Plan synthesis ──────────────────────────────────────
+    plan_p = sub.add_parser("plan",
+                            help="Turn a free-text goal into an action DAG")
+    plan_p.add_argument("goal", help="Free-text goal (e.g. 'scale winners')")
+    plan_p.add_argument("--json", action="store_true")
+
     # ── Skills ──────────────────────────────────────────────
     skills_p = sub.add_parser("skills",
                               help="View the brain's skill tree")
@@ -1488,6 +1494,29 @@ def _cmd_ask(args) -> None:
           f"{a.duration_s:.1f}s via {a.adapter}/{a.model}")
 
 
+def _cmd_plan(args) -> None:
+    """Synthesize an action DAG from a free-text goal."""
+    from core.brain.planner import synthesize
+    plan = synthesize(args.goal)
+    if args.json:
+        print(json.dumps(plan.as_dict(), indent=2))
+        return
+    print(f"\nPLAN {plan.id}  goal={plan.goal!r}")
+    print(f"  total cost ${plan.total_cost:.2f}  "
+          f"aggregate win_prob {plan.aggregate_win_prob:.0%}  "
+          f"expected value ${plan.expected_value:.2f}")
+    print()
+    if not plan.nodes:
+        print("  (no actions — empty goal?)")
+        return
+    for n in plan.nodes:
+        deps = ("→ " + ",".join(n.depends_on)) if n.depends_on else ""
+        print(f"  {n.id:20s}  {n.kind:16s}  w_p={n.win_prob:.0%}  "
+              f"${n.cost_usd:6.2f}  {deps}")
+        if n.rationale:
+            print(f"    └─ {n.rationale[:100]}")
+
+
 def _cmd_skills(args) -> None:
     """List the skill tree with confidence + use counts."""
     from core.brain.skills import registry
@@ -2014,6 +2043,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "skills":
         _cmd_skills(args)
+        return
+
+    if args.command == "plan":
+        _cmd_plan(args)
         return
 
     if args.command == "similar":
