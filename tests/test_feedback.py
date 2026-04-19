@@ -35,25 +35,25 @@ class TestRecord(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_up_vote_raises_score(self) -> None:
-        with patch("core.memory.intelligence.get_memory_intelligence"):
+        with patch("core.memory.unified_memory.get_unified_memory"):
             result = fb.record(42, +1, "good call")
         self.assertEqual(result.sign, 1)
         self.assertEqual(result.prior_score, 3.0)
         self.assertAlmostEqual(result.new_score, 3.25)
 
     def test_down_vote_lowers_score(self) -> None:
-        with patch("core.memory.intelligence.get_memory_intelligence"):
+        with patch("core.memory.unified_memory.get_unified_memory"):
             result = fb.record(42, -1, "bad call")
         self.assertAlmostEqual(result.new_score, 2.6)
 
     def test_zero_sign_is_noop(self) -> None:
-        with patch("core.memory.intelligence.get_memory_intelligence"):
+        with patch("core.memory.unified_memory.get_unified_memory"):
             result = fb.record(42, 0, "neutral")
         self.assertEqual(result.prior_score, 0.0)
         self.assertEqual(result.new_score, 0.0)
 
     def test_unknown_memory_noop(self) -> None:
-        with patch("core.memory.intelligence.get_memory_intelligence"):
+        with patch("core.memory.unified_memory.get_unified_memory"):
             result = fb.record(9999, +1)
         self.assertIsNone(result.feedback_memory_id)
         self.assertEqual(result.prior_score, 0.0)
@@ -64,7 +64,7 @@ class TestRecord(unittest.TestCase):
         conn.execute("UPDATE memories SET score=4.9 WHERE id=42")
         conn.commit()
         conn.close()
-        with patch("core.memory.intelligence.get_memory_intelligence"):
+        with patch("core.memory.unified_memory.get_unified_memory"):
             result = fb.record(42, +1)
         self.assertLessEqual(result.new_score, 5.0)
 
@@ -73,7 +73,7 @@ class TestRecord(unittest.TestCase):
         conn.execute("UPDATE memories SET score=1.1 WHERE id=42")
         conn.commit()
         conn.close()
-        with patch("core.memory.intelligence.get_memory_intelligence"):
+        with patch("core.memory.unified_memory.get_unified_memory"):
             result = fb.record(42, -1)
         self.assertGreaterEqual(result.new_score, 1.0)
 

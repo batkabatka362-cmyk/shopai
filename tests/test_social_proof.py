@@ -93,8 +93,10 @@ class TestRecordReview(unittest.TestCase):
         from unittest.mock import MagicMock
         fake_mi = MagicMock()
         fake_mi.create.return_value = 77
-        with patch("core.memory.intelligence.get_memory_intelligence",
-                   return_value=fake_mi):
+        fake_unified = MagicMock()
+        fake_unified.get_memory_intelligence.return_value = fake_mi
+        with patch("core.memory.unified_memory.get_unified_memory",
+                   return_value=fake_unified):
             mid = sp.record_review(
                 product_id=1, text="Great!", stars=5, source="judge_me",
             )
@@ -102,7 +104,7 @@ class TestRecordReview(unittest.TestCase):
         fake_mi.create.assert_called_once()
 
     def test_record_swallows_exception(self) -> None:
-        with patch("core.memory.intelligence.get_memory_intelligence",
+        with patch("core.memory.unified_memory.get_unified_memory",
                    side_effect=RuntimeError("x")):
             mid = sp.record_review(1, "x", 5)
         self.assertEqual(mid, 0)

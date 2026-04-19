@@ -118,8 +118,10 @@ class TestContradictions(unittest.TestCase):
         from unittest.mock import patch, MagicMock
         fake = MagicMock()
         fake.create.return_value = 99
-        with patch("core.memory.intelligence.get_memory_intelligence",
-                   return_value=fake):
+        fake_unified = MagicMock()
+        fake_unified.get_memory_intelligence.return_value = fake
+        with patch("core.memory.unified_memory.get_unified_memory",
+                   return_value=fake_unified):
             n = cc._detect_contradictions()
         self.assertEqual(n, 1)
 
@@ -130,8 +132,10 @@ class TestContradictions(unittest.TestCase):
         ])
         from unittest.mock import patch, MagicMock
         fake = MagicMock()
-        with patch("core.memory.intelligence.get_memory_intelligence",
-                   return_value=fake):
+        fake_unified = MagicMock()
+        fake_unified.get_memory_intelligence.return_value = fake
+        with patch("core.memory.unified_memory.get_unified_memory",
+                   return_value=fake_unified):
             n = cc._detect_contradictions()
         self.assertEqual(n, 0)
 

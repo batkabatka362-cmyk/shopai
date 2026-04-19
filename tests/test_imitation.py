@@ -91,8 +91,10 @@ class TestRecord(unittest.TestCase):
         from unittest.mock import MagicMock
         fake_mi = MagicMock()
         fake_mi.create.return_value = 42
-        with patch("core.memory.intelligence.get_memory_intelligence",
-                   return_value=fake_mi):
+        fake_unified = MagicMock()
+        fake_unified.get_memory_intelligence.return_value = fake_mi
+        with patch("core.memory.unified_memory.get_unified_memory",
+                   return_value=fake_unified):
             mid = im.record_demonstration(
                 "override",
                 before={"a": 1}, after={"a": 2},
@@ -102,7 +104,7 @@ class TestRecord(unittest.TestCase):
         fake_mi.create.assert_called_once()
 
     def test_record_swallows_exception(self) -> None:
-        with patch("core.memory.intelligence.get_memory_intelligence",
+        with patch("core.memory.unified_memory.get_unified_memory",
                    side_effect=RuntimeError("boom")):
             mid = im.record_demonstration("x", {}, {})
         self.assertEqual(mid, 0)
