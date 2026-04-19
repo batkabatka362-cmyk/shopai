@@ -32,20 +32,25 @@ class ContentStep(Step):
         niche = context.goal.niche
         attrs = context.source.get("attributes", {})
 
+        primary_kw = (niche or "").split(",")[0].strip() or title.split()[0]
+
         prompt = (
             "You are a conversion-focused e-commerce copywriter. "
             f"Write product copy for a dropshipping Shopify listing in a {tone} tone. "
             f"Niche: {niche or 'general'}. "
             f"Product title (raw): \"{title}\". "
             f"Known attributes: {attrs}. "
-            "\n\nRespond ONLY with a compact JSON object with these keys:"
-            "\n  title: short catchy title (<=80 chars)"
-            "\n  description_html: HTML body with <p> and <ul><li> only"
-            "\n  bullets: JSON array of 5 one-line benefit strings"
-            "\n  seo_title: <=70 chars"
-            "\n  seo_description: <=160 chars"
-            "\n  tags: JSON array of 3-6 single-word tags"
-            "\nNo commentary, no markdown fences — JSON only."
+            f"Primary keyword (MUST appear in title, seo_title, seo_description, "
+            f"and at least twice in description_html): \"{primary_kw}\".\n\n"
+            "Respond ONLY with a compact JSON object with these keys:\n"
+            "  title: catchy title 30-60 chars, MUST include the primary keyword\n"
+            "  description_html: HTML body with <p> and <ul><li> only, 200-400 words,\n"
+            "                    include the primary keyword at least twice naturally\n"
+            "  bullets: JSON array of 5 one-line benefit strings\n"
+            "  seo_title: 50-60 chars, include primary keyword early\n"
+            "  seo_description: 120-155 chars, include primary keyword\n"
+            "  tags: JSON array of 3-6 single-word tags (include the primary keyword)\n"
+            "No commentary, no markdown fences — JSON only."
         )
 
         fallback = self._deterministic_fallback(title, niche)
@@ -87,7 +92,7 @@ class ContentStep(Step):
             fallback["_llm_adapter"] = result.adapter
             return fallback
 
-        return {
+        output = {
             "title": parsed.get("title") or title[:120],
             "description": parsed.get("description_html") or fallback["description"],
             "bullets": parsed.get("bullets") or fallback["bullets"],
@@ -99,6 +104,43 @@ class ContentStep(Step):
             "_llm_model": result.model,
             "_llm_latency_ms": round(result.latency_ms, 1),
         }
+
+        # Audit pass: run the SEO scorer against the draft and
+        # record the score. Crossing 80/100 is the target the
+        # landing-page uplift table assumes; below that we log a
+        # signal that the content step could do a refinement pass.
+        # Cheap deterministic check — no extra LLM call.
+        seo_score, issues = self._seo_audit(output, niche)
+        output["_seo_score"] = seo_score
+        if issues:
+            output["_seo_issues"] = issues[:5]
+        return output
+
+    @staticmethod
+    def _seo_audit(output: dict[str, Any], niche: str) -> tuple[int, list[str]]:
+        """Delegate to core.intelligence.seo_intelligence for a
+        deterministic on-page audit. Returns (score, top_issues)."""
+        try:
+            from core.intelligence.seo_intelligence import SEOIntelligence
+            seo = SEOIntelligence()
+            result = seo.audit_page({
+                "title": output.get("seo_title", ""),
+                "meta_description": output.get("seo_description", ""),
+                "h1": output.get("title", ""),
+                "content": output.get("description", ""),
+                "images": [],
+                "internal_links": [],
+                "keyword": (niche or "").split(",")[0].strip(),
+            })
+        except Exception:
+            return 0, []
+        score = int(result.get("score", 0))
+        issues = [
+            f"{i.get('field')}:{i.get('issue')}"
+            for i in (result.get("issues") or [])
+            if i.get("severity") in ("high", "critical")
+        ]
+        return score, issues
 
     @staticmethod
     def _deterministic_fallback(title: str, niche: str) -> dict[str, Any]:
