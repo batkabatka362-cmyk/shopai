@@ -214,10 +214,10 @@ def _collect_stats() -> list[dict[str, Any]]:
     events carry ``variant:<id>`` tags; ad_insight events carry
     impressions + spend. Join them by variant_id."""
     try:
-        from core.memory.intelligence import get_memory_intelligence
+        from core.memory.unified_memory import get_unified_memory
     except Exception:
         return []
-    mi = get_memory_intelligence()
+    mi = get_unified_memory().get_memory_intelligence()
 
     orders = mi.retrieve(category="order", min_score=0.0, limit=2000)
     insights = mi.retrieve(category="ad_insight", min_score=0.0, limit=2000)

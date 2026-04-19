@@ -243,8 +243,8 @@ def _niche_map(limit: int) -> dict[str, str]:
                     if isinstance(tag, str) and not tag.startswith(("launch:", "monitor", "revenue")):
                         niche = tag
                         break
-            except (json.JSONDecodeError, ValueError):
-                pass
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.debug("self_critic niche tag parse failed: %s", exc)
         out[lid] = niche.strip().lower()
     return out
 

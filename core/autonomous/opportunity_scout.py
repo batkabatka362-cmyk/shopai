@@ -35,6 +35,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("autonomous.opportunity_scout")
 
 _DB_PATH = Path("data/memory_intelligence.db")
 _SECONDS_PER_DAY = 86_400
@@ -332,5 +336,5 @@ def _persist(report: DigestReport) -> None:
             score=3.0,
             tags=["digest", "opportunity_scout", report.date],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("opportunity digest persist failed: %s", exc)

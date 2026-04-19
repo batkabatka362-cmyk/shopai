@@ -31,6 +31,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.curiosity")
+
 
 _DB_PATH = Path("data/memory_intelligence.db")
 
@@ -215,8 +220,8 @@ def _quality_band(q: int) -> str:
 
 def _persist(hint: ExplorationHint) -> None:
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         mi.create(
             category="exploration",
             content=hint.as_dict(),
@@ -226,8 +231,8 @@ def _persist(hint: ExplorationHint) -> None:
                   hint.cell.tone, hint.cell.price_band,
                   hint.cell.quality_band],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("curiosity persist failed: %s", exc)
 
 
 def _blank(eps: float) -> ExplorationHint:

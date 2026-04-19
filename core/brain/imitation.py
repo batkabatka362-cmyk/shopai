@@ -33,6 +33,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.imitation")
 
 _DB_PATH = Path("data/memory_intelligence.db")
 _MIN_EVIDENCE_FOR_RULE = 3
@@ -85,8 +89,8 @@ def record_demonstration(
 ) -> int:
     """Record one owner action. Returns the memory id."""
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         mid = mi.create(
             category="demonstration",
             content={
@@ -209,8 +213,8 @@ def _load_demonstrations(limit: int) -> list[Demonstration]:
 
 def _persist_rule(rule: ImitationRule) -> None:
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         mi.create(
             category="imitation_rule",
             content=rule.as_dict(),
@@ -219,5 +223,5 @@ def _persist_rule(rule: ImitationRule) -> None:
             memory_type="semantic",
             tags=["imitation", "mined_rule"],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("imitation rule persist failed: %s", exc)

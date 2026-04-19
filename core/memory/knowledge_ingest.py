@@ -226,9 +226,11 @@ def _coerce(text: str) -> Any:
     try:
         return int(t)
     except ValueError:
-        pass
+        return _coerce_float(t)
+
+
+def _coerce_float(t: str) -> Any:
     try:
         return float(t)
     except ValueError:
-        pass
-    return t
+        return t

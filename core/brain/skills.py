@@ -39,6 +39,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.skills")
 
 _DB_PATH = Path("data/skills.db")
 
@@ -317,6 +321,6 @@ def with_skill(name: str, cost_usd: float = 0.0) -> Iterator[None]:
     finally:
         try:
             registry().record(name, success=success, cost_usd=cost_usd)
-        except Exception:
+        except Exception as exc:
             # Instrumentation must not break callers.
-            pass
+            logger.debug("skill instrumentation failed: %s", exc)

@@ -35,6 +35,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.counterfactual")
 
 _DB_PATH = Path("data/memory_intelligence.db")
 _OPPOSITES = {"kill": {"scale", "hold"},
@@ -216,8 +220,8 @@ def _blank(launch_id: str, reason: str) -> CounterfactualReport:
 
 def _persist(report: CounterfactualReport) -> None:
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         mi.create(
             category="counterfactual",
             content=report.as_dict(),
@@ -226,5 +230,5 @@ def _persist(report: CounterfactualReport) -> None:
             tags=["counterfactual", "regret",
                   f"launch:{report.launch_id}"],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("counterfactual persist failed: %s", exc)

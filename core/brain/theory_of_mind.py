@@ -36,6 +36,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.theory_of_mind")
 
 _DB_PATH = Path("data/memory_intelligence.db")
 
@@ -310,8 +314,8 @@ def _pull_events_by_category(category: str) -> list[dict[str, Any]]:
 
 def _persist(content: dict[str, Any], kind: str) -> None:
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         mi.create(
             category="belief",
             content={"kind": kind, **content},
@@ -319,5 +323,5 @@ def _persist(content: dict[str, Any], kind: str) -> None:
             score=3.0,
             tags=["belief", "theory_of_mind", kind],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("theory_of_mind persist failed: %s", exc)

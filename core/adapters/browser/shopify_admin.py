@@ -141,9 +141,9 @@ def _perform_login(page: Any, ctx: Any) -> bool:
         else:
             logger.info("2FA required — waiting 90 s for manual entry")
             page.wait_for_timeout(90_000)
-    except Exception:
+    except Exception as exc:
         # No 2FA prompt — the account doesn't have it enabled
-        pass
+        logger.debug("2FA probe skipped: %s", exc)
 
     page.wait_for_timeout(3_000)
     if "accounts.shopify.com" in page.url:
@@ -216,8 +216,8 @@ def update_menu(menu_handle: str, links: list[dict[str, str]]) -> dict[str, Any]
                 try:
                     page.click("button:has-text('Save')", timeout=5_000)
                     page.wait_for_timeout(1_500)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("menu save click failed: %s", exc)
                 _save_cookies(ctx.cookies())
                 return {"status": "ok", "added": added}
             finally:
@@ -268,19 +268,19 @@ def set_storefront_password(password: str | None) -> dict[str, Any]:
                     # Scroll to the password section
                     page.click("text=Restrict access to visitors with the password",
                                timeout=5_000)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("password toggle click failed: %s", exc)
                 if password:
                     try:
                         page.fill("input[name='password']", password,
                                   timeout=5_000)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("password fill failed: %s", exc)
                 try:
                     page.click("button:has-text('Save')", timeout=5_000)
                     page.wait_for_timeout(2_000)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("password save click failed: %s", exc)
                 _save_cookies(ctx.cookies())
                 return {"status": "ok",
                         "password_enabled": bool(password)}

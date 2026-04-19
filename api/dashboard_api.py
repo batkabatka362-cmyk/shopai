@@ -115,7 +115,8 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(length) if length else b"{}"
             try:
                 payload = json.loads(body)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                logger.debug("chat/send bad json: %s", exc)
                 self._json_response({"error": "bad json"}, 400)
                 return
             from core.brain.chat_session import send

@@ -185,8 +185,8 @@ def _collect_pairs() -> list[tuple[float, float]]:
 
 def _persist(report: CalibrationReport) -> bool:
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         mi.create(
             category="calibration",
             content=report.as_dict(),

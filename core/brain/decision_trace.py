@@ -146,8 +146,8 @@ class Trace:
         """Write the trace to MemoryIntelligence. Returns the new
         memory id, or ``None`` on failure (never raises)."""
         try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
             mid = mi.create(
                 category="decision_trace",
                 content=self.as_dict(),

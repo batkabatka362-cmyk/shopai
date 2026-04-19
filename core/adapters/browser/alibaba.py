@@ -142,8 +142,8 @@ def scrape(url: str, timeout_ms: int = 25_000) -> dict[str, Any]:
                 try:
                     html = page.content()
                     result["raw_html"] = html[:50_000]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("alibaba html capture failed: %s", exc)
             finally:
                 browser.close()
     except Exception as exc:  # noqa: BLE001

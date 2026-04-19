@@ -32,6 +32,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.feedback")
 
 _DB_PATH = Path("data/memory_intelligence.db")
 
@@ -95,8 +99,8 @@ def record(memory_id: int, sign: int, note: str = "") -> FeedbackResult:
     # Write the feedback as its own memory so retrieval can learn
     # from the pattern of corrections.
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         fid = mi.create(
             category="feedback",
             content={
@@ -116,8 +120,8 @@ def record(memory_id: int, sign: int, note: str = "") -> FeedbackResult:
             ],
         )
         result.feedback_memory_id = int(fid) if fid else None
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("feedback event persist failed: %s", exc)
 
     # Imitation-learning bridge: a feedback is an owner demonstration
     # of the form before={score: prior} → after={score: new}. Mining
@@ -130,8 +134,8 @@ def record(memory_id: int, sign: int, note: str = "") -> FeedbackResult:
             after={"score": result.new_score},
             context={"target_memory_id": int(memory_id)},
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("imitation bridge failed: %s", exc)
 
     return result
 

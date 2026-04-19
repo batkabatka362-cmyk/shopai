@@ -131,8 +131,8 @@ def _collect_launches() -> dict[str, LaunchStats]:
     try:
         from core.autonomous.self_critic import load_niche_thresholds
         niche_overrides = load_niche_thresholds()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("niche overrides unavailable: %s", exc)
 
     out: dict[str, LaunchStats] = {}
     for row in rows:

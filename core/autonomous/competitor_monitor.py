@@ -166,8 +166,8 @@ def _probe(ctx: Any, url: str) -> dict[str, Any]:
             try:
                 body = page.locator("body").inner_text(timeout=2_000)
                 price = _parse_price_text(body[:60_000])
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("competitor body scrape failed: %s", exc)
         return {"title": title, "price": price}
     finally:
         page.close()
@@ -180,14 +180,14 @@ def _parse_price_text(text: str) -> float | None:
     if m:
         try:
             return float(m.group(1).replace(",", ""))
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.debug("price re parse failed: %s", exc)
     m = _BARE_PRICE_RE.search(text)
     if m:
         try:
             return float(m.group(1))
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.debug("bare price parse failed: %s", exc)
     return None
 
 

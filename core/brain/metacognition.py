@@ -43,6 +43,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.metacognition")
 
 _MI_DB = Path("data/memory_intelligence.db")
 _SKILLS_DB = Path("data/skills.db")
@@ -254,8 +258,8 @@ def _persist(report: ReflectionReport) -> None:
     if not report.findings:
         return
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         mi.create(
             category="self_reflection",
             content=report.as_dict(),
@@ -263,5 +267,5 @@ def _persist(report: ReflectionReport) -> None:
             score=3.0,
             tags=["self_reflection", "metacognition"],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("metacognition persist failed: %s", exc)

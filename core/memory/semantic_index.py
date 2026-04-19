@@ -76,8 +76,8 @@ def _text_for(row: dict[str, Any]) -> str:
         try:
             parsed = json.loads(tags)
             tags = ", ".join(parsed) if isinstance(parsed, list) else tags
-        except (json.JSONDecodeError, ValueError):
-            pass
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.debug("semantic_index tag parse failed: %s", exc)
     return f"category={cat} action={action} tags={tags} {content_str}".strip()
 
 

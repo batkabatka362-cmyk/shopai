@@ -43,6 +43,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("brain.goal_agenda")
 
 _DB_PATH = Path("data/goal_agenda.db")
 _STATUSES = {"pending", "active", "paused", "achieved", "abandoned"}
@@ -324,8 +328,8 @@ class GoalAgenda:
 
     def _emit_status_change(self, goal: Goal, old_status: str | None) -> None:
         try:
-            from core.memory.intelligence import get_memory_intelligence
-            mi = get_memory_intelligence()
+            from core.memory.unified_memory import get_unified_memory
+            mi = get_unified_memory().get_memory_intelligence()
             mi.create(
                 category="goal_status",
                 content={
@@ -339,8 +343,8 @@ class GoalAgenda:
                 score=3.0,
                 tags=["goal", goal.status, f"goal:{goal.id}"],
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("goal status event emit failed: %s", exc)
 
 
 # ── Singleton ────────────────────────────────────────────────

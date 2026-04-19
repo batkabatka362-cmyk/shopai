@@ -38,6 +38,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
+
+logger = get_logger("memory.consolidation")
 
 _DB_PATH = Path("data/memory_intelligence.db")
 
@@ -82,8 +86,8 @@ def consolidate() -> ConsolidationReport:
         report.contradictions_found = _detect_contradictions()
         report.reinforced = _reinforce_well_travelled()
         _persist(report)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("consolidation pass failed: %s", exc)
     return report
 
 
@@ -249,8 +253,8 @@ def _detect_contradictions() -> int:
                                   f"memory:{m1}", f"memory:{m2}"],
                         )
                         count += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("contradiction event failed: %s", exc)
     return count
 
 
@@ -293,5 +297,5 @@ def _persist(report: ConsolidationReport) -> None:
             score=3.0,
             tags=["consolidation", "sleep", "meta"],
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("consolidation persist failed: %s", exc)

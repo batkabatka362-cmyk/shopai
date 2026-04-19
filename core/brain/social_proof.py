@@ -199,8 +199,8 @@ def record_review(
     """Helper so external importers (Judge.me / Loox hooks) can drop
     a review directly into memory."""
     try:
-        from core.memory.intelligence import get_memory_intelligence
-        mi = get_memory_intelligence()
+        from core.memory.unified_memory import get_unified_memory
+        mi = get_unified_memory().get_memory_intelligence()
         mid = mi.create(
             category="review",
             content={"text": text, "stars": stars, "source": source,
