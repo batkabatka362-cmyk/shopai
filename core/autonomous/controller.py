@@ -1539,6 +1539,21 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_anomaly: ANOMALY DETECTION — z-score every
+        # active launch against its niche baseline, persist deviations
+        # ≥ |2σ| as category=anomaly events.
+        try:
+            from core.autonomous.anomaly_detector import scan as anomaly_scan
+            anomaly_report = anomaly_scan()
+            if anomaly_report.anomalies:
+                cycle_result["phases"]["anomaly_detector"] = {
+                    "checked": anomaly_report.checked,
+                    "anomalies": len(anomaly_report.anomalies),
+                    "recorded": anomaly_report.recorded,
+                }
+        except Exception as exc:
+            _record("anomaly_detector", exc)
+
         # Phase 8k2b_trend: TIME-SERIES TREND DETECTION — pulls the
         # last 30 days of order / launch / competitor events, bins by
         # series, runs rolling-window slope + z-score, persists
