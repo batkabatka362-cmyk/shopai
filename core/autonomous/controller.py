@@ -2129,7 +2129,7 @@ class AutonomousController:
                     cycle_id=str(cycle_id),
                 )
             except Exception as exc:
-                logger.debug("brain close-out failed: %s", exc)
+                _record("brain_closeout", exc)
 
         if os.environ.get("SHOPAI_BRAIN_SHADOW", "0") == "1":
             try:
@@ -2149,7 +2149,7 @@ class AutonomousController:
                     ),
                 }
             except Exception as exc:
-                logger.debug("brain shadow think failed: %s", exc)
+                _record("brain_shadow", exc)
 
         return cycle_result
 
