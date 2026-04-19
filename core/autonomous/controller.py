@@ -1539,6 +1539,23 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_calibration: CALIBRATION TRACKER — measures
+        # whether the predictor's win_probability matches realised
+        # outcomes. Drift > |0.15| flags over/under-confidence so
+        # self_critic can compensate.
+        try:
+            from core.brain.calibration import score as _calibrate
+            cal_report = _calibrate()
+            if cal_report.samples > 0:
+                cycle_result["phases"]["calibration"] = {
+                    "samples": cal_report.samples,
+                    "brier_score": round(cal_report.brier_score, 3),
+                    "bias": round(cal_report.bias, 3),
+                    "level": cal_report.level,
+                }
+        except Exception as exc:
+            _record("calibration", exc)
+
         # Phase 8k2b_metacog: META-COGNITIVE REFLECTION — brain checks
         # whether it's actually learning, whether it's over-confident,
         # whether owner feedback is trending negative. Cheap — a few
