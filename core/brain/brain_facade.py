@@ -97,6 +97,15 @@ class Snapshot:
     shadow: dict[str, Any] = field(default_factory=dict)
     traces: dict[str, Any] = field(default_factory=dict)
     revisions: dict[str, Any] = field(default_factory=dict)
+    # v33: prompt composition, concepts, predictive alerts,
+    # attention calibration, clarification, assumptions, funnel
+    prompts: dict[str, Any] = field(default_factory=dict)
+    concepts: dict[str, Any] = field(default_factory=dict)
+    pre_breach: dict[str, Any] = field(default_factory=dict)
+    attention_calibration: dict[str, Any] = field(default_factory=dict)
+    clarifications: dict[str, Any] = field(default_factory=dict)
+    assumptions: dict[str, Any] = field(default_factory=dict)
+    funnel: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +166,13 @@ class Snapshot:
             "shadow": self.shadow,
             "traces": self.traces,
             "revisions": self.revisions,
+            "prompts": self.prompts,
+            "concepts": self.concepts,
+            "pre_breach": self.pre_breach,
+            "attention_calibration": self.attention_calibration,
+            "clarifications": self.clarifications,
+            "assumptions": self.assumptions,
+            "funnel": self.funnel,
         }
 
 
@@ -284,6 +300,17 @@ class BrainFacade:
         snap.shadow = _safe(lambda: _shadow_divergence_summary())
         snap.traces = _safe(lambda: _reasoning_trace_summary())
         snap.revisions = _safe(lambda: _revision_journal_summary())
+        snap.prompts = _safe(lambda: _prompt_composer_summary())
+        snap.concepts = _safe(lambda: _concept_former_summary())
+        snap.pre_breach = _safe(lambda: _predictive_alerter_summary())
+        snap.attention_calibration = _safe(
+            lambda: _attention_calibrator_summary(),
+        )
+        snap.clarifications = _safe(
+            lambda: _clarification_dialog_summary(),
+        )
+        snap.assumptions = _safe(lambda: _assumption_ledger_summary())
+        snap.funnel = _safe(lambda: _revenue_funnel_summary())
         return snap
 
     # ── v32: integration + divergence + journal ─────────
@@ -487,6 +514,228 @@ class BrainFacade:
             return {
                 "skill_name": skill_name,
                 "recommendation": "reject",
+            }
+
+    # ── v33: prompts, concepts, alerts, calibration, dialog,
+    #         assumptions, funnel ─────────────────────────────
+
+    def compose_prompt(
+        self,
+        base_template: str,
+        *,
+        overlay_templates: list[str] | None = None,
+        slot_overrides: dict[str, Any] | None = None,
+        required_slots: list[str] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            composed = _prompt_composer().compose(
+                base_template=base_template,
+                overlay_templates=tuple(overlay_templates or ()),
+                slot_overrides=slot_overrides or {},
+                required_slots=tuple(required_slots or ()),
+            )
+            return composed.as_dict()
+        except Exception as exc:
+            logger.debug("compose_prompt failed: %s", exc)
+            return {
+                "base_template": base_template,
+                "body": "",
+                "error": str(exc),
+            }
+
+    def register_prompt_provider(self, provider: Any) -> bool:
+        try:
+            _prompt_composer().register(provider)
+            return True
+        except Exception as exc:
+            logger.debug("register_prompt_provider failed: %s", exc)
+            return False
+
+    def observe_concept(
+        self,
+        fields: dict[str, Any],
+        *,
+        outcome_sign: str = "",
+    ) -> str:
+        try:
+            return _concept_former().observe(
+                fields, outcome_sign=outcome_sign,
+            )
+        except Exception as exc:
+            logger.debug("observe_concept failed: %s", exc)
+            return ""
+
+    def form_concepts(
+        self, *, min_support: int = 3,
+    ) -> list[dict[str, Any]]:
+        try:
+            concepts = _concept_former().form(
+                min_support=min_support,
+            )
+            return [c.as_dict() for c in concepts]
+        except Exception as exc:
+            logger.debug("form_concepts failed: %s", exc)
+            return []
+
+    def name_concept(self, signature: str, label: str) -> str:
+        try:
+            return _concept_former().name_concept(signature, label)
+        except Exception as exc:
+            logger.debug("name_concept failed: %s", exc)
+            return ""
+
+    def observe_kpi(
+        self, kpi: str, value: float,
+    ) -> bool:
+        try:
+            _predictive_alerter().observe(kpi, value)
+            return True
+        except Exception as exc:
+            logger.debug("observe_kpi failed: %s", exc)
+            return False
+
+    def project_breach(
+        self,
+        kpi: str,
+        *,
+        threshold: float,
+        direction: str,
+    ) -> dict[str, Any]:
+        try:
+            alert = _predictive_alerter().evaluate(
+                kpi, threshold=threshold, direction=direction,
+            )
+            return alert.as_dict()
+        except Exception as exc:
+            logger.debug("project_breach failed: %s", exc)
+            return {
+                "kpi": kpi, "severity": "none",
+                "note": f"unavailable: {exc}",
+            }
+
+    def record_attention(
+        self,
+        *,
+        cycle_id: str,
+        ranking: list[tuple[str, float]],
+    ) -> int:
+        try:
+            return _attention_calibrator().record_attended(
+                cycle_id=cycle_id, ranking=ranking,
+            )
+        except Exception as exc:
+            logger.debug("record_attention failed: %s", exc)
+            return 0
+
+    def record_attention_outcome(
+        self,
+        *,
+        cycle_id: str,
+        item_key: str,
+        realised_importance: float,
+    ) -> bool:
+        try:
+            return _attention_calibrator().record_outcome(
+                cycle_id=cycle_id, item_key=item_key,
+                realised_importance=realised_importance,
+            )
+        except Exception as exc:
+            logger.debug("record_attention_outcome failed: %s", exc)
+            return False
+
+    def calibrate_attention(
+        self, *, k: int = 5,
+    ) -> dict[str, Any]:
+        try:
+            return _attention_calibrator().calibrate(k=k).as_dict()
+        except Exception as exc:
+            logger.debug("calibrate_attention failed: %s", exc)
+            return {
+                "precision_at_k": 0.0, "recall_at_k": 0.0,
+                "k": k,
+            }
+
+    def detect_ambiguity(
+        self,
+        text: str,
+        *,
+        provided_slots: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            findings = _clarification_dialog().find_ambiguities(
+                text, provided_slots=provided_slots,
+            )
+            return [f.as_dict() for f in findings]
+        except Exception as exc:
+            logger.debug("detect_ambiguity failed: %s", exc)
+            return []
+
+    def draft_clarification(
+        self,
+        text: str,
+        *,
+        provided_slots: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            req = _clarification_dialog().draft(
+                text, provided_slots=provided_slots,
+            )
+            return req.as_dict() if req else None
+        except Exception as exc:
+            logger.debug("draft_clarification failed: %s", exc)
+            return None
+
+    def assume(
+        self,
+        *,
+        statement: str,
+        related_decision_id: str = "",
+        kpi: str = "",
+        expected_value: float | None = None,
+        tolerance: float = 0.0,
+    ) -> dict[str, Any]:
+        try:
+            a = _assumption_ledger().assume(
+                statement=statement,
+                related_decision_id=related_decision_id,
+                kpi=kpi, expected_value=expected_value,
+                tolerance=tolerance,
+            )
+            return a.as_dict()
+        except Exception as exc:
+            logger.debug("assume failed: %s", exc)
+            return {"statement": statement, "status": "error"}
+
+    def validate_assumption(
+        self, assumption_id: str, observed_value: float,
+    ) -> dict[str, Any]:
+        try:
+            a = _assumption_ledger().validate(
+                assumption_id, observed_value,
+            )
+            return a.as_dict()
+        except Exception as exc:
+            logger.debug("validate_assumption failed: %s", exc)
+            return {"id": assumption_id, "status": "error"}
+
+    def record_funnel_event(
+        self, stage: str, count: int = 1,
+    ) -> bool:
+        try:
+            _revenue_funnel().record(stage, count)
+            return True
+        except Exception as exc:
+            logger.debug("record_funnel_event failed: %s", exc)
+            return False
+
+    def analyse_funnel(self) -> dict[str, Any]:
+        try:
+            return _revenue_funnel().analyse().as_dict()
+        except Exception as exc:
+            logger.debug("analyse_funnel failed: %s", exc)
+            return {
+                "stages": [], "biggest_leak": None,
+                "overall_conversion": 0.0,
             }
 
     # ── v31: simulation, prioritization, transfer, self-test ──
@@ -3091,6 +3340,142 @@ def _revision_journal():
 
 def _revision_journal_summary() -> dict[str, Any]:
     return _revision_journal().stats()
+
+
+# ── v33 singletons ───────────────────────────────────────────
+
+_PROMPT_COMPOSER: Any = None
+_PC_LOCK = threading.Lock()
+
+
+def _prompt_composer():
+    global _PROMPT_COMPOSER
+    if _PROMPT_COMPOSER is None:
+        with _PC_LOCK:
+            if _PROMPT_COMPOSER is None:
+                from core.brain.prompt_composer import PromptComposer
+                _PROMPT_COMPOSER = PromptComposer()
+    return _PROMPT_COMPOSER
+
+
+def _prompt_composer_summary() -> dict[str, Any]:
+    return _prompt_composer().stats()
+
+
+_CONCEPT_FORMER: Any = None
+_CF_LOCK = threading.Lock()
+
+
+def _concept_former():
+    global _CONCEPT_FORMER
+    if _CONCEPT_FORMER is None:
+        with _CF_LOCK:
+            if _CONCEPT_FORMER is None:
+                from core.memory.concept_former import ConceptFormer
+                _CONCEPT_FORMER = ConceptFormer()
+    return _CONCEPT_FORMER
+
+
+def _concept_former_summary() -> dict[str, Any]:
+    return _concept_former().stats()
+
+
+_PREDICTIVE_ALERTER: Any = None
+_PA_LOCK = threading.Lock()
+
+
+def _predictive_alerter():
+    global _PREDICTIVE_ALERTER
+    if _PREDICTIVE_ALERTER is None:
+        with _PA_LOCK:
+            if _PREDICTIVE_ALERTER is None:
+                from core.brain.predictive_alerter import (
+                    PredictiveAlerter,
+                )
+                _PREDICTIVE_ALERTER = PredictiveAlerter()
+    return _PREDICTIVE_ALERTER
+
+
+def _predictive_alerter_summary() -> dict[str, Any]:
+    return _predictive_alerter().stats()
+
+
+_ATTENTION_CALIBRATOR: Any = None
+_AC_LOCK = threading.Lock()
+
+
+def _attention_calibrator():
+    global _ATTENTION_CALIBRATOR
+    if _ATTENTION_CALIBRATOR is None:
+        with _AC_LOCK:
+            if _ATTENTION_CALIBRATOR is None:
+                from core.brain.attention_calibrator import (
+                    AttentionCalibrator,
+                )
+                _ATTENTION_CALIBRATOR = AttentionCalibrator()
+    return _ATTENTION_CALIBRATOR
+
+
+def _attention_calibrator_summary() -> dict[str, Any]:
+    return _attention_calibrator().stats()
+
+
+_CLARIFICATION_DIALOG: Any = None
+_CD_LOCK = threading.Lock()
+
+
+def _clarification_dialog():
+    global _CLARIFICATION_DIALOG
+    if _CLARIFICATION_DIALOG is None:
+        with _CD_LOCK:
+            if _CLARIFICATION_DIALOG is None:
+                from core.brain.clarification_dialog import (
+                    ClarificationDialog,
+                )
+                _CLARIFICATION_DIALOG = ClarificationDialog()
+    return _CLARIFICATION_DIALOG
+
+
+def _clarification_dialog_summary() -> dict[str, Any]:
+    return _clarification_dialog().stats()
+
+
+_ASSUMPTION_LEDGER: Any = None
+_AL_LOCK = threading.Lock()
+
+
+def _assumption_ledger():
+    global _ASSUMPTION_LEDGER
+    if _ASSUMPTION_LEDGER is None:
+        with _AL_LOCK:
+            if _ASSUMPTION_LEDGER is None:
+                from core.brain.assumption_ledger import (
+                    AssumptionLedger,
+                )
+                _ASSUMPTION_LEDGER = AssumptionLedger()
+    return _ASSUMPTION_LEDGER
+
+
+def _assumption_ledger_summary() -> dict[str, Any]:
+    return _assumption_ledger().stats()
+
+
+_REVENUE_FUNNEL: Any = None
+_RF_LOCK = threading.Lock()
+
+
+def _revenue_funnel():
+    global _REVENUE_FUNNEL
+    if _REVENUE_FUNNEL is None:
+        with _RF_LOCK:
+            if _REVENUE_FUNNEL is None:
+                from core.brain.revenue_funnel import RevenueFunnel
+                _REVENUE_FUNNEL = RevenueFunnel()
+    return _REVENUE_FUNNEL
+
+
+def _revenue_funnel_summary() -> dict[str, Any]:
+    return _revenue_funnel().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
