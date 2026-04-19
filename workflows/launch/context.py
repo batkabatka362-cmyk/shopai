@@ -68,6 +68,7 @@ class LaunchContext:
     media: dict[str, Any] = field(default_factory=dict)          # image urls
     content: dict[str, Any] = field(default_factory=dict)        # title/desc/seo
     shopify_product: dict[str, Any] = field(default_factory=dict)  # id + handle
+    related: dict[str, Any] = field(default_factory=dict)          # related_product_ids
     creative: dict[str, Any] = field(default_factory=dict)       # ad assets
     ad_campaign: dict[str, Any] = field(default_factory=dict)    # Meta Ads ids
     tracking: dict[str, Any] = field(default_factory=dict)       # pixel + rules

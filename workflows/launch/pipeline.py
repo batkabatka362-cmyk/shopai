@@ -16,8 +16,8 @@ from utils.logger import get_logger
 from .context import LaunchGoal, LaunchContext, LaunchResult
 from .steps import (
     SourceStep, SupplierStep, MediaStep, ContentStep,
-    ShopifyCreateStep, CreativeStep, AdsLaunchStep,
-    TrackingStep, MonitorStep,
+    ShopifyCreateStep, RelatedProductsStep, CreativeStep,
+    AdsLaunchStep, TrackingStep, MonitorStep,
 )
 
 
@@ -32,6 +32,7 @@ _STEP_SLOT = {
     "media": "media",
     "content": "content",
     "shopify_create": "shopify_product",
+    "related": "related",
     "creative": "creative",
     "ads_launch": "ad_campaign",
     "tracking": "tracking",
@@ -56,6 +57,7 @@ class LaunchPipeline:
         MediaStep,
         ContentStep,
         ShopifyCreateStep,
+        RelatedProductsStep,
         CreativeStep,
         AdsLaunchStep,
         TrackingStep,
