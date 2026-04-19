@@ -118,10 +118,22 @@ def evaluate() -> EvaluationReport:
 
 
 def _collect_launches() -> dict[str, LaunchStats]:
-    """Pull every ``category='launch'`` memory event."""
+    """Pull every ``category='launch'`` memory event. Overrides the
+    per-launch kill/scale thresholds with whatever the self-critic
+    has learned for the niche (defaults apply when no override)."""
     from core.memory.intelligence import get_memory_intelligence
     mi = get_memory_intelligence()
     rows = mi.retrieve(category="launch", min_score=0.0, limit=200)
+
+    # Niche-level thresholds learned by core.autonomous.self_critic.
+    # If the file is missing we just use the per-launch values.
+    niche_overrides: dict[str, dict[str, float]] = {}
+    try:
+        from core.autonomous.self_critic import load_niche_thresholds
+        niche_overrides = load_niche_thresholds()
+    except Exception:
+        pass
+
     out: dict[str, LaunchStats] = {}
     for row in rows:
         content = row.get("content") or {}
@@ -134,13 +146,15 @@ def _collect_launches() -> dict[str, LaunchStats]:
         if not lid:
             continue
         kill_rule = content.get("kill_rule") or {}
+        niche = (content.get("niche") or "").strip().lower()
+        override = niche_overrides.get(niche) or {}
         out[lid] = LaunchStats(
             launch_id=lid,
             registered_at=float(content.get("registered_at") or row.get("timestamp") or 0),
             shopify_product_id=content.get("shopify_product_id"),
-            kill_roas=float(kill_rule.get("kill_roas", 1.5)),
-            scale_roas=float(kill_rule.get("scale_roas", 2.0)),
-            kill_after_days=int(kill_rule.get("after_days", 3)),
+            kill_roas=float(override.get("kill_roas") or kill_rule.get("kill_roas", 1.5)),
+            scale_roas=float(override.get("scale_roas") or kill_rule.get("scale_roas", 2.0)),
+            kill_after_days=int(override.get("kill_after_days") or kill_rule.get("after_days", 3)),
             ad_budget_day=float(kill_rule.get("ad_budget_day", 0.0)),
         )
     return out

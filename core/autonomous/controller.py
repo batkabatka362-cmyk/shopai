@@ -1539,6 +1539,20 @@ class AutonomousController:
         except Exception as exc:
             _record("launch_evaluator", exc)
 
+        # Phase 8k2b_critique: SELF-CRITIQUE — recompute per-niche
+        # kill/scale thresholds from observed ROAS distribution and
+        # persist the overrides so the next evaluator pass uses them.
+        try:
+            from core.autonomous.self_critic import critique
+            critique_report = critique()
+            if critique_report.verdicts:
+                cycle_result["phases"]["self_critique"] = {
+                    "launches": critique_report.launches_considered,
+                    "updated_niches": critique_report.updated_niches,
+                }
+        except Exception as exc:
+            _record("self_critique", exc)
+
         # Phase 8k2b_embed: SEMANTIC INDEXING — embed up to 15 recent
         # level≥1 memories per cycle so the similarity retriever has
         # fresh coverage. Caps the Gemini free-tier quota since each
