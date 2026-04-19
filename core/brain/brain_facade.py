@@ -124,6 +124,16 @@ class Snapshot:
     coherence: dict[str, Any] = field(default_factory=dict)
     episode_summaries: dict[str, Any] = field(default_factory=dict)
     salience: dict[str, Any] = field(default_factory=dict)
+    # v36: observation reducer, evidence accumulator, scenario
+    # planner, value weighter, compute budget, rationale builder,
+    # capability registry
+    observations: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
+    scenarios: dict[str, Any] = field(default_factory=dict)
+    values: dict[str, Any] = field(default_factory=dict)
+    compute: dict[str, Any] = field(default_factory=dict)
+    rationales: dict[str, Any] = field(default_factory=dict)
+    capabilities_registry: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -205,6 +215,13 @@ class Snapshot:
             "coherence": self.coherence,
             "episode_summaries": self.episode_summaries,
             "salience": self.salience,
+            "observations": self.observations,
+            "evidence": self.evidence,
+            "scenarios": self.scenarios,
+            "values": self.values,
+            "compute": self.compute,
+            "rationales": self.rationales,
+            "capabilities_registry": self.capabilities_registry,
         }
 
 
@@ -375,6 +392,23 @@ class BrainFacade:
             lambda: _episode_summariser_summary(),
         )
         snap.salience = _safe(lambda: _salience_tuner_summary())
+        snap.observations = _safe(
+            lambda: _observation_reducer_summary(),
+        )
+        snap.evidence = _safe(
+            lambda: _evidence_accumulator_summary(),
+        )
+        snap.scenarios = _safe(
+            lambda: _scenario_planner_summary(),
+        )
+        snap.values = _safe(lambda: _value_weighter_summary())
+        snap.compute = _safe(lambda: _compute_budget_summary())
+        snap.rationales = _safe(
+            lambda: _rationale_builder_summary(),
+        )
+        snap.capabilities_registry = _safe(
+            lambda: _capability_registry_summary(),
+        )
         return snap
 
     # ── v32: integration + divergence + journal ─────────
@@ -1237,6 +1271,240 @@ class BrainFacade:
         except Exception as exc:
             logger.debug("salience_weights failed: %s", exc)
             return {}
+
+    # ── v36: observation reducer, evidence, scenarios, values,
+    #         compute budget, rationale, capabilities ────────
+
+    def ingest_observation(
+        self,
+        kind: str,
+        fields: dict[str, Any] | None = None,
+    ) -> bool:
+        try:
+            _observation_reducer().ingest(kind, fields)
+            return True
+        except Exception as exc:
+            logger.debug("ingest_observation failed: %s", exc)
+            return False
+
+    def reduce_observations(self) -> dict[str, Any]:
+        try:
+            return _observation_reducer().reduce().as_dict()
+        except Exception as exc:
+            logger.debug("reduce_observations failed: %s", exc)
+            return {"total_events": 0}
+
+    def register_claim(
+        self,
+        statement: str,
+        *,
+        claim_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            c = _evidence_accumulator().register_claim(
+                statement, claim_id=claim_id,
+            )
+            return c.as_dict()
+        except Exception as exc:
+            logger.debug("register_claim failed: %s", exc)
+            return {"error": str(exc)}
+
+    def add_evidence(
+        self,
+        *,
+        claim_id: str,
+        polarity: str,
+        weight: float = 1.0,
+        source: str = "",
+        note: str = "",
+    ) -> bool:
+        try:
+            _evidence_accumulator().add_evidence(
+                claim_id=claim_id, polarity=polarity,
+                weight=weight, source=source, note=note,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("add_evidence failed: %s", exc)
+            return False
+
+    def claim_probability(self, claim_id: str) -> float:
+        try:
+            return _evidence_accumulator().probability(claim_id)
+        except Exception as exc:
+            logger.debug("claim_probability failed: %s", exc)
+            return 0.0
+
+    def plan_scenarios(
+        self,
+        *,
+        name: str,
+        starting_state: dict[str, Any],
+        branches: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.scenario_planner import (
+                Branch, ScenarioSpec,
+            )
+            branch_objs = [
+                Branch(
+                    label=str(b.get("label", "branch")),
+                    weight=float(b.get("weight", 1.0)),
+                    modifier=dict(b.get("modifier", {}) or {}),
+                )
+                for b in branches
+            ]
+            spec = ScenarioSpec(
+                name=name,
+                starting_state=dict(starting_state),
+                branches=branch_objs,
+            )
+            return _scenario_planner().plan(spec).as_dict()
+        except Exception as exc:
+            logger.debug("plan_scenarios failed: %s", exc)
+            return {"scenarios": [], "error": str(exc)}
+
+    def observe_value_feedback(
+        self,
+        *,
+        value_scores: dict[str, float],
+        feedback: str,
+    ) -> dict[str, float]:
+        try:
+            return _value_weighter().observe(
+                value_scores=value_scores, feedback=feedback,
+            )
+        except Exception as exc:
+            logger.debug("observe_value_feedback failed: %s", exc)
+            return {}
+
+    def value_weights(self) -> dict[str, float]:
+        try:
+            return _value_weighter().weights()
+        except Exception as exc:
+            logger.debug("value_weights failed: %s", exc)
+            return {}
+
+    def begin_compute_cycle(self, cycle_id: str) -> bool:
+        try:
+            _compute_budget().begin_cycle(cycle_id)
+            return True
+        except Exception as exc:
+            logger.debug("begin_compute_cycle failed: %s", exc)
+            return False
+
+    def end_compute_cycle(self) -> dict[str, Any] | None:
+        try:
+            report = _compute_budget().end_cycle()
+            return report.as_dict() if report else None
+        except Exception as exc:
+            logger.debug("end_compute_cycle failed: %s", exc)
+            return None
+
+    def spend_compute(
+        self, kind: str, amount: float,
+    ) -> dict[str, Any] | None:
+        try:
+            alert = _compute_budget().spend(kind, amount)
+            return alert.as_dict() if alert else None
+        except Exception as exc:
+            logger.debug("spend_compute failed: %s", exc)
+            return None
+
+    def remaining_compute(self, kind: str) -> float:
+        try:
+            return _compute_budget().remaining(kind)
+        except Exception as exc:
+            logger.debug("remaining_compute failed: %s", exc)
+            return 0.0
+
+    def start_rationale(
+        self, *, decision_id: str, summary: str,
+    ) -> dict[str, Any]:
+        try:
+            r = _rationale_builder().start(
+                decision_id=decision_id, summary=summary,
+            )
+            return r.as_dict()
+        except Exception as exc:
+            logger.debug("start_rationale failed: %s", exc)
+            return {"error": str(exc)}
+
+    def add_rationale_node(
+        self,
+        decision_id: str,
+        *,
+        kind: str,
+        headline: str,
+        weight: float = 0.5,
+        references: list[str] | None = None,
+        parent_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            node = _rationale_builder().add(
+                decision_id, kind=kind,
+                headline=headline, weight=weight,
+                references=tuple(references or ()),
+                parent_id=parent_id,
+            )
+            return node.as_dict()
+        except Exception as exc:
+            logger.debug("add_rationale_node failed: %s", exc)
+            return {"error": str(exc)}
+
+    def commit_rationale(
+        self, decision_id: str,
+    ) -> dict[str, Any] | None:
+        try:
+            r = _rationale_builder().commit(decision_id)
+            return r.as_dict()
+        except Exception as exc:
+            logger.debug("commit_rationale failed: %s", exc)
+            return None
+
+    def register_capability(
+        self,
+        *,
+        name: str,
+        scope: str,
+        initial_proficiency: float = 0.5,
+        gap_reason: str = "",
+    ) -> dict[str, Any]:
+        try:
+            c = _capability_registry().register(
+                name=name, scope=scope,
+                initial_proficiency=initial_proficiency,
+                gap_reason=gap_reason,
+            )
+            return c.as_dict()
+        except Exception as exc:
+            logger.debug("register_capability failed: %s", exc)
+            return {"error": str(exc)}
+
+    def update_capability(
+        self, name: str, *, ok: bool,
+    ) -> bool:
+        try:
+            _capability_registry().update(name, ok=ok)
+            return True
+        except Exception as exc:
+            logger.debug("update_capability failed: %s", exc)
+            return False
+
+    def can_do(self, name: str) -> bool:
+        try:
+            return _capability_registry().can_do(name)
+        except Exception as exc:
+            logger.debug("can_do failed: %s", exc)
+            return False
+
+    def capability_gaps(self) -> list[dict[str, Any]]:
+        try:
+            gaps = _capability_registry().gaps()
+            return [g.as_dict() for g in gaps]
+        except Exception as exc:
+            logger.debug("capability_gaps failed: %s", exc)
+            return []
 
     # ── v31: simulation, prioritization, transfer, self-test ──
 
@@ -4244,6 +4512,144 @@ def _salience_tuner():
 
 def _salience_tuner_summary() -> dict[str, Any]:
     return _salience_tuner().stats()
+
+
+# ── v36 singletons ───────────────────────────────────────────
+
+_OBSERVATION_REDUCER: Any = None
+_OR_LOCK = threading.Lock()
+
+
+def _observation_reducer():
+    global _OBSERVATION_REDUCER
+    if _OBSERVATION_REDUCER is None:
+        with _OR_LOCK:
+            if _OBSERVATION_REDUCER is None:
+                from core.brain.observation_stream_reducer import (
+                    ObservationStreamReducer,
+                )
+                _OBSERVATION_REDUCER = ObservationStreamReducer()
+    return _OBSERVATION_REDUCER
+
+
+def _observation_reducer_summary() -> dict[str, Any]:
+    return _observation_reducer().stats()
+
+
+_EVIDENCE_ACCUMULATOR: Any = None
+_EA_LOCK = threading.Lock()
+
+
+def _evidence_accumulator():
+    global _EVIDENCE_ACCUMULATOR
+    if _EVIDENCE_ACCUMULATOR is None:
+        with _EA_LOCK:
+            if _EVIDENCE_ACCUMULATOR is None:
+                from core.brain.evidence_accumulator import (
+                    EvidenceAccumulator,
+                )
+                _EVIDENCE_ACCUMULATOR = EvidenceAccumulator()
+    return _EVIDENCE_ACCUMULATOR
+
+
+def _evidence_accumulator_summary() -> dict[str, Any]:
+    return _evidence_accumulator().stats()
+
+
+_SCENARIO_PLANNER: Any = None
+_SP_LOCK = threading.Lock()
+
+
+def _scenario_planner():
+    global _SCENARIO_PLANNER
+    if _SCENARIO_PLANNER is None:
+        with _SP_LOCK:
+            if _SCENARIO_PLANNER is None:
+                from core.brain.scenario_planner import (
+                    ScenarioPlanner,
+                )
+                _SCENARIO_PLANNER = ScenarioPlanner()
+    return _SCENARIO_PLANNER
+
+
+def _scenario_planner_summary() -> dict[str, Any]:
+    return _scenario_planner().stats()
+
+
+_VALUE_WEIGHTER: Any = None
+_VW_LOCK = threading.Lock()
+
+
+def _value_weighter():
+    global _VALUE_WEIGHTER
+    if _VALUE_WEIGHTER is None:
+        with _VW_LOCK:
+            if _VALUE_WEIGHTER is None:
+                from core.brain.value_weighter import ValueWeighter
+                _VALUE_WEIGHTER = ValueWeighter()
+    return _VALUE_WEIGHTER
+
+
+def _value_weighter_summary() -> dict[str, Any]:
+    return _value_weighter().stats()
+
+
+_COMPUTE_BUDGET: Any = None
+_CB_LOCK = threading.Lock()
+
+
+def _compute_budget():
+    global _COMPUTE_BUDGET
+    if _COMPUTE_BUDGET is None:
+        with _CB_LOCK:
+            if _COMPUTE_BUDGET is None:
+                from core.brain.compute_budget import ComputeBudget
+                _COMPUTE_BUDGET = ComputeBudget()
+    return _COMPUTE_BUDGET
+
+
+def _compute_budget_summary() -> dict[str, Any]:
+    return _compute_budget().stats()
+
+
+_RATIONALE_BUILDER: Any = None
+_RB_LOCK = threading.Lock()
+
+
+def _rationale_builder():
+    global _RATIONALE_BUILDER
+    if _RATIONALE_BUILDER is None:
+        with _RB_LOCK:
+            if _RATIONALE_BUILDER is None:
+                from core.brain.decision_rationale_builder import (
+                    DecisionRationaleBuilder,
+                )
+                _RATIONALE_BUILDER = DecisionRationaleBuilder()
+    return _RATIONALE_BUILDER
+
+
+def _rationale_builder_summary() -> dict[str, Any]:
+    return _rationale_builder().stats()
+
+
+_CAPABILITY_REGISTRY: Any = None
+_CR_LOCK = threading.Lock()
+
+
+def _capability_registry():
+    global _CAPABILITY_REGISTRY
+    if _CAPABILITY_REGISTRY is None:
+        with _CR_LOCK:
+            if _CAPABILITY_REGISTRY is None:
+                from core.brain.capability_registry import (
+                    CapabilityRegistry,
+                )
+                _CAPABILITY_REGISTRY = CapabilityRegistry()
+    return _CAPABILITY_REGISTRY
+
+
+def _capability_registry_summary() -> dict[str, Any]:
+    return _capability_registry().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
