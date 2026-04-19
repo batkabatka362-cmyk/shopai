@@ -192,6 +192,44 @@ def build_parser() -> argparse.ArgumentParser:
     learn_p = sub.add_parser("learn", help="Show learning status")
     learn_p.add_argument("--details", action="store_true", help="Show detailed learning data")
 
+    # ── Launch commands (Goal-Driven Executor) ──────────────
+    launch_p = sub.add_parser("launch", help="Launch a new product end-to-end")
+    launch_p.add_argument("--alibaba-url", default="", help="Alibaba product URL")
+    launch_p.add_argument("--title", default="", help="Product title (manual mode)")
+    launch_p.add_argument("--price", type=float, default=0.0,
+                          help="Source price (manual mode only)")
+    launch_p.add_argument("--gallery", default="",
+                          help="Comma-separated image URLs (manual mode only)")
+    launch_p.add_argument("--target-price", type=float, default=None,
+                          help="Retail price (default: AI computes from cost + margin)")
+    launch_p.add_argument("--ad-budget", type=float, default=20.0,
+                          help="Daily Meta Ads budget in USD (default 20)")
+    launch_p.add_argument("--niche", default="", help="Niche / product category")
+    launch_p.add_argument("--tone",
+                          choices=["urgent", "friendly", "luxury", "informative"],
+                          default="friendly")
+    launch_p.add_argument("--dry-run", action="store_true",
+                          help="Print the goal without running the pipeline")
+
+    launches_p = sub.add_parser("launches", help="List active launches + verdicts")
+    launches_p.add_argument("--json", action="store_true",
+                            help="Emit raw JSON instead of a table")
+
+    kill_p = sub.add_parser("kill",
+                            help="Force-kill a launch regardless of ROAS")
+    kill_p.add_argument("launch_id", help="launch_<id> to kill")
+
+    # ── Competitor monitoring ───────────────────────────────
+    comp_p = sub.add_parser("competitor",
+                            help="Track a competitor product URL")
+    comp_sub = comp_p.add_subparsers(dest="comp_action")
+    comp_add = comp_sub.add_parser("add", help="Add URL to tracker")
+    comp_add.add_argument("url")
+    comp_rm = comp_sub.add_parser("remove", help="Stop tracking URL")
+    comp_rm.add_argument("url")
+    comp_sub.add_parser("list", help="Show tracked URLs + last snapshot")
+    comp_sub.add_parser("check", help="Probe every tracked URL now")
+
     # ── System commands ──────────────────────────────────────
     sub.add_parser("health", help="System health check")
     sub.add_parser("status", help="Full system status")
@@ -1209,6 +1247,144 @@ def _cmd_learn(args) -> None:
 
 # ── System Commands ──────────────────────────────────────────
 
+def _cmd_launch(args) -> None:
+    """Run the Goal-Driven launch pipeline end-to-end."""
+    from workflows.launch import LaunchPipeline, LaunchGoal
+    from core.adapters.llm.bootstrap import register_all as _register_llms
+    _register_llms()  # idempotent; enables ContentStep's LLM call
+
+    manual_payload = None
+    if args.title:
+        gallery = [u.strip() for u in (args.gallery or "").split(",") if u.strip()]
+        manual_payload = {
+            "title": args.title,
+            "price_usd": args.price or 0.0,
+            "gallery_urls": gallery,
+        }
+
+    goal = LaunchGoal(
+        alibaba_url=args.alibaba_url or None,
+        manual_payload=manual_payload,
+        target_price=args.target_price,
+        ad_budget_day=args.ad_budget,
+        niche=args.niche,
+        copy_tone=args.tone,
+    )
+
+    if args.dry_run:
+        import dataclasses
+        print(json.dumps(dataclasses.asdict(goal), indent=2, default=str))
+        return
+
+    if goal.source_kind() == "manual" and not goal.manual_payload:
+        print("ERR: supply --alibaba-url OR --title (and --price / --gallery)",
+              file=sys.stderr)
+        sys.exit(2)
+
+    result = LaunchPipeline().run(goal)
+    print(f"\n[{result.status.upper()}] {result.launch_id}  "
+          f"({result.duration_s:.1f}s)")
+    if result.shopify_product_id:
+        print(f"  Shopify: https://admin.shopify.com/store/"
+              f"{os.environ.get('SHOPAI_SHOPIFY_URL', '').split('.')[0]}"
+              f"/products/{result.shopify_product_id}")
+    if result.shopify_handle:
+        print(f"  Storefront: https://"
+              f"{os.environ.get('SHOPAI_SHOPIFY_URL', '')}"
+              f"/products/{result.shopify_handle}")
+    print()
+    for s in result.steps:
+        marker = {"ok": "✓", "skipped": "·", "failed": "✗"}.get(s.status, " ")
+        line = f"  {marker} {s.name:18s} {s.duration_s:5.2f}s"
+        if s.error:
+            line += f"  {s.error[:60]}"
+        print(line)
+    if result.failed_step:
+        print(f"\n  aborted at {result.failed_step}: {result.failure_reason}")
+        sys.exit(3)
+
+
+def _cmd_launches(args) -> None:
+    """Print per-launch KPIs + verdicts from the ROAS bucketer."""
+    from core.autonomous.launch_evaluator import evaluate
+    report = evaluate()
+    data = report.as_dict()
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+    print(f"Tracked: {data['launches_tracked']}  "
+          f"Evaluated: {data['launches_evaluated']}  "
+          f"Kills: {len(data['kills'])}  "
+          f"Scales: {len(data['scales'])}  "
+          f"Monitors: {len(data['monitors'])}\n")
+    rows = data["kills"] + data["scales"] + data["monitors"]
+    if not rows:
+        print("  (no launches — run `shopai launch` first)")
+        return
+    print(f"  {'VERDICT':10s}  {'LAUNCH_ID':22s}  {'ROAS':6s}  "
+          f"{'REV':>7s}  {'ORD':>4s}  {'DAYS':>5s}  REASON")
+    for r in rows:
+        print(f"  {r['verdict']:10s}  {r['launch_id']:22s}  "
+              f"{r.get('estimated_roas', 0):6.2f}  "
+              f"{r.get('revenue_usd', 0):>7.2f}  "
+              f"{r.get('order_count', 0):>4d}  "
+              f"{r.get('days_live', 0):>5.1f}  "
+              f"{r.get('reason', '')[:60]}")
+
+
+def _cmd_kill(launch_id: str) -> None:
+    """Record a manual kill decision as a memory event + return."""
+    try:
+        from core.memory.intelligence import get_memory_intelligence
+        mi = get_memory_intelligence()
+        mi.create(
+            category="launch",
+            content={"launch_id": launch_id, "verdict": "manual_kill",
+                     "reason": "owner-issued kill via CLI"},
+            action="kill_launch",
+            score=3.0,
+            tags=["launch", "manual_kill", f"launch:{launch_id}"],
+        )
+        print(f"kill recorded for {launch_id}")
+    except Exception as exc:
+        print(f"ERR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_competitor(args) -> None:
+    """Manage the competitor price tracker."""
+    from core.autonomous import competitor_monitor as cm
+    action = getattr(args, "comp_action", None)
+    if action == "add":
+        ok = cm.add_url(args.url)
+        print("added" if ok else "already tracked or invalid URL")
+    elif action == "remove":
+        ok = cm.remove_url(args.url)
+        print("removed" if ok else "not tracked")
+    elif action == "list":
+        rows = cm.list_tracked()
+        if not rows:
+            print("(no tracked URLs — `shopai competitor add <url>` to add one)")
+            return
+        print(f"  {'PRICE':>8s}  {'CHECKED':>10s}  URL")
+        for r in rows:
+            price = r.get("last_price")
+            ts = r.get("last_checked", 0)
+            age = f"{int((time.time() - ts) / 60)}m" if ts else "never"
+            pricestr = f"${price:.2f}" if isinstance(price, (int, float)) else "-"
+            print(f"  {pricestr:>8s}  {age:>10s}  {r['url'][:80]}")
+    elif action == "check":
+        result = cm.check_all()
+        print(f"checked {result['checked']} URLs — "
+              f"{len(result['changes'])} significant price changes")
+        for c in result.get("changes", [])[:10]:
+            print(f"  {c['delta_pct']:+.1f}%  {c['old_price']} → "
+                  f"{c['new_price']}  {c['url'][:80]}")
+    else:
+        print("ERR: use `competitor add|remove|list|check`", file=sys.stderr)
+        sys.exit(2)
+
+
 def _cmd_health() -> None:
     import importlib
     from engines.registry import engine_count
@@ -1497,6 +1673,22 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pipeline":
         _cmd_pipeline(args.pipeline_name, getattr(args, "input"))
+        return
+
+    if args.command == "launch":
+        _cmd_launch(args)
+        return
+
+    if args.command == "launches":
+        _cmd_launches(args)
+        return
+
+    if args.command == "kill":
+        _cmd_kill(args.launch_id)
+        return
+
+    if args.command == "competitor":
+        _cmd_competitor(args)
         return
 
     if args.command == "health":
