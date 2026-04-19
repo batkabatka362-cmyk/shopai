@@ -100,6 +100,16 @@ def run_daemon(store_id="ts0efe-ih", interval=600, max_cycles=0):
     cycle_num = 0
     total_insights = 0
     total_actions = 0
+    last_housekeep_ts = 0.0
+    housekeep_interval_s = 86_400.0   # 24h — adjust via SHOPAI_HOUSEKEEP_S
+
+    import os as _os
+    try:
+        housekeep_interval_s = float(
+            _os.environ.get("SHOPAI_HOUSEKEEP_S", "86400"),
+        )
+    except (TypeError, ValueError):
+        pass
 
     while _running:
         cycle_num += 1
@@ -151,6 +161,28 @@ def run_daemon(store_id="ts0efe-ih", interval=600, max_cycles=0):
             if alerts.get("critical", 0) > 0:
                 for msg in alerts.get("messages", []):
                     print("  ALERT: {}".format(msg))
+
+            # v24-A3: once-per-interval brain housekeep. Runs memory
+            # consolidation, drift summary, learning-curve roll-up.
+            # Controlled by SHOPAI_BRAIN_HOOKS and the housekeep
+            # interval above. Fail-soft.
+            now_ts = time.time()
+            if (
+                _os.environ.get("SHOPAI_BRAIN_HOOKS", "0") == "1"
+                and now_ts - last_housekeep_ts >= housekeep_interval_s
+            ):
+                try:
+                    from core.brain.brain_facade import brain as _brain
+                    hk = _brain().housekeep()
+                    last_housekeep_ts = now_ts
+                    print("[{}] housekeep: {}".format(
+                        time.strftime("%H:%M:%S"),
+                        hk.get("status", "ok")
+                        if isinstance(hk, dict) else "ok",
+                    ))
+                except Exception as exc:
+                    print("[{}] housekeep ERROR: {}".format(
+                        time.strftime("%H:%M:%S"), str(exc)[:80]))
 
         except Exception as exc:
             print("[{}] Cycle {} ERROR: {}".format(

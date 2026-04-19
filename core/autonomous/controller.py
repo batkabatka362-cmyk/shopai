@@ -487,6 +487,41 @@ class AutonomousController:
             "phases": {},
         }
 
+        # v24-A1: expose cycle id to the gateway/recorder via env so
+        # LLM calls and outcomes can be attributed back to this cycle.
+        os.environ["SHOPAI_CURRENT_CYCLE_ID"] = str(cycle_id)
+
+        # v24-A1: brain_facade attention pre-pass. Fail-soft; missing
+        # brain never blocks the cycle. Opt-in via SHOPAI_BRAIN_HOOKS=1
+        # while shadow behaviour is still being validated.
+        if os.environ.get("SHOPAI_BRAIN_HOOKS", "0") == "1":
+            try:
+                from core.brain.brain_facade import brain as _brain
+                from core.brain.experience_recorder import record_phase
+                pending_events: list[dict[str, Any]] = []
+                # Derive lightweight events from the observations so
+                # attention can rank them without loading live data.
+                for obs in (cycle_result["phases"].get(
+                    "exploration_alert", {}).get("signals") or []):
+                    pending_events.append({
+                        "kind": "exploration",
+                        "ts": time.time(),
+                        "stakes": 0.5,
+                        "detail": obs,
+                    })
+                attn = _brain().rank_by_attention(pending_events, k=5)
+                cycle_result["phases"]["brain_attention"] = {
+                    "top": [a.get("event_id", "") for a in attn],
+                    "n": len(attn),
+                }
+                record_phase(
+                    cycle_id=cycle_id, name="brain_attention",
+                    status="ok",
+                    detail={"ranked": len(attn)},
+                )
+            except Exception as exc:
+                _record("brain_attention", exc)
+
         # Phase 0: TIME + CONTEXT awareness
         try:
             from core.brain.smart_rotation import get_time_awareness, get_exploration_boost
@@ -2060,6 +2095,61 @@ class AutonomousController:
                 cycle_result["phase_errors"]
             )
             logger.warning("reflection hook failed: %s", exc)
+
+        # v24-A1+A2: brain_facade close-out — record an assessment
+        # event, fan outcome to learning_curve, optionally shadow-run
+        # the facade think() for divergence tracking. All fail-soft.
+        if os.environ.get("SHOPAI_BRAIN_HOOKS", "0") == "1":
+            try:
+                from core.brain.experience_recorder import (
+                    record_assessment, record_outcome,
+                )
+                record_assessment(
+                    cycle_id=cycle_id,
+                    summary=f"cycle {cycle_id} finished with "
+                            f"{cycle_result.get('phase_error_count', 0)} "
+                            f"phase errors",
+                    health_score=float(
+                        cycle_result.get("phases", {})
+                        .get("brain_think", {})
+                        .get("health_score", 0) or 0,
+                    ),
+                    findings=[
+                        {"signal": k, "level": "error"}
+                        for k in (cycle_result.get("phase_errors") or {})
+                    ],
+                )
+                # Numeric KPIs roll up into learning_curve for trend
+                # detection on the cycle subsystem itself.
+                record_outcome(
+                    action_id=str(cycle_id),
+                    kpi="phase_error_count",
+                    value=float(cycle_result.get("phase_error_count", 0)),
+                    source="autonomous_controller",
+                    cycle_id=str(cycle_id),
+                )
+            except Exception as exc:
+                logger.debug("brain close-out failed: %s", exc)
+
+        if os.environ.get("SHOPAI_BRAIN_SHADOW", "0") == "1":
+            try:
+                from core.brain.brain_facade import brain as _brain
+                shadow = _brain().think(
+                    observation={
+                        "cycle_id": cycle_id,
+                        "phase_error_count": cycle_result.get(
+                            "phase_error_count", 0,
+                        ),
+                    },
+                )
+                cycle_result["phases"]["brain_shadow"] = {
+                    "stages": len(shadow.get("stages", [])),
+                    "chosen_kind": (
+                        (shadow.get("chosen_action") or {}).get("kind", "")
+                    ),
+                }
+            except Exception as exc:
+                logger.debug("brain shadow think failed: %s", exc)
 
         return cycle_result
 
