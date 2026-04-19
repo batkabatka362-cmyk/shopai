@@ -242,6 +242,14 @@ def build_parser() -> argparse.ArgumentParser:
     ask_p.add_argument("--json", action="store_true",
                        help="Emit raw JSON instead of human text")
 
+    # ── Causal inference ────────────────────────────────────
+    why_p = sub.add_parser("why",
+                           help="Investigate likely causes for a launch outcome")
+    why_p.add_argument("launch_id", help="launch_<id> to investigate")
+    why_p.add_argument("--window", type=int, default=7,
+                       help="Days of memory context around the anchor (default 7)")
+    why_p.add_argument("--json", action="store_true")
+
     # ── Multi-turn chat ─────────────────────────────────────
     chat_p = sub.add_parser("chat",
                             help="Multi-turn conversation with the brain")
@@ -1453,6 +1461,29 @@ def _cmd_ask(args) -> None:
           f"{a.duration_s:.1f}s via {a.adapter}/{a.model}")
 
 
+def _cmd_why(args) -> None:
+    """Run the causal-inference engine on a launch and print the
+    ranked list of candidate root causes."""
+    from core.brain.causal_inference import investigate_launch
+    report = investigate_launch(args.launch_id)
+    if args.window:
+        report.window_days = args.window
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    if not report.anchor_ts:
+        print(f"ERR: no launch memory for {args.launch_id}", file=sys.stderr)
+        sys.exit(2)
+    print(f"Causal investigation for {report.target_id}  "
+          f"(±{report.window_days} days around anchor)")
+    if not report.candidates:
+        print("  (no correlated events found in window)")
+        return
+    print(f"\n  {'STRENGTH':>8s}  {'CATEGORY':16s}  {'EVIDENCE':>8s}  SUMMARY")
+    for c in report.candidates[:8]:
+        print(f"  {c.strength:>8.2f}  {c.category:16s}  {c.evidence_count:>8d}  {c.summary[:80]}")
+
+
 def _cmd_chat(args) -> None:
     """Multi-turn chat backed by ChatSession persistence."""
     from core.adapters.llm.bootstrap import register_all as _reg
@@ -1869,6 +1900,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "chat":
         _cmd_chat(args)
+        return
+
+    if args.command == "why":
+        _cmd_why(args)
         return
 
     if args.command == "similar":
