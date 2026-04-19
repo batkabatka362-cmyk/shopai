@@ -110,7 +110,9 @@ def type_check(
                 repaired = t(val)
                 return True, f"coerced to {t.__name__}", repaired
             except (TypeError, ValueError):
-                pass
+                # Coerce failed — fall through to the wrong-type
+                # report below so the caller still learns why.
+                return False, f"wrong type {type(val).__name__}", None
         return False, f"wrong type {type(val).__name__}", None
     return Rule(
         name="type_check", field=field_,

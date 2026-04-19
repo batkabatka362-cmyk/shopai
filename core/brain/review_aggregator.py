@@ -88,13 +88,13 @@ def _parse_ts(v: Any) -> float:
     if isinstance(v, (int, float)):
         return float(v)
     if isinstance(v, str):
-        # Try ISO 8601 parsing
+        # Try ISO 8601 parsing; fall through to 0.0 on unparseable.
         try:
             return dt.datetime.fromisoformat(
                 v.replace("Z", "+00:00"),
             ).timestamp()
         except ValueError:
-            pass
+            return 0.0
     return 0.0
 
 
