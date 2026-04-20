@@ -1508,7 +1508,7 @@ class CoreOrchestrator:
         health = phases.get("health", {})
         events = phases.get("events", {})
 
-        return {
+        summary = {
             "decision": decision.get("action", "none"),
             "decision_reason": decision.get("reason", ""),
             "confidence": decision.get("confidence", "unknown"),
@@ -1524,6 +1524,42 @@ class CoreOrchestrator:
             "modules_active": len(self._modules),
             "intel_summary": intel.get("summary", ""),
         }
+        # Brain-layer surface: top bottleneck + prioritised insights
+        # so the cycle summary reflects what the brain actually
+        # learned this run, not just the phase outputs.
+        if self._brain_hooks_enabled:
+            try:
+                from core.brain.brain_facade import brain
+                b = brain()
+                bottleneck = b.top_bottleneck()
+                if bottleneck:
+                    summary["bottleneck_phase"] = bottleneck.get(
+                        "phase",
+                    )
+                    summary["bottleneck_reason"] = bottleneck.get(
+                        "reason",
+                    )
+                insights = b.active_insights(limit=3) or []
+                if insights:
+                    summary["top_insights"] = [
+                        {
+                            "kind": i.get("kind"),
+                            "severity": i.get("severity"),
+                            "statement": i.get("statement"),
+                        }
+                        for i in insights
+                    ]
+                mood = b.mood_snapshot() or {}
+                if mood:
+                    summary["mood_label"] = mood.get("label")
+                    summary["mood_temp"] = mood.get(
+                        "temperature",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "brain summary surface skipped: %s", exc,
+                )
+        return summary
 
     # ── Public API ──
 
