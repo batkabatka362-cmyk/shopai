@@ -750,16 +750,6 @@ class BrainFacade:
             logger.debug("name_concept failed: %s", exc)
             return ""
 
-    def observe_kpi(
-        self, kpi: str, value: float,
-    ) -> bool:
-        try:
-            _predictive_alerter().observe(kpi, value)
-            return True
-        except Exception as exc:
-            logger.debug("observe_kpi failed: %s", exc)
-            return False
-
     def project_breach(
         self,
         kpi: str,
@@ -2686,10 +2676,20 @@ class BrainFacade:
         *,
         ts: float | None = None,
     ) -> None:
+        """Feed a KPI observation to both forecaster (level forecast)
+        and predictive_alerter (threshold trajectory)."""
         try:
             _forecaster().observe(kpi, value, ts=ts)
         except Exception as exc:
-            logger.debug("observe_kpi failed: %s", exc)
+            logger.debug(
+                "observe_kpi forecaster failed: %s", exc,
+            )
+        try:
+            _predictive_alerter().observe(kpi, value, ts=ts)
+        except Exception as exc:
+            logger.debug(
+                "observe_kpi predictive_alerter failed: %s", exc,
+            )
 
     def forecast(
         self,

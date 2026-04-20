@@ -492,8 +492,11 @@ class CoreOrchestrator:
             try:
                 campaigns = cfg.get("campaigns", [])
                 if campaigns:
-                    result["optimization"] = optimizer.optimize(campaigns)
+                    actions = optimizer.optimize(campaigns)
+                    result["optimization"] = actions
                     result["health"] = optimizer.get_campaign_health(campaigns)
+                    # Feed KPIs + actions into brain learning modules
+                    self._brain_ingest_campaigns(campaigns, actions)
                 else:
                     result["optimization"] = {"actions": [], "note": "no_campaigns_provided"}
             except Exception as exc:
@@ -1024,6 +1027,72 @@ class CoreOrchestrator:
                 name,
                 (time.monotonic() - start) * 1000.0,
                 ok,
+            )
+
+    def _brain_ingest_campaigns(
+        self,
+        campaigns: list[dict[str, Any]] | None,
+        actions: list[dict[str, Any]] | None,
+    ) -> None:
+        """Feed campaign KPIs + actions into brain learning modules.
+
+        - ROAS / CPM values → predictive_alerter (trajectory forecast)
+        - Each campaign → observation_stream_reducer (situation agg)
+        - Each action → decision_reversal_detector (flip-flop watch)
+
+        Everything is best-effort; a brain-side failure never breaks
+        the cycle. Gated by SHOPAI_BRAIN_HOOKS=1.
+        """
+        if not self._brain_hooks_enabled:
+            return
+        camps = [c for c in (campaigns or []) if isinstance(c, dict)]
+        acts = [a for a in (actions or []) if isinstance(a, dict)]
+        if not camps and not acts:
+            return
+        try:
+            from core.brain.brain_facade import brain
+            b = brain()
+            for c in camps:
+                cid = str(
+                    c.get("campaign_id") or c.get("id") or "",
+                )
+                if not cid:
+                    continue
+                # Trajectory signal per KPI
+                for kpi in ("roas", "cpm", "ctr", "cpc"):
+                    val = c.get(kpi)
+                    if isinstance(val, (int, float)) and val > 0:
+                        b.observe_kpi(
+                            f"campaign.{cid}.{kpi}",
+                            float(val),
+                        )
+                # Event ingestion for situation reducer
+                b.ingest_observation(
+                    "campaign",
+                    {
+                        "id": cid,
+                        "roas": float(c.get("roas") or 0),
+                        "ctr": float(c.get("ctr") or 0),
+                        "status": str(
+                            c.get("status") or "",
+                        ),
+                    },
+                )
+            for a in acts:
+                act_name = str(a.get("action") or "")
+                cid = str(a.get("campaign_id") or "")
+                if not act_name or not cid or (
+                    act_name == "maintain"
+                ):
+                    continue
+                b.record_decision(
+                    target=f"campaign:{cid}",
+                    action=act_name,
+                    rationale=str(a.get("reason") or ""),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "brain_ingest_campaigns skipped: %s", exc,
             )
 
     def _brain_finalise(
