@@ -19,7 +19,6 @@ REQUIRED_MODULES = [
     ("agents", None),
     ("knowledge", None),
     ("memory", None),
-    ("testing", None),
     ("monitoring", None),
     ("infrastructure", None),
     ("models.routing.model_router", "ModelRouter"),
