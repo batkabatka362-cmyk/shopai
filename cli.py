@@ -640,6 +640,86 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── LX.5 multi-store federation ──────────────────────────
+    fed_p = sub.add_parser(
+        "federation",
+        help=(
+            "Multi-store federation — pool rules across "
+            "stores by similarity (LX.5)"
+        ),
+    )
+    fed_sub = fed_p.add_subparsers(dest="fed_action")
+    fed_sub.add_parser(
+        "status",
+        help="List registered stores + rule counts",
+    )
+    fed_register = fed_sub.add_parser(
+        "register",
+        help="Register a store (idempotent — re-register updates traits)",
+    )
+    fed_register.add_argument(
+        "--store", required=True,
+        help="Store id (unique)",
+    )
+    fed_register.add_argument(
+        "--trait", action="append", default=[],
+        help=(
+            "key=value; repeatable. "
+            "Example: --trait niche=pet --trait currency=USD"
+        ),
+    )
+    fed_register.add_argument(
+        "--weight", type=float, default=1.0,
+    )
+    fed_observe = fed_sub.add_parser(
+        "observe",
+        help=(
+            "Record a rule observation. Observations accumulate."
+        ),
+    )
+    fed_observe.add_argument(
+        "--store", required=True,
+    )
+    fed_observe.add_argument(
+        "--rule", required=True,
+    )
+    fed_observe.add_argument(
+        "--wins", type=int, required=True,
+    )
+    fed_observe.add_argument(
+        "--uses", type=int, required=True,
+    )
+    fed_score = fed_sub.add_parser(
+        "score",
+        help=(
+            "Federated score for a rule at a target store "
+            "(weighted by trait similarity)"
+        ),
+    )
+    fed_score.add_argument(
+        "--target", required=True,
+        help="Target store_id",
+    )
+    fed_score.add_argument(
+        "--rule", required=True,
+    )
+    fed_score.add_argument(
+        "--json", action="store_true",
+    )
+    fed_best = fed_sub.add_parser(
+        "best",
+        help="Top federated rules for a target store",
+    )
+    fed_best.add_argument(
+        "--target", required=True,
+    )
+    fed_best.add_argument(
+        "--limit", type=int, default=10,
+    )
+    fed_best.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── LX.1 customer support ────────────────────────────────
     ask_support_p = sub.add_parser(
         "ask-support",
@@ -2700,6 +2780,135 @@ def _cmd_activations(
         )
 
 
+def _parse_trait_pairs(pairs: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in pairs or []:
+        if "=" not in raw:
+            continue
+        k, v = raw.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if k:
+            out[k] = v
+    return out
+
+
+def _cmd_federation_status() -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    stores = fed.stores()
+    s = fed.stats()
+    print("Multi-store federation")
+    print(f"  Stores:       {len(stores)}")
+    print(f"  Observations: {s.get('observations', 0)}")
+    print(f"  Unique rules: {s.get('rules', 0)}")
+    if stores:
+        print()
+        print("  Registered stores:")
+        for spec in stores:
+            traits = ", ".join(
+                f"{k}={v}" for k, v in spec.traits.items()
+            ) or "(no traits)"
+            print(
+                f"    • {spec.store_id} "
+                f"[weight={spec.weight:.2f}]  "
+                f"{traits}"
+            )
+
+
+def _cmd_federation_register(
+    *, store: str, trait_pairs: list[str], weight: float,
+) -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    traits = _parse_trait_pairs(trait_pairs)
+    fed.register_store(
+        store, traits=traits, weight=weight,
+    )
+    print(
+        f"✓ Registered {store} "
+        f"[weight={weight:.2f}]  "
+        + (
+            ", ".join(
+                f"{k}={v}" for k, v in traits.items()
+            ) or "(no traits)"
+        )
+    )
+
+
+def _cmd_federation_observe(
+    *, store: str, rule: str, wins: int, uses: int,
+) -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    obs = fed.observe(
+        store, rule, wins=wins, uses=uses,
+    )
+    print(
+        f"✓ Observed {rule} @ {store}: "
+        f"wins={obs.wins}, uses={obs.uses}, "
+        f"rate={obs.win_rate:.2%}"
+    )
+
+
+def _cmd_federation_score(
+    *, target: str, rule: str, as_json: bool,
+) -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    report = fed.federated_score(
+        target_store=target, rule_id=rule,
+    )
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(
+        f"Federated score for rule={rule} "
+        f"target={target}:"
+    )
+    print(
+        f"  score: {report.federated_score:.4f}"
+    )
+    if report.contributors:
+        print()
+        print("  Contributors:")
+        for c in report.contributors:
+            print(
+                f"    • {c.get('store_id')}  "
+                f"weight={c.get('weight', 0):.3f}  "
+                f"win_rate={c.get('win_rate', 0):.2%}  "
+                f"uses={c.get('uses', 0)}"
+            )
+    else:
+        print("  (no observations yet)")
+
+
+def _cmd_federation_best(
+    *, target: str, limit: int, as_json: bool,
+) -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    best = fed.best_rules_for(
+        target_store=target, top_n=limit,
+    )
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in best], indent=2,
+        ))
+        return
+    if not best:
+        print(f"No federated rules yet for {target}.")
+        return
+    print(
+        f"Top federated rules for {target}:"
+    )
+    for r in best:
+        print(
+            f"  • {r.rule_id:30s}  "
+            f"score={r.federated_score:.4f}"
+        )
+
+
 def _cmd_ask_support(
     *, question: str, as_json: bool,
 ) -> None:
@@ -3454,6 +3663,39 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "federation":
+        action = (
+            getattr(args, "fed_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_federation_status()
+        elif action == "register":
+            _cmd_federation_register(
+                store=args.store,
+                trait_pairs=args.trait,
+                weight=float(args.weight),
+            )
+        elif action == "observe":
+            _cmd_federation_observe(
+                store=args.store,
+                rule=args.rule,
+                wins=int(args.wins),
+                uses=int(args.uses),
+            )
+        elif action == "score":
+            _cmd_federation_score(
+                target=args.target,
+                rule=args.rule,
+                as_json=bool(args.json),
+            )
+        elif action == "best":
+            _cmd_federation_best(
+                target=args.target,
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "ask-support":
