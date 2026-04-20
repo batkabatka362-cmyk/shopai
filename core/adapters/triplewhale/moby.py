@@ -448,3 +448,31 @@ class MobyAdapter:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+
+# ── Singleton ─────────────────────────────────────────────
+
+_SINGLETON: "MobyAdapter | None" = None
+_SINGLETON_LOCK = threading.Lock()
+
+
+def get_moby_adapter() -> MobyAdapter:
+    global _SINGLETON
+    if _SINGLETON is None:
+        with _SINGLETON_LOCK:
+            if _SINGLETON is None:
+                _SINGLETON = MobyAdapter()
+    return _SINGLETON
+
+
+def reset_moby_adapter_for_tests() -> None:
+    global _SINGLETON
+    with _SINGLETON_LOCK:
+        if _SINGLETON is not None:
+            try:
+                _SINGLETON.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "moby singleton close: %s", exc,
+                )
+        _SINGLETON = None

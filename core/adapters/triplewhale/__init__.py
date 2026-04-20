@@ -6,10 +6,14 @@ from core.adapters.triplewhale.moby import (
     MobyAdapter,
     MobyRecommendation,
     RLDisagreementLog,
+    get_moby_adapter,
+    reset_moby_adapter_for_tests,
 )
 
 __all__ = [
     "MobyAdapter",
     "MobyRecommendation",
     "RLDisagreementLog",
+    "get_moby_adapter",
+    "reset_moby_adapter_for_tests",
 ]

@@ -105,6 +105,28 @@ def _hooks_enabled() -> bool:
     return os.getenv("SHOPAI_BRAIN_HOOKS", "") == "1"
 
 
+def _moby_actual_from_event(event: "OutcomeEvent") -> str:
+    """Map an OutcomeEvent into the action-token space Moby
+    records in its disagreement log. Empty string means 'no
+    actionable outcome to record'.
+
+    Mapping rationale:
+      * purchase + launched capability → ``activate``
+        (the decision to turn the campaign on paid off)
+      * return / cancel              → ``pause``
+        (the campaign should have stayed off)
+      * non-launch purchases are ignored here — they don't
+        carry a campaign-level action signal.
+    """
+    if event.kind == "purchase" and event.capability_name in (
+        "launch_sku",
+    ):
+        return "activate"
+    if event.kind in ("return", "cancel"):
+        return "pause"
+    return ""
+
+
 class OutcomeRecorder:
     """Feeds normalised outcome events into v33-v38 brain learners.
 
@@ -256,6 +278,30 @@ class OutcomeRecorder:
         except Exception as exc:  # noqa: BLE001
             logger.debug("mood observe failed: %s", exc)
             recorded["mood"] = False
+
+        # 7. Moby vote-comparator resolve (Wave C-1 A7).
+        #    When an outcome lands for a decision that had a
+        #    pending moby/shopai vote disagreement, close it
+        #    with the actual action taken so win-rate becomes
+        #    a trust signal, not a guess.
+        if event.decision_id and event.kind in (
+            "purchase", "launch", "return", "cancel",
+        ):
+            try:
+                from core.brain.moby_vote_comparator import (
+                    get_moby_vote_comparator,
+                )
+                actual = _moby_actual_from_event(event)
+                if actual:
+                    get_moby_vote_comparator().resolve_outcome(
+                        decision_id=event.decision_id,
+                        actual=actual,
+                    )
+                    recorded["moby_resolved"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "moby resolve skipped: %s", exc,
+                )
 
         with self._lock:
             self._recorded_count += 1
