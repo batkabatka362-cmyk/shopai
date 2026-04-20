@@ -41,9 +41,11 @@
 - **Finding:** Could move into `interface/api/` per new layout
   but no urgency. Keep as-is; `interface/` facade re-exports.
 
-### brain/  (4 subdirs)
+### ~~brain/~~  (DELETED 2026-04-20, C1)
 - **Purpose:** unclear — `core/brain/` is the real brain
 - **Finding:** **CONFLICT** — two folders claim "brain" concept.
+- **Resolved 2026-04-20:** zero imports found across the
+  repo; folder removed. `core/brain/` is canonical.
   Verify which is canonical; deprecate the other.
 - **Recommended:** audit contents; if top-level `brain/` is
   legacy scaffold from pre-Sprint-1, delete after confirming
@@ -115,7 +117,7 @@
   duplicates `core/system/` concerns, consolidate.
 - **Recommended:** enumerate files and decide.
 
-### integrations/  (0 subdirs)
+### ~~integrations/~~  (DELETED 2026-04-20, C1)
 - **Purpose:** 3rd-party integrations
 - **Finding:** **EMPTY** or file-only. Check if used; if not,
   remove or absorb into `core/adapters/`.
@@ -181,7 +183,7 @@
 - **Finding:** ✓ clean. Could live under `core/` but separate
   is OK.
 
-### testing/  (1 subdir)
+### ~~testing/~~  (DELETED 2026-04-20, C1)
 - **Purpose:** existing test infrastructure (not pytest; the
   integration harness)
 - **Finding:** parallel to `tests/` pytest suite. **CONFUSING
@@ -218,11 +220,11 @@
 
 | Folder A | Folder B | Winner | Action |
 |---|---|---|---|
-| `brain/` | `core/brain/` | `core/brain/` | audit + deprecate top-level `brain/` |
-| `memory/` | `core/memory/` | `core/memory/` | audit + consolidate `memory/` |
+| ~~`brain/`~~ | `core/brain/` | `core/brain/` | ✅ DELETED 2026-04-20 (C1) |
+| `memory/` | `core/memory/` | `core/memory/` | audit + consolidate `memory/` (C3 — LIVE code uses top-level `memory/`; consolidation is non-trivial) |
 | `knowledge/` | `core/memory/` + `vault/Knowledge/` | clarify | rename or merge |
 | `infrastructure/` | `core/system/` | verify | check overlap |
-| `testing/` | `tests/` | `tests/` | rename `testing/` → `test_harness/` |
+| ~~`testing/`~~ | `tests/` | `tests/` | ✅ DELETED 2026-04-20 (C1) |
 
 ## Empty or near-empty folders
 
@@ -251,17 +253,19 @@ dir without one is a bug.
 
 ## Prioritized cleanup (5 low-risk items)
 
-1. **Enumerate + delete dead scaffolds** — confirm `brain/`,
-   `integrations/`, `workflows/` are unused, then remove.
-   Preserve shim for any surviving imports.
-2. **Rename `testing/` → `test_harness/`** — resolves the
-   `testing/` vs `tests/` confusion.
-3. **Consolidate `memory/` into `core/memory/`** — add backward
-   shim.
-4. **Add `docs/nav_{folder}.md` for each of the 12 concepts**
-   — Phase 1 of reorg plan.
-5. **Ship remaining 4 facades (`feedback/`, `evaluation/`,
-   `modules/`, `flow/`)** — Phase 2 of reorg plan.
+1. ✅ **Enumerate + delete dead scaffolds** — 2026-04-20 (C1).
+   `brain/`, `integrations/`, `testing/` removed (zero imports
+   in the entire codebase). `workflows/` KEPT — actively used
+   by cli.py, api/server.py, tests.
+2. ~~Rename `testing/` → `test_harness/`~~ — moot; testing/
+   was dead and got deleted.
+3. **Consolidate `memory/` into `core/memory/`** — deferred
+   (5 live import sites). Non-trivial without breaking
+   changes; revisit as a separate ticket.
+4. ✅ **Add `docs/nav_{folder}.md` for each of the 12
+   concepts** — 2026-04-20 (B).
+5. ✅ **Ship remaining 4 facades (`feedback/`, `evaluation/`,
+   `modules/`, `flow/`)** — earlier in this session.
 
 ## Final verdict
 
