@@ -660,6 +660,55 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── L9 learning / rulebook ───────────────────────────────
+    learned_p = sub.add_parser(
+        "brain-learned",
+        help=(
+            "Show the RuleBook — what the brain has learned "
+            "from episodes + outcomes"
+        ),
+    )
+    learned_sub = learned_p.add_subparsers(
+        dest="learned_action",
+    )
+    learned_sub.add_parser(
+        "status",
+        help=(
+            "Rule counts by status + active thresholds"
+        ),
+    )
+    learned_top = learned_sub.add_parser(
+        "top",
+        help=(
+            "Highest-confidence rules (ranked by "
+            "confidence = wins × coverage)"
+        ),
+    )
+    learned_top.add_argument(
+        "--limit", type=int, default=10,
+    )
+    learned_top.add_argument(
+        "--json", action="store_true",
+    )
+    learned_ls = learned_sub.add_parser(
+        "list",
+        help="List rules by status",
+    )
+    learned_ls.add_argument(
+        "--status",
+        choices=(
+            "proposed", "active",
+            "deprecated", "killed",
+        ),
+        default="proposed",
+    )
+    learned_ls.add_argument(
+        "--limit", type=int, default=20,
+    )
+    learned_ls.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── L2 niche discovery ───────────────────────────────────
     niches_p = sub.add_parser(
         "niches",
@@ -2902,6 +2951,90 @@ def _cmd_activations(
         )
 
 
+def _cmd_brain_learned_status() -> None:
+    from core.learning.rulebook import get_rulebook
+    book = get_rulebook()
+    s = book.stats()
+    print("RuleBook — what the brain has learned")
+    print(f"  Total rules:      {s['total_rules']}")
+    for status, count in (
+        s.get("by_status") or {}
+    ).items():
+        print(f"    {status:12s}  {count}")
+    print()
+    print(
+        f"  Auto-activate:    {s['min_evidence_for_active']}"
+        f" evidence @ "
+        f"{s['min_win_rate_for_active']:.0%} win-rate"
+    )
+    print(
+        f"  Auto-kill:        "
+        f"{s['kill_after_applied']} applied @ "
+        f"< {s['kill_win_rate_floor']:.0%} win-rate"
+    )
+
+
+def _cmd_brain_learned_top(
+    *, limit: int, as_json: bool,
+) -> None:
+    from core.learning.rulebook import get_rulebook
+    book = get_rulebook()
+    rules = book.top_by_confidence(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in rules], indent=2,
+        ))
+        return
+    if not rules:
+        print("No learned rules yet.")
+        return
+    print(
+        f"Top {len(rules)} rules by confidence:"
+    )
+    print(
+        f"  {'Status':>10}  {'Conf':>5}  "
+        f"{'Win%':>5}  {'N':>3}  Pattern → Action"
+    )
+    for r in rules:
+        print(
+            f"  {r.status:>10}  "
+            f"{r.confidence:>5.2f}  "
+            f"{r.win_rate_ema:>5.0%}  "
+            f"{r.applied_count:>3}  "
+            f"{r.pattern[:40]:40s} → {r.action}"
+        )
+
+
+def _cmd_brain_learned_list(
+    *, status: str, limit: int, as_json: bool,
+) -> None:
+    from core.learning.rulebook import get_rulebook
+    book = get_rulebook()
+    rules = book.by_status(status, limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in rules], indent=2,
+        ))
+        return
+    if not rules:
+        print(f"No {status} rules.")
+        return
+    print(f"{status.upper()} rules ({len(rules)}):")
+    for r in rules:
+        print(
+            f"  [{r.rule_id[:10]}] "
+            f"{r.origin:18s}  "
+            f"evidence={r.evidence_count:>3}  "
+            f"applied={r.applied_count:>3}  "
+            f"win_ema={r.win_rate_ema:.0%}"
+        )
+        print(
+            f"      {r.pattern}  →  {r.action}"
+        )
+        if r.note:
+            print(f"      note: {r.note}")
+
+
 def _cmd_niches(
     *,
     candidate_limit: int,
@@ -4016,6 +4149,26 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "brain-learned":
+        action = (
+            getattr(args, "learned_action", None)
+            or "status"
+        )
+        if action == "status":
+            _cmd_brain_learned_status()
+        elif action == "top":
+            _cmd_brain_learned_top(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        elif action == "list":
+            _cmd_brain_learned_list(
+                status=args.status,
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "niches":
