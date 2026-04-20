@@ -660,6 +660,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── Brain state synthesizer ──────────────────────────────
+    brain_p = sub.add_parser(
+        "brain",
+        help=(
+            "Holistic brain state snapshot — crisis + risk + "
+            "memory + learning + trust + rationale + "
+            "derived priorities (Track 9)"
+        ),
+    )
+    brain_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── Decision rationale replay ────────────────────────────
     explain_p = sub.add_parser(
         "explain",
@@ -3066,6 +3079,72 @@ def _cmd_activations(
         )
 
 
+def _cmd_brain_snapshot(*, as_json: bool) -> None:
+    from core.brain.brain_state_synthesizer import (
+        get_brain_state_synthesizer,
+    )
+    synth = get_brain_state_synthesizer()
+    state = synth.snapshot()
+    if as_json:
+        print(json.dumps(state.as_dict(), indent=2))
+        return
+    icon = {
+        "green": "✓", "yellow": "?",
+        "red": "✗",
+    }.get(state.crisis_level, "?")
+    print(
+        f"{icon} Brain snapshot — "
+        f"crisis={state.crisis_level.upper()}  "
+        + ("(HALTED)" if state.halted else "")
+    )
+    print()
+    print(
+        f"  Ad spend today:   "
+        f"{state.tripwire_utilisation:.0%} of cap  "
+        f"(${state.tripwire_remaining_usd:.2f} remaining)"
+    )
+    if state.rule_counts:
+        inline = "  ".join(
+            f"{k}={v}"
+            for k, v in sorted(state.rule_counts.items())
+        )
+        print(f"  Learned rules:    {inline}")
+    if state.memory_counts:
+        inline = "  ".join(
+            f"{k}={v}"
+            for k, v in state.memory_counts.items()
+        )
+        print(f"  Memory:           {inline}")
+    if state.trust_top:
+        names = ", ".join(
+            f"{s}({t:.0%})"
+            for s, t in state.trust_top[:3]
+        )
+        print(f"  Top sources:      {names}")
+    print(
+        f"  Decisions logged: {state.rationale_total}"
+    )
+    print()
+    if state.priorities:
+        print("Priorities:")
+        for p in state.priorities:
+            mark = {
+                "critical": "✗",
+                "warning": "!",
+                "info": "·",
+            }.get(p.level, "·")
+            print(f"  {mark} [{p.level}] {p.message}")
+            if p.detail:
+                print(f"      {p.detail}")
+    else:
+        print("Priorities: (none — system idle)")
+    if state.notes:
+        print()
+        print("Notes:")
+        for n in state.notes:
+            print(f"  • {n}")
+
+
 def _cmd_vault_sweep(
     *, vault: str, dry_run: bool, as_json: bool,
 ) -> None:
@@ -4544,6 +4623,10 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "brain":
+        _cmd_brain_snapshot(as_json=bool(args.json))
         return
 
     if args.command == "vault-sweep":
