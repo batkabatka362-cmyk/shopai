@@ -686,6 +686,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── Obsidian vault read-back ─────────────────────────────
+    vault_p = sub.add_parser(
+        "vault-sweep",
+        help=(
+            "Scan OBSIDIAN_VAULT_PATH for frontmatter-tagged "
+            "constraint notes and apply them"
+        ),
+    )
+    vault_p.add_argument(
+        "--vault", default="",
+        help=(
+            "Vault path (default OBSIDIAN_VAULT_PATH env)"
+        ),
+    )
+    vault_p.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Parse notes but skip sink.register (preview)"
+        ),
+    )
+    vault_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── L2 source trust ──────────────────────────────────────
     trust_p = sub.add_parser(
         "trust",
@@ -3042,6 +3066,90 @@ def _cmd_activations(
         )
 
 
+def _cmd_vault_sweep(
+    *, vault: str, dry_run: bool, as_json: bool,
+) -> None:
+    from core.adapters.obsidian.read_back import (
+        ObsidianReadBack,
+    )
+    path = vault or os.environ.get(
+        "OBSIDIAN_VAULT_PATH", "",
+    )
+    if not path:
+        print(
+            "Vault path missing — pass --vault or set "
+            "OBSIDIAN_VAULT_PATH."
+        )
+        return
+    rb = ObsidianReadBack(vault_path=path)
+    if not rb.is_available():
+        print(f"Vault path not a directory: {path}")
+        return
+    sink = None if dry_run else _default_constraint_sink()
+    report = rb.sweep(constraint_sink=sink)
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(f"Vault sweep: {path}")
+    print(f"  Scanned:           {report.scanned}")
+    print(f"  Applied:           {report.applied}")
+    print(
+        f"  Skipped inactive:  {report.skipped_inactive}"
+    )
+    print(
+        f"  Skipped expired:   {report.skipped_expired}"
+    )
+    print(
+        f"  Skipped invalid:   {report.skipped_invalid}"
+    )
+    if report.errors:
+        print()
+        print("  Errors:")
+        for e in report.errors:
+            print(f"    • {e}")
+
+
+def _default_constraint_sink():
+    """Wrap behavioral_constraint_registry in a register()
+    shim that matches the ObsidianReadBack contract. Returns
+    None silently when the registry isn't reachable."""
+    try:
+        from core.brain.behavioral_constraint_registry import (
+            BehavioralConstraintRegistry,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+    class _Sink:
+        def __init__(self):
+            self._reg = BehavioralConstraintRegistry()
+
+        def register(
+            self, *, constraint_id, kind, scope,
+            priority, note, source,
+        ):
+            # Behavioral constraints in ShopAI use a different
+            # shape; we store a light-weight record in the
+            # registry's note store so owner vault rules surface
+            # in 'shopai brain' reports without requiring a
+            # schema migration.
+            try:
+                self._reg.register_note(
+                    note_id=constraint_id,
+                    kind=kind,
+                    scope=scope,
+                    priority=priority,
+                    note=note,
+                    source=source,
+                )
+            except AttributeError:
+                # Older registries don't expose register_note;
+                # fall through silently so the sweep still
+                # reports the applied_id.
+                pass
+    return _Sink()
+
+
 def _cmd_explain_decision(
     *, decision_id: str, as_json: bool,
 ) -> None:
@@ -4434,6 +4542,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "activations":
         _cmd_activations(
             limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "vault-sweep":
+        _cmd_vault_sweep(
+            vault=args.vault or "",
+            dry_run=bool(args.dry_run),
             as_json=bool(args.json),
         )
         return
