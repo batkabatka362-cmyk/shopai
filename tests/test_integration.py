@@ -175,12 +175,23 @@ class TestShopifyBridgeIntegration(unittest.TestCase):
     """
 
     def test_fetch_products_raises_when_unavailable(self):
+        """Explicitly clear Shopify env vars so CI dummy values
+        don't make the bridge attempt a real 401 HTTP call. See
+        tests/test_core.py for the same rationale."""
+        import os
+        from unittest.mock import patch
         from core.bridge.shopify_bridge import (
             ShopifyBridge, ShopifyBridgeUnavailable,
         )
-        sb = ShopifyBridge()
-        with self.assertRaises(ShopifyBridgeUnavailable):
-            sb.fetch_products()
+        with patch.dict(
+            os.environ,
+            {"SHOPAI_SHOPIFY_URL": "",
+             "SHOPAI_SHOPIFY_KEY": ""},
+            clear=False,
+        ):
+            sb = ShopifyBridge()
+            with self.assertRaises(ShopifyBridgeUnavailable):
+                sb.fetch_products()
 
     def test_fetch_for_engine_returns_dict(self):
         from core.bridge.shopify_bridge import ShopifyBridge
