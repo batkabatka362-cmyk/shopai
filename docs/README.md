@@ -36,20 +36,20 @@ The repo is organized into 12 conceptual groups surfaced by
 facades. Physical files live in legacy paths for backward
 compat; facades re-export them.
 
-| Concept | Physical source | Facade |
-|---|---|---|
-| core | `core/` | n/a (already top-level) |
-| orchestrator | `core/core_orchestrator.py`, `scripts/autopilot_loop.py`, `scripts/owner_loop.py`, `execution/launch/*` | `orchestrator/` |
-| interface | `cli.py`, `api/`, `mcp_server/`, `agents/owner_dialog/` | `interface/` |
-| feedback | `core/attribution/`, `core/bridge/agentic_storefront.py`, `core/integration/engine_outcome_bus.py` | `feedback/` |
-| evaluation | `simulation/`, `execution/verify/`, `core/brain/world_model_calibration.py`, `tests/` | `evaluation/` |
-| modules | `core/risk`, `core/crisis`, `core/legal`, `core/planning`, `core/federation`, `execution/compliance`, `execution/fulfillment`, `execution/seo` | `modules/` |
-| flow | `agents/learning/`, `core/memory/consolidator.py`, `core/learning/rulebook.py`, `core/learning/pattern_miner.py`, `core/learning/llm_pattern_miner.py`, `workflows/` | `flow/` |
-| agents | `agents/` | n/a |
-| layers | `layers/` | n/a |
-| engines | `engines/` (~2,500 files) | n/a |
-| tools | `tools/`, `scripts/` | n/a |
-| adapters | `core/adapters/` | `adapters/` |
+| Concept | Nav doc | Physical source | Facade |
+|---|---|---|---|
+| core | [nav_core.md](./nav_core.md) | `core/` | n/a (already top-level) |
+| orchestrator | [nav_orchestrator.md](./nav_orchestrator.md) | `core/core_orchestrator.py`, `scripts/autopilot_loop.py`, `scripts/owner_loop.py`, `execution/launch/*` | `orchestrator/` |
+| interface | [nav_interface.md](./nav_interface.md) | `cli.py`, `api/`, `mcp_server/`, `agents/owner_dialog/` | `interface/` |
+| feedback | [nav_feedback.md](./nav_feedback.md) | `core/attribution/`, `core/bridge/agentic_storefront.py`, `core/integration/engine_outcome_bus.py` | `feedback/` |
+| evaluation | [nav_evaluation.md](./nav_evaluation.md) | `simulation/`, `execution/verify/`, `core/brain/world_model_calibration.py`, `tests/` | `evaluation/` |
+| modules | [nav_modules.md](./nav_modules.md) | `core/risk`, `core/crisis`, `core/legal`, `core/planning`, `core/federation`, `execution/compliance`, `execution/fulfillment`, `execution/seo` | `modules/` |
+| flow | [nav_flow.md](./nav_flow.md) | `agents/learning/`, `core/memory/consolidator.py`, `core/learning/rulebook.py`, `core/learning/pattern_miner.py`, `core/learning/llm_pattern_miner.py`, `workflows/` | `flow/` |
+| agents | [nav_agents.md](./nav_agents.md) | `agents/` | n/a |
+| layers | [nav_layers.md](./nav_layers.md) | `layers/` | n/a |
+| engines | [nav_engines.md](./nav_engines.md) | `engines/` (~2,500 files) | n/a |
+| tools | [nav_tools.md](./nav_tools.md) | `tools/`, `scripts/` | n/a |
+| adapters | [nav_adapters.md](./nav_adapters.md) | `core/adapters/` | `adapters/` |
 
 ## 6. CLI surface
 
