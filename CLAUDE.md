@@ -486,6 +486,51 @@ Blockers: <if any>
 - Хэтэрвэл `insight_synthesizer` warning гарч, owner-руу
   escalate хийнэ.
 
+### K. Self-check discipline (wrong-loop detector)
+
+Agent нь infrastructure-аа илүүтэйгээр plumb-дэн, бодит хэрэглэгчийн
+орлого руу орох замыг алдаж болзошгүй. Буруу loop-оос гарахын тулд
+*3 commit тутам* дараах 4 асуултыг ассесcмент хийнэ:
+
+1. **Mission-ийн дагуу уу?** Сүүлийн 3 commit нь дараах аль нэгийг
+   шууд урагшлуулсан уу? — (a) dropshipping revenue, (b) content/ads
+   production, (c) brand/social channel өсөлт, (d) autonomy (брэйн
+   өөрөө шийд гаргах), (e) self-improvement (алдааны сургамж).
+   Хариу *none* бол буруу loop.
+2. **Plumbing vs Capability?** Сүүлийн 3 commit нь "observe /
+   record / surface" хийсэн үү, эсвэл "spend / earn / reach a
+   buyer" хийсэн үү? Харьцаа 2:1 plumbing-capability байвал OK,
+   түүнээс их бол **pivot**.
+3. **Month-tomorrow test.** "Хэрэв би энэ ажлыг сар хийсэн бол
+   Shopify store дээр үүнээс хамаарч one real order байх байсан уу?"
+   Хариу *no* бол зогсоод AGI_MISSION_PLAN-аа дахин унш.
+4. **Dollar distance.** Өнөөдрийн ажилаас real $ event-тэй хүрэх
+   хамгийн богино зам хэд хэдэн commit вэ? 5+ бол plan нь буруу.
+
+Хариу нь *wrong loop* гэвэл:
+
+```
+STOP → re-read docs/AGI_MISSION_PLAN.md →
+  pick highest-P item that ENDS in a $ event →
+  restart loop
+```
+
+### Cross-check (double-verification before commit)
+
+Commit хийхээсээ өмнө дараах хоёр шалгалтыг **хоёулаа** гүйцэтгэ:
+
+1. **Technical cross-check:**
+   - `pytest <changed>.py` — өөрчилсөн module-ийн тест
+   - `pytest <dependent>.py` — нэмэлтээр хамааралтай хэсэг
+   - Smoke-run if the cycle / webhook / adapter path is touched
+2. **Strategic cross-check (§4c.K):**
+   - Mission-ийн дагуу уу?
+   - Plumbing vs Capability харьцаа зөв үү?
+   - Dollar distance 4-өөс доошоо уу?
+
+Хоёр шалгалт pass хийсний дараа л commit. Commit message нь заавал
+сүүлийн 2 асуултын хариуг дурдна (1-2 өгүүлбэрийн хүрээнд).
+
 ---
 
 ## 5. LLM / MODEL ТОХИРГОО (3-Agent Architecture)

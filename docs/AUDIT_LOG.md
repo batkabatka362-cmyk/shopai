@@ -16,6 +16,28 @@
 
 ## Open
 
+### 2026-04-20 · pre-existing · P2 · duplicate test name, order-flaky
+
+`test_fetch_products_raises_when_unavailable` is defined in **three
+separate test files**:
+
+  * tests/test_core.py
+  * tests/test_integration.py
+  * tests/test_stub_cleanup.py
+
+Runs clean in isolation; fails in full-suite sweep because an
+earlier cycle run leaves ShopifyBridge in a state where the
+``unavailable`` assertion no longer holds. Likely module-level
+cache pollution; not introduced by §4c iterations.
+
+**Repro:** `pytest tests/ --ignore=tests/test_intelligence_systems.py`
+
+**Fix direction:** dedupe the three copies, or gate the assertion
+on a fresh bridge instance with explicit env reset. Defer — does
+not block mission work.
+
+---
+
 ### 2026-04-20 · pre-existing · P3 · engines/ dead code sweep
 
 ~2500 engines in `engines/` per CLAUDE.md §2. Many are
