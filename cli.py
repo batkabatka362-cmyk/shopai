@@ -1402,6 +1402,19 @@ def _cmd_store_configure(args) -> None:
         print("No store specified and no active store set.")
         return
 
+    # When the owner types an explicit store_id it must exist in
+    # the registry. Otherwise get_credentials() would happily
+    # return env-var fallback credentials for a *different*
+    # store — a cross-store write that's easy to miss.
+    if args.store_id and hasattr(sm, "db"):
+        store_row = sm.db.get_store(args.store_id)
+        if not store_row:
+            print(
+                f"Store {args.store_id!r} not found "
+                "in registry.",
+            )
+            return
+
     creds = sm.get_credentials(store_id)
     if not creds or not creds.get("shop_url"):
         print(f"Store {store_id!r} not found or has no shop_url.")
