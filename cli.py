@@ -532,6 +532,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── LX.6 owner dialog ────────────────────────────────────
+    notify_p = sub.add_parser(
+        "notify",
+        help=(
+            "Send launch digest to the owner via Telegram "
+            "(LX.6 owner dialog)"
+        ),
+    )
+    notify_p.add_argument(
+        "--hours", type=float, default=24.0 * 7,
+        help="Window in hours (default 168 / 7d)",
+    )
+    notify_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Compose the message without actually sending",
+    )
+    notify_p.add_argument(
+        "--chat-id", type=str, default=None,
+        help="Override TELEGRAM_CHAT_ID for this message",
+    )
+    notify_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── L7 risk / tripwire ───────────────────────────────────
     risk_p = sub.add_parser(
         "risk",
@@ -2540,6 +2564,38 @@ def _cmd_activations(
         )
 
 
+def _cmd_notify(
+    *, hours: float, dry_run: bool,
+    chat_id: str | None, as_json: bool,
+) -> None:
+    """Compose launch digest and push to Telegram."""
+    from agents.owner_dialog.notify import notify_owner
+    result = notify_owner(
+        period_hours=hours,
+        dry_run=dry_run,
+        chat_id=chat_id,
+    )
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    if result.sent:
+        print(
+            f"✓ Sent digest to Telegram "
+            f"(message_id={result.message_id})"
+        )
+        return
+    if result.reason == "dry_run":
+        print("— dry run — composed digest below —")
+        print()
+        print(result.text)
+        return
+    print(f"✗ Not sent: {result.reason}")
+    if result.text:
+        print()
+        print("Preview:")
+        print(result.text)
+
+
 def _cmd_risk_status(*, as_json: bool) -> None:
     """Show today's ad spend rollup vs caps."""
     from core.risk.tripwire import get_risk_tripwire
@@ -3031,6 +3087,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "activations":
         _cmd_activations(
             limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "notify":
+        _cmd_notify(
+            hours=float(args.hours),
+            dry_run=bool(args.dry_run),
+            chat_id=args.chat_id,
             as_json=bool(args.json),
         )
         return

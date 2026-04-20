@@ -104,6 +104,57 @@ class LaunchDigest:
                 lines.append(f"  · {r}")
         return "\n".join(lines)
 
+    def as_markdown(self) -> str:
+        """Telegram-safe Markdown (v1). Escapes underscores that
+        could otherwise start italics mid-text."""
+        def _safe(s: str) -> str:
+            return str(s).replace("_", r"\_").replace(
+                "*", r"\*",
+            )
+
+        lines = [
+            f"*ShopAI digest — {_safe(self.period_label)}*",
+            "",
+            (
+                f"• *Launches*: {self.launches_successful}/"
+                f"{self.launches_total} ok, "
+                f"{self.launches_blocked} blocked"
+            ),
+            (
+                f"• *Learning*: {self.distill_accepted}/"
+                f"{self.distill_proposals} proposals "
+                f"accepted"
+            ),
+            (
+                f"• *Journal*: {self.journal_pending} pending, "
+                f"{self.journal_applied} applied"
+            ),
+            (
+                f"• *Spend*: $"
+                f"{self.compute_spent_usd:.2f} compute"
+            ),
+            f"• *Mood*: {_safe(self.mood_label)}",
+            f"• *Bottleneck*: {_safe(self.bottleneck_phase)}",
+        ]
+        if self.top_insights:
+            lines.append("")
+            lines.append("*Top insights*:")
+            for i in self.top_insights:
+                sev = _safe(str(i.get("severity", "?")))
+                stmt = _safe(str(i.get("statement", ""))[:80])
+                lines.append(f"  _\\[{sev}]_ {stmt}")
+        if self.recommendations:
+            lines.append("")
+            lines.append("*Recommended next*:")
+            for r in self.recommendations:
+                lines.append(f"  · {_safe(r)}")
+        lines.append("")
+        lines.append(
+            "_Reply_: `approve <id>` · `reject <id>` · "
+            "`status` · `limits` · `pause`",
+        )
+        return "\n".join(lines)
+
 
 def _period_label(hours: float) -> str:
     if hours <= 25:
