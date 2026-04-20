@@ -28,7 +28,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from utils.logger import get_logger
 
@@ -143,6 +143,15 @@ class Snapshot:
     bottlenecks: dict[str, Any] = field(default_factory=dict)
     strategy_coherence: dict[str, Any] = field(default_factory=dict)
     readiness: dict[str, Any] = field(default_factory=dict)
+    # v38: heuristics, intentions, surprise context, failure taxonomy,
+    # value conflicts, knowledge transfer, behavioral constraints
+    heuristics: dict[str, Any] = field(default_factory=dict)
+    intentions: dict[str, Any] = field(default_factory=dict)
+    surprise_context: dict[str, Any] = field(default_factory=dict)
+    failures: dict[str, Any] = field(default_factory=dict)
+    value_conflicts: dict[str, Any] = field(default_factory=dict)
+    transfer_priority: dict[str, Any] = field(default_factory=dict)
+    behavioral_constraints: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -238,6 +247,13 @@ class Snapshot:
             "bottlenecks": self.bottlenecks,
             "strategy_coherence": self.strategy_coherence,
             "readiness": self.readiness,
+            "heuristics": self.heuristics,
+            "intentions": self.intentions,
+            "surprise_context": self.surprise_context,
+            "failures": self.failures,
+            "value_conflicts": self.value_conflicts,
+            "transfer_priority": self.transfer_priority,
+            "behavioral_constraints": self.behavioral_constraints,
         }
 
 
@@ -442,6 +458,25 @@ class BrainFacade:
             lambda: _strategy_coherence_summary(),
         )
         snap.readiness = _safe(lambda: _readiness_gate_summary())
+        snap.heuristics = _safe(lambda: _heuristic_bank_summary())
+        snap.intentions = _safe(
+            lambda: _intention_tracker_summary(),
+        )
+        snap.surprise_context = _safe(
+            lambda: _surprise_contextualizer_summary(),
+        )
+        snap.failures = _safe(
+            lambda: _failure_taxonomy_summary(),
+        )
+        snap.value_conflicts = _safe(
+            lambda: _value_conflict_arbiter_summary(),
+        )
+        snap.transfer_priority = _safe(
+            lambda: _transfer_prioritizer_summary(),
+        )
+        snap.behavioral_constraints = _safe(
+            lambda: _behavioral_constraint_summary(),
+        )
         return snap
 
     # ── v32: integration + divergence + journal ─────────
@@ -1722,6 +1757,237 @@ class BrainFacade:
         except Exception as exc:
             logger.debug("check_readiness failed: %s", exc)
             return {"verdict": "gather", "reason": str(exc)}
+
+    # ── v38: heuristics, intentions, surprise context, failures,
+    #         value conflicts, knowledge transfer, constraints ──
+
+    def evaluate_heuristics(
+        self, ctx: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        try:
+            v = _heuristic_bank().evaluate(ctx)
+            return v.as_dict() if v else None
+        except Exception as exc:
+            logger.debug("evaluate_heuristics failed: %s", exc)
+            return None
+
+    def record_heuristic_outcome(
+        self, heuristic_id: str, *, was_correct: bool,
+    ) -> bool:
+        try:
+            return _heuristic_bank().record_outcome(
+                heuristic_id, was_correct=was_correct,
+            )
+        except Exception as exc:
+            logger.debug(
+                "record_heuristic_outcome failed: %s", exc,
+            )
+            return False
+
+    def declare_intention(
+        self,
+        *,
+        statement: str,
+        due_ts: float,
+        observable_kpi: str = "",
+        expected_value: float | None = None,
+        direction: str = "",
+    ) -> dict[str, Any]:
+        try:
+            i = _intention_tracker().declare(
+                statement=statement,
+                due_ts=due_ts,
+                observable_kpi=observable_kpi,
+                expected_value=expected_value,
+                direction=direction,
+            )
+            return i.as_dict()
+        except Exception as exc:
+            logger.debug("declare_intention failed: %s", exc)
+            return {"error": str(exc)}
+
+    def resolve_intention(
+        self, intention_id: str, observed_value: float,
+    ) -> dict[str, Any]:
+        try:
+            return _intention_tracker().resolve(
+                intention_id,
+                observed_value=observed_value,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("resolve_intention failed: %s", exc)
+            return {"error": str(exc)}
+
+    def follow_through_rate(self) -> float:
+        try:
+            return _intention_tracker().follow_through_rate()
+        except Exception as exc:
+            logger.debug("follow_through_rate failed: %s", exc)
+            return 0.0
+
+    def contextualise_surprise(
+        self,
+        *,
+        kpi: str,
+        expected: float,
+        observed: float,
+        situation: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return _surprise_contextualizer().contextualise(
+                kpi=kpi, expected=expected,
+                observed=observed,
+                situation=situation,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug(
+                "contextualise_surprise failed: %s", exc,
+            )
+            return {"error": str(exc)}
+
+    def classify_failure(
+        self,
+        *,
+        message: str = "",
+        status_code: int | None = None,
+        exception_type: str = "",
+    ) -> dict[str, Any]:
+        try:
+            return _failure_taxonomy().classify(
+                message=message,
+                status_code=status_code,
+                exception_type=exception_type,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("classify_failure failed: %s", exc)
+            return {"category": "unknown"}
+
+    def arbitrate_value_conflict(
+        self,
+        *,
+        case_id: str,
+        options: list[dict[str, Any]],
+        value_weights: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.value_conflict_arbiter import (
+                ConflictCase, OptionScore,
+            )
+            option_objs = [
+                OptionScore(
+                    option_id=str(o["option_id"]),
+                    name=str(o.get("name", o["option_id"])),
+                    scores={
+                        k: float(v)
+                        for k, v in o.get("scores", {}).items()
+                    },
+                )
+                for o in options
+            ]
+            case = ConflictCase(
+                id=case_id, options=option_objs,
+            )
+            r = _value_conflict_arbiter().arbitrate(
+                case, value_weights=value_weights,
+            )
+            return r.as_dict()
+        except Exception as exc:
+            logger.debug(
+                "arbitrate_value_conflict failed: %s", exc,
+            )
+            return {"verdict": "tie", "error": str(exc)}
+
+    def rank_transfer_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        top_k: int | None = None,
+        min_score: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        try:
+            from core.brain.knowledge_transfer_prioritizer import (
+                TransferCandidate,
+            )
+            converted = [
+                TransferCandidate(
+                    id=str(c["id"]),
+                    subject=str(c["subject"]),
+                    source_store=str(c["source_store"]),
+                    target_store=str(c["target_store"]),
+                    evidence_strength=float(
+                        c.get("evidence_strength", 0.5),
+                    ),
+                    portability=float(
+                        c.get("portability", 0.5),
+                    ),
+                    novelty_to_peer=float(
+                        c.get("novelty_to_peer", 0.5),
+                    ),
+                    expected_lift=float(
+                        c.get("expected_lift", 0.5),
+                    ),
+                    source_trust=float(
+                        c.get("source_trust", 0.5),
+                    ),
+                )
+                for c in candidates
+            ]
+            ranked = _transfer_prioritizer().rank(
+                converted,
+                top_k=top_k,
+                min_score=min_score,
+            )
+            return [r.as_dict() for r in ranked]
+        except Exception as exc:
+            logger.debug(
+                "rank_transfer_candidates failed: %s", exc,
+            )
+            return []
+
+    def register_behavioral_constraint(
+        self,
+        *,
+        name: str,
+        predicate: Callable[
+            [dict[str, Any], dict[str, Any]], bool,
+        ],
+        severity: str = "warn",
+        description: str = "",
+    ) -> dict[str, Any]:
+        try:
+            c = _behavioral_constraints().register(
+                name=name,
+                predicate=predicate,
+                severity=severity,  # type: ignore[arg-type]
+                description=description,
+            )
+            return {
+                "id": c.id, "name": c.name,
+                "severity": c.severity,
+            }
+        except Exception as exc:
+            logger.debug(
+                "register_behavioral_constraint failed: %s",
+                exc,
+            )
+            return {"error": str(exc)}
+
+    def evaluate_behavioral_constraints(
+        self,
+        *,
+        action: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return _behavioral_constraints().evaluate(
+                action=action, context=context,
+            ).as_dict()
+        except Exception as exc:
+            logger.debug(
+                "evaluate_behavioral_constraints failed: %s",
+                exc,
+            )
+            return {"alerts": [], "any_severe": False}
 
     # ── v31: simulation, prioritization, transfer, self-test ──
 
@@ -5013,6 +5279,152 @@ def _readiness_gate():
 
 def _readiness_gate_summary() -> dict[str, Any]:
     return _readiness_gate().stats()
+
+
+# ── v38 singletons ───────────────────────────────────────────
+
+_HEURISTIC_BANK: Any = None
+_HB_LOCK = threading.Lock()
+
+
+def _heuristic_bank():
+    global _HEURISTIC_BANK
+    if _HEURISTIC_BANK is None:
+        with _HB_LOCK:
+            if _HEURISTIC_BANK is None:
+                from core.brain.heuristic_bank import HeuristicBank
+                _HEURISTIC_BANK = HeuristicBank()
+    return _HEURISTIC_BANK
+
+
+def _heuristic_bank_summary() -> dict[str, Any]:
+    return _heuristic_bank().stats()
+
+
+_INTENTION_TRACKER: Any = None
+_IT_LOCK = threading.Lock()
+
+
+def _intention_tracker():
+    global _INTENTION_TRACKER
+    if _INTENTION_TRACKER is None:
+        with _IT_LOCK:
+            if _INTENTION_TRACKER is None:
+                from core.brain.intention_tracker import (
+                    IntentionTracker,
+                )
+                _INTENTION_TRACKER = IntentionTracker()
+    return _INTENTION_TRACKER
+
+
+def _intention_tracker_summary() -> dict[str, Any]:
+    return _intention_tracker().stats()
+
+
+_SURPRISE_CONTEXTUALIZER: Any = None
+_SCX_LOCK = threading.Lock()
+
+
+def _surprise_contextualizer():
+    global _SURPRISE_CONTEXTUALIZER
+    if _SURPRISE_CONTEXTUALIZER is None:
+        with _SCX_LOCK:
+            if _SURPRISE_CONTEXTUALIZER is None:
+                from core.brain.surprise_contextualizer import (
+                    SurpriseContextualizer,
+                )
+                _SURPRISE_CONTEXTUALIZER = (
+                    SurpriseContextualizer()
+                )
+    return _SURPRISE_CONTEXTUALIZER
+
+
+def _surprise_contextualizer_summary() -> dict[str, Any]:
+    return _surprise_contextualizer().stats()
+
+
+_FAILURE_TAXONOMY: Any = None
+_FT_LOCK = threading.Lock()
+
+
+def _failure_taxonomy():
+    global _FAILURE_TAXONOMY
+    if _FAILURE_TAXONOMY is None:
+        with _FT_LOCK:
+            if _FAILURE_TAXONOMY is None:
+                from core.brain.failure_taxonomy import (
+                    FailureTaxonomy,
+                )
+                _FAILURE_TAXONOMY = FailureTaxonomy()
+    return _FAILURE_TAXONOMY
+
+
+def _failure_taxonomy_summary() -> dict[str, Any]:
+    return _failure_taxonomy().stats()
+
+
+_VALUE_CONFLICT_ARBITER: Any = None
+_VCA_LOCK = threading.Lock()
+
+
+def _value_conflict_arbiter():
+    global _VALUE_CONFLICT_ARBITER
+    if _VALUE_CONFLICT_ARBITER is None:
+        with _VCA_LOCK:
+            if _VALUE_CONFLICT_ARBITER is None:
+                from core.brain.value_conflict_arbiter import (
+                    ValueConflictArbiter,
+                )
+                _VALUE_CONFLICT_ARBITER = ValueConflictArbiter()
+    return _VALUE_CONFLICT_ARBITER
+
+
+def _value_conflict_arbiter_summary() -> dict[str, Any]:
+    return _value_conflict_arbiter().stats()
+
+
+_TRANSFER_PRIORITIZER: Any = None
+_TP_LOCK = threading.Lock()
+
+
+def _transfer_prioritizer():
+    global _TRANSFER_PRIORITIZER
+    if _TRANSFER_PRIORITIZER is None:
+        with _TP_LOCK:
+            if _TRANSFER_PRIORITIZER is None:
+                from core.brain.knowledge_transfer_prioritizer import (
+                    KnowledgeTransferPrioritizer,
+                )
+                _TRANSFER_PRIORITIZER = (
+                    KnowledgeTransferPrioritizer()
+                )
+    return _TRANSFER_PRIORITIZER
+
+
+def _transfer_prioritizer_summary() -> dict[str, Any]:
+    return _transfer_prioritizer().stats()
+
+
+_BEHAVIORAL_CONSTRAINTS: Any = None
+_BC_LOCK = threading.Lock()
+
+
+def _behavioral_constraints():
+    global _BEHAVIORAL_CONSTRAINTS
+    if _BEHAVIORAL_CONSTRAINTS is None:
+        with _BC_LOCK:
+            if _BEHAVIORAL_CONSTRAINTS is None:
+                from core.brain.behavioral_constraint_registry import (
+                    BehavioralConstraintRegistry,
+                )
+                _BEHAVIORAL_CONSTRAINTS = (
+                    BehavioralConstraintRegistry()
+                )
+    return _BEHAVIORAL_CONSTRAINTS
+
+
+def _behavioral_constraint_summary() -> dict[str, Any]:
+    return _behavioral_constraints().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
