@@ -11,10 +11,16 @@ from mcp_server.tools import (
     build_default_registry,
 )
 
+try:
+    from mcp_server.server import StdioServer
+except Exception:  # noqa: BLE001
+    StdioServer = None  # type: ignore[assignment]
+
 __all__ = [
     "ToolCall",
     "ToolError",
     "ToolRegistry",
     "ToolResult",
+    "StdioServer",
     "build_default_registry",
 ]
