@@ -532,6 +532,52 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── L8 simulator ─────────────────────────────────────────
+    sim_p = sub.add_parser(
+        "simulate",
+        help=(
+            "Monte Carlo pre-launch profit projection "
+            "(L8 — see docs/AGI_STACK.md)"
+        ),
+    )
+    sim_p.add_argument(
+        "--cost", type=float, required=True,
+        help="Unit cost (COGS + fulfilment)",
+    )
+    sim_p.add_argument(
+        "--price", type=float, required=True,
+        help="Retail price",
+    )
+    sim_p.add_argument(
+        "--budget", type=float, required=True,
+        help="Daily ad budget USD",
+    )
+    sim_p.add_argument("--days", type=int, default=3)
+    sim_p.add_argument(
+        "--cvr-mean", type=float, default=0.02,
+    )
+    sim_p.add_argument(
+        "--cvr-stddev", type=float, default=0.01,
+    )
+    sim_p.add_argument(
+        "--cpc-mean", type=float, default=1.20,
+    )
+    sim_p.add_argument(
+        "--cpc-stddev", type=float, default=0.40,
+    )
+    sim_p.add_argument(
+        "--refund-rate", type=float, default=0.05,
+    )
+    sim_p.add_argument(
+        "--trials", type=int, default=1000,
+    )
+    sim_p.add_argument(
+        "--seed", type=int, default=1337,
+    )
+    sim_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── L7 legal templates ───────────────────────────────────
     legal_p = sub.add_parser(
         "legal",
@@ -2602,6 +2648,65 @@ def _cmd_activations(
         )
 
 
+def _cmd_simulate(args) -> None:
+    """Pre-launch Monte Carlo projection."""
+    from simulation.launch_simulator import (
+        LaunchCandidate,
+        simulate_launch,
+    )
+    c = LaunchCandidate(
+        cost=float(args.cost),
+        price=float(args.price),
+        daily_budget_usd=float(args.budget),
+        days=int(args.days),
+        est_cvr_mean=float(args.cvr_mean),
+        est_cvr_stddev=float(args.cvr_stddev),
+        est_cpc_mean=float(args.cpc_mean),
+        est_cpc_stddev=float(args.cpc_stddev),
+        refund_rate=float(args.refund_rate),
+    )
+    proj = simulate_launch(
+        c,
+        n_trials=int(args.trials),
+        seed=int(args.seed),
+    )
+    if args.json:
+        print(json.dumps(proj.as_dict(), indent=2))
+        return
+    verdict_icon = {
+        "go": "✓", "caution": "?", "stand_down": "✗",
+    }.get(proj.verdict, "?")
+    print(
+        f"{verdict_icon} {proj.verdict.upper()}: "
+        f"{proj.reason}"
+    )
+    print()
+    print(f"  Margin:      {c.margin_ratio():.1%}")
+    print(f"  Spend:       ${c.daily_budget_usd * c.days:.2f}")
+    print(
+        f"  Break-even:  {proj.break_even_prob:.0%}"
+    )
+    print(
+        f"  Expected ROAS: {proj.expected_roas:.2f}x"
+    )
+    print(f"  Expected orders: {proj.expected_orders:.1f}")
+    print()
+    print("  Profit distribution:")
+    print(
+        f"    p25: ${proj.profit_p25:>8.2f}"
+    )
+    print(
+        f"    p50: ${proj.profit_p50:>8.2f}"
+    )
+    print(
+        f"    p75: ${proj.profit_p75:>8.2f}"
+    )
+    print(
+        f"    mean ${proj.profit_mean:>7.2f} "
+        f"± ${proj.profit_stddev:.2f}"
+    )
+
+
 def _cmd_legal(
     *,
     region: str,
@@ -3182,6 +3287,10 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "simulate":
+        _cmd_simulate(args)
         return
 
     if args.command == "legal":
