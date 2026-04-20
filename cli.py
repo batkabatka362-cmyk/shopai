@@ -697,6 +697,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── Agentic Storefront channels (Wave B-1) ───────────────
+    agentic_p = sub.add_parser(
+        "agentic",
+        help=(
+            "Agentic Storefront channels — ChatGPT, Perplexity, "
+            "Copilot, Gemini enrollment + attribution"
+        ),
+    )
+    agentic_sub = agentic_p.add_subparsers(
+        dest="agentic_action",
+    )
+    agentic_status = agentic_sub.add_parser(
+        "status",
+        help="Per-channel enrollment + order counts",
+    )
+    agentic_status.add_argument(
+        "--force", action="store_true",
+        help="Bypass 5-minute status cache",
+    )
+    agentic_status.add_argument(
+        "--json", action="store_true",
+    )
+    agentic_metrics = agentic_sub.add_parser(
+        "metrics",
+        help=(
+            "Roll up orders by agentic channel over window"
+        ),
+    )
+    agentic_metrics.add_argument(
+        "--days", type=int, default=7,
+    )
+    agentic_metrics.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── Brain state synthesizer ──────────────────────────────
     brain_p = sub.add_parser(
         "brain",
@@ -3171,6 +3206,85 @@ def _cmd_predict(args) -> None:
     print(f"  {pred.explanation}")
 
 
+def _cmd_agentic_status(
+    *, force: bool, as_json: bool,
+) -> None:
+    from core.bridge.agentic_storefront import (
+        get_agentic_bridge,
+    )
+    bridge = get_agentic_bridge()
+    statuses = bridge.status(force=force)
+    if as_json:
+        print(json.dumps(
+            [s.as_dict() for s in statuses], indent=2,
+        ))
+        return
+    print("Agentic storefront channels:")
+    print()
+    print(
+        f"  {'Channel':<12} {'Enabled':>8}  "
+        f"{'Orders':>8}  Note"
+    )
+    for s in statuses:
+        mark = "✓" if s.enabled else "·"
+        print(
+            f"  {s.channel:<12} {mark:>8}  "
+            f"{s.total_orders:>8}  {s.note}"
+        )
+    print()
+    print(
+        "Shopify admin > Online Store > Sales channels > "
+        "Agentic Storefronts to toggle."
+    )
+
+
+def _cmd_agentic_metrics(
+    *, days: int, as_json: bool,
+) -> None:
+    from core.bridge.agentic_storefront import (
+        get_agentic_bridge,
+    )
+    try:
+        from core.memory.memory_intelligence import (
+            MemoryIntelligence,
+        )
+        mem = MemoryIntelligence()
+        orders = mem.recent_orders(
+            window_days=int(days),
+        ) if hasattr(
+            mem, "recent_orders",
+        ) else []
+    except Exception:  # noqa: BLE001
+        orders = []
+    bridge = get_agentic_bridge()
+    metrics = bridge.aggregate(
+        orders, window_days=int(days),
+    )
+    if as_json:
+        print(json.dumps(
+            [m.as_dict() for m in metrics], indent=2,
+        ))
+        return
+    if not metrics:
+        print(
+            f"No agentic orders in last {days}d.\n"
+            "Either channels not enabled, or no AI-"
+            "referred orders yet. Check `shopai agentic "
+            "status`."
+        )
+        return
+    print(f"Agentic channel GMV — last {days}d:")
+    print(
+        f"  {'Channel':<12} {'Orders':>7}  "
+        f"{'GMV':>10}  {'AOV':>8}"
+    )
+    for m in metrics:
+        print(
+            f"  {m.channel:<12} {m.orders:>7}  "
+            f"${m.gmv_usd:>9.2f}  ${m.aov_usd:>7.2f}"
+        )
+
+
 def _cmd_brain_snapshot(*, as_json: bool) -> None:
     from core.brain.brain_state_synthesizer import (
         get_brain_state_synthesizer,
@@ -4719,6 +4833,23 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "predict":
         _cmd_predict(args)
+        return
+
+    if args.command == "agentic":
+        action = (
+            getattr(args, "agentic_action", None)
+            or "status"
+        )
+        if action == "status":
+            _cmd_agentic_status(
+                force=bool(args.force),
+                as_json=bool(args.json),
+            )
+        elif action == "metrics":
+            _cmd_agentic_metrics(
+                days=int(args.days),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "brain":
