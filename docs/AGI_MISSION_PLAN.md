@@ -255,6 +255,188 @@ niche_discoverer as "trend direction=rising".
 
 ---
 
+## Sprint 3 plan — bottom-up per layer
+
+**Owner-ийн хязгаарлалт:**
+  * Зах зээл: **US + EU**
+  * Хурд: **яаралтай**, зардал: **бага**
+  * Priority: "hamgiin asuudal bolhoor hesgvvdees" — хамгийн
+    гэмтэлтэй цэгийг эхлэл болгоно
+
+**Architecture reference:** `docs/AGI_STACK.md` — 10 layer + 6 extension.
+Bottom-up зарчим: layer-below заавал бэлэн байж, дараа layer-above
+гарч ирнэ. Live switch нь L7 (governance) бүрэн болсны дараа хэрэглэнэ.
+
+### S3-1 (P0, L7): `risk_tripwire`
+
+**Яагаад хамгийн түрүүнд:** Sprint 1 дээр `autopilot --live` сонголт
+байна, гэвч governance давхар багажгүй. Нэг командаар $1000 ad spend
+гарахад зогсоох зүйл байхгүй. Энэ нь mission-ийн *эхний* хариуцлагатай
+цэг.
+
+  * Module: `core/risk/tripwire.py`
+  * Hard caps: `daily_ad_spend_usd`, `per_campaign_spend_usd`,
+    `min_margin_ratio`, `max_chargeback_rate`
+  * API: `check_before_spend(amount, context) → allow | block | escalate`
+  * Owner override via env: `SHOPAI_RISK_DAILY_CAP=50` гэх мэт
+  * Storage: SQLite `data/risk_events.db` per-day spend rollup
+  * Hook: `campaign_activator` must call `tripwire.check_before_spend`
+  * CLI: `shopai risk status` / `shopai risk limits`
+  * Pure logic, deterministic, **LLM-гүй**, **zero cost**
+
+### S3-2 (P0, L7): `legal_compliance`
+
+**Яагаад:** US + EU зах зээл = GDPR, CCPA, VAT thresholds (EU OSS
+€10k, UK £85k), FTC endorsement rules. Store live болсны дараа
+retro fit нь хэд дахин үнэтэй.
+
+  * Module: `core/legal/compliance.py`
+  * Templates: privacy policy, terms, cookie notice, return policy
+    (per-region)
+  * VAT threshold tracker (per-country rolling 12-сар sales)
+  * GDPR/CCPA data-subject request handler stub
+  * Shopify page publisher: `publish_legal_pages(region="US"|"EU")`
+  * Dependency: Sprint 1-ийн `execution/content/publisher.py`
+
+### S3-3 (P1, L2): `google_trends_source`
+
+**Яагаад:** Бодит trend signal бараг үнэгүй — Google Trends pytrends
+нь free. Одоо niche_discoverer нь зөвхөн winner pool-оос label
+гарна; external trend evidence-гүй.
+
+  * Module: `agents/research/sources/google_trends.py`
+  * Uses `pytrends` (`pip install pytrends`) — no API key
+  * Keyword-level trend index (0-100) + related queries
+  * Rate-limit friendly (daily cadence)
+  * Brain hook: `trend_signal.observe(keyword, score)`
+  * `niche_discoverer` intake: trend_score mix into rollup formula
+
+### S3-4 (P1, L6): `seo_skill` capability
+
+**Яагаад:** Free organic traffic = сарын зардалд нөлөөлөхгүй. Store
+live болсны дараа indexing үр дүн 30 хоногт гарах.
+
+  * Module: `execution/seo/seo_skill.py`
+  * Capabilities: meta title/description, schema.org JSON-LD
+    (Product, Offer, Review), Open Graph, Twitter cards
+  * Google Merchant feed (XML) — free listings
+  * Sitemap hook to Shopify
+  * Registered in `capability_registry` as `seo.optimize_product`
+
+### S3-5 (P1, LX.6): `telegram_owner_dialog`
+
+**Яагаад:** Sprint 2-д `weekly_digest` stdout-д ирдэг болсон. Owner
+2-way chat-гүй бол real-time approval нь зогсоно. Telegram нь free,
+bot API simple.
+
+  * Adapter: `core/adapters/telegram_bot/`
+  * Tokens: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+  * `digest_to_chat` — `weekly_digest.compose` → markdown message
+  * `chat_command_parser` — approve / reject / pause / scale /
+    status / limits commands
+  * Hook into `pending_activations.json` approval flow
+
+### S3-6 (P2, L2+L5): `tiktok_trending_source` + `meta_ads_library_source`
+
+**Яагаад:** Winner source breadth. TikTok Creator Center + Meta Ad
+Library нь public (API-гүй ч scrape боломжтой).
+
+  * `agents/research/sources/tiktok_trending.py` — Creator Center
+    scrape
+  * `agents/research/sources/meta_ads_library.py` — public ad
+    library spy
+  * Both `experimental=True`, env-gated
+
+### S3-7 (P2, LX.1): `customer_support_lite`
+
+**Яагаад:** First order ирсний дараа FAQ / refund / shipping chat
+шаардлагатай. LLM-гүй rule-based эхний шат.
+
+  * Module: `agents/customer/support_chatbot.py`
+  * FAQ матч: keyword + `knowledge_base.recall`
+  * Refund auto-process: policy match → `shopify.refund` executor
+  * Escalate to owner (Telegram) — coherence check-ээс уналт
+
+### S3-8 (P2, LX.2): `fulfillment_adapter`
+
+**Яагаад:** Order → supplier → tracking loop хаах. Одоо `publisher_
+bundle` product create хийнэ гэтэл fulfillment leg байхгүй.
+
+  * Adapter: `core/adapters/cj_fulfill/` (CJ-ийн шинэ capability)
+  * Order webhook → CJ order place → tracking id → Shopify fulfill
+  * `autods_adapter` — backup/alt supplier
+
+### S3-9 (P2, L8): `real_simulator`
+
+**Яагаад:** Одоо `dry_run` хийнэ гэхэд бодит `price × ROAS × CVR ×
+shipping_cost × refund_rate` тооцдоггүй.
+
+  * Module: `simulation/launch_simulator.py`
+  * Monte Carlo 1000 trial per candidate
+  * Inputs: cost, price, historic ROAS distribution (from episodes)
+  * Outputs: p25/p50/p75 profit, break-even probability
+  * Gate: `campaign_activator` → `simulator.expected_profit ≥ 0`
+
+### S3-10 (P3, LX.4): `crisis_response`
+
+**Яагаад:** Meta ad ban, chargeback spike, Shopify risk-review —
+5-минутын response window. Currently nothing watches.
+
+  * Module: `core/crisis/response.py`
+  * Triggers: chargeback > 1%, velocity spike, ad account disabled
+  * Actions: emergency halt, backup store activation, owner alert
+  * Hook `emergency_halt` env var as one-flip kill switch
+
+### S3-11 (P3, LX.5): `multi_store_federation_activate`
+
+Federator module бий, idle. Activate + `shopai company add` CLI.
+
+### S3-12 (P3, L4): `long_horizon_planning`
+
+`goal_decomposer`-ийг quarterly goal (e.g. "$5k/month by Q3")
+scope-т өргөжүүлэх; milestone-based re-plan.
+
+### Sprint 3 dependency waterfall
+
+```
+S3-1 risk_tripwire ──┐
+S3-2 legal_compliance┤── required for `--live` in US/EU
+                     │
+S3-3 google_trends ──┤── feeds niche_discoverer + winner pool
+S3-4 seo_skill ──────┤── piggyback on existing publisher
+S3-5 telegram_dialog ┤── turns stdout digest into real loop
+                     │
+(gate: Sprint 3 Part A — safety + signal)
+                     │
+S3-6 trend sources ──┤── more breadth, optional
+S3-7 customer_support┤── after first orders
+S3-8 fulfillment ────┤── after first orders
+S3-9 real_simulator ─┤── after 20+ episodes collected
+                     │
+(gate: Sprint 3 Part B — revenue + self-correct)
+                     │
+S3-10 crisis ────────┤── after $ scale-up
+S3-11 multi-store ───┤
+S3-12 planning ──────┘
+```
+
+### Sprint 3 success criteria (for §4c.K)
+
+  * **Mission fit:** S3-1/2 → autonomy (safe live); S3-3/4/5/6
+    → winner discovery; S3-7/8 → order fulfillment; S3-9 → self-
+    improvement. All layer with direct revenue line.
+  * **Plumbing vs capability:** 4:8 capability-heavy (inverse of
+    Sprint 2). Each ship has user-visible impact.
+  * **Month-tomorrow test:** `risk_tripwire` (safety) +
+    `google_trends` (signal) + `telegram_dialog` (approval loop) =
+    owner can let autopilot run 24/7 with confidence. Dollar
+    distance = **2 commits** (S3-1, S3-5) from real $ allowable.
+  * **Dollar distance:** S3-1 → 1 commit away. S3-5 → 2 commits
+    away. Then *every* subsequent S3-N decreases risk / increases
+    revenue without adding plumbing layers.
+
+---
+
 ## Part D — AGI-ийн тодорхойлолт (success criteria)
 
 Эдгээр criteria бүгд биелэгдвэл "AGI түвшинд" гэж нэрлэж болно:
