@@ -640,6 +640,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── LX.1 customer support ────────────────────────────────
+    ask_support_p = sub.add_parser(
+        "ask-support",
+        help=(
+            "Preview how the LX.1 support chatbot would "
+            "answer a customer question (rule-based, LLM-free)"
+        ),
+    )
+    ask_support_p.add_argument("question", type=str)
+    ask_support_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── LX.4 crisis response ─────────────────────────────────
     crisis_p = sub.add_parser(
         "crisis",
@@ -2687,6 +2700,37 @@ def _cmd_activations(
         )
 
 
+def _cmd_ask_support(
+    *, question: str, as_json: bool,
+) -> None:
+    """Preview the LX.1 first-line support answer for a question."""
+    from agents.customer.support_chatbot import SupportChatbot
+    bot = SupportChatbot()
+    answer = bot.answer(question)
+    if as_json:
+        print(json.dumps(answer.as_dict(), indent=2))
+        return
+    icon = "✓" if answer.verdict == "answered" else "→"
+    print(
+        f"{icon} {answer.verdict.upper()} "
+        f"(kind={answer.kind}, "
+        f"confidence={answer.confidence:.2f})"
+    )
+    if answer.matched_rules:
+        print(
+            "  matched: "
+            + ", ".join(answer.matched_rules)
+        )
+    if answer.text:
+        print()
+        print(answer.text)
+    if answer.verdict == "escalate":
+        print()
+        print(
+            f"  Escalate because: {answer.escalate_reason}"
+        )
+
+
 def _cmd_crisis_status(*, as_json: bool) -> None:
     from core.crisis.response import get_crisis_responder
     cr = get_crisis_responder()
@@ -3408,6 +3452,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "activations":
         _cmd_activations(
             limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "ask-support":
+        _cmd_ask_support(
+            question=args.question,
             as_json=bool(args.json),
         )
         return
