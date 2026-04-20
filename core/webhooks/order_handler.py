@@ -10,6 +10,7 @@ This is the CRITICAL piece that makes learning real.
 """
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any
 
@@ -19,10 +20,61 @@ from utils.helpers import safe_float, safe_int
 logger = get_logger("webhooks.order")
 
 
+_ENV_ENABLE_CJ_FULFILL = "SHOPAI_ENABLE_CJ_FULFILL"
+
+
+def _shopify_lines_to_cj(items: Any) -> list[dict[str, Any]]:
+    """Map Shopify line_items to CJ productId + quantity.
+
+    A Shopify line carries sku/product_id/variant_id; the CJ
+    adapter's ``line_items`` entries want productId + quantity.
+    We try properties (owner attached cj_product_id via
+    line_item properties), then sku, then product_id. Lines
+    without any resolvable CJ id are dropped so we never send
+    Shopify-internal ids CJ can't understand.
+    """
+    if not isinstance(items, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        cj_id = ""
+        props = item.get("properties") or []
+        if isinstance(props, list):
+            for p in props:
+                if isinstance(p, dict) and p.get(
+                    "name",
+                ) == "cj_product_id":
+                    cj_id = str(p.get("value") or "")
+                    break
+        if not cj_id:
+            sku = str(item.get("sku") or "")
+            if sku.startswith("cj-") or sku.startswith(
+                "cj_",
+            ):
+                cj_id = sku
+        if not cj_id:
+            continue
+        qty = safe_int(item.get("quantity", 1)) or 1
+        variant = item.get("variant_id") or ""
+        entry: dict[str, Any] = {
+            "productId": cj_id,
+            "quantity": max(1, int(qty)),
+        }
+        if variant:
+            entry["variantId"] = str(variant)
+        out.append(entry)
+    return out
+
+
 class OrderWebhookHandler:
     """Handles order webhooks and records outcomes for learning."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, cj_fulfill_adapter: Any = None,
+    ) -> None:
+        self._cj_fulfill = cj_fulfill_adapter
         # ``_processed`` is a plain counter but webhooks arrive
         # on multiple threads (HTTP server worker + async
         # dispatch from ShopifyWebhookHandler.handle_async).
@@ -161,10 +213,121 @@ class OrderWebhookHandler:
             logger.debug("brain outcome record failed: %s", exc)
             recorded["brain_recorded"] = False
 
+        # 5. Optional CJ fulfillment dispatch (LX.2 wire-in).
+        #    Opt-in via SHOPAI_ENABLE_CJ_FULFILL=1 so owners who
+        #    only want analytics don't trigger live supplier
+        #    orders on every paid Shopify order.
+        fulfill_info = self._dispatch_cj_fulfillment(
+            order_id=order_id,
+            order_data=order_data,
+            items=items,
+            customer=customer,
+            decision_id=decision_id,
+        )
+        if fulfill_info is not None:
+            recorded["cj_fulfillment"] = fulfill_info
+
         with self._lock:
             self._processed += 1
             recorded["total_processed"] = self._processed
         return recorded
+
+    # ── CJ fulfillment dispatch ─────────────────────────
+
+    def _dispatch_cj_fulfillment(
+        self,
+        *,
+        order_id: str,
+        order_data: dict[str, Any],
+        items: Any,
+        customer: dict[str, Any],
+        decision_id: str | None,
+    ) -> dict[str, Any] | None:
+        """Place a CJ dropship order for a paid Shopify order.
+
+        No-op unless ``SHOPAI_ENABLE_CJ_FULFILL=1`` AND the
+        injected/lazy adapter is_available(). Returns a summary
+        dict (status + fulfillment_id or skip reason); None is
+        returned only when the step itself raised — callers
+        should treat that as a soft skip."""
+        if os.environ.get(
+            _ENV_ENABLE_CJ_FULFILL, "",
+        ) != "1":
+            return {"status": "skipped", "reason": "disabled"}
+        if not order_id:
+            return {
+                "status": "skipped",
+                "reason": "no order_id",
+            }
+        try:
+            adapter = self._get_cj_fulfill()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "cj_fulfill import failed: %s", exc,
+            )
+            return {"status": "error", "reason": str(exc)}
+        if adapter is None or not adapter.is_available():
+            return {
+                "status": "skipped",
+                "reason": "cj adapter unavailable",
+            }
+        line_items = _shopify_lines_to_cj(items)
+        if not line_items:
+            return {
+                "status": "skipped",
+                "reason": "no mappable line items",
+            }
+        shipping = (
+            order_data.get("shipping_address") or {}
+        )
+        if not isinstance(shipping, dict):
+            shipping = {}
+        # Guest orders lack customer info; CJ still needs an
+        # address, so pass whatever Shopify gave us.
+        try:
+            order = adapter.place_order(
+                shopify_order_number=str(order_id),
+                shipping_address=shipping,
+                line_items=line_items,
+                note=(
+                    f"ShopAI order {order_id}"
+                    + (
+                        f" (decision={decision_id})"
+                        if decision_id else ""
+                    )
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "CJ fulfill dispatch raised: %s", exc,
+            )
+            return {"status": "error", "reason": str(exc)}
+        if order is None:
+            stats: dict[str, Any] = {}
+            try:
+                stats = adapter.stats()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "cj_fulfill stats() failed: %s", exc,
+                )
+            return {
+                "status": "error",
+                "reason": stats.get("last_error", "unknown"),
+            }
+        return {
+            "status": "placed",
+            "fulfillment_id": order.fulfillment_id,
+            "cj_status": order.status,
+        }
+
+    def _get_cj_fulfill(self) -> Any:
+        if self._cj_fulfill is not None:
+            return self._cj_fulfill
+        from core.adapters.fulfillment import (
+            CJFulfillAdapter,
+        )
+        self._cj_fulfill = CJFulfillAdapter()
+        return self._cj_fulfill
 
     def handle_order_cancelled(self, order_data: dict[str, Any]) -> dict[str, Any]:
         """Process a cancelled order — record negative outcome."""
