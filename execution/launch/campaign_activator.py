@@ -12,12 +12,15 @@ before calling ``MetaAdsAdapter.resume_campaign``:
   1. pre-flight  — credentials + campaign exists + budget reasonable
   2. tripwire    — L7 hard $-caps (daily / per-campaign / margin /
                    chargeback). See core/risk/tripwire.py.
-  3. readiness   — brain's readiness_gate verdict (gather / go)
-  4. constraints — behavioral_constraint_registry
-  5. auto-approve vs owner — if not auto_approved and not in dry
+  3. simulator   — L8 Monte Carlo profit projection (skipped if
+                   product_cost / product_price not supplied).
+                   See simulation/launch_simulator.py.
+  4. readiness   — brain's readiness_gate verdict (gather / go)
+  5. constraints — behavioral_constraint_registry
+  6. auto-approve vs owner — if not auto_approved and not in dry
      mode, return ``pending`` instead of activating
-  6. execute     — MetaAdsAdapter.execute(ADS_RESUME_CAMPAIGN)
-  7. record      — OutcomeRecorder (kind=campaign_activate) + rationale
+  7. execute     — MetaAdsAdapter.execute(ADS_RESUME_CAMPAIGN)
+  8. record      — OutcomeRecorder (kind=campaign_activate) + rationale
      builder (decision trace). On live success the requested
      daily_budget_usd is booked into the tripwire rollup.
 
@@ -60,6 +63,15 @@ class ActivateRequest:
     auto_approve: bool = False
     live: bool = False
     note: str = ""
+    # L8 simulator hook: when both > 0, CampaignActivator runs a
+    # Monte Carlo profit projection. When either is 0 (default),
+    # the simulator step is skipped with status=ok.
+    product_cost: float = 0.0
+    product_price: float = 0.0
+    simulator_days: int = 3
+    simulator_cvr_mean: float = 0.02
+    simulator_cpc_mean: float = 1.20
+    simulator_refund_rate: float = 0.05
 
     def __post_init__(self) -> None:
         if not self.campaign_id:
@@ -150,6 +162,7 @@ class CampaignActivator:
         outcome_recorder: Any = None,
         rationale_builder: Any = None,
         risk_tripwire: Any = None,
+        launch_simulator: Any = None,
         max_daily_budget_usd: float = _DEFAULT_MAX_DAILY_BUDGET_USD,
     ) -> None:
         if max_daily_budget_usd <= 0:
@@ -163,6 +176,7 @@ class CampaignActivator:
         self._outcomes = outcome_recorder
         self._rationale = rationale_builder
         self._tripwire = risk_tripwire
+        self._simulator = launch_simulator
         self._max_budget = float(max_daily_budget_usd)
         self._history: list[ActivationResult] = []
 
@@ -217,6 +231,15 @@ class CampaignActivator:
         from core.risk.tripwire import get_risk_tripwire
         self._tripwire = get_risk_tripwire()
         return self._tripwire
+
+    def _get_simulator(self) -> Any:
+        """Return an injected simulator callable, or the default
+        ``simulate_launch`` function when none was supplied."""
+        if self._simulator is not None:
+            return self._simulator
+        from simulation.launch_simulator import simulate_launch
+        self._simulator = simulate_launch
+        return self._simulator
 
     # ── Pipeline ─────────────────────────────────────────
 
@@ -276,7 +299,24 @@ class CampaignActivator:
                 rationale=rationale,
             )
 
-        # 3. readiness gate
+        # 3. simulator — L8 pre-flight profit projection
+        sim_log = self._step_simulator(request, steps)
+        if sim_log.status == "blocked":
+            return self._finalise(
+                decision_id, request.campaign_id,
+                "blocked", dry_run, steps,
+                block_reason=sim_log.note,
+                rationale=rationale,
+            )
+        if sim_log.status == "pending":
+            return self._finalise(
+                decision_id, request.campaign_id,
+                "pending", dry_run, steps,
+                pending_reason=sim_log.note,
+                rationale=rationale,
+            )
+
+        # 4. readiness gate
         ready_log = self._step_readiness(request, steps)
         if ready_log.status == "blocked":
             return self._finalise(
@@ -349,7 +389,7 @@ class CampaignActivator:
                 kpi="activation",
                 kpi_value=1.0,
                 signals=(
-                    "preflight", "tripwire",
+                    "preflight", "tripwire", "simulator",
                     "readiness", "constraints",
                 ),
                 note=(
@@ -478,6 +518,110 @@ class CampaignActivator:
                 status="ok",
                 note=verdict.reason,
                 data=verdict.as_dict(),
+                ts=time.time(),
+            )
+        steps.append(log)
+        return log
+
+    def _step_simulator(
+        self,
+        request: ActivateRequest,
+        steps: list[StepLog],
+    ) -> StepLog:
+        """Run an L8 Monte Carlo profit projection when the caller
+        supplied product_cost + product_price + daily_budget. If
+        any of the three is missing the step is skipped with
+        status=ok, mirroring the tripwire's zero-budget skip."""
+        if (
+            request.product_cost <= 0
+            or request.product_price <= 0
+            or request.daily_budget_usd <= 0
+        ):
+            log = StepLog(
+                name="simulator",
+                status="ok",
+                note=(
+                    "skipped — product_cost/product_price/"
+                    "daily_budget not all > 0"
+                ),
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        try:
+            from simulation.launch_simulator import (
+                LaunchCandidate,
+            )
+            candidate = LaunchCandidate(
+                cost=float(request.product_cost),
+                price=float(request.product_price),
+                daily_budget_usd=float(
+                    request.daily_budget_usd,
+                ),
+                days=int(request.simulator_days),
+                est_cvr_mean=float(
+                    request.simulator_cvr_mean,
+                ),
+                est_cpc_mean=float(
+                    request.simulator_cpc_mean,
+                ),
+                refund_rate=float(
+                    request.simulator_refund_rate,
+                ),
+            )
+            projection = self._get_simulator()(candidate)
+        except ValueError as exc:
+            log = StepLog(
+                name="simulator",
+                status="blocked",
+                note=f"simulator input invalid: {exc}",
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        except Exception as exc:  # noqa: BLE001
+            # Fail open: simulator wobbles should not block
+            # launches that passed all other gates. Surface the
+            # error for observability but keep moving.
+            logger.debug(
+                "simulator raised, treated as advisory: %s",
+                exc,
+            )
+            log = StepLog(
+                name="simulator",
+                status="ok",
+                note=f"simulator error (advisory): {exc}",
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        data = projection.as_dict()
+        if projection.verdict == "stand_down":
+            log = StepLog(
+                name="simulator",
+                status="blocked",
+                note=(
+                    f"stand_down: {projection.reason}"
+                ),
+                data=data,
+                ts=time.time(),
+            )
+        elif projection.verdict == "caution":
+            log = StepLog(
+                name="simulator",
+                status="pending",
+                note=(
+                    f"caution: {projection.reason}"
+                ),
+                data=data,
+                ts=time.time(),
+            )
+        else:
+            log = StepLog(
+                name="simulator",
+                status="ok",
+                note=projection.reason,
+                data=data,
                 ts=time.time(),
             )
         steps.append(log)

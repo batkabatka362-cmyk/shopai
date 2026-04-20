@@ -533,9 +533,149 @@ class TestTripwireStep(unittest.TestCase):
         )
         names = [s.name for s in r.steps]
         self.assertEqual(
-            names[:4],
-            ["preflight", "tripwire", "readiness", "constraints"],
+            names[:5],
+            [
+                "preflight", "tripwire", "simulator",
+                "readiness", "constraints",
+            ],
         )
+
+
+class TestSimulatorStep(unittest.TestCase):
+    """L8 simulator hook. Injected to stay offline + deterministic."""
+
+    def setUp(self):
+        self._orig = os.environ.get(
+            "SHOPAI_ENABLE_LIVE_EXECUTION",
+        )
+        os.environ["SHOPAI_ENABLE_LIVE_EXECUTION"] = "1"
+
+    def tearDown(self):
+        if self._orig is None:
+            os.environ.pop(
+                "SHOPAI_ENABLE_LIVE_EXECUTION", None,
+            )
+        else:
+            os.environ[
+                "SHOPAI_ENABLE_LIVE_EXECUTION"
+            ] = self._orig
+
+    def _fake_sim(self, verdict, reason="x"):
+        def sim(candidate):
+            from simulation.launch_simulator import (
+                LaunchProjection,
+            )
+            return LaunchProjection(
+                candidate=candidate,
+                n_trials=10,
+                profit_p25=0.0,
+                profit_p50=0.0,
+                profit_p75=0.0,
+                profit_mean=0.0,
+                profit_stddev=0.0,
+                break_even_prob=0.5,
+                expected_orders=0.0,
+                expected_roas=0.0,
+                verdict=verdict,
+                reason=reason,
+            )
+        return sim
+
+    def test_skipped_when_no_product_cost(self):
+        act = _activator(
+            launch_simulator=self._fake_sim("stand_down"),
+        )
+        r = act.activate(
+            _req(live=True, auto_approve=True),
+        )
+        self.assertEqual(r.verdict, "activated")
+        sim_step = next(
+            s for s in r.steps if s.name == "simulator"
+        )
+        self.assertEqual(sim_step.status, "ok")
+        self.assertIn("skipped", sim_step.note)
+
+    def test_go_verdict_passes_through(self):
+        act = _activator(
+            launch_simulator=self._fake_sim(
+                "go", reason="safe",
+            ),
+        )
+        r = act.activate(_req(
+            live=True, auto_approve=True,
+            daily_budget_usd=20.0,
+            product_cost=5.0, product_price=30.0,
+        ))
+        self.assertEqual(r.verdict, "activated")
+
+    def test_stand_down_blocks(self):
+        ads = _FakeAds()
+        act = _activator(
+            ad_adapter=ads,
+            launch_simulator=self._fake_sim(
+                "stand_down", reason="unprofitable",
+            ),
+        )
+        r = act.activate(_req(
+            live=True, auto_approve=True,
+            daily_budget_usd=20.0,
+            product_cost=25.0, product_price=20.0,
+        ))
+        self.assertEqual(r.verdict, "blocked")
+        self.assertIn("unprofitable", r.block_reason)
+        self.assertEqual(ads.calls, [])
+
+    def test_caution_goes_pending(self):
+        ads = _FakeAds()
+        act = _activator(
+            ad_adapter=ads,
+            launch_simulator=self._fake_sim(
+                "caution", reason="marginal",
+            ),
+        )
+        r = act.activate(_req(
+            live=True, auto_approve=True,
+            daily_budget_usd=20.0,
+            product_cost=10.0, product_price=15.0,
+        ))
+        self.assertEqual(r.verdict, "pending")
+        self.assertIn("caution", r.pending_reason)
+        self.assertEqual(ads.calls, [])
+
+    def test_simulator_exception_is_advisory_not_blocking(self):
+        def boom(candidate):
+            raise RuntimeError("sim crashed")
+
+        act = _activator(launch_simulator=boom)
+        r = act.activate(_req(
+            live=True, auto_approve=True,
+            daily_budget_usd=20.0,
+            product_cost=5.0, product_price=30.0,
+        ))
+        # Pipeline continues; simulator step is ok with note
+        sim_step = next(
+            s for s in r.steps if s.name == "simulator"
+        )
+        self.assertEqual(sim_step.status, "ok")
+        self.assertIn("sim crashed", sim_step.note)
+        self.assertEqual(r.verdict, "activated")
+
+    def test_invalid_candidate_blocks(self):
+        act = _activator(
+            launch_simulator=self._fake_sim("go"),
+        )
+        # product_price negative → LaunchCandidate raises ValueError
+        r = act.activate(ca.ActivateRequest(
+            campaign_id="c",
+            auto_approve=True,
+            live=True,
+            daily_budget_usd=20.0,
+            product_cost=10.0,
+            product_price=5.0,
+            simulator_refund_rate=1.5,    # out of range
+        ))
+        self.assertEqual(r.verdict, "blocked")
+        self.assertIn("invalid", r.block_reason)
 
 
 class TestStats(unittest.TestCase):
