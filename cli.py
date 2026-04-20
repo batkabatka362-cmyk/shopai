@@ -660,6 +660,47 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── L3 memory consolidator ───────────────────────────────
+    mem_p = sub.add_parser(
+        "memory",
+        help=(
+            "Memory consolidator — episode → concept → "
+            "procedure ladder"
+        ),
+    )
+    mem_sub = mem_p.add_subparsers(dest="mem_action")
+    mem_sub.add_parser(
+        "status",
+        help="Counts by layer + active thresholds",
+    )
+    mem_run = mem_sub.add_parser(
+        "consolidate",
+        help="Run one ladder sweep (promote + decay + archive)",
+    )
+    mem_run.add_argument(
+        "--json", action="store_true",
+    )
+    mem_concepts = mem_sub.add_parser(
+        "concepts",
+        help="List top concepts by priority × evidence",
+    )
+    mem_concepts.add_argument(
+        "--limit", type=int, default=20,
+    )
+    mem_concepts.add_argument(
+        "--json", action="store_true",
+    )
+    mem_procs = mem_sub.add_parser(
+        "procedures",
+        help="List promoted procedures",
+    )
+    mem_procs.add_argument(
+        "--limit", type=int, default=20,
+    )
+    mem_procs.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── L9 learning / rulebook ───────────────────────────────
     learned_p = sub.add_parser(
         "brain-learned",
@@ -2951,6 +2992,109 @@ def _cmd_activations(
         )
 
 
+def _cmd_memory_status() -> None:
+    from core.memory.consolidator import get_consolidator
+    c = get_consolidator()
+    s = c.stats()
+    print("Memory consolidator — episode → concept → procedure")
+    print(f"  Episodes:         {s['episodes']}")
+    print(f"  Concepts:         {s['concepts']}")
+    print(f"  Procedures:       {s['procedures']}")
+    print(f"  Cold archive:     {s['cold_archive']}")
+    print()
+    print(
+        f"  min_episodes→concept:           "
+        f"{s['min_episodes_for_concept']}"
+    )
+    print(
+        f"  min_concept_refs→procedure:     "
+        f"{s['min_concept_refs_for_procedure']}"
+    )
+    print(
+        f"  min_success_rate:               "
+        f"{s['min_success_rate']:.0%}"
+    )
+    print(
+        f"  stale_after:                    "
+        f"{int(s['stale_after_s'] / 86400)}d"
+    )
+
+
+def _cmd_memory_consolidate(*, as_json: bool) -> None:
+    from core.memory.consolidator import get_consolidator
+    c = get_consolidator()
+    report = c.consolidate()
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print("✓ Consolidation sweep complete")
+    print(
+        f"  Episodes seen:       {report.episodes_seen}"
+    )
+    print(
+        f"  Concepts promoted:   "
+        f"{report.concepts_promoted}"
+    )
+    print(
+        f"  Procedures promoted: "
+        f"{report.procedures_promoted}"
+    )
+    print(f"  Stale decayed:       {report.stale_decayed}")
+    print(f"  Cold archived:       {report.cold_archived}")
+
+
+def _cmd_memory_concepts(
+    *, limit: int, as_json: bool,
+) -> None:
+    from core.memory.consolidator import get_consolidator
+    c = get_consolidator()
+    concepts = c.concepts(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [c.as_dict() for c in concepts], indent=2,
+        ))
+        return
+    if not concepts:
+        print("No concepts yet.")
+        return
+    print(f"Top {len(concepts)} concepts:")
+    for cc in concepts:
+        procedure_mark = " →P" if cc.promoted_to_procedure else ""
+        print(
+            f"  [{cc.concept_id[:8]}] "
+            f"{cc.signature:18s}  "
+            f"ev={cc.evidence_count:>3} "
+            f"refs={cc.refs:>3} "
+            f"succ={cc.success_rate:.0%} "
+            f"prio={cc.priority:.2f}"
+            f"{procedure_mark}"
+        )
+
+
+def _cmd_memory_procedures(
+    *, limit: int, as_json: bool,
+) -> None:
+    from core.memory.consolidator import get_consolidator
+    c = get_consolidator()
+    procs = c.procedures(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [p.as_dict() for p in procs], indent=2,
+        ))
+        return
+    if not procs:
+        print("No procedures promoted yet.")
+        return
+    print(f"Promoted procedures ({len(procs)}):")
+    for p in procs:
+        print(
+            f"  [{p.procedure_id[:8]}] "
+            f"{p.signature:22s}  "
+            f"refs={p.refs:>3} "
+            f"success={p.success_rate:.0%}"
+        )
+
+
 def _cmd_brain_learned_status() -> None:
     from core.learning.rulebook import get_rulebook
     book = get_rulebook()
@@ -4149,6 +4293,28 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "memory":
+        action = (
+            getattr(args, "mem_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_memory_status()
+        elif action == "consolidate":
+            _cmd_memory_consolidate(
+                as_json=bool(args.json),
+            )
+        elif action == "concepts":
+            _cmd_memory_concepts(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        elif action == "procedures":
+            _cmd_memory_procedures(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "brain-learned":
