@@ -632,10 +632,22 @@ class CoreOrchestrator:
                 })
                 events_fired.append("product.price_change:competitor")
 
-            # Check campaign underperformance
+            # Check campaign underperformance. ``optimization`` is
+            # a bare list of action dicts when real campaigns were
+            # supplied to _phase_campaigns, and a {"actions":[]}
+            # dict when none were. Handle both shapes — pre-audit
+            # this crashed with AttributeError on real campaigns.
             campaigns = cycle_results.get("phases", {}).get("campaigns", {})
             optimization = campaigns.get("optimization", {})
-            for action in optimization.get("actions", []):
+            if isinstance(optimization, list):
+                campaign_actions = optimization
+            elif isinstance(optimization, dict):
+                campaign_actions = optimization.get("actions", [])
+            else:
+                campaign_actions = []
+            for action in campaign_actions:
+                if not isinstance(action, dict):
+                    continue
                 if action.get("action") == "pause":
                     reactor.react("campaign.underperform", {
                         "campaign": action.get("campaign_id", "unknown"),

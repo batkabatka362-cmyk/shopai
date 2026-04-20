@@ -526,6 +526,34 @@ class TestCycleIntegration:
         result = c.run_cycle()
         assert "events_fired" in result["phases"]["events"]
 
+    def test_events_phase_survives_list_optimization(self):
+        """Regression for AUDIT_LOG P2 (2026-04-20).
+
+        _phase_campaigns stores optimizer.optimize() output directly,
+        which is a list of action dicts. _phase_events then reads
+        ``campaigns["optimization"]`` and previously called .get() on
+        it, crashing with AttributeError and producing no events.
+        """
+        c = CoreOrchestrator()
+        cfg = {
+            "campaigns": [
+                {
+                    "campaign_id": "c1",
+                    "roas": 1.2, "ctr": 0.5, "cpc": 1.0,
+                    "budget": 100, "spend": 50, "revenue": 60,
+                    "status": "active",
+                },
+            ],
+        }
+        result = c.run_cycle(config=cfg)
+        events = result["phases"]["events"]
+        assert "events_fired" in events
+        # Pause verdict on c1 should have fired an underperform event
+        details = events.get("details", [])
+        assert any(
+            "campaign.underperform" in d for d in details
+        ), f"expected underperform event, got {details}"
+
     def test_kpi_recorded(self):
         c = CoreOrchestrator()
         c.run_cycle()

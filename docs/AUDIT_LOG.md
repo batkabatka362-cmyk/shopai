@@ -16,29 +16,6 @@
 
 ## Open
 
-### 2026-04-20 · pre-existing · P2 · `event_processing` type error
-
-Surfaced while smoke-testing SHOPAI_BRAIN_HOOKS=1 with real
-campaigns (commit 87f3a65 / 440367d). Warning:
-
-```
-shopai.core_orchestrator: Event processing failed:
-'list' object has no attribute 'get'
-```
-
-Origin unknown — `_phase_events` or one of its downstream modules
-expects a dict but receives a list. Does not crash the cycle
-because the phase is wrapped in try/except + logger.warning,
-but it does mean the events phase produces zero output on real
-campaign input.
-
-**Repro:** any `run_cycle` call that supplies non-empty campaigns.
-**Next:** grep for `event_result.get`-style coercions, add
-defensive isinstance() shields. Batch with other
-"list vs dict" audit sweeps.
-
----
-
 ### 2026-04-20 · pre-existing · P3 · engines/ dead code sweep
 
 ~2500 engines in `engines/` per CLAUDE.md §2. Many are
@@ -78,6 +55,18 @@ attribution injection.
 ---
 
 ## Fixed
+
+### 2026-04-20 · `_phase_events` list crash on real campaigns
+
+Fixed in the autonomous-loop iteration following
+bb47f61. `_phase_events` called
+`campaigns["optimization"].get("actions", [])` but
+`optimization` is a **list** of action dicts when real campaigns
+ran through the optimizer (same list-vs-dict shape as
+update_marketing). Defensive isinstance() shield added; pause
+actions now fire `campaign.underperform` events correctly.
+Regression locked by
+`tests/test_core_orchestrator.py::test_events_phase_survives_list_optimization`.
 
 ### 2026-04-20 · `store_snapshot.update_marketing` list crash
 
