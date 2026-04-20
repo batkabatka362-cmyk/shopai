@@ -1,6 +1,7 @@
 """Weekly digest tests."""
 from __future__ import annotations
 
+import calendar
 import time
 import unittest
 from dataclasses import dataclass
@@ -20,8 +21,23 @@ def _now() -> float:
     return time.time()
 
 
+def _noon_utc_today() -> float:
+    """Stable mid-UTC-day anchor so offsets ≤ 11h stay on the same
+    UTC day regardless of wall-clock. Pre-audit _hours_ago used
+    time.time(); when CI ran near 00:XX UTC, an event 5h ago landed
+    on the previous UTC day while an event 1h ago stayed on today,
+    so TestRollup.test_per_day_buckets flaked (2 buckets != 1).
+    _day_key() in weekly_digest.py formats in UTC via gmtime, so we
+    anchor to UTC noon here explicitly."""
+    now = time.gmtime()
+    return float(calendar.timegm((
+        now.tm_year, now.tm_mon, now.tm_mday,
+        12, 0, 0, 0, 0, 0,
+    )))
+
+
 def _hours_ago(h: float) -> float:
-    return time.time() - h * 3600.0
+    return _noon_utc_today() - h * 3600.0
 
 
 class TestEmpty(unittest.TestCase):
