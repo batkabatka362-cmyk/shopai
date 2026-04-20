@@ -53,6 +53,15 @@ class CoreOrchestrator:
         self.priority_engine = PriorityEngine()
         self.action_coordinator = ActionCoordinator()
         self.journal = CycleJournal()
+        # Brain-facade hook state (v33-v38 modules). Set to False by
+        # default so the v20-v32 wiring is unchanged; the single
+        # SHOPAI_BRAIN_HOOKS env gate (shared with controller.py)
+        # turns the hook chain ON. Default budgets are registered
+        # once on first begin.
+        self._brain_hooks_enabled = (
+            os.getenv("SHOPAI_BRAIN_HOOKS", "") == "1"
+        )
+        self._brain_budgets_registered = False
         self._init_modules()
 
     def get_init_errors(self) -> dict[str, str]:
@@ -204,6 +213,9 @@ class CoreOrchestrator:
         start = time.monotonic()
         cfg = config or {}
 
+        # ── BRAIN: open compute budget cycle ──
+        self._brain_begin(cycle_id)
+
         # ── Phase 0: GOAL SELECTION ──
         # Callers can pass goal="" or goal=None to request automatic
         # goal selection from the GoalManager; otherwise the provided
@@ -288,11 +300,17 @@ class CoreOrchestrator:
             fin_depth, mkt_tactics, journey, supply, compliance,
         )
         enriched_data["_episodes"] = past_episodes
-        intel = self._phase_intelligence(enriched_data, goal)
+        intel = self._timed_phase(
+            "intelligence",
+            lambda: self._phase_intelligence(enriched_data, goal),
+        )
         results["phases"]["intelligence"] = intel
 
         # ── Phase 9: STRATEGY OPTIMIZATION ──
-        strategy = self._phase_strategy(intel, goal)
+        strategy = self._timed_phase(
+            "strategy",
+            lambda: self._phase_strategy(intel, goal),
+        )
         results["phases"]["strategy"] = strategy
 
         # ── Phase 10: EVENT PROCESSING ──
@@ -307,7 +325,12 @@ class CoreOrchestrator:
         # Wave 4 #1: pass recalled episodes as memories so deliberate()
         # can feed them to the MemoryManager persona when the risk
         # score lands in the uncertainty band.
-        judgment = self._phase_judgment(intel, data, memories=past_episodes)
+        judgment = self._timed_phase(
+            "judgment",
+            lambda: self._phase_judgment(
+                intel, data, memories=past_episodes,
+            ),
+        )
         results["phases"]["judgment"] = judgment
 
         # ── ENFORCE JUDGMENT VERDICT ──
@@ -323,7 +346,10 @@ class CoreOrchestrator:
 
         # ── Phase 15: EXECUTION (only if not blocked/delayed) ──
         if not results.get("blocked") and not results.get("delayed"):
-            execution = self._phase_execution(intel, data)
+            execution = self._timed_phase(
+                "execution",
+                lambda: self._phase_execution(intel, data),
+            )
             results["phases"]["execution"] = execution
             # Wave 6 #2: feed execution outcomes into the advisor's
             # Bayesian belief store so future decisions can query the
@@ -390,6 +416,9 @@ class CoreOrchestrator:
 
         # ── Record Episode ──
         self._record_episode(results)
+
+        # ── BRAIN: finalise (summary + insights + budget close) ──
+        self._brain_finalise(results, elapsed * 1000.0)
 
         # ── Journal ──
         self.journal.record_cycle(results)
@@ -919,6 +948,157 @@ class CoreOrchestrator:
             "free_shipping_threshold": supply.get("shipping_optimization", {}).get("recommended_threshold"),
             "compliance_violations": compliance.get("violation_count", 0),
         }
+
+    # ── Brain hooks (v33-v38 facade integration) ──────────
+
+    def _brain_begin(self, cycle_id: str) -> None:
+        """Open a compute-budget cycle on the brain facade.
+
+        No-ops when SHOPAI_BRAIN_HOOKS is unset. Registers default
+        budgets (latency_ms / usd / api_calls) once per process.
+        """
+        if not self._brain_hooks_enabled:
+            return
+        try:
+            from core.brain.brain_facade import brain
+            b = brain()
+            if not self._brain_budgets_registered:
+                from core.brain.compute_budget import BudgetSpec
+                from core.brain.brain_facade import _compute_budget
+                cb = _compute_budget()
+                cb.register_budget(BudgetSpec(
+                    kind="latency_ms",
+                    max_per_cycle=30_000.0,
+                    warn_at=0.8,
+                ))
+                cb.register_budget(BudgetSpec(
+                    kind="usd",
+                    max_per_cycle=0.10,
+                    warn_at=0.8,
+                ))
+                cb.register_budget(BudgetSpec(
+                    kind="api_calls",
+                    max_per_cycle=500.0,
+                    warn_at=0.8,
+                ))
+                self._brain_budgets_registered = True
+            b.begin_compute_cycle(cycle_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("brain_begin skipped: %s", exc)
+
+    def _brain_tick(
+        self, phase: str, duration_ms: float, ok: bool,
+    ) -> None:
+        """Record a phase sample + charge the latency budget."""
+        if not self._brain_hooks_enabled:
+            return
+        try:
+            from core.brain.brain_facade import brain
+            b = brain()
+            b.record_phase_sample(
+                phase=phase,
+                duration_ms=duration_ms,
+                ok=ok,
+            )
+            b.spend_compute("latency_ms", duration_ms)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("brain_tick skipped: %s", exc)
+
+    def _timed_phase(
+        self, name: str, fn: Any,
+    ) -> Any:
+        """Run ``fn`` and record phase latency + ok to the brain.
+
+        Exceptions are re-raised so the caller's existing error path
+        keeps working; the finally block always fires.
+        """
+        start = time.monotonic()
+        ok = True
+        try:
+            return fn()
+        except Exception:
+            ok = False
+            raise
+        finally:
+            self._brain_tick(
+                name,
+                (time.monotonic() - start) * 1000.0,
+                ok,
+            )
+
+    def _brain_finalise(
+        self,
+        results: dict[str, Any],
+        elapsed_ms: float,
+    ) -> None:
+        """End compute cycle + summarise episode + synthesise
+        insights."""
+        if not self._brain_hooks_enabled:
+            return
+        try:
+            from core.brain.brain_facade import brain
+            b = brain()
+            blocked = bool(results.get("blocked"))
+            ok = not blocked
+            b.record_phase_sample(
+                phase="cycle",
+                duration_ms=elapsed_ms,
+                ok=ok,
+            )
+            # Mood reacts to the gross cycle result. "overbudget"
+            # fires separately if compute budget raised alerts —
+            # we surface cycle-level tone here.
+            b.observe_mood("error" if blocked else "win")
+            # Episode summary for the vault
+            summary = results.get("summary", {}) or {}
+            intel = (
+                results.get("phases", {}).get("intelligence", {})
+                or {}
+            )
+            decision = intel.get("decision", {}) or {}
+            score = summary.get("confidence_score")
+            outcome_score = (
+                float(score) / 100.0
+                if isinstance(score, (int, float))
+                and score > 1.0
+                else (float(score) if score is not None else None)
+            )
+            title_hint = str(
+                summary.get("decision")
+                or results.get("goal")
+                or "cycle",
+            )[:60]
+            b.summarise_episode(
+                title_hint=title_hint,
+                situation={
+                    "goal": str(results.get("goal", "")),
+                    "health_grade": str(
+                        summary.get("health_grade", ""),
+                    ),
+                    "cycle_number": int(
+                        results.get("cycle_number", 0),
+                    ),
+                },
+                winning_action=str(
+                    decision.get("action") or "noop",
+                ),
+                outcome_score=outcome_score,
+                evidence_keys=[
+                    f"cycle:{results.get('cycle_id', '')}",
+                ],
+            )
+            # Synthesise insights from modules that accumulate
+            # signals across cycles. The facade handles missing
+            # inputs gracefully.
+            drift = b.detect_world_drift()
+            funnel = b.analyse_funnel()
+            b.synthesise_insights(
+                drift_alerts=drift or None,
+                funnel_snapshot=funnel or None,
+            )
+            b.end_compute_cycle()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("brain_finalise skipped: %s", exc)
 
     def _record_episode(self, results: dict[str, Any]) -> None:
         """Record this cycle as an episode in episodic memory."""
