@@ -317,7 +317,32 @@ def build_parser() -> argparse.ArgumentParser:
     comp_sub.add_parser("check", help="Probe every tracked URL now")
 
     # ── System commands ──────────────────────────────────────
-    sub.add_parser("health", help="System health check")
+    sub.add_parser("health", help="System health check (module imports)")
+    doctor_p = sub.add_parser(
+        "doctor",
+        help=(
+            "End-to-end readiness check — tells you exactly what "
+            "to fix"
+        ),
+    )
+    doctor_p.add_argument(
+        "--json", action="store_true",
+        help="Machine-readable output",
+    )
+    doctor_p.add_argument(
+        "--network", action="store_true",
+        help=(
+            "Also run network-dependent checks (webhook "
+            "registered, credentials validate via live call)"
+        ),
+    )
+    doctor_p.add_argument(
+        "--snippet", action="store_true",
+        help=(
+            "Print the Shopify attribution Liquid snippet for "
+            "pasting into theme.liquid"
+        ),
+    )
     sub.add_parser("status", help="Full system status")
     sub.add_parser("setup", help="Interactive setup wizard")
     sub.add_parser("start", help="Start the orchestrator")
@@ -1749,6 +1774,41 @@ def _cmd_health() -> None:
     print(f"Status:  {'ALL OK' if all_ok else 'SOME FAILURES'}")
 
 
+def _cmd_doctor(
+    *,
+    as_json: bool = False,
+    network: bool = False,
+    snippet: bool = False,
+) -> None:
+    """End-to-end readiness diagnostic. Tells the owner exactly
+    what env / wiring / webhook fixes are needed for real work."""
+    if snippet:
+        from execution.launch.shopify_attribution import (
+            build_liquid_snippet, install_instructions,
+        )
+        shop = os.environ.get(
+            "SHOPAI_SHOPIFY_URL", "your-store.myshopify.com",
+        )
+        print(install_instructions(shop))
+        print()
+        print("─" * 60)
+        print("SNIPPET (paste into layout/theme.liquid):")
+        print("─" * 60)
+        print(build_liquid_snippet())
+        return
+    from core.readiness.health_check import run_all
+    report = run_all(network=network)
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(report.as_text())
+    # Non-zero exit when blocked so shell scripts / CI can branch
+    if report.verdict == "blocked":
+        sys.exit(2)
+    if report.verdict == "degraded":
+        sys.exit(1)
+
+
 def _cmd_status() -> None:
     from engines.registry import engine_count
     sm = _get_store_manager()
@@ -2059,6 +2119,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "health":
         _cmd_health()
+        return
+
+    if args.command == "doctor":
+        _cmd_doctor(
+            as_json=bool(getattr(args, "json", False)),
+            network=bool(getattr(args, "network", False)),
+            snippet=bool(getattr(args, "snippet", False)),
+        )
         return
 
     if args.command == "status":
