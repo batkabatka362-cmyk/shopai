@@ -384,6 +384,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    autopilot_p = sub.add_parser(
+        "autopilot",
+        help=(
+            "Full-autonomy: winner sources → publish → "
+            "activate. Per CLAUDE.md §4c, dry-run by default."
+        ),
+    )
+    autopilot_p.add_argument(
+        "--seeds",
+        default="data/winner_seeds.json",
+        help=(
+            "ManualSeedSource JSON file "
+            "(default data/winner_seeds.json)"
+        ),
+    )
+    autopilot_p.add_argument(
+        "--peers",
+        default="",
+        help=(
+            "Comma-separated peer Shopify store URLs "
+            "for PeerStoreObserverSource "
+            "(e.g. a.myshopify.com,b.com)"
+        ),
+    )
+    autopilot_p.add_argument(
+        "--max-launches", type=int, default=1,
+        help="Max winners to launch in one run (default 1)",
+    )
+    autopilot_p.add_argument(
+        "--top-n", type=int, default=5,
+        help="Top-N winners to rank before cap (default 5)",
+    )
+    autopilot_p.add_argument(
+        "--budget", type=float, default=20.0,
+        help="Daily ad budget USD (default $20)",
+    )
+    autopilot_p.add_argument(
+        "--platform", default="facebook",
+        choices=["facebook", "instagram", "tiktok", "google"],
+    )
+    autopilot_p.add_argument(
+        "--no-activate", action="store_true",
+        help=(
+            "Publish only; skip campaign activation"
+        ),
+    )
+    autopilot_p.add_argument(
+        "--live", action="store_true",
+        help=(
+            "Live writes (also needs "
+            "SHOPAI_ENABLE_LIVE_EXECUTION=1)"
+        ),
+    )
+    autopilot_p.add_argument(
+        "--json", action="store_true",
+    )
+
     publications_p = sub.add_parser(
         "publications",
         help="Recent publisher_bundle publications",
@@ -2069,6 +2126,127 @@ def _cmd_activate(
         sys.exit(2)
 
 
+def _cmd_autopilot(
+    *,
+    seeds: str,
+    peers: str,
+    max_launches: int,
+    top_n: int,
+    budget: float,
+    platform: str,
+    auto_activate: bool,
+    live: bool,
+    as_json: bool,
+) -> None:
+    """Full-autonomy chain: discovery → publish → activate."""
+    from execution.launch.autopilot import (
+        Autopilot, AutopilotRequest,
+    )
+    from agents.research.sources.manual_seed import (
+        ManualSeedSource,
+    )
+    from agents.research.sources.peer_store_observer import (
+        PeerStoreObserverSource,
+    )
+    # Build sources from CLI flags
+    sources = []
+    seed_path = Path(seeds) if seeds else None
+    if seed_path and seed_path.exists():
+        sources.append(ManualSeedSource(seed_path))
+    peer_list = [
+        p.strip() for p in peers.split(",") if p.strip()
+    ]
+    if peer_list:
+        sources.append(
+            PeerStoreObserverSource(peer_list),
+        )
+    if not sources:
+        msg = (
+            "No winner sources available. "
+            "Either create --seeds file or pass --peers. "
+            "See 'shopai doctor --snippet' for template."
+        )
+        if as_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(f"[autopilot] {msg}")
+        sys.exit(2)
+    shop_url = os.environ.get(
+        "SHOPAI_SHOPIFY_URL", "",
+    )
+    api_key = os.environ.get(
+        "SHOPAI_SHOPIFY_KEY",
+        os.environ.get(
+            "SHOPAI_SHOPIFY_CLIENT_SECRET", "",
+        ),
+    )
+    meta_account = os.environ.get(
+        "META_ADS_ACCOUNT_ID",
+        os.environ.get("meta_ads_account_id", ""),
+    )
+    try:
+        req = AutopilotRequest(
+            shop_url=shop_url,
+            api_key=api_key,
+            winner_sources=sources,
+            max_launches=max_launches,
+            top_n=top_n,
+            ad_budget_daily=budget,
+            platform=platform,
+            meta_account_id=meta_account,
+            auto_activate=auto_activate,
+            live=live,
+        )
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"[autopilot] request invalid: {exc}")
+        sys.exit(2)
+    pilot = Autopilot()
+    run = pilot.run(req)
+    if as_json:
+        print(json.dumps(run.as_dict(), indent=2))
+        return
+    mode = "DRY-RUN" if run.dry_run else "LIVE"
+    print(
+        f"[autopilot {mode}] run={run.id} "
+        f"examined={run.winners_examined} "
+        f"ranked={run.winners_ranked} "
+        f"launches={len(run.launches)} "
+        f"successful={run.successful_launches}"
+    )
+    for l in run.launches:
+        pub_icon = {
+            "ok": "✓", "dry_run": "·", "error": "✗",
+        }.get(l.publish_verdict, "?")
+        act_icon = {
+            "activated": "✓", "dry_run": "·",
+            "pending": "?", "blocked": "✗",
+            "skipped": "-", "error": "✗",
+        }.get(l.activate_verdict, "?")
+        print(
+            f"  [{pub_icon}/{act_icon}] {l.winner_title[:40]}"
+        )
+        print(
+            f"      decision : {l.decision_id}"
+        )
+        if l.product_handle:
+            print(
+                f"      handle   : {l.product_handle}"
+            )
+        if l.campaign_id:
+            print(
+                f"      campaign : {l.campaign_id}"
+            )
+        if l.block_reason:
+            print(
+                f"      blocked  : {l.block_reason}"
+            )
+    if run.successful_launches == 0 and run.launches:
+        sys.exit(1)
+
+
 def _cmd_publications(
     *, limit: int, as_json: bool,
 ) -> None:
@@ -2466,6 +2644,20 @@ def main(argv: list[str] | None = None) -> None:
             campaign_id=args.campaign_id,
             budget=float(args.budget),
             auto_approve=bool(args.auto_approve),
+            live=bool(args.live),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "autopilot":
+        _cmd_autopilot(
+            seeds=args.seeds,
+            peers=args.peers,
+            max_launches=int(args.max_launches),
+            top_n=int(args.top_n),
+            budget=float(args.budget),
+            platform=args.platform,
+            auto_activate=not args.no_activate,
             live=bool(args.live),
             as_json=bool(args.json),
         )
