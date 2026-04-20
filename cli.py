@@ -640,6 +640,82 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── L4 long-horizon planning ─────────────────────────────
+    plan_p = sub.add_parser(
+        "plan-quarter",
+        help=(
+            "Build a weekly-milestone plan from a quarterly "
+            "revenue goal (L4)"
+        ),
+    )
+    plan_p.add_argument(
+        "--monthly-target", type=float, required=True,
+        help="Revenue target in USD/month at deadline",
+    )
+    plan_p.add_argument(
+        "--weeks", type=int, default=13,
+        help="Plan duration in weeks (default 13 = 1 quarter)",
+    )
+    plan_p.add_argument(
+        "--sku-target", type=int, default=20,
+    )
+    plan_p.add_argument(
+        "--roas-target", type=float, default=1.8,
+    )
+    plan_p.add_argument(
+        "--ramp",
+        choices=("linear", "front_loaded", "back_loaded"),
+        default="linear",
+    )
+    plan_p.add_argument(
+        "--niche", default="",
+    )
+    plan_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    checkin_p = sub.add_parser(
+        "plan-checkin",
+        help=(
+            "Check current revenue against a quarterly plan "
+            "(verdict: ahead / on_track / behind / at_risk)"
+        ),
+    )
+    checkin_p.add_argument(
+        "--monthly-target", type=float, required=True,
+    )
+    checkin_p.add_argument(
+        "--weeks", type=int, default=13,
+    )
+    checkin_p.add_argument(
+        "--week-elapsed", type=int, required=True,
+        help=(
+            "Weeks since plan started (1-based; use week 0 "
+            "for pre-kickoff)"
+        ),
+    )
+    checkin_p.add_argument(
+        "--revenue", type=float, required=True,
+        help="Cumulative revenue so far, USD",
+    )
+    checkin_p.add_argument(
+        "--skus-live", type=int, default=0,
+    )
+    checkin_p.add_argument(
+        "--current-roas", type=float, default=0.0,
+    )
+    checkin_p.add_argument(
+        "--ramp",
+        choices=("linear", "front_loaded", "back_loaded"),
+        default="linear",
+    )
+    checkin_p.add_argument(
+        "--sku-target", type=int, default=20,
+    )
+    checkin_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── LX.5 multi-store federation ──────────────────────────
     fed_p = sub.add_parser(
         "federation",
@@ -2780,6 +2856,115 @@ def _cmd_activations(
         )
 
 
+def _cmd_plan_quarter(args) -> None:
+    from core.planning.quarterly_planner import (
+        QuarterlyGoal,
+        build_quarterly_plan,
+    )
+    now = time.time()
+    weeks = max(1, int(args.weeks))
+    goal = QuarterlyGoal(
+        revenue_target_monthly_usd=float(
+            args.monthly_target,
+        ),
+        start_ts=now,
+        deadline_ts=now + weeks * 7 * 24 * 3600.0,
+        sku_target=int(args.sku_target),
+        roas_target=float(args.roas_target),
+        ramp_curve=args.ramp,
+        niche=args.niche or "",
+    )
+    plan = build_quarterly_plan(goal)
+    if args.json:
+        print(json.dumps(plan.as_dict(), indent=2))
+        return
+    print(
+        f"Quarterly plan — {weeks} weeks, "
+        f"${goal.revenue_target_monthly_usd:,.0f}/mo target"
+    )
+    print(
+        f"  Ramp: {goal.ramp_curve}  "
+        f"SKU target: {goal.sku_target}  "
+        f"ROAS floor: {goal.roas_target:.2f}"
+    )
+    print()
+    print(
+        f"  {'Week':>4}  {'Date':>10}  "
+        f"{'Cum rev':>10}  {'SKUs':>4}  {'ROAS':>5}"
+    )
+    for m in plan.milestones:
+        date_str = time.strftime(
+            "%Y-%m-%d", time.gmtime(m.target_ts),
+        )
+        print(
+            f"  {m.week_index:>4}  {date_str}  "
+            f"${m.cumulative_revenue_usd:>9,.0f}  "
+            f"{m.skus_live_target:>4}  "
+            f"{m.roas_target:>5.2f}"
+        )
+
+
+def _cmd_plan_checkin(args) -> None:
+    from core.planning.quarterly_planner import (
+        QuarterlyGoal,
+        build_quarterly_plan,
+        check_in,
+    )
+    week_s = 7 * 24 * 3600.0
+    weeks = max(1, int(args.weeks))
+    elapsed = max(0, int(args.week_elapsed))
+    # Plan started `elapsed` weeks ago; deadline at weeks * week_s
+    # from start
+    now = time.time()
+    start_ts = now - elapsed * week_s
+    deadline_ts = start_ts + weeks * week_s
+    goal = QuarterlyGoal(
+        revenue_target_monthly_usd=float(
+            args.monthly_target,
+        ),
+        start_ts=start_ts,
+        deadline_ts=deadline_ts,
+        sku_target=int(args.sku_target),
+        ramp_curve=args.ramp,
+    )
+    plan = build_quarterly_plan(goal)
+    report = check_in(
+        plan,
+        current_revenue_usd=float(args.revenue),
+        current_skus_live=int(args.skus_live),
+        current_roas=float(args.current_roas),
+        now_ts=now,
+    )
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    icon = {
+        "ahead": "⇧", "on_track": "✓",
+        "behind": "⇩", "at_risk": "✗",
+    }.get(report.verdict, "?")
+    print(
+        f"{icon} {report.verdict.upper()} "
+        f"(ratio {report.ratio:.0%}, "
+        f"missed {report.missed_milestones})"
+    )
+    print()
+    print(f"  Reason:         {report.reason}")
+    if report.current_milestone is not None:
+        m = report.current_milestone
+        print(
+            f"  Active mile:    week {m.week_index}  "
+            f"target ${m.cumulative_revenue_usd:,.0f}"
+        )
+    if report.next_milestone is not None:
+        m = report.next_milestone
+        print(
+            f"  Next mile:      week {m.week_index}  "
+            f"target ${m.cumulative_revenue_usd:,.0f}"
+        )
+    print()
+    print(f"  Recommend: {report.recommendation}")
+
+
 def _parse_trait_pairs(pairs: list[str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for raw in pairs or []:
@@ -3663,6 +3848,14 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "plan-quarter":
+        _cmd_plan_quarter(args)
+        return
+
+    if args.command == "plan-checkin":
+        _cmd_plan_checkin(args)
         return
 
     if args.command == "federation":
