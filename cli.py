@@ -2217,7 +2217,13 @@ def _cmd_autopilot(
     from agents.research.sources.peer_store_observer import (
         PeerStoreObserverSource,
     )
-    # Build sources from CLI flags
+    from agents.research.sources.cj_dropshipping import (
+        CJDropshippingSource,
+    )
+    from agents.research.sources.aliexpress_scraper import (
+        AliExpressScraperSource,
+    )
+    # Build sources from CLI flags + env
     sources = []
     seed_path = Path(seeds) if seeds else None
     if seed_path and seed_path.exists():
@@ -2229,6 +2235,14 @@ def _cmd_autopilot(
         sources.append(
             PeerStoreObserverSource(peer_list),
         )
+    # CJ auto-enables on CJ_EMAIL + CJ_API_KEY
+    cj = CJDropshippingSource()
+    if cj.is_available():
+        sources.append(cj)
+    # AliExpress opt-in via env gate
+    ali = AliExpressScraperSource()
+    if ali.is_available():
+        sources.append(ali)
     if not sources:
         msg = (
             "No winner sources available. "

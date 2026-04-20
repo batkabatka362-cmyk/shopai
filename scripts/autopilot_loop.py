@@ -176,6 +176,12 @@ class AutopilotLoop:
         from agents.research.sources.peer_store_observer import (
             PeerStoreObserverSource,
         )
+        from agents.research.sources.cj_dropshipping import (
+            CJDropshippingSource,
+        )
+        from agents.research.sources.aliexpress_scraper import (
+            AliExpressScraperSource,
+        )
         sources: list[Any] = []
         seed_path = (
             Path(self._config.seeds_path)
@@ -192,6 +198,14 @@ class AutopilotLoop:
             sources.append(
                 PeerStoreObserverSource(peer_list),
             )
+        # CJ auto-enables when creds are in env
+        cj = CJDropshippingSource()
+        if cj.is_available():
+            sources.append(cj)
+        # AliExpress only when explicit env opt-in
+        ali = AliExpressScraperSource()
+        if ali.is_available():
+            sources.append(ali)
         return sources
 
     def _run_one_cycle(self) -> CycleSummary:
