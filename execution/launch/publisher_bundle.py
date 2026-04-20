@@ -393,6 +393,80 @@ class PublisherBundle:
         steps.append(log)
         return log
 
+    def _build_seo(
+        self,
+        *,
+        request: LaunchRequest,
+        ad_copy: dict[str, Any],
+    ) -> Any:
+        """Build a ``ProductSEO`` bundle for the winner; returns
+        None if the SEO generator raises (never blocks a launch)."""
+        try:
+            from execution.seo.seo_skill import (
+                generate_product_seo,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "seo_skill import failed: %s", exc,
+            )
+            return None
+        product = {
+            "title": request.winner.get("title", "Product"),
+            "description": (
+                ad_copy.get("body")
+                or request.winner.get("description", "")
+            ),
+            "image": (
+                request.winner.get("image_url")
+                or request.winner.get("image", "")
+            ),
+            "price": float(
+                request.winner.get("price", 0) or 0,
+            ),
+            "sku": str(
+                request.winner.get("sku")
+                or request.winner.get("external_id", ""),
+            ),
+            "brand": request.winner.get(
+                "brand", "",
+            ) or "ShopAI",
+            "availability": "InStock",
+            "gtin": str(
+                request.winner.get("gtin", ""),
+            ),
+            "rating": request.winner.get("rating"),
+            "review_count": request.winner.get(
+                "review_count",
+            ),
+        }
+        shop_url = (request.shop_url or "").strip()
+        site_url = (
+            f"https://{shop_url}"
+            if shop_url and not shop_url.startswith("http")
+            else shop_url
+        )
+        store_name = (
+            shop_url.replace(".myshopify.com", "")
+            .replace("https://", "")
+            .replace("http://", "")
+            .strip("/")
+            .replace("-", " ")
+            .title()
+            or "ShopAI"
+        )
+        try:
+            return generate_product_seo(
+                product,
+                store_name=store_name,
+                site_url=site_url,
+                currency=request.store_currency or "USD",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "generate_product_seo failed: %s", exc,
+            )
+            return None
+
     def _step_create_product(
         self,
         request: LaunchRequest,
@@ -400,6 +474,12 @@ class PublisherBundle:
         ad_copy: dict[str, Any],
         dry_run: bool,
     ) -> StepLog:
+        # Build L6 SEO bundle so the Shopify product carries
+        # meta title/description + schema.org + Merchant feed
+        # entry from the start (S3-4 wire-in).
+        seo_bundle = self._build_seo(
+            request=request, ad_copy=ad_copy,
+        )
         product_payload = {
             "title": request.winner.get("title", "Product"),
             "description": ad_copy.get("body", ""),
@@ -414,6 +494,21 @@ class PublisherBundle:
                 if request.winner.get("image_url") else []
             ),
         }
+        if seo_bundle is not None:
+            product_payload["metafields_global_title_tag"] = (
+                seo_bundle.meta_title
+            )
+            product_payload[
+                "metafields_global_description_tag"
+            ] = seo_bundle.meta_description
+            product_payload["seo"] = {
+                "title": seo_bundle.meta_title,
+                "description": seo_bundle.meta_description,
+            }
+            if seo_bundle.keywords:
+                product_payload["tags"] = ", ".join(
+                    seo_bundle.keywords,
+                )
         if dry_run:
             log = StepLog(
                 name="create_product",
@@ -423,6 +518,10 @@ class PublisherBundle:
                     "handle": _slugify(product_payload["title"]),
                     "product_id": (
                         f"dryrun_{uuid.uuid4().hex[:8]}"
+                    ),
+                    "seo": (
+                        seo_bundle.as_dict()
+                        if seo_bundle is not None else None
                     ),
                 },
                 ts=time.time(),
@@ -447,6 +546,11 @@ class PublisherBundle:
                             or _slugify(
                                 product_payload["title"],
                             ),
+                        ),
+                        "seo": (
+                            seo_bundle.as_dict()
+                            if seo_bundle is not None
+                            else None
                         ),
                     },
                     ts=time.time(),

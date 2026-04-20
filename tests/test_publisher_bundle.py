@@ -52,8 +52,14 @@ class _FakeProducts:
         self._status = status
         self._id = product_id
         self._handle = handle
+        self.calls: list[dict] = []
 
     def create_product(self, shop_url, api_key, payload):
+        self.calls.append({
+            "shop_url": shop_url,
+            "api_key": api_key,
+            "payload": payload,
+        })
         if self._status == "created":
             return {
                 "status": "created",
@@ -352,6 +358,81 @@ class TestQueries(unittest.TestCase):
     def test_reset(self):
         self.bundle.launch(_request())
         self.assertEqual(self.bundle.reset(), 1)
+
+
+class TestSEOEnrichment(unittest.TestCase):
+    """S3-4 wire-in: publisher_bundle fills SEO fields on Shopify
+    product create, and includes the schema.org + merchant feed
+    bundle in the step log."""
+
+    def setUp(self):
+        self._orig = os.environ.pop(
+            "SHOPAI_ENABLE_LIVE_EXECUTION", None,
+        )
+        self.products = _FakeProducts()
+        self.bundle = pb.PublisherBundle(
+            content_generator=_FakeContent(),
+            product_creator=self.products,
+            ad_adapter=_FakeAds(),
+            outcome_recorder=_FakeOutcomes(),
+            rationale_builder=_FakeRationale(),
+        )
+
+    def tearDown(self):
+        if self._orig is not None:
+            os.environ[
+                "SHOPAI_ENABLE_LIVE_EXECUTION"
+            ] = self._orig
+
+    def test_dry_run_exposes_seo_in_step_data(self):
+        result = self.bundle.launch(_request(live=False))
+        create_step = next(
+            s for s in result.steps
+            if s.name == "create_product"
+        )
+        seo = create_step.data.get("seo")
+        self.assertIsNotNone(seo)
+        self.assertIn("meta_title", seo)
+        self.assertIn("schema_org_jsonld", seo)
+        self.assertIn("merchant_feed_entry", seo)
+
+    def test_dry_run_payload_carries_meta_tags(self):
+        result = self.bundle.launch(_request(live=False))
+        create_step = next(
+            s for s in result.steps
+            if s.name == "create_product"
+        )
+        payload = create_step.data["payload"]
+        self.assertIn(
+            "metafields_global_title_tag", payload,
+        )
+        self.assertIn(
+            "metafields_global_description_tag", payload,
+        )
+        self.assertIn("seo", payload)
+        # Keywords populated into tags when extracted
+        self.assertIn("tags", payload)
+
+    def test_live_path_payload_carries_seo_fields(self):
+        try:
+            os.environ[
+                "SHOPAI_ENABLE_LIVE_EXECUTION"
+            ] = "1"
+            self.bundle.launch(_request(live=True))
+        finally:
+            os.environ.pop(
+                "SHOPAI_ENABLE_LIVE_EXECUTION", None,
+            )
+        # The fake product creator captured the payload
+        self.assertTrue(self.products.calls)
+        last_payload = self.products.calls[-1]["payload"]
+        self.assertIn(
+            "metafields_global_title_tag",
+            last_payload,
+        )
+        self.assertTrue(
+            last_payload["metafields_global_title_tag"],
+        )
 
 
 class TestDict(unittest.TestCase):
