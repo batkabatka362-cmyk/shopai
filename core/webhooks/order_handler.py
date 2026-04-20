@@ -129,7 +129,31 @@ class OrderWebhookHandler:
         source = order_data.get("source_name") or order_data.get("referring_site") or ""
         landing = order_data.get("landing_site") or ""
 
+        # Agentic channel attribution (Wave B-1 A4).
+        # Shopify's Agentic Storefronts are default-on since
+        # 24 Mar 2026; ``source_name`` / ``note_attributes``
+        # carry ``chatgpt`` | ``perplexity`` | ``copilot`` |
+        # ``gemini`` | ``agentic`` when an AI surface
+        # originated the order. Classify here so every paid
+        # order becomes a per-channel learning signal.
+        agentic_channel = ""
+        try:
+            from core.bridge.agentic_storefront import (
+                AgenticStorefrontBridge,
+            )
+            agentic_channel = (
+                AgenticStorefrontBridge.classify_order(
+                    order_data,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "agentic classify failed: %s", exc,
+            )
+
         recorded = {"order_id": order_id, "revenue": revenue, "items": item_count}
+        if agentic_channel:
+            recorded["agentic_channel"] = agentic_channel
 
         # 1. Record to OutcomeTracker — links decision to real outcome
         if decision_id:
@@ -212,6 +236,34 @@ class OrderWebhookHandler:
         except Exception as exc:  # noqa: BLE001
             logger.debug("brain outcome record failed: %s", exc)
             recorded["brain_recorded"] = False
+
+        # 4b. Agentic channel outcome on the engine bus so
+        #     per-channel ROAS rebalancing has real evidence.
+        if agentic_channel:
+            try:
+                from core.integration.engine_outcome_bus import (
+                    EngineOutcome,
+                    get_engine_outcome_bus,
+                )
+                get_engine_outcome_bus().report(EngineOutcome(
+                    engine="agentic_storefront",
+                    kpi="gmv",
+                    value=float(revenue),
+                    ok=revenue > 0,
+                    source=agentic_channel,
+                    context={
+                        "order_id": order_id,
+                        "channel": agentic_channel,
+                        "items": item_count,
+                    },
+                    rationale_id=str(decision_id or ""),
+                ))
+                recorded["agentic_bus_reported"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "agentic bus report failed: %s", exc,
+                )
+                recorded["agentic_bus_reported"] = False
 
         # 5. Optional CJ fulfillment dispatch (LX.2 wire-in).
         #    Opt-in via SHOPAI_ENABLE_CJ_FULFILL=1 so owners who
