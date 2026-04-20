@@ -134,6 +134,15 @@ class Snapshot:
     compute: dict[str, Any] = field(default_factory=dict)
     rationales: dict[str, Any] = field(default_factory=dict)
     capabilities_registry: dict[str, Any] = field(default_factory=dict)
+    # v37: mood, confidence thresholds, delegation, relations,
+    # workflow bottlenecks, strategy coherence, readiness
+    mood: dict[str, Any] = field(default_factory=dict)
+    confidence_thresholds: dict[str, Any] = field(default_factory=dict)
+    delegation: dict[str, Any] = field(default_factory=dict)
+    relations: dict[str, Any] = field(default_factory=dict)
+    bottlenecks: dict[str, Any] = field(default_factory=dict)
+    strategy_coherence: dict[str, Any] = field(default_factory=dict)
+    readiness: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -222,6 +231,13 @@ class Snapshot:
             "compute": self.compute,
             "rationales": self.rationales,
             "capabilities_registry": self.capabilities_registry,
+            "mood": self.mood,
+            "confidence_thresholds": self.confidence_thresholds,
+            "delegation": self.delegation,
+            "relations": self.relations,
+            "bottlenecks": self.bottlenecks,
+            "strategy_coherence": self.strategy_coherence,
+            "readiness": self.readiness,
         }
 
 
@@ -409,6 +425,23 @@ class BrainFacade:
         snap.capabilities_registry = _safe(
             lambda: _capability_registry_summary(),
         )
+        snap.mood = _safe(lambda: _mood_model_summary())
+        snap.confidence_thresholds = _safe(
+            lambda: _confidence_tuner_summary(),
+        )
+        snap.delegation = _safe(
+            lambda: _delegation_router_summary(),
+        )
+        snap.relations = _safe(
+            lambda: _relation_extractor_summary(),
+        )
+        snap.bottlenecks = _safe(
+            lambda: _bottleneck_detector_summary(),
+        )
+        snap.strategy_coherence = _safe(
+            lambda: _strategy_coherence_summary(),
+        )
+        snap.readiness = _safe(lambda: _readiness_gate_summary())
         return snap
 
     # ── v32: integration + divergence + journal ─────────
@@ -1505,6 +1538,190 @@ class BrainFacade:
         except Exception as exc:
             logger.debug("capability_gaps failed: %s", exc)
             return []
+
+    # ── v37: mood, confidence thresholds, delegation, relations,
+    #         bottlenecks, strategy coherence, readiness ─────
+
+    def observe_mood(
+        self, event: str, *, weight: float = 1.0,
+    ) -> dict[str, Any]:
+        try:
+            return _mood_model().observe(
+                event, weight=weight,  # type: ignore[arg-type]
+            ).as_dict()
+        except Exception as exc:
+            logger.debug("observe_mood failed: %s", exc)
+            return {}
+
+    def mood_snapshot(self) -> dict[str, Any]:
+        try:
+            return _mood_model().snapshot().as_dict()
+        except Exception as exc:
+            logger.debug("mood_snapshot failed: %s", exc)
+            return {}
+
+    def record_decision_outcome(
+        self,
+        *,
+        kind: str,
+        confidence: float,
+        outcome_ok: bool,
+    ) -> bool:
+        try:
+            _confidence_tuner().record(
+                kind=kind, confidence=confidence,
+                outcome_ok=outcome_ok,
+            )
+            return True
+        except Exception as exc:
+            logger.debug(
+                "record_decision_outcome failed: %s", exc,
+            )
+            return False
+
+    def confidence_threshold(self, kind: str) -> float:
+        try:
+            return _confidence_tuner().threshold(kind)
+        except Exception as exc:
+            logger.debug("confidence_threshold failed: %s", exc)
+            return 0.7
+
+    def accepts_decision(
+        self, kind: str, confidence: float,
+    ) -> bool:
+        try:
+            return _confidence_tuner().accepts(kind, confidence)
+        except Exception as exc:
+            logger.debug("accepts_decision failed: %s", exc)
+            return False
+
+    def route_task(
+        self,
+        *,
+        kind: str,
+        stakes: float,
+        novelty: float,
+        capability_name: str,
+        urgency: int = 0,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.delegation_router import Task
+            task = Task(
+                kind=kind, stakes=stakes, novelty=novelty,
+                capability_name=capability_name,
+                urgency=urgency,
+            )
+            return _delegation_router().route(task).as_dict()
+        except Exception as exc:
+            logger.debug("route_task failed: %s", exc)
+            return {"target": "skip", "reason": str(exc)}
+
+    def extract_relations(
+        self, text: str,
+    ) -> list[dict[str, Any]]:
+        try:
+            rels = _relation_extractor().extract(text)
+            return [r.as_dict() for r in rels]
+        except Exception as exc:
+            logger.debug("extract_relations failed: %s", exc)
+            return []
+
+    def record_phase_sample(
+        self,
+        *,
+        phase: str,
+        duration_ms: float,
+        ok: bool,
+    ) -> bool:
+        try:
+            _bottleneck_detector().record(
+                phase=phase,
+                duration_ms=duration_ms, ok=ok,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("record_phase_sample failed: %s", exc)
+            return False
+
+    def top_bottleneck(self) -> dict[str, Any] | None:
+        try:
+            b = _bottleneck_detector().top_bottleneck()
+            return b.as_dict() if b else None
+        except Exception as exc:
+            logger.debug("top_bottleneck failed: %s", exc)
+            return None
+
+    def declare_strategy(
+        self,
+        *,
+        name: str,
+        clauses: list[dict[str, Any]],
+        strategy_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.strategy_coherence_monitor import (
+                StrategyClause,
+            )
+            clause_objs = [
+                StrategyClause(
+                    id=str(c.get("id", "")),
+                    kind=c["kind"],
+                    value=c["value"],
+                    description=str(c.get("description", "")),
+                )
+                for c in clauses
+            ]
+            strategy = _strategy_coherence().declare(
+                name=name,
+                clauses=clause_objs,
+                strategy_id=strategy_id,
+            )
+            return strategy.as_dict()
+        except Exception as exc:
+            logger.debug("declare_strategy failed: %s", exc)
+            return {"error": str(exc)}
+
+    def record_strategic_action(
+        self,
+        *,
+        kind: str,
+        stake: float,
+        tags: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            alerts = _strategy_coherence().record_action(
+                kind=kind, stake=stake,
+                tags=tags or [],
+            )
+            return [a.as_dict() for a in alerts]
+        except Exception as exc:
+            logger.debug(
+                "record_strategic_action failed: %s", exc,
+            )
+            return []
+
+    def check_readiness(
+        self,
+        *,
+        evidence_probability: float,
+        evidence_gap: float,
+        knowledge_freshness: float,
+        mood_temperature: float = 0.3,
+        urgency: int = 0,
+    ) -> dict[str, Any]:
+        try:
+            from core.brain.readiness_gate import ReadinessInput
+            inp = ReadinessInput(
+                evidence_probability=evidence_probability,
+                evidence_gap=evidence_gap,
+                knowledge_freshness=knowledge_freshness,
+                mood_temperature=mood_temperature,
+                urgency=urgency,
+            )
+            return _readiness_gate().check(inp).as_dict()
+        except Exception as exc:
+            logger.debug("check_readiness failed: %s", exc)
+            return {"verdict": "gather", "reason": str(exc)}
 
     # ── v31: simulation, prioritization, transfer, self-test ──
 
@@ -4650,6 +4867,152 @@ def _capability_registry():
 
 def _capability_registry_summary() -> dict[str, Any]:
     return _capability_registry().stats()
+
+
+# ── v37 singletons ───────────────────────────────────────────
+
+_MOOD_MODEL: Any = None
+_MM_LOCK = threading.Lock()
+
+
+def _mood_model():
+    global _MOOD_MODEL
+    if _MOOD_MODEL is None:
+        with _MM_LOCK:
+            if _MOOD_MODEL is None:
+                from core.brain.mood_model import MoodModel
+                _MOOD_MODEL = MoodModel()
+    return _MOOD_MODEL
+
+
+def _mood_model_summary() -> dict[str, Any]:
+    return _mood_model().stats()
+
+
+_CONFIDENCE_TUNER: Any = None
+_CT_LOCK = threading.Lock()
+
+
+def _confidence_tuner():
+    global _CONFIDENCE_TUNER
+    if _CONFIDENCE_TUNER is None:
+        with _CT_LOCK:
+            if _CONFIDENCE_TUNER is None:
+                from core.brain.confidence_threshold_tuner import (
+                    ConfidenceThresholdTuner,
+                )
+                _CONFIDENCE_TUNER = ConfidenceThresholdTuner()
+    return _CONFIDENCE_TUNER
+
+
+def _confidence_tuner_summary() -> dict[str, Any]:
+    return _confidence_tuner().stats()
+
+
+_DELEGATION_ROUTER: Any = None
+_DR_LOCK = threading.Lock()
+
+
+def _delegation_router():
+    global _DELEGATION_ROUTER
+    if _DELEGATION_ROUTER is None:
+        with _DR_LOCK:
+            if _DELEGATION_ROUTER is None:
+                from core.brain.delegation_router import (
+                    DelegationRouter,
+                )
+                _DELEGATION_ROUTER = DelegationRouter(
+                    capability_check=(
+                        lambda n: _capability_registry().can_do(n)
+                    ),
+                )
+    return _DELEGATION_ROUTER
+
+
+def _delegation_router_summary() -> dict[str, Any]:
+    return _delegation_router().stats()
+
+
+_RELATION_EXTRACTOR: Any = None
+_RE_LOCK = threading.Lock()
+
+
+def _relation_extractor():
+    global _RELATION_EXTRACTOR
+    if _RELATION_EXTRACTOR is None:
+        with _RE_LOCK:
+            if _RELATION_EXTRACTOR is None:
+                from core.memory.relation_extractor import (
+                    RelationExtractor,
+                )
+                _RELATION_EXTRACTOR = RelationExtractor()
+    return _RELATION_EXTRACTOR
+
+
+def _relation_extractor_summary() -> dict[str, Any]:
+    return _relation_extractor().stats()
+
+
+_BOTTLENECK_DETECTOR: Any = None
+_BD_LOCK = threading.Lock()
+
+
+def _bottleneck_detector():
+    global _BOTTLENECK_DETECTOR
+    if _BOTTLENECK_DETECTOR is None:
+        with _BD_LOCK:
+            if _BOTTLENECK_DETECTOR is None:
+                from core.brain.workflow_bottleneck_detector import (
+                    WorkflowBottleneckDetector,
+                )
+                _BOTTLENECK_DETECTOR = (
+                    WorkflowBottleneckDetector()
+                )
+    return _BOTTLENECK_DETECTOR
+
+
+def _bottleneck_detector_summary() -> dict[str, Any]:
+    return _bottleneck_detector().stats()
+
+
+_STRATEGY_COHERENCE: Any = None
+_SC_LOCK = threading.Lock()
+
+
+def _strategy_coherence():
+    global _STRATEGY_COHERENCE
+    if _STRATEGY_COHERENCE is None:
+        with _SC_LOCK:
+            if _STRATEGY_COHERENCE is None:
+                from core.brain.strategy_coherence_monitor import (
+                    StrategyCoherenceMonitor,
+                )
+                _STRATEGY_COHERENCE = StrategyCoherenceMonitor()
+    return _STRATEGY_COHERENCE
+
+
+def _strategy_coherence_summary() -> dict[str, Any]:
+    return _strategy_coherence().stats()
+
+
+_READINESS_GATE: Any = None
+_RG_LOCK = threading.Lock()
+
+
+def _readiness_gate():
+    global _READINESS_GATE
+    if _READINESS_GATE is None:
+        with _RG_LOCK:
+            if _READINESS_GATE is None:
+                from core.brain.readiness_gate import (
+                    ReadinessGate,
+                )
+                _READINESS_GATE = ReadinessGate()
+    return _READINESS_GATE
+
+
+def _readiness_gate_summary() -> dict[str, Any]:
+    return _readiness_gate().stats()
 
 
 # ── Singleton ────────────────────────────────────────────────
