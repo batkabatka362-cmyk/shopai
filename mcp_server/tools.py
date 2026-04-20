@@ -312,6 +312,63 @@ def _emergency_resume_handler(
     }
 
 
+def _moby_win_rate_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    from core.brain.moby_vote_comparator import (
+        get_moby_vote_comparator,
+    )
+    return get_moby_vote_comparator().win_rate()
+
+
+def _fal_budget_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    from core.adapters.fal.video_router import (
+        FalVideoRouter,
+    )
+    router = FalVideoRouter()
+    try:
+        stats = router.stats()
+        sku = str(args.get("sku", ""))
+        if sku:
+            stats["sku_spent_this_week_usd"] = (
+                router.spent_this_week(sku)
+            )
+            stats["sku"] = sku
+        return stats
+    finally:
+        router.close()
+
+
+def _oauth_status_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    from core.auth.token_resolver import (
+        _get_auth, has_oauth_config, source_for,
+    )
+    import os as _os
+    shop = str(
+        args.get("shop")
+        or _os.environ.get("SHOPAI_SHOPIFY_URL", ""),
+    )
+    payload: dict[str, Any] = {
+        "shop": shop,
+        "oauth_configured": has_oauth_config(),
+        "source": source_for(shop),
+    }
+    if has_oauth_config() and shop:
+        auth = _get_auth()
+        if auth is not None:
+            try:
+                payload["token_status"] = (
+                    auth.token_status(shop)
+                )
+            except Exception as exc:  # noqa: BLE001
+                payload["token_status_error"] = str(exc)
+    return payload
+
+
 def _launch_simulate_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -433,6 +490,55 @@ def build_default_registry() -> ToolRegistry:
             "required": ["cost", "price", "daily_budget_usd"],
         },
         handler=_launch_simulate_handler,
+    ))
+    reg.register(ToolSpec(
+        name="moby_win_rate",
+        description=(
+            "Triple Whale Moby vs ShopAI vote-comparator "
+            "summary over resolved campaign disagreements."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        handler=_moby_win_rate_handler,
+    ))
+    reg.register(ToolSpec(
+        name="fal_budget_status",
+        description=(
+            "fal.ai video router budget — weekly cap, "
+            "total spend, optional per-SKU spend."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "sku": {
+                    "type": "string",
+                    "description": (
+                        "Optional SKU to add per-SKU "
+                        "weekly spend"
+                    ),
+                },
+            },
+        },
+        handler=_fal_budget_handler,
+    ))
+    reg.register(ToolSpec(
+        name="oauth_status",
+        description=(
+            "Shopify OAuth token source + expiry + "
+            "refresh health for the target shop."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "shop": {
+                    "type": "string",
+                    "description": (
+                        "Shop domain; defaults to "
+                        "SHOPAI_SHOPIFY_URL env"
+                    ),
+                },
+            },
+        },
+        handler=_oauth_status_handler,
     ))
     reg.register(ToolSpec(
         name="emergency_halt",

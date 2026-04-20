@@ -819,6 +819,90 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── Moby vote comparator (Wave C-1 A7) ───────────────────
+    moby_p = sub.add_parser(
+        "moby",
+        help=(
+            "Triple Whale Moby vote comparator — log "
+            "shopai/moby disagreements + report win-rate"
+        ),
+    )
+    moby_sub = moby_p.add_subparsers(dest="moby_action")
+    moby_rate = moby_sub.add_parser(
+        "win-rate",
+        help=(
+            "Win-rate summary: moby vs shopai on resolved "
+            "disagreements"
+        ),
+    )
+    moby_rate.add_argument(
+        "--json", action="store_true",
+    )
+    moby_log = moby_sub.add_parser(
+        "log",
+        help="Recent disagreement rows (default 20)",
+    )
+    moby_log.add_argument(
+        "--limit", type=int, default=20,
+    )
+    moby_log.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── fal.ai video budget (Wave D-1 A6) ────────────────────
+    fal_p = sub.add_parser(
+        "fal",
+        help=(
+            "fal.ai video router — budget status + model "
+            "catalogue"
+        ),
+    )
+    fal_sub = fal_p.add_subparsers(dest="fal_action")
+    fal_status = fal_sub.add_parser(
+        "status",
+        help="Config + total spend so far",
+    )
+    fal_status.add_argument(
+        "--json", action="store_true",
+    )
+    fal_spent = fal_sub.add_parser(
+        "spent",
+        help=(
+            "Weekly spend for one SKU "
+            "(vs weekly cap)"
+        ),
+    )
+    fal_spent.add_argument(
+        "sku", help="Product SKU",
+    )
+    fal_spent.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── OAuth token status (Wave F-1 D1) ─────────────────────
+    oauth_p = sub.add_parser(
+        "oauth",
+        help=(
+            "Shopify OAuth token status — source + expiry "
+            "+ refresh health"
+        ),
+    )
+    oauth_sub = oauth_p.add_subparsers(dest="oauth_action")
+    oauth_status = oauth_sub.add_parser(
+        "status",
+        help=(
+            "Show current token source "
+            "(expiring_oauth | legacy_static | none)"
+        ),
+    )
+    oauth_status.add_argument(
+        "--shop",
+        help="Shop domain; defaults to SHOPAI_SHOPIFY_URL",
+    )
+    oauth_status.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── Brain state synthesizer ──────────────────────────────
     brain_p = sub.add_parser(
         "brain",
@@ -3464,6 +3548,191 @@ def _cmd_agentic_metrics(
         )
 
 
+def _cmd_moby_win_rate(*, as_json: bool) -> None:
+    from core.brain.moby_vote_comparator import (
+        get_moby_vote_comparator,
+    )
+    rate = get_moby_vote_comparator().win_rate()
+    if as_json:
+        print(json.dumps(rate, indent=2))
+        return
+    if not rate or not rate.get("total_resolved"):
+        print(
+            "Moby win-rate: no resolved disagreements yet."
+            "\nDisagreements auto-resolve when a paid "
+            "order fires OutcomeRecorder with the same "
+            "decision_id."
+        )
+        return
+    total = int(rate["total_resolved"])
+    print(f"Moby win-rate — {total} resolved disagreements:")
+    print(
+        f"  moby_only:     "
+        f"{rate.get('moby_only', 0):>4}"
+    )
+    print(
+        f"  shopai_only:   "
+        f"{rate.get('shopai_only', 0):>4}"
+    )
+    print(
+        f"  both_correct:  "
+        f"{rate.get('both_correct', 0):>4}"
+    )
+    print(
+        f"  both_wrong:    "
+        f"{rate.get('both_wrong', 0):>4}"
+    )
+    print(
+        f"  moby_win_rate:   "
+        f"{rate.get('moby_win_rate', 0):.1%}"
+    )
+    print(
+        f"  shopai_win_rate: "
+        f"{rate.get('shopai_win_rate', 0):.1%}"
+    )
+
+
+def _cmd_moby_log(*, limit: int, as_json: bool) -> None:
+    from core.adapters.triplewhale.moby import (
+        get_moby_adapter,
+    )
+    rows = get_moby_adapter().recent_disagreements(
+        limit=limit,
+    )
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in rows], indent=2,
+        ))
+        return
+    if not rows:
+        print("No recorded disagreements.")
+        return
+    print(f"Moby ↔ ShopAI disagreements (last {len(rows)}):")
+    print(
+        f"  {'decision_id':<24} "
+        f"{'moby':<18} {'shopai':<18} "
+        f"{'outcome':<12} winner"
+    )
+    for r in rows:
+        print(
+            f"  {r.decision_id[:23]:<24} "
+            f"{r.moby_vote[:17]:<18} "
+            f"{r.shopai_vote[:17]:<18} "
+            f"{(r.actual_outcome or 'pending')[:11]:<12} "
+            f"{r.winner or '-'}"
+        )
+
+
+def _cmd_fal_status(*, as_json: bool) -> None:
+    from core.adapters.fal.video_router import (
+        FalVideoRouter,
+    )
+    router = FalVideoRouter()
+    stats = router.stats()
+    router.close()
+    if as_json:
+        print(json.dumps(stats, indent=2))
+        return
+    print("fal.ai video router:")
+    print(
+        f"  configured:          "
+        f"{stats.get('configured')}"
+    )
+    print(
+        f"  weekly_cap_usd:      "
+        f"${stats.get('weekly_cap_usd', 0):.2f}"
+    )
+    print(
+        f"  total_spend_usd:     "
+        f"${stats.get('total_spend_usd', 0):.2f}"
+    )
+    print(
+        f"  total_generations:   "
+        f"{stats.get('total_generations', 0)}"
+    )
+    print(
+        f"  catalogue_size:      "
+        f"{stats.get('catalogue_size', 0)}"
+    )
+    if not stats.get("configured"):
+        print("  (set FAL_KEY to enable live generation)")
+
+
+def _cmd_fal_spent(*, sku: str, as_json: bool) -> None:
+    from core.adapters.fal.video_router import (
+        FalVideoRouter,
+    )
+    router = FalVideoRouter()
+    spent = router.spent_this_week(sku)
+    cap = router.stats().get("weekly_cap_usd", 0)
+    router.close()
+    remaining = max(0.0, float(cap) - float(spent))
+    payload = {
+        "sku": sku,
+        "spent_this_week_usd": round(spent, 4),
+        "weekly_cap_usd": round(float(cap), 2),
+        "remaining_usd": round(remaining, 4),
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return
+    print(f"fal.ai weekly spend for {sku}:")
+    print(f"  spent:     ${spent:.2f}")
+    print(f"  cap:       ${float(cap):.2f}")
+    print(f"  remaining: ${remaining:.2f}")
+
+
+def _cmd_oauth_status(
+    *, shop: str | None, as_json: bool,
+) -> None:
+    from core.auth.token_resolver import (
+        has_oauth_config, source_for,
+    )
+    target_shop = shop or os.environ.get(
+        "SHOPAI_SHOPIFY_URL", "",
+    )
+    payload = {
+        "shop": target_shop,
+        "oauth_configured": has_oauth_config(),
+        "source": source_for(target_shop),
+    }
+    if has_oauth_config() and target_shop:
+        try:
+            from core.auth.token_resolver import _get_auth
+            auth = _get_auth()
+            if auth is not None:
+                payload["token_status"] = (
+                    auth.token_status(target_shop)
+                )
+        except Exception as exc:  # noqa: BLE001
+            payload["token_status_error"] = str(exc)
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return
+    print("Shopify OAuth token status:")
+    print(f"  shop:             {payload['shop'] or '(unset)'}")
+    print(
+        f"  oauth_configured: "
+        f"{payload['oauth_configured']}"
+    )
+    print(f"  source:           {payload['source']}")
+    ts = payload.get("token_status")
+    if isinstance(ts, dict):
+        for k, v in ts.items():
+            print(f"    {k}: {v}")
+    elif "token_status_error" in payload:
+        print(
+            f"  error: {payload['token_status_error']}",
+        )
+    if payload["source"] == "none":
+        print(
+            "  (set SHOPAI_SHOPIFY_CLIENT_ID + "
+            "CLIENT_SECRET + install via OAuth, "
+            "or set SHOPAI_SHOPIFY_KEY for legacy "
+            "custom apps)"
+        )
+
+
 def _cmd_brain_snapshot(*, as_json: bool) -> None:
     from core.brain.brain_state_synthesizer import (
         get_brain_state_synthesizer,
@@ -5031,6 +5300,49 @@ def main(argv: list[str] | None = None) -> None:
         elif action == "metrics":
             _cmd_agentic_metrics(
                 days=int(args.days),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "moby":
+        action = (
+            getattr(args, "moby_action", None)
+            or "win-rate"
+        )
+        if action == "win-rate":
+            _cmd_moby_win_rate(
+                as_json=bool(args.json),
+            )
+        elif action == "log":
+            _cmd_moby_log(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "fal":
+        action = (
+            getattr(args, "fal_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_fal_status(
+                as_json=bool(args.json),
+            )
+        elif action == "spent":
+            _cmd_fal_spent(
+                sku=str(args.sku),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "oauth":
+        action = (
+            getattr(args, "oauth_action", None)
+            or "status"
+        )
+        if action == "status":
+            _cmd_oauth_status(
+                shop=getattr(args, "shop", None),
                 as_json=bool(args.json),
             )
         return
