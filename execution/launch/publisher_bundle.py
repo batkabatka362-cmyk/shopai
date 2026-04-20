@@ -61,6 +61,13 @@ class LaunchRequest:
     decision_id: str = ""
     store_currency: str = "USD"
     live: bool = False
+    # Wave A-1 of 2026 wiring: EU AI Act Art. 50 compliance
+    # gate. When target_markets includes an EU country or
+    # ``"EU"`` itself, every entry in ``ai_creatives`` must
+    # carry a C2PA manifest + disclosure — else the launch
+    # is blocked before Meta Ads upload.
+    target_markets: tuple[str, ...] = ("US",)
+    ai_creatives: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.winner:
@@ -281,6 +288,22 @@ class PublisherBundle:
             or _slugify(request.winner.get("title", "product")),
         )
         product_id = str(product_log.data.get("product_id", ""))
+        # 2.5. EU AI Act Article 50 compliance gate
+        #     Wave A-1 of 2026 wiring — block EU-targeted
+        #     launches if any AI creative is missing C2PA /
+        #     disclosure / has tampered media hash.
+        compliance_log = self._step_eu_ai_compliance(
+            request, steps,
+        )
+        if compliance_log.status == "error":
+            return self._finalise(
+                decision_id, steps,
+                dry_run, ok=False,
+                note=(
+                    "EU AI Act compliance: "
+                    + compliance_log.error
+                ),
+            )
         # 3. meta ads campaign
         campaign_log = self._step_launch_campaign(
             request, steps,
@@ -572,6 +595,123 @@ class PublisherBundle:
                 status="error",
                 data={},
                 error=str(exc),
+                ts=time.time(),
+            )
+        steps.append(log)
+        return log
+
+    def _step_eu_ai_compliance(
+        self,
+        request: LaunchRequest,
+        steps: list[StepLog],
+    ) -> StepLog:
+        """Gate every AI creative through EUAIActGate before
+        the Meta Ads upload step. No creatives OR no EU target
+        → no-op pass. Any blocked creative → step errors out."""
+        if not request.ai_creatives:
+            log = StepLog(
+                name="eu_ai_compliance",
+                status="success",
+                data={"note": "no AI creatives declared"},
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        try:
+            from execution.compliance.eu_ai_act_gate import (
+                C2PAManifest,
+                Creative,
+                get_eu_ai_gate,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log = StepLog(
+                name="eu_ai_compliance",
+                status="success",
+                data={
+                    "note": (
+                        f"gate unavailable, skipping: {exc}"
+                    ),
+                },
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        gate = get_eu_ai_gate()
+        blocked: list[str] = []
+        verdicts: list[dict[str, Any]] = []
+        for raw in request.ai_creatives:
+            if not isinstance(raw, dict):
+                continue
+            c2pa_raw = raw.get("c2pa")
+            c2pa = None
+            if isinstance(c2pa_raw, dict):
+                try:
+                    c2pa = C2PAManifest(
+                        creator=str(
+                            c2pa_raw.get("creator", ""),
+                        ),
+                        generator_model=str(
+                            c2pa_raw.get(
+                                "generator_model", "",
+                            ),
+                        ),
+                        created_at_iso=str(
+                            c2pa_raw.get(
+                                "created_at_iso", "",
+                            ),
+                        ),
+                        ai_generated=bool(
+                            c2pa_raw.get(
+                                "ai_generated", True,
+                            ),
+                        ),
+                        signature=str(
+                            c2pa_raw.get("signature", ""),
+                        ),
+                        media_hash=str(
+                            c2pa_raw.get("media_hash", ""),
+                        ),
+                    )
+                except (TypeError, ValueError) as exc:
+                    logger.debug(
+                        "c2pa parse failed: %s", exc,
+                    )
+            creative = Creative(
+                asset_id=str(
+                    raw.get("asset_id")
+                    or f"ad_{request.decision_id[:8]}",
+                ),
+                media_kind=str(
+                    raw.get("media_kind", "image"),
+                ),
+                c2pa=c2pa,
+                disclosure_text=str(
+                    raw.get("disclosure_text", ""),
+                ),
+                target_markets=tuple(
+                    request.target_markets,
+                ),
+            )
+            verdict = gate.verify(creative)
+            verdicts.append(verdict.as_dict())
+            if verdict.decision == "block":
+                blocked.append(verdict.asset_id)
+        if blocked:
+            log = StepLog(
+                name="eu_ai_compliance",
+                status="error",
+                data={"verdicts": verdicts},
+                error=(
+                    f"blocked {len(blocked)} creative(s): "
+                    + ", ".join(blocked)
+                ),
+                ts=time.time(),
+            )
+        else:
+            log = StepLog(
+                name="eu_ai_compliance",
+                status="success",
+                data={"verdicts": verdicts},
                 ts=time.time(),
             )
         steps.append(log)

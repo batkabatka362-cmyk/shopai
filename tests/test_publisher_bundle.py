@@ -435,6 +435,113 @@ class TestSEOEnrichment(unittest.TestCase):
         )
 
 
+class TestEUAIActGateWire(unittest.TestCase):
+    """Wave A1 wiring — publisher_bundle calls
+    EUAIActGate.verify() on every ai_creative when EU market
+    is declared."""
+
+    def setUp(self):
+        self._orig = os.environ.pop(
+            "SHOPAI_ENABLE_LIVE_EXECUTION", None,
+        )
+        self.bundle = pb.PublisherBundle(
+            content_generator=_FakeContent(),
+            product_creator=_FakeProducts(),
+            ad_adapter=_FakeAds(),
+            outcome_recorder=_FakeOutcomes(),
+            rationale_builder=_FakeRationale(),
+        )
+
+    def tearDown(self):
+        if self._orig is not None:
+            os.environ[
+                "SHOPAI_ENABLE_LIVE_EXECUTION"
+            ] = self._orig
+
+    def test_no_ai_creatives_skips_cleanly(self):
+        result = self.bundle.launch(_request(live=False))
+        step = next(
+            s for s in result.steps
+            if s.name == "eu_ai_compliance"
+        )
+        self.assertEqual(step.status, "success")
+        self.assertIn(
+            "no AI creatives", step.data.get("note", ""),
+        )
+
+    def test_eu_target_with_valid_creative_passes(self):
+        req = _request(
+            live=False,
+            target_markets=("DE",),
+            ai_creatives=(
+                {
+                    "asset_id": "ad1",
+                    "media_kind": "image",
+                    "c2pa": {
+                        "creator": "ShopAI",
+                        "generator_model": "fal/kling",
+                        "created_at_iso": "2026-04-20",
+                        "ai_generated": True,
+                    },
+                    "disclosure_text": (
+                        "This ad is AI-generated."
+                    ),
+                },
+            ),
+        )
+        result = self.bundle.launch(req)
+        step = next(
+            s for s in result.steps
+            if s.name == "eu_ai_compliance"
+        )
+        self.assertEqual(step.status, "success")
+        self.assertTrue(result.ok)
+
+    def test_eu_target_with_missing_c2pa_blocks_launch(self):
+        req = _request(
+            live=False,
+            target_markets=("FR",),
+            ai_creatives=(
+                {
+                    "asset_id": "bad",
+                    "media_kind": "video",
+                    "disclosure_text": "AI made this.",
+                    # no c2pa
+                },
+            ),
+        )
+        result = self.bundle.launch(req)
+        self.assertFalse(result.ok)
+        self.assertIn("compliance", result.note)
+        # launch_campaign should NOT have run
+        names = [s.name for s in result.steps]
+        self.assertNotIn(
+            "launch_campaign", names,
+        )
+
+    def test_non_eu_with_missing_c2pa_advisory_passes(self):
+        req = _request(
+            live=False,
+            target_markets=("US",),
+            ai_creatives=(
+                {
+                    "asset_id": "us_ad",
+                    "disclosure_text": (
+                        "AI-generated content."
+                    ),
+                    # no c2pa; advisory only for non-EU
+                },
+            ),
+        )
+        result = self.bundle.launch(req)
+        step = next(
+            s for s in result.steps
+            if s.name == "eu_ai_compliance"
+        )
+        self.assertEqual(step.status, "success")
+        self.assertTrue(result.ok)
+
+
 class TestDict(unittest.TestCase):
     def test_step_serialises(self):
         step = pb.StepLog(
