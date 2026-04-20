@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+from core.risk.tripwire import RiskTripwire, TripwireLimits
 from execution.launch import campaign_activator as ca
 
 
@@ -112,6 +115,27 @@ class _FakeRationale:
         return MagicMock()
 
 
+_TEST_TMP: list[tempfile.TemporaryDirectory] = []
+
+
+def _permissive_tripwire() -> RiskTripwire:
+    """Per-test tripwire with caps set large enough to allow the
+    default fixtures. Callers wanting to test caps construct their
+    own RiskTripwire directly."""
+    tmp = tempfile.TemporaryDirectory()
+    _TEST_TMP.append(tmp)
+    return RiskTripwire(
+        db_path=Path(tmp.name) / "risk.db",
+        limits=TripwireLimits(
+            daily_ad_spend_usd=10_000.0,
+            per_campaign_cap_usd=10_000.0,
+            min_margin_ratio=0.0,
+            max_chargeback_rate=0.0,
+            escalate_pct=1.0,
+        ),
+    )
+
+
 def _activator(**overrides):
     defaults = dict(
         ad_adapter=_FakeAds(),
@@ -119,6 +143,7 @@ def _activator(**overrides):
         constraint_registry=_FakeConstraints(),
         outcome_recorder=_FakeOutcomes(),
         rationale_builder=_FakeRationale(),
+        risk_tripwire=_permissive_tripwire(),
     )
     defaults.update(overrides)
     return ca.CampaignActivator(**defaults)
@@ -365,6 +390,152 @@ class TestReadinessAdvisory(unittest.TestCase):
             _req(live=True, auto_approve=True),
         )
         self.assertEqual(r.verdict, "activated")
+
+
+class TestTripwireStep(unittest.TestCase):
+    """L7 tripwire injected between preflight and readiness."""
+
+    def setUp(self):
+        self._orig = os.environ.get(
+            "SHOPAI_ENABLE_LIVE_EXECUTION",
+        )
+        os.environ["SHOPAI_ENABLE_LIVE_EXECUTION"] = "1"
+        self._tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        if self._orig is None:
+            os.environ.pop(
+                "SHOPAI_ENABLE_LIVE_EXECUTION", None,
+            )
+        else:
+            os.environ[
+                "SHOPAI_ENABLE_LIVE_EXECUTION"
+            ] = self._orig
+
+    def _tw(self, **limit_kw) -> RiskTripwire:
+        lim = TripwireLimits(**{
+            "daily_ad_spend_usd": 100.0,
+            "per_campaign_cap_usd": 30.0,
+            "min_margin_ratio": 0.0,
+            "max_chargeback_rate": 0.0,
+            "escalate_pct": 1.0,
+            **limit_kw,
+        })
+        return RiskTripwire(
+            db_path=Path(self._tmp.name) / "t.db",
+            limits=lim,
+        )
+
+    def test_blocks_when_per_campaign_cap_exceeded(self):
+        tw = self._tw(per_campaign_cap_usd=10.0)
+        ads = _FakeAds()
+        act = _activator(
+            ad_adapter=ads, risk_tripwire=tw,
+        )
+        r = act.activate(
+            _req(
+                live=True, auto_approve=True,
+                daily_budget_usd=20.0,
+            ),
+        )
+        self.assertEqual(r.verdict, "blocked")
+        self.assertIn("per_campaign_cap_usd", r.block_reason)
+        self.assertEqual(ads.calls, [])
+
+    def test_pending_when_escalate(self):
+        # Daily cap=100, escalate_pct=0.5 → projected=60 > 50 escalate
+        tw = self._tw(
+            daily_ad_spend_usd=100.0,
+            escalate_pct=0.5,
+            per_campaign_cap_usd=200.0,
+        )
+        tw.record_spend(amount_usd=40.0, campaign_id="other")
+        ads = _FakeAds()
+        act = _activator(
+            ad_adapter=ads, risk_tripwire=tw,
+        )
+        r = act.activate(
+            _req(
+                live=True, auto_approve=True,
+                daily_budget_usd=20.0,
+                campaign_id="camp_abc",
+            ),
+        )
+        self.assertEqual(r.verdict, "pending")
+        self.assertIn("escalate", r.pending_reason)
+        self.assertEqual(ads.calls, [])
+
+    def test_zero_budget_skips(self):
+        tw = self._tw(per_campaign_cap_usd=1.0)
+        act = _activator(risk_tripwire=tw)
+        r = act.activate(
+            _req(
+                live=True, auto_approve=True,
+                daily_budget_usd=0.0,
+            ),
+        )
+        self.assertEqual(r.verdict, "activated")
+
+    def test_live_success_books_spend(self):
+        tw = self._tw()
+        ads = _FakeAds()
+        act = _activator(
+            ad_adapter=ads, risk_tripwire=tw,
+        )
+        r = act.activate(
+            _req(
+                live=True, auto_approve=True,
+                daily_budget_usd=15.0,
+            ),
+        )
+        self.assertEqual(r.verdict, "activated")
+        self.assertAlmostEqual(
+            tw._daily_spend("ad_spend"), 15.0,
+        )
+
+    def test_dry_run_does_not_book_spend(self):
+        tw = self._tw()
+        act = _activator(risk_tripwire=tw)
+        r = act.activate(_req(daily_budget_usd=15.0))
+        self.assertEqual(r.verdict, "dry_run")
+        self.assertEqual(tw._daily_spend("ad_spend"), 0.0)
+
+    def test_dedupe_key_prevents_double_book(self):
+        tw = self._tw()
+        act = _activator(risk_tripwire=tw)
+        req = _req(
+            live=True, auto_approve=True,
+            daily_budget_usd=10.0,
+        )
+        # Force same decision_id twice
+        req2 = _req(
+            live=True, auto_approve=True,
+            daily_budget_usd=10.0,
+            decision_id="act_fixed",
+        )
+        # First activation → book
+        r1 = act.activate(req2)
+        # Record spend under same dedupe key directly
+        tw.record_spend(
+            amount_usd=10.0,
+            campaign_id=req2.campaign_id,
+            dedupe_key=f"activate:{r1.decision_id}",
+        )
+        self.assertEqual(
+            tw._daily_spend("ad_spend"), 10.0,
+        )
+
+    def test_tripwire_step_is_between_preflight_and_readiness(self):
+        act = _activator(risk_tripwire=self._tw())
+        r = act.activate(
+            _req(live=True, auto_approve=True),
+        )
+        names = [s.name for s in r.steps]
+        self.assertEqual(
+            names[:4],
+            ["preflight", "tripwire", "readiness", "constraints"],
+        )
 
 
 class TestStats(unittest.TestCase):

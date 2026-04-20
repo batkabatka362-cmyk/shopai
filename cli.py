@@ -532,6 +532,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── L7 risk / tripwire ───────────────────────────────────
+    risk_p = sub.add_parser(
+        "risk",
+        help="Risk tripwire — $ caps and current spend",
+    )
+    risk_sub = risk_p.add_subparsers(dest="risk_action")
+    risk_status_p = risk_sub.add_parser(
+        "status",
+        help="Today's ad spend vs caps + chargeback rate",
+    )
+    risk_status_p.add_argument(
+        "--json", action="store_true",
+    )
+    risk_limits_p = risk_sub.add_parser(
+        "limits",
+        help="Show active tripwire limits and their env overrides",
+    )
+    risk_limits_p.add_argument(
+        "--json", action="store_true",
+    )
+    risk_recent_p = risk_sub.add_parser(
+        "recent",
+        help="Recent spend events booked by the tripwire",
+    )
+    risk_recent_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    risk_recent_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── System commands ──────────────────────────────────────
     sub.add_parser("health", help="System health check (module imports)")
     doctor_p = sub.add_parser(
@@ -2509,6 +2540,101 @@ def _cmd_activations(
         )
 
 
+def _cmd_risk_status(*, as_json: bool) -> None:
+    """Show today's ad spend rollup vs caps."""
+    from core.risk.tripwire import get_risk_tripwire
+    tw = get_risk_tripwire()
+    s = tw.status()
+    if as_json:
+        print(json.dumps(s, indent=2))
+        return
+    lim = s["limits"]
+    today = s["today"]
+    cb = s["chargebacks"]
+    print("Risk tripwire — today")
+    print(
+        f"  Ad spend:       ${today['ad_spend_usd']:.2f} / "
+        f"${lim['daily_ad_spend_usd']:.2f} "
+        f"({today['utilisation']:.0%})"
+    )
+    print(
+        f"  Remaining:      ${today['remaining_usd']:.2f}"
+    )
+    print(
+        f"  Per-campaign:   ${lim['per_campaign_cap_usd']:.2f} cap"
+    )
+    print(
+        f"  Margin floor:   {lim['min_margin_ratio']:.2%}"
+    )
+    print(
+        f"  Escalate at:    {lim['escalate_pct']:.0%} of daily"
+    )
+    print()
+    print(
+        f"Chargebacks (last {cb['window_days']}d): "
+        f"{cb['bad']}/{cb['total']} = {cb['rate']:.2%} "
+        f"(cap {lim['max_chargeback_rate']:.2%})"
+    )
+
+
+def _cmd_risk_limits(*, as_json: bool) -> None:
+    """Show tripwire limits plus their env-var overrides."""
+    from core.risk.tripwire import get_risk_tripwire
+    tw = get_risk_tripwire()
+    lim = tw.limits().as_dict()
+    env_map = {
+        "daily_ad_spend_usd": "SHOPAI_RISK_DAILY_CAP_USD",
+        "per_campaign_cap_usd": "SHOPAI_RISK_PER_CAMPAIGN_CAP_USD",
+        "min_margin_ratio": "SHOPAI_RISK_MIN_MARGIN",
+        "max_chargeback_rate": "SHOPAI_RISK_MAX_CHARGEBACK",
+        "escalate_pct": "SHOPAI_RISK_ESCALATE_PCT",
+    }
+    if as_json:
+        out = {
+            k: {
+                "value": v,
+                "env_var": env_map[k],
+                "env_set": os.environ.get(env_map[k], ""),
+            }
+            for k, v in lim.items()
+        }
+        print(json.dumps(out, indent=2))
+        return
+    print("Risk tripwire — limits")
+    for key, val in lim.items():
+        env_name = env_map[key]
+        env_val = os.environ.get(env_name, "")
+        marker = f"  (env={env_val})" if env_val else ""
+        print(f"  {key:22s} = {val}{marker}")
+    print()
+    print("Override with env vars, e.g.:")
+    print("  export SHOPAI_RISK_DAILY_CAP_USD=100")
+
+
+def _cmd_risk_recent(*, limit: int, as_json: bool) -> None:
+    """Recent spend events booked by the tripwire."""
+    from core.risk.tripwire import get_risk_tripwire
+    tw = get_risk_tripwire()
+    recent = tw.recent_spend(limit=limit)
+    if as_json:
+        print(json.dumps(recent, indent=2))
+        return
+    if not recent:
+        print("No spend events recorded.")
+        return
+    print(f"Recent spend ({len(recent)}):")
+    for ev in recent:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%SZ",
+            time.gmtime(ev["ts"]),
+        )
+        camp = ev["campaign_id"] or "-"
+        print(
+            f"  {ts}  ${ev['amount_usd']:>7.2f}  "
+            f"{ev['category']:10s}  campaign={camp}"
+        )
+
+
 def _cmd_status() -> None:
     from engines.registry import engine_count
     sm = _get_store_manager()
@@ -2907,6 +3033,19 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "risk":
+        action = getattr(args, "risk_action", None) or "status"
+        if action == "status":
+            _cmd_risk_status(as_json=bool(args.json))
+        elif action == "limits":
+            _cmd_risk_limits(as_json=bool(args.json))
+        elif action == "recent":
+            _cmd_risk_recent(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "status":

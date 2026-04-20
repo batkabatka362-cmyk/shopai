@@ -10,13 +10,16 @@ learning signal for the brain.
 before calling ``MetaAdsAdapter.resume_campaign``:
 
   1. pre-flight  — credentials + campaign exists + budget reasonable
-  2. readiness   — brain's readiness_gate verdict (gather / go)
-  3. constraints — behavioral_constraint_registry
-  4. auto-approve vs owner — if not auto_approved and not in dry
+  2. tripwire    — L7 hard $-caps (daily / per-campaign / margin /
+                   chargeback). See core/risk/tripwire.py.
+  3. readiness   — brain's readiness_gate verdict (gather / go)
+  4. constraints — behavioral_constraint_registry
+  5. auto-approve vs owner — if not auto_approved and not in dry
      mode, return ``pending`` instead of activating
-  5. execute     — MetaAdsAdapter.execute(ADS_RESUME_CAMPAIGN)
-  6. record      — OutcomeRecorder (kind=campaign_activate) + rationale
-     builder (decision trace)
+  6. execute     — MetaAdsAdapter.execute(ADS_RESUME_CAMPAIGN)
+  7. record      — OutcomeRecorder (kind=campaign_activate) + rationale
+     builder (decision trace). On live success the requested
+     daily_budget_usd is booked into the tripwire rollup.
 
 Live writes dual-gated: ``ActivateRequest.live=True`` AND
 ``SHOPAI_ENABLE_LIVE_EXECUTION=1``. Either miss → dry_run.
@@ -146,6 +149,7 @@ class CampaignActivator:
         constraint_registry: Any = None,
         outcome_recorder: Any = None,
         rationale_builder: Any = None,
+        risk_tripwire: Any = None,
         max_daily_budget_usd: float = _DEFAULT_MAX_DAILY_BUDGET_USD,
     ) -> None:
         if max_daily_budget_usd <= 0:
@@ -158,6 +162,7 @@ class CampaignActivator:
         self._constraints = constraint_registry
         self._outcomes = outcome_recorder
         self._rationale = rationale_builder
+        self._tripwire = risk_tripwire
         self._max_budget = float(max_daily_budget_usd)
         self._history: list[ActivationResult] = []
 
@@ -206,6 +211,13 @@ class CampaignActivator:
         self._rationale = DecisionRationaleBuilder()
         return self._rationale
 
+    def _get_tripwire(self) -> Any:
+        if self._tripwire is not None:
+            return self._tripwire
+        from core.risk.tripwire import get_risk_tripwire
+        self._tripwire = get_risk_tripwire()
+        return self._tripwire
+
     # ── Pipeline ─────────────────────────────────────────
 
     def activate(
@@ -246,7 +258,25 @@ class CampaignActivator:
                 rationale=rationale,
             )
 
-        # 2. readiness gate
+        # 2. tripwire — L7 hard caps (daily / per-campaign /
+        #    margin / chargeback)
+        trip_log = self._step_tripwire(request, steps)
+        if trip_log.status == "blocked":
+            return self._finalise(
+                decision_id, request.campaign_id,
+                "blocked", dry_run, steps,
+                block_reason=trip_log.note,
+                rationale=rationale,
+            )
+        if trip_log.status == "pending":
+            return self._finalise(
+                decision_id, request.campaign_id,
+                "pending", dry_run, steps,
+                pending_reason=trip_log.note,
+                rationale=rationale,
+            )
+
+        # 3. readiness gate
         ready_log = self._step_readiness(request, steps)
         if ready_log.status == "blocked":
             return self._finalise(
@@ -305,7 +335,7 @@ class CampaignActivator:
                 rationale=rationale,
             )
 
-        # 6. record outcome
+        # 6. record outcome + book spend in tripwire
         try:
             from core.attribution.outcome_recorder import (
                 OutcomeEvent,
@@ -318,7 +348,10 @@ class CampaignActivator:
                 capability_name="activate_campaign",
                 kpi="activation",
                 kpi_value=1.0,
-                signals=("preflight", "readiness", "constraints"),
+                signals=(
+                    "preflight", "tripwire",
+                    "readiness", "constraints",
+                ),
                 note=(
                     "live" if not dry_run else "dry_run"
                 ),
@@ -327,6 +360,25 @@ class CampaignActivator:
             logger.debug(
                 "outcome record at-activate skipped: %s", exc,
             )
+
+        if not dry_run and request.daily_budget_usd > 0:
+            try:
+                self._get_tripwire().record_spend(
+                    amount_usd=float(
+                        request.daily_budget_usd,
+                    ),
+                    category="ad_spend",
+                    campaign_id=str(request.campaign_id),
+                    dedupe_key=f"activate:{decision_id}",
+                    meta={
+                        "source": "campaign_activator",
+                        "decision_id": decision_id,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "tripwire.record_spend skipped: %s", exc,
+                )
 
         verdict = "dry_run" if dry_run else "activated"
         return self._finalise(
@@ -363,6 +415,69 @@ class CampaignActivator:
                     f"budget ${request.daily_budget_usd:.2f} "
                     "within cap"
                 ),
+                ts=time.time(),
+            )
+        steps.append(log)
+        return log
+
+    def _step_tripwire(
+        self,
+        request: ActivateRequest,
+        steps: list[StepLog],
+    ) -> StepLog:
+        """Consult L7 tripwire. Block on hard cap, surface escalate
+        as owner-pending. Zero-budget activations (request doesn't
+        declare a daily budget) skip the check — nothing to gate."""
+        if request.daily_budget_usd <= 0:
+            log = StepLog(
+                name="tripwire",
+                status="ok",
+                note="no budget declared; tripwire skipped",
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        try:
+            verdict = self._get_tripwire().check_before_spend(
+                amount_usd=float(request.daily_budget_usd),
+                category="ad_spend",
+                campaign_id=str(request.campaign_id),
+                context={
+                    "decision_id": request.decision_id,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Fail closed: if tripwire itself errors, block.
+            log = StepLog(
+                name="tripwire",
+                status="blocked",
+                note=f"tripwire unavailable: {exc}",
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        if verdict.action == "block":
+            log = StepLog(
+                name="tripwire",
+                status="blocked",
+                note=f"{verdict.rule}: {verdict.reason}",
+                data=verdict.as_dict(),
+                ts=time.time(),
+            )
+        elif verdict.action == "escalate":
+            log = StepLog(
+                name="tripwire",
+                status="pending",
+                note=f"{verdict.rule}: {verdict.reason}",
+                data=verdict.as_dict(),
+                ts=time.time(),
+            )
+        else:
+            log = StepLog(
+                name="tripwire",
+                status="ok",
+                note=verdict.reason,
+                data=verdict.as_dict(),
                 ts=time.time(),
             )
         steps.append(log)
