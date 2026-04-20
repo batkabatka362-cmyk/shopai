@@ -22,6 +22,43 @@ Usage:
     python cli.py health                         # System health check
     python cli.py status                         # Full system status
     python cli.py setup                          # Interactive setup wizard
+
+Module map (intended decomposition, not yet physical split)
+─────────────────────────────────────────────────────────────
+At 5000+ lines this file is too long for a single module.
+A future refactor should extract each command group into
+``cli_commands/<group>.py`` with a ``register(subparsers)`` +
+``dispatch(args)`` pair. The mapping below is the plan; the
+physical split is deferred because every command group has
+inter-module helper usage that needs untangling first.
+
+  Group           → Future home
+  ──────────────── ─────────────────────────────────────────
+  store, sync,    → cli_commands/store.py
+  db, config
+  mind, engines,  → cli_commands/brain.py
+  run, explain,
+  explains, plan-*
+  actions,        → cli_commands/ops.py
+  health, setup,
+  status
+  simulate,       → cli_commands/evaluate.py
+  predict
+  brain-learned,  → cli_commands/learning.py
+  memory, trust
+  vault-sweep,    → cli_commands/vault.py
+  niches
+  ask-support,    → cli_commands/support.py
+  notify,
+  owner-poll
+  federation      → cli_commands/federation.py
+  risk, crisis    → cli_commands/safety.py
+  agentic,        → cli_commands/channels.py
+  landed-cost
+
+Rule: until the split happens, new commands follow the
+same ``sub.add_parser(...) + def handle_<cmd>(args)``
+pattern used by existing commands in this file.
 """
 
 import argparse
