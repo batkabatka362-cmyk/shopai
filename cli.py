@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 from utils.logger import get_logger
 
@@ -315,6 +316,95 @@ def build_parser() -> argparse.ArgumentParser:
     comp_rm.add_argument("url")
     comp_sub.add_parser("list", help="Show tracked URLs + last snapshot")
     comp_sub.add_parser("check", help="Probe every tracked URL now")
+
+    # ── Publisher bundle (v38+) ──────────────────────────────
+    # ``publish`` goes through execution.launch.publisher_bundle
+    # which is the v38-era transactional launch pipeline.
+    # The older ``launch`` command uses the Goal-Driven Executor
+    # (Alibaba URL / manual fields); both coexist.
+    publish_p = sub.add_parser(
+        "publish",
+        help=(
+            "Publish a winner end-to-end via publisher_bundle "
+            "(Shopify product + PAUSED Meta campaign)"
+        ),
+    )
+    publish_p.add_argument(
+        "winner_json",
+        help=(
+            "Path to JSON with winner fields "
+            "(title/price/image_url/...) or '-' for stdin"
+        ),
+    )
+    publish_p.add_argument(
+        "--budget", type=float, default=20.0,
+        help="Daily ad budget USD (default $20)",
+    )
+    publish_p.add_argument(
+        "--platform", default="facebook",
+        choices=["facebook", "instagram", "tiktok", "google"],
+    )
+    publish_p.add_argument(
+        "--live", action="store_true",
+        help=(
+            "Live writes (also needs "
+            "SHOPAI_ENABLE_LIVE_EXECUTION=1)"
+        ),
+    )
+    publish_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    activate_p = sub.add_parser(
+        "activate",
+        help=(
+            "Flip a PAUSED Meta campaign to ACTIVE after "
+            "readiness + constraints pass"
+        ),
+    )
+    activate_p.add_argument("campaign_id")
+    activate_p.add_argument(
+        "--budget", type=float, default=0.0,
+        help=(
+            "Daily budget for pre-flight sanity "
+            "(optional)"
+        ),
+    )
+    activate_p.add_argument(
+        "--auto-approve", action="store_true",
+        help=(
+            "Skip owner confirmation gate — required "
+            "when not dry_run"
+        ),
+    )
+    activate_p.add_argument(
+        "--live", action="store_true",
+    )
+    activate_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    publications_p = sub.add_parser(
+        "publications",
+        help="Recent publisher_bundle publications",
+    )
+    publications_p.add_argument(
+        "--limit", type=int, default=10,
+    )
+    publications_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    activations_p = sub.add_parser(
+        "activations",
+        help="Recent campaign_activator runs",
+    )
+    activations_p.add_argument(
+        "--limit", type=int, default=10,
+    )
+    activations_p.add_argument(
+        "--json", action="store_true",
+    )
 
     # ── System commands ──────────────────────────────────────
     sub.add_parser("health", help="System health check (module imports)")
@@ -1809,6 +1899,238 @@ def _cmd_doctor(
         sys.exit(1)
 
 
+# ── Launch pipeline handlers ───────────────────────────────
+
+def _read_winner(source: str) -> dict:
+    """Read winner JSON from file path or stdin ('-')."""
+    if source == "-":
+        data = sys.stdin.read()
+    else:
+        path = Path(source)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"winner file not found: {source}",
+            )
+        data = path.read_text()
+    try:
+        winner = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"winner_json is not valid JSON: {exc}",
+        ) from exc
+    if not isinstance(winner, dict):
+        raise ValueError(
+            "winner_json must decode to an object",
+        )
+    return winner
+
+
+def _cmd_publish(
+    *,
+    winner_json: str,
+    budget: float,
+    platform: str,
+    live: bool,
+    as_json: bool,
+) -> None:
+    """Run publisher_bundle for one winner."""
+    from execution.launch.publisher_bundle import (
+        LaunchRequest, PublisherBundle,
+    )
+    try:
+        winner = _read_winner(winner_json)
+    except Exception as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"[launch] error: {exc}")
+        sys.exit(2)
+    shop_url = os.environ.get(
+        "SHOPAI_SHOPIFY_URL", "",
+    )
+    api_key = os.environ.get(
+        "SHOPAI_SHOPIFY_KEY",
+        os.environ.get(
+            "SHOPAI_SHOPIFY_CLIENT_SECRET", "",
+        ),
+    )
+    meta_account = os.environ.get(
+        "META_ADS_ACCOUNT_ID",
+        os.environ.get("meta_ads_account_id", ""),
+    )
+    try:
+        req = LaunchRequest(
+            winner=winner,
+            shop_url=shop_url,
+            api_key=api_key,
+            ad_budget_daily=budget,
+            platform=platform,
+            meta_account_id=meta_account,
+            live=live,
+        )
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"[launch] request invalid: {exc}")
+            print(
+                "(hint: ensure SHOPAI_SHOPIFY_URL is set; "
+                "use --live only with real Shopify token)"
+            )
+        sys.exit(2)
+    bundle = PublisherBundle()
+    result = bundle.launch(req)
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    status = "✓" if result.ok else "✗"
+    mode = "DRY-RUN" if result.dry_run else "LIVE"
+    print(
+        f"[publish {status} {mode}] decision={result.decision_id}"
+    )
+    print(f"  product_id     : {result.product_id}")
+    print(f"  product_handle : {result.product_handle}")
+    print(f"  campaign_id    : {result.campaign_id}")
+    print(f"  tracking_url   : {result.tracking_url}")
+    if not result.ok:
+        print(f"  note           : {result.note}")
+    print("  steps:")
+    for s in result.steps:
+        icon = {
+            "success": "✓", "dry_run": "·",
+            "error": "✗",
+        }.get(s.status, "?")
+        print(f"    {icon} {s.name}: {s.status}")
+        if s.error:
+            print(f"        error: {s.error}")
+    if not result.ok:
+        sys.exit(1)
+
+
+def _cmd_activate(
+    *,
+    campaign_id: str,
+    budget: float,
+    auto_approve: bool,
+    live: bool,
+    as_json: bool,
+) -> None:
+    """Run campaign_activator to flip PAUSED→ACTIVE."""
+    from execution.launch.campaign_activator import (
+        ActivateRequest, CampaignActivator,
+    )
+    try:
+        req = ActivateRequest(
+            campaign_id=campaign_id,
+            daily_budget_usd=budget,
+            auto_approve=auto_approve,
+            live=live,
+        )
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"[activate] request invalid: {exc}")
+        sys.exit(2)
+    activator = CampaignActivator()
+    result = activator.activate(req)
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    verdict_icon = {
+        "activated": "✓",
+        "dry_run": "·",
+        "pending": "?",
+        "blocked": "✗",
+    }.get(result.verdict, "?")
+    print(
+        f"[activate {verdict_icon} {result.verdict.upper()}] "
+        f"campaign={result.campaign_id}"
+    )
+    print(f"  decision_id : {result.decision_id}")
+    if result.block_reason:
+        print(f"  blocked     : {result.block_reason}")
+    if result.pending_reason:
+        print(f"  pending     : {result.pending_reason}")
+    print("  steps:")
+    for s in result.steps:
+        icon = {
+            "ok": "✓", "dry_run": "·",
+            "blocked": "✗", "pending": "?",
+            "error": "✗",
+        }.get(s.status, "?")
+        print(
+            f"    {icon} {s.name}: {s.status} "
+            f"— {s.note}"
+        )
+    if result.verdict == "blocked":
+        sys.exit(1)
+    if result.verdict == "pending":
+        sys.exit(2)
+
+
+def _cmd_publications(
+    *, limit: int, as_json: bool,
+) -> None:
+    """Show recent publisher_bundle.recent() entries."""
+    from execution.launch.publisher_bundle import (
+        PublisherBundle,
+    )
+    bundle = PublisherBundle()
+    recent = bundle.recent(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in recent],
+            indent=2,
+        ))
+        return
+    if not recent:
+        print(
+            "No publications yet (in-process history; "
+            "run under a daemon for persistent history)."
+        )
+        return
+    print(f"Recent publications ({len(recent)}):")
+    for r in recent:
+        icon = "✓" if r.ok else "✗"
+        mode = "dry" if r.dry_run else "live"
+        print(
+            f"  {icon} [{mode}] {r.decision_id} "
+            f"handle={r.product_handle} "
+            f"campaign={r.campaign_id}"
+        )
+
+
+def _cmd_activations(
+    *, limit: int, as_json: bool,
+) -> None:
+    """Show recent campaign_activator.recent() entries."""
+    from execution.launch.campaign_activator import (
+        CampaignActivator,
+    )
+    activator = CampaignActivator()
+    recent = activator.recent(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in recent],
+            indent=2,
+        ))
+        return
+    if not recent:
+        print("No activations yet.")
+        return
+    print(f"Recent activations ({len(recent)}):")
+    for r in recent:
+        icon = {
+            "activated": "✓", "dry_run": "·",
+            "pending": "?", "blocked": "✗",
+        }.get(r.verdict, "?")
+        print(
+            f"  {icon} {r.verdict:10s} campaign={r.campaign_id} "
+            f"decision={r.decision_id}"
+        )
+
+
 def _cmd_status() -> None:
     from engines.registry import engine_count
     sm = _get_store_manager()
@@ -2126,6 +2448,40 @@ def main(argv: list[str] | None = None) -> None:
             as_json=bool(getattr(args, "json", False)),
             network=bool(getattr(args, "network", False)),
             snippet=bool(getattr(args, "snippet", False)),
+        )
+        return
+
+    if args.command == "publish":
+        _cmd_publish(
+            winner_json=args.winner_json,
+            budget=float(args.budget),
+            platform=args.platform,
+            live=bool(args.live),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "activate":
+        _cmd_activate(
+            campaign_id=args.campaign_id,
+            budget=float(args.budget),
+            auto_approve=bool(args.auto_approve),
+            live=bool(args.live),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "publications":
+        _cmd_publications(
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "activations":
+        _cmd_activations(
+            limit=int(args.limit),
+            as_json=bool(args.json),
         )
         return
 
