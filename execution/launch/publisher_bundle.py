@@ -189,6 +189,7 @@ class PublisherBundle:
         ad_adapter: Any = None,
         outcome_recorder: Any = None,
         rationale_builder: Any = None,
+        video_router: Any = None,
     ) -> None:
         self._lock = threading.Lock()
         self._content = content_generator
@@ -196,6 +197,7 @@ class PublisherBundle:
         self._ads = ad_adapter
         self._outcomes = outcome_recorder
         self._rationale = rationale_builder
+        self._video_router = video_router
         self._history: list[LaunchResult] = []
 
     # ── Lazy deps (default to real modules) ──────────────
@@ -243,6 +245,21 @@ class PublisherBundle:
         self._rationale = DecisionRationaleBuilder()
         return self._rationale
 
+    def _get_video_router(self) -> Any:
+        if self._video_router is not None:
+            return self._video_router
+        try:
+            from core.adapters.fal.video_router import (
+                FalVideoRouter,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "fal video router lazy import: %s", exc,
+            )
+            return None
+        self._video_router = FalVideoRouter()
+        return self._video_router
+
     # ── Launch pipeline ─────────────────────────────────
 
     def launch(self, request: LaunchRequest) -> LaunchResult:
@@ -288,6 +305,20 @@ class PublisherBundle:
             or _slugify(request.winner.get("title", "product")),
         )
         product_id = str(product_log.data.get("product_id", ""))
+        # 2.4. Optional fal.ai video generation (Wave D-1 A6).
+        #     When winner carries ``video_prompts``, route each
+        #     through the cost-aware model picker. Generated
+        #     creatives merge into request.ai_creatives so the
+        #     EU AI Act gate below sees them too.
+        video_log = self._step_generate_videos(
+            request, steps, dry_run=dry_run,
+        )
+        if video_log.status == "error":
+            return self._finalise(
+                decision_id, steps,
+                dry_run, ok=False,
+                note="video generation failed",
+            )
         # 2.5. EU AI Act Article 50 compliance gate
         #     Wave A-1 of 2026 wiring — block EU-targeted
         #     launches if any AI creative is missing C2PA /
@@ -716,6 +747,189 @@ class PublisherBundle:
                 error=str(exc),
                 ts=time.time(),
             )
+        steps.append(log)
+        return log
+
+    def _step_generate_videos(
+        self,
+        request: LaunchRequest,
+        steps: list[StepLog],
+        *,
+        dry_run: bool,
+    ) -> StepLog:
+        """Generate video creatives via fal.ai when the winner
+        declares ``video_prompts``. Produced creatives merge
+        into ``request.ai_creatives`` so the EU gate + Meta Ads
+        campaign see them. Failures are recorded but do not
+        block the launch unless every prompt fails."""
+        prompts = request.winner.get("video_prompts") or []
+        if not isinstance(prompts, (list, tuple)):
+            prompts = []
+        if not prompts:
+            log = StepLog(
+                name="video_generate",
+                status="success",
+                data={"note": "no video_prompts on winner"},
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        router = self._get_video_router()
+        if router is None:
+            log = StepLog(
+                name="video_generate",
+                status="success",
+                data={
+                    "note": "fal video router unavailable",
+                    "skipped": len(prompts),
+                },
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        # In dry-run mode we cost-pick but never hit the API,
+        # so simulate-friendly payloads are available downstream.
+        sku = str(
+            request.winner.get("sku")
+            or _slugify(
+                request.winner.get("title", "product"),
+            ),
+        )
+        results: list[dict[str, Any]] = []
+        costs: float = 0.0
+        errors: list[str] = []
+        try:
+            from core.adapters.fal.video_router import (
+                VideoRequest,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log = StepLog(
+                name="video_generate",
+                status="success",
+                data={
+                    "note": (
+                        f"VideoRequest import failed: {exc}"
+                    ),
+                },
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        for raw in prompts:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                vr = VideoRequest(
+                    sku=sku,
+                    prompt=str(raw.get("prompt", "")),
+                    aspect=str(raw.get("aspect", "9:16")),
+                    duration_s=float(
+                        raw.get("duration_s", 5.0),
+                    ),
+                    quality_floor=str(
+                        raw.get("quality_floor", "volume"),
+                    ),
+                    reference_image_url=str(
+                        raw.get(
+                            "reference_image_url", "",
+                        ),
+                    ),
+                    seed=int(raw.get("seed", 0) or 0),
+                )
+            except (TypeError, ValueError) as exc:
+                errors.append(str(exc))
+                continue
+            if dry_run:
+                picked = router.pick_model(vr)
+                if picked is None:
+                    errors.append(
+                        "no model matches request",
+                    )
+                    continue
+                estimate = router.estimate_cost(
+                    model=picked,
+                    duration_s=vr.duration_s,
+                )
+                results.append({
+                    "asset_id": (
+                        f"video_{len(results) + 1}"
+                    ),
+                    "media_kind": "video",
+                    "disclosure_text": (
+                        "AI-generated — fal.ai "
+                        f"{picked.model_id}"
+                    ),
+                    "dry_run": True,
+                    "model_id": picked.model_id,
+                    "estimated_cost_usd": estimate,
+                    "duration_s": vr.duration_s,
+                    "c2pa": {
+                        "creator": "shopai",
+                        "generator_model": picked.model_id,
+                        "ai_generated": True,
+                    },
+                })
+                continue
+            res = router.generate(vr)
+            if not res.ok:
+                errors.append(
+                    res.error or res.skipped_reason,
+                )
+                continue
+            costs += float(res.cost_usd)
+            results.append({
+                "asset_id": res.request_id or (
+                    f"video_{len(results) + 1}"
+                ),
+                "media_kind": "video",
+                "disclosure_text": (
+                    "AI-generated — fal.ai "
+                    f"{res.model_id}"
+                ),
+                "url": res.video_url,
+                "model_id": res.model_id,
+                "cost_usd": res.cost_usd,
+                "duration_s": res.duration_s,
+                "c2pa": {
+                    "creator": "shopai",
+                    "generator_model": res.model_id,
+                    "ai_generated": True,
+                },
+            })
+        # Merge produced creatives into the request so the EU
+        # gate and the Meta campaign step both see them.
+        if results:
+            merged = tuple(request.ai_creatives) + tuple(
+                results,
+            )
+            try:
+                request.ai_creatives = merged  # type: ignore[assignment]
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "ai_creatives merge skipped: %s", exc,
+                )
+        status = "success"
+        if results:
+            status = "dry_run" if dry_run else "success"
+        # If every prompt failed AND we generated nothing, that
+        # is a step-level error the caller should surface.
+        if not results and errors:
+            status = "error"
+        log = StepLog(
+            name="video_generate",
+            status=status,
+            data={
+                "generated": len(results),
+                "total_cost_usd": round(costs, 4),
+                "errors": errors,
+                "creatives": results,
+            },
+            error=(
+                "; ".join(errors) if status == "error"
+                else ""
+            ),
+            ts=time.time(),
+        )
         steps.append(log)
         return log
 
