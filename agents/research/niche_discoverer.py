@@ -38,6 +38,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from utils.logger import get_logger
+
+
+logger = get_logger("agents.research.niche_discoverer")
+
 
 # Niche dictionary — extendable via ``register_niche``. Tokens are
 # matched case-insensitively against title + tags.
@@ -96,6 +101,8 @@ class NicheReport:
     rollup_score: float
     trend_direction: str = "stable"    # "rising" / "falling" / "stable"
     example_titles: tuple[str, ...] = ()
+    trend_signal_score: float = 0.0     # external signal (0-1)
+    ranked_score: float = 0.0           # rollup * (1 + trend_signal)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +116,10 @@ class NicheReport:
             "rollup_score": round(self.rollup_score, 4),
             "trend_direction": self.trend_direction,
             "example_titles": list(self.example_titles),
+            "trend_signal_score": round(
+                self.trend_signal_score, 4,
+            ),
+            "ranked_score": round(self.ranked_score, 4),
         }
 
 
@@ -158,6 +169,7 @@ class NicheDiscoverer:
         niches: dict[str, tuple[str, ...]] | None = None,
         rising_threshold: float = 1.15,
         falling_threshold: float = 0.85,
+        trend_scorer: Any = None,
     ) -> None:
         if rising_threshold <= 1.0:
             raise ValueError(
@@ -173,6 +185,7 @@ class NicheDiscoverer:
         )
         self._rising = float(rising_threshold)
         self._falling = float(falling_threshold)
+        self._trend_scorer = trend_scorer
         self._conn: sqlite3.Connection | None = None
         self._last_reports: list[NicheReport] = []
         if db_path is not None:
@@ -290,8 +303,27 @@ class NicheDiscoverer:
                 r.trend_direction = "falling"
             else:
                 r.trend_direction = "stable"
+        # Apply external trend signal (Google Trends etc.) if a
+        # scorer was injected. Failures degrade to 0.0 so ranking
+        # collapses back to pure rollup.
+        scorer = self._trend_scorer
+        for r in reports:
+            signal = 0.0
+            if scorer is not None:
+                tokens = niches.get(r.label, ())
+                try:
+                    raw = scorer(r.label, tokens)
+                    signal = max(0.0, min(1.0, float(raw)))
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "trend_scorer(%s) failed: %s",
+                        r.label, exc,
+                    )
+                    signal = 0.0
+            r.trend_signal_score = signal
+            r.ranked_score = r.rollup_score * (1.0 + signal)
         reports.sort(
-            key=lambda r: -r.rollup_score,
+            key=lambda r: -r.ranked_score,
         )
         # Persist snapshot for next-run trend comparison
         if persist and self._conn is not None:

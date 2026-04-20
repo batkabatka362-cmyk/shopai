@@ -375,5 +375,82 @@ class TestDict(unittest.TestCase):
         self.assertEqual(d["candidate_count"], 3)
 
 
+class TestTrendScorer(unittest.TestCase):
+    """Optional external trend signal hook."""
+
+    def test_default_no_scorer_signal_is_zero(self):
+        d = NicheDiscoverer()
+        r = d.discover(
+            [_candidate(title="Dog Toy")], persist=False,
+        )
+        self.assertEqual(r[0].trend_signal_score, 0.0)
+        self.assertAlmostEqual(
+            r[0].ranked_score, r[0].rollup_score,
+        )
+
+    def test_scorer_boosts_ranked_score(self):
+        def scorer(label, tokens):
+            return 0.5 if label == "pet" else 0.0
+
+        d = NicheDiscoverer(trend_scorer=scorer)
+        r = d.discover(
+            [_candidate(title="Dog Toy")], persist=False,
+        )
+        self.assertAlmostEqual(r[0].trend_signal_score, 0.5)
+        self.assertAlmostEqual(
+            r[0].ranked_score, r[0].rollup_score * 1.5,
+        )
+
+    def test_scorer_reorders_ranking(self):
+        # pet has higher rollup naturally, but we boost kitchen more
+        def scorer(label, tokens):
+            return 0.9 if label == "kitchen" else 0.0
+
+        d = NicheDiscoverer(trend_scorer=scorer)
+        reports = d.discover([
+            _candidate(
+                title="Dog Toy",
+                daily_sales=50,
+            ),
+            _candidate(
+                title="Kitchen Blender",
+                daily_sales=10,
+            ),
+        ], persist=False)
+        labels = [r.label for r in reports]
+        self.assertIn("kitchen", labels)
+        self.assertIn("pet", labels)
+        kitchen = next(r for r in reports if r.label == "kitchen")
+        self.assertGreater(kitchen.trend_signal_score, 0.0)
+
+    def test_scorer_clamped_to_unit(self):
+        d = NicheDiscoverer(
+            trend_scorer=lambda l, t: 5.0,
+        )
+        r = d.discover(
+            [_candidate(title="Dog Toy")], persist=False,
+        )
+        self.assertEqual(r[0].trend_signal_score, 1.0)
+
+    def test_scorer_clamped_non_negative(self):
+        d = NicheDiscoverer(
+            trend_scorer=lambda l, t: -2.0,
+        )
+        r = d.discover(
+            [_candidate(title="Dog Toy")], persist=False,
+        )
+        self.assertEqual(r[0].trend_signal_score, 0.0)
+
+    def test_scorer_error_degrades_to_zero(self):
+        def boom(label, tokens):
+            raise RuntimeError("nope")
+
+        d = NicheDiscoverer(trend_scorer=boom)
+        r = d.discover(
+            [_candidate(title="Dog Toy")], persist=False,
+        )
+        self.assertEqual(r[0].trend_signal_score, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
