@@ -526,6 +526,34 @@ class TestCycleIntegration:
         result = c.run_cycle()
         assert "events_fired" in result["phases"]["events"]
 
+    def test_brain_scan_records_fetch_failure(self):
+        """End-of-run brain scan must classify phase failures into
+        failure_taxonomy + error_pattern_library so the owner can
+        see which subsystems are degrading. SHOPAI_BRAIN_HOOKS=1
+        gated path."""
+        import os
+        prior = os.environ.get("SHOPAI_BRAIN_HOOKS")
+        os.environ["SHOPAI_BRAIN_HOOKS"] = "1"
+        try:
+            # Reset singletons so the assertion isn't polluted by
+            # other tests running in the suite.
+            from core.brain import brain_facade
+            brain_facade._FAILURE_TAXONOMY = None
+            brain_facade._ERROR_PATTERN_LIBRARY = None
+
+            c = CoreOrchestrator()
+            c.run_cycle()   # Shopify unreachable → fetch errors
+
+            from core.brain.brain_facade import brain
+            snap = brain().introspect()
+            assert snap.failures.get("total", 0) >= 1
+            assert snap.error_patterns.get("observations", 0) >= 1
+        finally:
+            if prior is None:
+                os.environ.pop("SHOPAI_BRAIN_HOOKS", None)
+            else:
+                os.environ["SHOPAI_BRAIN_HOOKS"] = prior
+
     def test_events_phase_survives_list_optimization(self):
         """Regression for AUDIT_LOG P2 (2026-04-20).
 

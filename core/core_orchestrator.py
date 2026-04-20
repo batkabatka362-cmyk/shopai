@@ -435,6 +435,11 @@ class CoreOrchestrator:
         # ── Record Episode ──
         self._record_episode(results)
 
+        # ── BRAIN: scan phase failures → taxonomy + pattern lib ──
+        self._brain_scan_phase_failures(
+            results.get("phases", {}),
+        )
+
         # ── BRAIN: finalise (summary + insights + budget close) ──
         self._brain_finalise(results, elapsed * 1000.0)
 
@@ -1057,6 +1062,87 @@ class CoreOrchestrator:
                 name,
                 (time.monotonic() - start) * 1000.0,
                 ok,
+            )
+
+    def _brain_scan_phase_failures(
+        self,
+        phases: dict[str, Any],
+    ) -> None:
+        """After all phases run, collect any that reported a
+        ``{status: error, error: <msg>}`` dict and feed them into
+        failure_taxonomy + error_pattern_library so the brain
+        learns which phases rot + which remedies work. Gated by
+        SHOPAI_BRAIN_HOOKS=1.
+
+        Currently most phase handlers swallow their own
+        exceptions into this shape (see the ~15 logger.warning
+        sites in the phase handlers). Centralising the post-scan
+        here means new phases automatically feed the learners.
+        """
+        if not self._brain_hooks_enabled:
+            return
+        if not isinstance(phases, dict):
+            return
+        try:
+            from core.brain.brain_facade import brain
+            b = brain()
+            for phase_name, phase_result in phases.items():
+                if not isinstance(phase_result, dict):
+                    continue
+                # Three common error shapes produced by phase
+                # handlers:
+                #   * {"status": "error", "error": <msg>}
+                #   * {"source": "error", ...} (fetch phase)
+                #   * nested: {"optimization": {"status": "error"}}
+                status = phase_result.get("status")
+                source = phase_result.get("source")
+                err_msg = ""
+                if status == "error":
+                    err_msg = str(phase_result.get("error") or "")
+                elif source == "error":
+                    err_msg = (
+                        f"{phase_name} source unavailable"
+                    )
+                else:
+                    # Scan nested sections for error status
+                    nested_err = None
+                    for key, sub in phase_result.items():
+                        if (
+                            isinstance(sub, dict)
+                            and sub.get("status") == "error"
+                        ):
+                            nested_err = str(
+                                sub.get("error") or "",
+                            )
+                            break
+                    if nested_err is None:
+                        continue
+                    err_msg = nested_err
+                # Classify the failure — failure_taxonomy buckets
+                # it into capacity / timeout / auth / validation /
+                # api / external / logic.
+                classification = b.classify_failure(
+                    message=err_msg,
+                ) or {}
+                category = str(
+                    classification.get("category", "unknown"),
+                )
+                signature = f"phase:{phase_name}:{category}"
+                # Record the failure with no remedy yet — future
+                # iterations that DO recover can call
+                # observe_error(..., remedy=<what worked>, worked=True)
+                b.observe_error(
+                    signature=signature,
+                    context={
+                        "phase": phase_name,
+                        "category": category,
+                    },
+                    remedy="untriaged",
+                    worked=False,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "brain_scan_phase_failures skipped: %s", exc,
             )
 
     def _brain_ingest_data(
