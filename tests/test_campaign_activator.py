@@ -118,6 +118,22 @@ class _FakeRationale:
 _TEST_TMP: list[tempfile.TemporaryDirectory] = []
 
 
+def _green_crisis():
+    """Minimal fake crisis responder — always green."""
+    stub = MagicMock()
+    state = MagicMock()
+    state.level = "green"
+    state.halted = False
+    state.reason = "test: no events"
+    state.as_dict.return_value = {
+        "level": "green",
+        "halted": False,
+        "reason": "test: no events",
+    }
+    stub.detect_state.return_value = state
+    return stub
+
+
 def _permissive_tripwire() -> RiskTripwire:
     """Per-test tripwire with caps set large enough to allow the
     default fixtures. Callers wanting to test caps construct their
@@ -144,6 +160,7 @@ def _activator(**overrides):
         outcome_recorder=_FakeOutcomes(),
         rationale_builder=_FakeRationale(),
         risk_tripwire=_permissive_tripwire(),
+        crisis_responder=_green_crisis(),
     )
     defaults.update(overrides)
     return ca.CampaignActivator(**defaults)
@@ -533,12 +550,87 @@ class TestTripwireStep(unittest.TestCase):
         )
         names = [s.name for s in r.steps]
         self.assertEqual(
-            names[:5],
+            names[:6],
             [
-                "preflight", "tripwire", "simulator",
-                "readiness", "constraints",
+                "crisis", "preflight", "tripwire",
+                "simulator", "readiness", "constraints",
             ],
         )
+
+
+class TestCrisisStep(unittest.TestCase):
+    """LX.4 crisis gate. Runs before preflight and fails closed."""
+
+    def setUp(self):
+        self._orig = os.environ.get(
+            "SHOPAI_ENABLE_LIVE_EXECUTION",
+        )
+        os.environ["SHOPAI_ENABLE_LIVE_EXECUTION"] = "1"
+
+    def tearDown(self):
+        if self._orig is None:
+            os.environ.pop(
+                "SHOPAI_ENABLE_LIVE_EXECUTION", None,
+            )
+        else:
+            os.environ[
+                "SHOPAI_ENABLE_LIVE_EXECUTION"
+            ] = self._orig
+
+    def _halted_crisis(self, reason="platform ban"):
+        stub = MagicMock()
+        state = MagicMock()
+        state.level = "red"
+        state.halted = True
+        state.reason = reason
+        state.as_dict.return_value = {
+            "level": "red",
+            "halted": True,
+            "reason": reason,
+        }
+        stub.detect_state.return_value = state
+        return stub
+
+    def test_halted_blocks_all_activation(self):
+        ads = _FakeAds()
+        act = _activator(
+            ad_adapter=ads,
+            crisis_responder=self._halted_crisis(
+                "chargeback spike",
+            ),
+        )
+        r = act.activate(
+            _req(live=True, auto_approve=True),
+        )
+        self.assertEqual(r.verdict, "blocked")
+        self.assertIn(
+            "chargeback spike", r.block_reason,
+        )
+        # No downstream step runs
+        self.assertEqual(len(r.steps), 1)
+        self.assertEqual(r.steps[0].name, "crisis")
+        self.assertEqual(ads.calls, [])
+
+    def test_green_crisis_passes_through(self):
+        act = _activator()
+        r = act.activate(
+            _req(live=True, auto_approve=True),
+        )
+        self.assertEqual(r.verdict, "activated")
+        self.assertEqual(r.steps[0].name, "crisis")
+        self.assertEqual(r.steps[0].status, "ok")
+
+    def test_crisis_responder_exception_blocks(self):
+        broken = MagicMock()
+        broken.detect_state.side_effect = RuntimeError(
+            "DB down",
+        )
+        act = _activator(crisis_responder=broken)
+        r = act.activate(
+            _req(live=True, auto_approve=True),
+        )
+        self.assertEqual(r.verdict, "blocked")
+        self.assertIn("DB down", r.block_reason)
 
 
 class TestSimulatorStep(unittest.TestCase):

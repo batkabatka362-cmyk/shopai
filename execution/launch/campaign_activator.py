@@ -9,6 +9,8 @@ learning signal for the brain.
 ``CampaignActivator.activate(request)`` runs a paranoid gate chain
 before calling ``MetaAdsAdapter.resume_campaign``:
 
+  0. crisis      — LX.4 kill switch / active-event check. See
+                   core/crisis/response.py. Fails fastest.
   1. pre-flight  — credentials + campaign exists + budget reasonable
   2. tripwire    — L7 hard $-caps (daily / per-campaign / margin /
                    chargeback). See core/risk/tripwire.py.
@@ -163,6 +165,7 @@ class CampaignActivator:
         rationale_builder: Any = None,
         risk_tripwire: Any = None,
         launch_simulator: Any = None,
+        crisis_responder: Any = None,
         max_daily_budget_usd: float = _DEFAULT_MAX_DAILY_BUDGET_USD,
     ) -> None:
         if max_daily_budget_usd <= 0:
@@ -177,6 +180,7 @@ class CampaignActivator:
         self._rationale = rationale_builder
         self._tripwire = risk_tripwire
         self._simulator = launch_simulator
+        self._crisis = crisis_responder
         self._max_budget = float(max_daily_budget_usd)
         self._history: list[ActivationResult] = []
 
@@ -241,6 +245,15 @@ class CampaignActivator:
         self._simulator = simulate_launch
         return self._simulator
 
+    def _get_crisis(self) -> Any:
+        if self._crisis is not None:
+            return self._crisis
+        from core.crisis.response import (
+            get_crisis_responder,
+        )
+        self._crisis = get_crisis_responder()
+        return self._crisis
+
     # ── Pipeline ─────────────────────────────────────────
 
     def activate(
@@ -269,6 +282,16 @@ class CampaignActivator:
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "rationale.start skipped: %s", exc,
+            )
+
+        # 0. crisis — LX.4 kill switch check
+        crisis_log = self._step_crisis(request, steps)
+        if crisis_log.status == "blocked":
+            return self._finalise(
+                decision_id, request.campaign_id,
+                "blocked", dry_run, steps,
+                block_reason=crisis_log.note,
+                rationale=rationale,
             )
 
         # 1. pre-flight — budget sanity
@@ -389,8 +412,8 @@ class CampaignActivator:
                 kpi="activation",
                 kpi_value=1.0,
                 signals=(
-                    "preflight", "tripwire", "simulator",
-                    "readiness", "constraints",
+                    "crisis", "preflight", "tripwire",
+                    "simulator", "readiness", "constraints",
                 ),
                 note=(
                     "live" if not dry_run else "dry_run"
@@ -428,6 +451,46 @@ class CampaignActivator:
         )
 
     # ── Steps ────────────────────────────────────────────
+
+    def _step_crisis(
+        self,
+        request: ActivateRequest,
+        steps: list[StepLog],
+    ) -> StepLog:
+        """Fail closed on any active crisis. Runs first so the
+        owner's kill switch short-circuits the whole pipeline."""
+        try:
+            state = self._get_crisis().detect_state()
+        except Exception as exc:  # noqa: BLE001
+            # Fail closed: if the crisis responder errors, treat
+            # it as a crisis. Surface the reason so the owner
+            # can debug.
+            log = StepLog(
+                name="crisis",
+                status="blocked",
+                note=f"crisis_responder error: {exc}",
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        if state.halted:
+            log = StepLog(
+                name="crisis",
+                status="blocked",
+                note=f"{state.level}: {state.reason}",
+                data=state.as_dict(),
+                ts=time.time(),
+            )
+        else:
+            log = StepLog(
+                name="crisis",
+                status="ok",
+                note=f"{state.level}: {state.reason}",
+                data=state.as_dict(),
+                ts=time.time(),
+            )
+        steps.append(log)
+        return log
 
     def _step_preflight(
         self,

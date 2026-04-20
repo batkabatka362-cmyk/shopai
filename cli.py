@@ -640,6 +640,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── LX.4 crisis response ─────────────────────────────────
+    crisis_p = sub.add_parser(
+        "crisis",
+        help=(
+            "Crisis responder — kill switch + event-driven "
+            "escalation"
+        ),
+    )
+    crisis_sub = crisis_p.add_subparsers(
+        dest="crisis_action",
+    )
+    crisis_status = crisis_sub.add_parser(
+        "status", help="Show current crisis level + events",
+    )
+    crisis_status.add_argument(
+        "--json", action="store_true",
+    )
+    crisis_halt = crisis_sub.add_parser(
+        "halt",
+        help="Trip the emergency halt (blocks all live writes)",
+    )
+    crisis_halt.add_argument(
+        "--reason", default="",
+        help="Reason recorded alongside the halt",
+    )
+    crisis_sub.add_parser(
+        "resume", help="Clear a manual halt",
+    )
+    crisis_events = crisis_sub.add_parser(
+        "events",
+        help="Recent crisis events (limit = 20 by default)",
+    )
+    crisis_events.add_argument(
+        "--limit", type=int, default=20,
+    )
+    crisis_events.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── L7 risk / tripwire ───────────────────────────────────
     risk_p = sub.add_parser(
         "risk",
@@ -2648,6 +2687,90 @@ def _cmd_activations(
         )
 
 
+def _cmd_crisis_status(*, as_json: bool) -> None:
+    from core.crisis.response import get_crisis_responder
+    cr = get_crisis_responder()
+    s = cr.stats()
+    if as_json:
+        print(json.dumps(s, indent=2))
+        return
+    state = s["state"]
+    icon = {"green": "✓", "yellow": "?", "red": "✗"}.get(
+        state["level"], "?",
+    )
+    print(
+        f"{icon} Crisis level: {state['level'].upper()}"
+    )
+    print(f"  Halted:            {state['halted']}")
+    print(f"  Reason:            {state['reason']}")
+    print(
+        f"  Events in window:  {state['recent_event_count']}"
+    )
+    if state["triggered_kinds"]:
+        print(
+            "  Triggered kinds:   "
+            + ", ".join(state["triggered_kinds"])
+        )
+    print(
+        f"  Window:            {int(s['window_s']/60)} min"
+    )
+    print(
+        f"  Red threshold:     {s['red_threshold']} events"
+    )
+    print(
+        f"  Env kill switch:   "
+        f"{'set' if s['env_halt_set'] else 'not set'}"
+    )
+
+
+def _cmd_crisis_halt(*, reason: str) -> None:
+    from core.crisis.response import get_crisis_responder
+    cr = get_crisis_responder()
+    cr.halt(reason=reason or "")
+    print(
+        "✗ Emergency halt engaged"
+        + (f" ({reason})" if reason else "")
+    )
+    print("  Clear with: shopai crisis resume")
+
+
+def _cmd_crisis_resume() -> None:
+    from core.crisis.response import get_crisis_responder
+    cr = get_crisis_responder()
+    cr.resume()
+    print("✓ Manual halt cleared")
+    state = cr.detect_state()
+    if state.halted:
+        print(
+            f"  Still halted by: {state.reason}",
+        )
+
+
+def _cmd_crisis_events(*, limit: int, as_json: bool) -> None:
+    from core.crisis.response import get_crisis_responder
+    cr = get_crisis_responder()
+    events = cr.recent_events(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [e.as_dict() for e in events], indent=2,
+        ))
+        return
+    if not events:
+        print("No crisis events recorded.")
+        return
+    print(f"Recent crisis events ({len(events)}):")
+    for ev in events:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%SZ",
+            time.gmtime(ev.ts),
+        )
+        sev = ev.severity.upper()
+        print(
+            f"  {ts}  [{sev:8s}] {ev.kind:22s} "
+            f"{ev.note}"
+        )
+
+
 def _cmd_simulate(args) -> None:
     """Pre-launch Monte Carlo projection."""
     from simulation.launch_simulator import (
@@ -3287,6 +3410,23 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "crisis":
+        action = (
+            getattr(args, "crisis_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_crisis_status(as_json=bool(args.json))
+        elif action == "halt":
+            _cmd_crisis_halt(reason=args.reason)
+        elif action == "resume":
+            _cmd_crisis_resume()
+        elif action == "events":
+            _cmd_crisis_events(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "simulate":
