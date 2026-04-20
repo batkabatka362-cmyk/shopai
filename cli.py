@@ -697,6 +697,56 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── Landed cost calculator (Wave F-1) ────────────────────
+    landed_p = sub.add_parser(
+        "landed-cost",
+        help=(
+            "Landed cost + de-minimis aware routing "
+            "(FOB + duty + VAT + shipping + processing)"
+        ),
+    )
+    landed_p.add_argument(
+        "--fob", type=float, required=True,
+        help="Supplier cost USD",
+    )
+    landed_p.add_argument(
+        "--destination",
+        choices=("US", "EU", "UK"),
+        required=True,
+    )
+    landed_p.add_argument(
+        "--origin", default="CN",
+        help="Origin country code (default CN)",
+    )
+    landed_p.add_argument(
+        "--hts", default="",
+        help="HTS code (optional; drives duty category)",
+    )
+    landed_p.add_argument(
+        "--shipping", type=float, default=0.0,
+    )
+    landed_p.add_argument(
+        "--fulfillment", type=float, default=0.0,
+    )
+    landed_p.add_argument(
+        "--target-margin", type=float, default=0.30,
+        help="Target retail margin (default 0.30)",
+    )
+    landed_p.add_argument(
+        "--de-minimis",
+        choices=(
+            "active", "suspended_cn", "suspended_all",
+        ),
+        default=None,
+        help=(
+            "Override US de-minimis status (default reads "
+            "SHOPAI_US_DE_MINIMIS_STATUS env)"
+        ),
+    )
+    landed_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── Agentic Storefront channels (Wave B-1) ───────────────
     agentic_p = sub.add_parser(
         "agentic",
@@ -3206,6 +3256,85 @@ def _cmd_predict(args) -> None:
     print(f"  {pred.explanation}")
 
 
+def _cmd_landed_cost(args) -> None:
+    from execution.fulfillment.landed_cost import (
+        LandedCostInput,
+        calculate_landed_cost,
+        minimum_retail_for_margin,
+    )
+    inp = LandedCostInput(
+        fob_usd=float(args.fob),
+        destination=args.destination,
+        origin=args.origin or "CN",
+        hts_code=args.hts or "",
+        shipping_usd=float(args.shipping),
+        fulfillment_fee_usd=float(args.fulfillment),
+    )
+    breakdown = calculate_landed_cost(
+        inp, de_minimis_override=args.de_minimis,
+    )
+    min_retail = minimum_retail_for_margin(
+        inp,
+        target_margin=float(args.target_margin),
+        de_minimis_override=args.de_minimis,
+    )
+    if args.json:
+        out = breakdown.as_dict()
+        out["minimum_retail_for_target_margin"] = round(
+            min_retail, 2,
+        )
+        out["target_margin"] = float(args.target_margin)
+        print(json.dumps(out, indent=2))
+        return
+    print(
+        f"Landed cost — {args.origin}→{args.destination} "
+        f"FOB ${args.fob:.2f}"
+    )
+    print()
+    print(
+        f"  FOB:                ${breakdown.fob_usd:>8.2f}"
+    )
+    print(
+        f"  Shipping:           ${breakdown.shipping_usd:>8.2f}"
+    )
+    print(
+        f"  Duty ({breakdown.duty_rate:.0%}):        "
+        f"${breakdown.duty_usd:>8.2f}"
+    )
+    print(
+        f"  VAT ({breakdown.vat_rate:.0%}):         "
+        f"${breakdown.vat_usd:>8.2f}"
+    )
+    print(
+        f"  Payment processing: "
+        f"${breakdown.payment_processing_usd:>8.2f}"
+    )
+    print(
+        f"  Fulfillment fee:    "
+        f"${breakdown.fulfillment_fee_usd:>8.2f}"
+    )
+    print(f"  {'':─>40}")
+    print(
+        f"  TOTAL:              ${breakdown.total_usd:>8.2f}"
+    )
+    print()
+    print(
+        f"  De-minimis: "
+        + (
+            "APPLIED ✓" if breakdown.de_minimis_applied
+            else "NOT applied"
+        )
+    )
+    if breakdown.notes:
+        for n in breakdown.notes:
+            print(f"    · {n}")
+    print()
+    print(
+        f"  Min retail for {float(args.target_margin):.0%} "
+        f"margin: ${min_retail:.2f}"
+    )
+
+
 def _cmd_agentic_status(
     *, force: bool, as_json: bool,
 ) -> None:
@@ -4833,6 +4962,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "predict":
         _cmd_predict(args)
+        return
+
+    if args.command == "landed-cost":
+        _cmd_landed_cost(args)
         return
 
     if args.command == "agentic":
