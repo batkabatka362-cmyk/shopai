@@ -1,0 +1,474 @@
+"""Autopilot loop daemon — run ShopAI's full pipeline on an interval.
+
+Sprint 2 #4 of AGI_MISSION_PLAN. Turns the one-shot `shopai autopilot`
+command into a 24/7 autonomous loop:
+
+    while True:
+        autopilot.run() — winner sources → publish → activate
+        launch_learner.distill() — episodes → rules → journal
+        log a summary line to data/autopilot_loop.log
+        sleep(interval)
+
+Respects:
+  * compute_budget per-cycle caps (errors cause skip-till-next)
+  * SHOPAI_ENABLE_LIVE_EXECUTION + --live double gate
+  * graceful shutdown on SIGINT / SIGTERM (finishes current cycle
+    then exits)
+
+Usage:
+    python scripts/autopilot_loop.py                  # dry-run
+    python scripts/autopilot_loop.py --live           # real writes
+    python scripts/autopilot_loop.py --interval 600   # 10 min
+    python scripts/autopilot_loop.py --iterations 3   # N then stop
+
+Log format (one JSON line per cycle):
+    {"ts": ..., "cycle": N, "mode": "dry_run|live",
+     "launches": K, "successful": S, "distilled": D,
+     "accepted": A, "duration_s": X}
+
+Pure stdlib. Does not poll — sleeps between cycles. Exits cleanly
+on KeyboardInterrupt (owner hits Ctrl-C).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+# Force sys.path so the daemon works when invoked directly
+if __name__ == "__main__":
+    _ROOT = Path(__file__).resolve().parent.parent
+    if str(_ROOT) not in sys.path:
+        sys.path.insert(0, str(_ROOT))
+
+from utils.logger import get_logger
+
+
+logger = get_logger("scripts.autopilot_loop")
+
+
+_DEFAULT_INTERVAL_S = 900.0   # 15 minutes
+_DEFAULT_MAX_ITERATIONS = 0    # 0 = infinite
+_DEFAULT_LOG_PATH = Path("data/autopilot_loop.log")
+
+
+@dataclass
+class LoopConfig:
+    """Configuration for the autopilot loop."""
+    seeds_path: str = "data/winner_seeds.json"
+    peers: str = ""
+    max_launches: int = 1
+    top_n: int = 5
+    ad_budget_daily: float = 20.0
+    platform: str = "facebook"
+    auto_activate: bool = True
+    live: bool = False
+    interval_s: float = _DEFAULT_INTERVAL_S
+    max_iterations: int = _DEFAULT_MAX_ITERATIONS
+    log_path: str = str(_DEFAULT_LOG_PATH)
+    distill_every: int = 5       # distill every N cycles
+
+    def __post_init__(self) -> None:
+        if self.interval_s <= 0:
+            raise ValueError("interval_s must be > 0")
+        if self.max_iterations < 0:
+            raise ValueError(
+                "max_iterations must be ≥ 0",
+            )
+        if self.max_launches < 1:
+            raise ValueError(
+                "max_launches must be ≥ 1",
+            )
+        if self.distill_every < 1:
+            raise ValueError(
+                "distill_every must be ≥ 1",
+            )
+
+
+@dataclass
+class CycleSummary:
+    cycle: int
+    ts: float
+    mode: str                    # "dry_run" | "live"
+    launches: int
+    successful: int
+    distilled_proposals: int
+    accepted: int
+    duration_s: float
+    error: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ts": self.ts,
+            "cycle": self.cycle,
+            "mode": self.mode,
+            "launches": self.launches,
+            "successful": self.successful,
+            "distilled": self.distilled_proposals,
+            "accepted": self.accepted,
+            "duration_s": round(self.duration_s, 3),
+            "error": self.error,
+        }
+
+
+class AutopilotLoop:
+    """Orchestrate repeated autopilot + distill cycles."""
+
+    def __init__(
+        self,
+        config: LoopConfig,
+        *,
+        autopilot: Any = None,
+        launch_learner: Any = None,
+    ) -> None:
+        self._config = config
+        self._autopilot = autopilot
+        self._learner = launch_learner
+        self._stop_event = threading.Event()
+        self._cycle_count = 0
+        self._history: list[CycleSummary] = []
+        self._lock = threading.Lock()
+        # Log path
+        self._log_path = Path(config.log_path)
+        self._log_path.parent.mkdir(
+            parents=True, exist_ok=True,
+        )
+
+    # ── Lazy deps ────────────────────────────────────────
+
+    def _get_autopilot(self) -> Any:
+        if self._autopilot is not None:
+            return self._autopilot
+        from execution.launch.autopilot import Autopilot
+        self._autopilot = Autopilot()
+        return self._autopilot
+
+    def _get_learner(self) -> Any:
+        if self._learner is not None:
+            return self._learner
+        from agents.learning.launch_learner import (
+            LaunchLearner,
+        )
+        self._learner = LaunchLearner()
+        return self._learner
+
+    # ── Control ──────────────────────────────────────────
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def is_stopping(self) -> bool:
+        return self._stop_event.is_set()
+
+    # ── Cycle ────────────────────────────────────────────
+
+    def _build_sources(self) -> list[Any]:
+        from agents.research.sources.manual_seed import (
+            ManualSeedSource,
+        )
+        from agents.research.sources.peer_store_observer import (
+            PeerStoreObserverSource,
+        )
+        sources: list[Any] = []
+        seed_path = (
+            Path(self._config.seeds_path)
+            if self._config.seeds_path else None
+        )
+        if seed_path and seed_path.exists():
+            sources.append(ManualSeedSource(seed_path))
+        peer_list = [
+            p.strip()
+            for p in self._config.peers.split(",")
+            if p.strip()
+        ]
+        if peer_list:
+            sources.append(
+                PeerStoreObserverSource(peer_list),
+            )
+        return sources
+
+    def _run_one_cycle(self) -> CycleSummary:
+        start = time.time()
+        with self._lock:
+            self._cycle_count += 1
+            cycle_id = self._cycle_count
+        summary = CycleSummary(
+            cycle=cycle_id,
+            ts=start,
+            mode="live" if self._config.live else "dry_run",
+            launches=0,
+            successful=0,
+            distilled_proposals=0,
+            accepted=0,
+            duration_s=0.0,
+        )
+        try:
+            sources = self._build_sources()
+            if not sources:
+                summary.error = (
+                    "no winner sources (seeds missing + "
+                    "no --peers)"
+                )
+                summary.duration_s = time.time() - start
+                return summary
+            shop_url = os.environ.get(
+                "SHOPAI_SHOPIFY_URL", "",
+            )
+            api_key = os.environ.get(
+                "SHOPAI_SHOPIFY_KEY",
+                os.environ.get(
+                    "SHOPAI_SHOPIFY_CLIENT_SECRET", "",
+                ),
+            )
+            meta_account = os.environ.get(
+                "META_ADS_ACCOUNT_ID",
+                os.environ.get(
+                    "meta_ads_account_id", "",
+                ),
+            )
+            from execution.launch.autopilot import (
+                AutopilotRequest,
+            )
+            req = AutopilotRequest(
+                shop_url=shop_url,
+                api_key=api_key,
+                winner_sources=sources,
+                max_launches=self._config.max_launches,
+                top_n=self._config.top_n,
+                ad_budget_daily=(
+                    self._config.ad_budget_daily
+                ),
+                platform=self._config.platform,
+                meta_account_id=meta_account,
+                auto_activate=self._config.auto_activate,
+                live=self._config.live,
+            )
+            run = self._get_autopilot().run(req)
+            summary.launches = len(run.launches)
+            summary.successful = run.successful_launches
+        except Exception as exc:  # noqa: BLE001
+            summary.error = (
+                f"autopilot raised: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            logger.warning(
+                "autopilot_loop cycle %d raised: %s",
+                cycle_id, exc,
+            )
+            summary.duration_s = time.time() - start
+            return summary
+        # Distill learning every N cycles
+        if (
+            cycle_id % self._config.distill_every == 0
+        ):
+            try:
+                report = self._get_learner().distill()
+                summary.distilled_proposals = (
+                    len(report.proposals)
+                )
+                summary.accepted = report.accepted
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "autopilot_loop distill failed: %s",
+                    exc,
+                )
+                summary.error = (
+                    summary.error or (
+                        f"distill raised: {exc}"
+                    )
+                )
+        summary.duration_s = time.time() - start
+        return summary
+
+    def _log_summary(self, summary: CycleSummary) -> None:
+        """Append one JSON line to the log file."""
+        try:
+            with self._log_path.open("a") as fh:
+                fh.write(
+                    json.dumps(summary.as_dict()) + "\n",
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "log append failed: %s", exc,
+            )
+
+    # ── Main loop ────────────────────────────────────────
+
+    def run(self) -> list[CycleSummary]:
+        """Run cycles until stopped or max_iterations reached.
+
+        Returns the list of per-cycle summaries.
+        """
+        logger.info(
+            "autopilot_loop starting "
+            "(interval=%.1fs, live=%s, max=%d)",
+            self._config.interval_s,
+            self._config.live,
+            self._config.max_iterations,
+        )
+        while not self.is_stopping():
+            summary = self._run_one_cycle()
+            with self._lock:
+                self._history.append(summary)
+                if len(self._history) > 500:
+                    del self._history[
+                        : len(self._history) - 500
+                    ]
+            self._log_summary(summary)
+            logger.info(
+                "cycle %d: mode=%s launches=%d "
+                "successful=%d distilled=%d "
+                "accepted=%d %.2fs %s",
+                summary.cycle, summary.mode,
+                summary.launches, summary.successful,
+                summary.distilled_proposals,
+                summary.accepted,
+                summary.duration_s,
+                f"err={summary.error}"
+                if summary.error else "",
+            )
+            if (
+                self._config.max_iterations > 0
+                and summary.cycle
+                >= self._config.max_iterations
+            ):
+                logger.info(
+                    "max_iterations reached, stopping",
+                )
+                break
+            # Sleep in small chunks so stop flag is responsive
+            target = time.time() + self._config.interval_s
+            while (
+                time.time() < target
+                and not self.is_stopping()
+            ):
+                time.sleep(
+                    min(
+                        1.0,
+                        max(
+                            0.0,
+                            target - time.time(),
+                        ),
+                    ),
+                )
+        logger.info(
+            "autopilot_loop stopped after %d cycles",
+            self._cycle_count,
+        )
+        return list(self._history)
+
+    def history(self) -> list[CycleSummary]:
+        with self._lock:
+            return list(self._history)
+
+
+# ── CLI entrypoint ─────────────────────────────────────────
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=(
+            "Autopilot loop daemon — recurring "
+            "autopilot + distill"
+        ),
+    )
+    p.add_argument(
+        "--seeds",
+        default="data/winner_seeds.json",
+        help="ManualSeedSource JSON file",
+    )
+    p.add_argument(
+        "--peers",
+        default="",
+        help=(
+            "Comma-separated peer Shopify stores "
+            "for PeerStoreObserverSource"
+        ),
+    )
+    p.add_argument(
+        "--max-launches", type=int, default=1,
+    )
+    p.add_argument(
+        "--top-n", type=int, default=5,
+    )
+    p.add_argument(
+        "--budget", type=float, default=20.0,
+    )
+    p.add_argument(
+        "--platform", default="facebook",
+        choices=[
+            "facebook", "instagram", "tiktok", "google",
+        ],
+    )
+    p.add_argument(
+        "--no-activate", action="store_true",
+    )
+    p.add_argument(
+        "--live", action="store_true",
+    )
+    p.add_argument(
+        "--interval", type=float,
+        default=_DEFAULT_INTERVAL_S,
+        help="Seconds between cycles (default 900)",
+    )
+    p.add_argument(
+        "--iterations", type=int,
+        default=_DEFAULT_MAX_ITERATIONS,
+        help=(
+            "Max cycles before exiting; 0 = infinite"
+        ),
+    )
+    p.add_argument(
+        "--distill-every", type=int, default=5,
+    )
+    p.add_argument(
+        "--log", default=str(_DEFAULT_LOG_PATH),
+    )
+    return p.parse_args()
+
+
+def _install_signal_handlers(loop: AutopilotLoop) -> None:
+    def _handle(signum, frame):  # noqa: ARG001
+        loop.request_stop()
+    signal.signal(signal.SIGINT, _handle)
+    signal.signal(signal.SIGTERM, _handle)
+
+
+def main() -> int:
+    args = _parse_args()
+    try:
+        config = LoopConfig(
+            seeds_path=args.seeds,
+            peers=args.peers,
+            max_launches=args.max_launches,
+            top_n=args.top_n,
+            ad_budget_daily=args.budget,
+            platform=args.platform,
+            auto_activate=not args.no_activate,
+            live=args.live,
+            interval_s=args.interval,
+            max_iterations=args.iterations,
+            log_path=args.log,
+            distill_every=args.distill_every,
+        )
+    except ValueError as exc:
+        print(f"[autopilot_loop] {exc}", file=sys.stderr)
+        return 2
+    loop = AutopilotLoop(config)
+    _install_signal_handlers(loop)
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        print("\n[autopilot_loop] interrupted", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
