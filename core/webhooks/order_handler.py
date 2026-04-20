@@ -132,6 +132,35 @@ class OrderWebhookHandler:
             logger.warning("RevenueTracker failed: %s", exc)
             recorded["revenue_tracked"] = False
 
+        # 4. Brain learners via OutcomeRecorder — closes the
+        # v33-v38 feedback loop. Gated by SHOPAI_BRAIN_HOOKS=1
+        # internally; always safe to call.
+        try:
+            from core.attribution.outcome_recorder import (
+                OutcomeEvent, OutcomeRecorder,
+            )
+            OutcomeRecorder().record(OutcomeEvent(
+                kind="purchase",
+                ok=True,
+                revenue=revenue,
+                decision_id=str(decision_id or ""),
+                # Webhook payload rarely carries the claimed
+                # confidence — if the decision pipeline stored
+                # it, downstream work will attach it here.
+                claimed_confidence=safe_float(
+                    order_data.get("shopai_confidence", 0.0),
+                ),
+                kpi="revenue",
+                kpi_value=revenue,
+                capability_name=(
+                    "launch_sku" if decision_id else ""
+                ),
+            ))
+            recorded["brain_recorded"] = True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("brain outcome record failed: %s", exc)
+            recorded["brain_recorded"] = False
+
         with self._lock:
             self._processed += 1
             recorded["total_processed"] = self._processed
@@ -161,6 +190,18 @@ class OrderWebhookHandler:
                     "order_id": order_id,
                     "reason": "cancelled",
                 })
+                # Feed brain learners as well
+                try:
+                    from core.attribution.outcome_recorder import (
+                        OutcomeRecorder,
+                    )
+                    OutcomeRecorder().record_cancel(
+                        decision_id=str(decision_id),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "brain cancel record failed: %s", exc,
+                    )
                 return {"order_id": order_id, "outcome_tracked": True, "type": "cancellation"}
             except Exception as exc:  # noqa: BLE001
                 logger.debug("order cancellation outcome tracking failed: %s", exc)
