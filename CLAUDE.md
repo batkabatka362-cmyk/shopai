@@ -340,6 +340,154 @@ PR-д:
 
 
 
+## 4c. AUTONOMOUS MASTER PROMPT
+
+*Энэ хэсэг нь owner "hiij ehel" / "continue" / "uhaalag bolgo"
+гэх мэт ерөнхий даалгавар өгөхөд код-агент ямар горимоор ажиллахыг
+тодорхойлно. MVP/demo биш, бодит ажлын стандарт.*
+
+### Цөм зарчим
+
+1. **Never stop.** "Дууссан уу?" гэж асуухын оронд дараагийн roadmap
+   зүйл рүү шуудан шилж. Дууссан гэдэг = code commit, тест green,
+   push хийгдэж, owner-т статус илгээсэн.
+2. **Real work.** Stub файл биш — contract-тай, тесттэй, brain-facade-
+   руу холбогдсон, pre-existing pipeline-аас ч холбогдсон ажил.
+3. **Honest status.** Overclaim хориотой. "Wiring ready but no
+   revenue yet" гэх шиг үнэн хэл.
+
+### Гол ажлын loop (iteration бүрд давтана)
+
+```
+observe   → snapshot: git status, recent commits, open todos,
+             pytest collect-only count, "what might be rotten"
+plan      → highest-leverage unit from docs/AGI_ROADMAP.md,
+             эсвэл өмнөх iteration-ий discovered gap
+execute   → build / fix / wire. Small, testable increments.
+verify    → targeted pytest, then broader, then smoke-test on real
+             code path (e.g. SHOPAI_BRAIN_HOOKS=1 cycle run)
+commit    → descriptive message: WHY first paragraph, WHAT second,
+             HOW / TESTS / INVARIANTS third
+push      → git push -u origin <branch>
+report    → ≤100 words status to owner
+```
+
+### Priority order (аль ажлыг эхлэх)
+
+1. **P0 bugs** гол pipeline-ийг breaks хийдэг алдаанууд →
+   тэр дороо fix (commit нь reason-ыг captured хийнэ)
+2. **Unfinished commits** previous session-аас → бүрэн гүйцэд
+3. **Roadmap P0 items** (`docs/AGI_ROADMAP.md`)
+4. **Audit findings** — dead code, missing tests, pre-existing
+   bugs батал олсон → batch-fix
+5. **New features** roadmap-ийн P1–P4
+
+### Audit habits (iteration эхэнд заавал ажиллуул)
+
+Commit эхлэхээс өмнө эдгээрийг систем даяар шалгах:
+
+- `grep -rn "TODO\|FIXME\|XXX"` шинэ оруулгыг triage
+- **Duplicate class / function names** — `observe_kpi` давхар
+  тодорхойлогдоод шадов хийгдсэн шиг алдаа байнга хайх
+- **Lock misuse** — `Lock` ашиглаж байгаад ижил instance-аас дахин
+  lock авах код (deadlock) → `RLock`-той солих
+- **Bare `except Exception: pass`** — CI guard wave11 хориотой;
+  `logger.debug(exc)`-тэй солих
+- **New module in `/core/brain/` not wired to `brain_facade`** →
+  singleton + snapshot + facade method нэмэх
+- **New module in `/agents/` эсвэл `/execution/` not invoked** от
+  orchestrator руу → wiring нэмэх
+- **Module without test** → write one эсвэл delete
+
+### Bug-finding discipline
+
+- **Pre-existing bugs discovered** other work-ийн дунд → commit
+  message-д тэмдэгл АМД если risk нь бага бол тэр даруй зас.
+  Risk өндөр (production write path) → unit-test бичиж reproduce
+  хий, дараа fix, дараа extend test.
+- **Silently bypass a broken thing огт хориотой** — note, decide
+  fix-now or defer, don't ignore.
+- **Rabbit hole?** Time-box: 30 минут fix-on-sight; нэмэх бол
+  `docs/AUDIT_LOG.md`-д бичээд дараагийн iteration хойш шилж.
+
+### Search agent pattern (когда мэдээ дутмаг)
+
+Өгөгдсөн ажил clear биш бол доорх тusage дагаж мэдээлэл цуглуул:
+
+```
+1. `grep`, `find`, `ls` — codebase map
+2. Read related tests — invariant-ийг captured
+3. Read adjacent modules — naming / structure дагаж мөрдөх
+4. `git log --oneline | head -20` — дурдагдсан өөрчлөлтийн
+   шалтгаан хайх
+5. `pytest tests/<related>.py -v` — одоогийн behavior баталгаа
+```
+
+LLM-ийг зөвхөн ambiguous natural-language дээр дуудах; determinism
+эсвэл rule-based аргаар шийдэх боломжтой үед **битгий дуудна**.
+
+### Self-improvement triggers
+
+- 200+ мөр change-д дараах шалгалт автомат:
+  - Одоо байгаа модультай duplicate болж байна уу?
+  - Edge case тест бүгдийг covered уу?
+  - Module docstring-д WHY-ийг тайлбарласан уу?
+- 5 commit тутам mini-audit:
+  - `brain_facade` дотор хэдэн method? Snapshot section-тай тулгана
+  - Unreachable modules, slow tests, flakes
+- 20 commit тутам full-suite regression ажиллуулж archive
+
+### "Real work vs MVP" цагаан хар жагсаалт
+
+**Real работа:**
+- Бүх write path нь idempotent + retry-hardened (`_client_request_id`,
+  exponential backoff)
+- Action бүрт outcome event `outcome_recorder`-оор brain-руу очдог
+- Шинэ module нь `brain_facade` дотор thing эсвэл тодорхой reason-тай
+  шалтгаантайгаар тусад нь
+- Test suite нь зөвхөн happy path биш, failure mode-уудыг шалгана
+- Commit message нь *owner pain*-ийг шийдсэн зүйлсийг тусгана
+
+**MVP / demo:**
+- Stub функц, "TODO: implement"
+- Happy-path only test
+- Module хаана ч холбогдоогүй
+- Commit "let me try X" эсвэл "WIP"
+- External API call рeтry-гүй
+
+### Status format (owner руу илгээх ≤100 үг)
+
+```
+Shipped: <commit_hash1> <short title>
+         <commit_hash2> <short title>
+Wired into: <pipeline / facade / orchestrator>
+Tests: <N/N green>; regression across <scope>
+Next: <next roadmap item>
+Blockers: <if any>
+```
+
+### Roadmap дагаж явах
+
+- `docs/AGI_ROADMAP.md` нь таамаглалын цахим бус, бодит
+  track list.
+- Ажил ship хийгдэх бүрт тухайн track M-ийн статусыг дэвшүүлж,
+  шинэ unknown (pre-existing bug, missing wiring) олдвол Notes
+  section-д нэмнэ.
+- Roadmap дуусахад шинэ хэрэгцээг brain-ийн snapshot statistics-
+  аас ухааж гарга: hooks = off module-ууд, low coverage test-
+  үүд, unreachable engines.
+
+### Cycle-ийн cost budget
+
+- LLM cost **cycle-д $0.10-аас доогуур** байлгана
+  (`compute_budget` caps дагаж).
+- `_http_request` retry loops нь кумулятив latency 30s-аас
+  хэтрэх ёсгүй.
+- Хэтэрвэл `insight_synthesizer` warning гарч, owner-руу
+  escalate хийнэ.
+
+---
+
 ## 5. LLM / MODEL ТОХИРГОО (3-Agent Architecture)
 
 ShopAI-ийн brain нь 3 тусдаа LLM-ыг чиг үүрэгтэй:
