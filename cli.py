@@ -660,6 +660,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── Decision rationale replay ────────────────────────────
+    explain_p = sub.add_parser(
+        "explain",
+        help=(
+            "Replay a decision's rationale tree from the "
+            "persistent ledger"
+        ),
+    )
+    explain_p.add_argument(
+        "decision_id",
+        help="Decision id returned by activator/publisher",
+    )
+    explain_p.add_argument(
+        "--json", action="store_true",
+    )
+    explain_recent_p = sub.add_parser(
+        "explains",
+        help="Recent decisions with rationale records",
+    )
+    explain_recent_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    explain_recent_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── L2 source trust ──────────────────────────────────────
     trust_p = sub.add_parser(
         "trust",
@@ -3016,6 +3042,57 @@ def _cmd_activations(
         )
 
 
+def _cmd_explain_decision(
+    *, decision_id: str, as_json: bool,
+) -> None:
+    from core.decision.rationale_ledger import (
+        get_rationale_ledger,
+    )
+    ledger = get_rationale_ledger()
+    if as_json:
+        rec = ledger.get(decision_id)
+        if rec is None:
+            print(json.dumps(
+                {"error": "not found"}, indent=2,
+            ))
+            return
+        print(json.dumps(rec.as_dict(), indent=2))
+        return
+    print(ledger.explain(decision_id))
+
+
+def _cmd_explain_recent(
+    *, limit: int, as_json: bool,
+) -> None:
+    from core.decision.rationale_ledger import (
+        get_rationale_ledger,
+    )
+    ledger = get_rationale_ledger()
+    records = ledger.recent(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in records], indent=2,
+        ))
+        return
+    if not records:
+        print(
+            "No rationales recorded yet. Run a launch via "
+            "`shopai autopilot` to populate."
+        )
+        return
+    print(f"Recent decisions ({len(records)}):")
+    for r in records:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%SZ",
+            time.gmtime(r.ts),
+        )
+        print(
+            f"  {ts}  {r.decision_id:24s}  "
+            f"nodes={r.node_count:>3}  "
+            f"{r.summary[:40]}"
+        )
+
+
 def _cmd_trust_status() -> None:
     from core.data.source_trust_calibrator import (
         get_calibrator,
@@ -4356,6 +4433,20 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "activations":
         _cmd_activations(
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "explain":
+        _cmd_explain_decision(
+            decision_id=args.decision_id,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "explains":
+        _cmd_explain_recent(
             limit=int(args.limit),
             as_json=bool(args.json),
         )

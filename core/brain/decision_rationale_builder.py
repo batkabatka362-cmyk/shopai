@@ -200,6 +200,25 @@ class DecisionRationaleBuilder:
                     f"decision {decision_id!r} not started",
                 )
             self._archive[decision_id] = rationale
+        # Persist to the owner-facing rationale ledger so
+        # 'shopai why <decision_id>' can replay months later.
+        # Lazy import — keeps this module standalone if the
+        # ledger layer isn't available.
+        try:
+            from core.decision.rationale_ledger import (
+                get_rationale_ledger,
+            )
+            get_rationale_ledger().record(rationale)
+        except Exception as exc:  # noqa: BLE001
+            # Never block commit on ledger write failure —
+            # in-memory archive is still authoritative for the
+            # current process.
+            import logging
+            logging.getLogger(
+                "brain.decision_rationale_builder",
+            ).debug(
+                "rationale_ledger persist skipped: %s", exc,
+            )
         return rationale
 
     def abandon(self, decision_id: str) -> bool:
