@@ -159,7 +159,8 @@ AliExpress → Shopify → Meta Ads → Shopify order хаалттай loop.
 
 ### Sprint 3 (month 2) — "Peer learning + brand voice"
 
-- `peer_store_observer` top 100 scraper
+- `peer_store_observer` top 100 scraper (Sprint 1-д basic нь бий;
+  Sprint 3-д top 100 seed + trend-aware pattern mining)
 - `brand_persona` тохиргоо (tone / palette / hashtag)
 - Instagram posting adapter (basic)
 
@@ -169,6 +170,88 @@ AliExpress → Shopify → Meta Ads → Shopify order хаалттай loop.
 - Customer dialog widget + escalation
 - Company onboarding CLI
 - Quarterly goal compiler
+
+---
+
+## Sprint 1 — бодит төлөв (2026-04-20)
+
+14 commit-ийн дараа:
+
+**Ship хийгдсэн (bodit):**
+- M3.1 `outcome_recorder` — Shopify order → brain loop closed
+- M1.1 Meta Ads adapter hardening — retry + idempotency + brain hook
+- `publisher_bundle` — transactional winner → Shopify + PAUSED Meta
+- `campaign_activator` — readiness + constraints + approval gate
+- `shopify_attribution` snippet + `ensure_attribution` webhook reg
+- `health_check` + `shopai doctor` — actionable readiness diagnostic
+- `ManualSeedSource` — file-based winner seed
+- `PeerStoreObserverSource` — public `/products.json` observer
+- `autopilot` — winner → publish → activate full chain
+- CLI: `doctor`, `publish`, `activate`, `publications`, `activations`,
+  `autopilot`
+
+**Dollar-distance verdict:** 0 commits from $. Owner needs:
+  * Shopify Admin API token + store URL
+  * Meta Ads access_token + ad_account_id
+  * Одоогоос `shopai autopilot --live` → бодит order-д хүрнэ
+
+**Хадгалагдсан гап-ууд (Sprint 2-т орно):**
+- CJDropshipping API source (API key хэрэгтэй)
+- AliExpress scraper (fragile, experimental)
+- `niche_discoverer` — trend data → niche clustering (owner #5)
+- Shopify webhook daemon (webhook эвент ирэх endpoint-ыг host-ожа)
+- Meta Ads AdSet + Ad creation (одоо зөвхөн campaign)
+- Content factory B-trend (image/video generation)
+
+## Sprint 2 plan (хамгийн ойрын)
+
+**Гол зорилго:** Sprint 1-ийн pipeline автономыг **outcome-driven
+self-correction**-оор хаах. Өмнөх launch-уудын outcome-оор дараах
+launch-уудыг автомат засдаг болох.
+
+**Зорилго:** Trend-driven niche discovery + closed-loop rule
+promotion.
+
+### S2-1: `niche_discoverer` module
+- Input: WinnerSource-уудаас ирсэн N candidate-ын pool
+- Process: title keyword clustering → niche labels
+  (pet / kitchen / fitness / beauty / gadget / style)
+- Output: per-niche rollup (avg_margin, count, saturation,
+  demand-band, trend direction)
+- Brain hook: `concept_former.observe` per niche signature
+- CLI: `shopai niches` — top 10 niches by current trend score
+
+### S2-2: Outcome-driven launch-pattern extraction
+- After N launches via `autopilot`, run `principle_extractor` on
+  `episode_summariser`-ийн Wins vs Losses
+- Validated rules go through `proposal_arbiter` → owner approval
+  list → `self_revision_journal.applied`
+- CLI: `shopai principles` — top distilled launch-rules
+
+### S2-3: Weekly digest → dialog
+- `agents/digest_sender/` — `weekly_digest.compose` + top insights
+- Simple stdout mode first (Sprint 2); Telegram/Slack Sprint 3
+- Fields: Wins, Losses, Active insights, Pending proposals,
+  Dollar-this-week
+
+### S2-4: Autopilot loop daemon
+- `scripts/autopilot_loop.py` — calls `shopai autopilot` on a
+  `--interval` cadence
+- Respects `compute_budget` daily caps
+- Writes one summary per run to `data/autopilot_loop.log`
+
+### S2-5: AliExpress + CJ sources (real 3rd-party supply)
+- `CJDropshippingSource` — real API (CJ_API_KEY env)
+- `AliExpressScraperSource` — experimental (best-effort scraping)
+
+### S2-6: ACTIVE flip owner dialog (reversible)
+- If `CampaignActivator` returns verdict=pending, write to
+  `data/pending_activations.json` with a `shopai approve <id>` /
+  `shopai reject <id>` CLI
+
+Sprint 2 criteria: 5+ launches via autopilot → 1+ distilled rule
+applied via self_revision_journal → 1 niche flagged by
+niche_discoverer as "trend direction=rising".
 
 ---
 
