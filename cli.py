@@ -660,6 +660,43 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── World model what-if prediction ───────────────────────
+    predict_p = sub.add_parser(
+        "predict",
+        help=(
+            "Calibrated what-if prediction for an action "
+            "(L4 reasoning — Track 10)"
+        ),
+    )
+    predict_p.add_argument(
+        "action",
+        help=(
+            "Action vocabulary: launch | scale | kill | "
+            "hold | add_cross_sell | wait"
+        ),
+    )
+    predict_p.add_argument(
+        "--kpi", default="roas",
+        choices=("roas", "cvr", "revenue", "aov"),
+    )
+    predict_p.add_argument(
+        "--niche", default="unknown",
+    )
+    predict_p.add_argument(
+        "--price-band",
+        choices=("low", "mid", "high"), default="mid",
+    )
+    predict_p.add_argument(
+        "--margin-band",
+        choices=("low", "mid", "high"), default="mid",
+    )
+    predict_p.add_argument(
+        "--tone", default="friendly",
+    )
+    predict_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── Brain state synthesizer ──────────────────────────────
     brain_p = sub.add_parser(
         "brain",
@@ -3079,6 +3116,61 @@ def _cmd_activations(
         )
 
 
+def _cmd_predict(args) -> None:
+    from core.brain.world_model_calibration import (
+        get_world_model_calibration,
+    )
+    calib = get_world_model_calibration()
+    pred = calib.predict(
+        action=args.action,
+        kpi=args.kpi,
+        context={
+            "niche": args.niche,
+            "price_band": args.price_band,
+            "margin_band": args.margin_band,
+            "copy_tone": args.tone,
+        },
+    )
+    if args.json:
+        print(json.dumps(pred.as_dict(), indent=2))
+        return
+    band_mark = {
+        "tight": "✓", "moderate": "·",
+        "loose": "!", "uninformed": "?",
+    }.get(pred.band, "?")
+    print(
+        f"{band_mark} Prediction — action={args.action} "
+        f"kpi={args.kpi}"
+    )
+    print()
+    print(
+        f"  Base mean:              {pred.mean:.3f}"
+    )
+    print(
+        f"  Base stdev:             {pred.stdev:.3f}"
+    )
+    print(
+        f"  Calibrated stdev:       "
+        f"{pred.calibrated_stdev:.3f}"
+    )
+    print(
+        f"  Bias-adjusted mean:     "
+        f"{pred.bias_adjusted_mean:.3f}"
+    )
+    print(
+        f"  Band:                   {pred.band}"
+    )
+    print(
+        f"  World-model samples:    {pred.samples}"
+    )
+    print(
+        f"  Calibration samples:    "
+        f"{pred.calibration_sample_count}"
+    )
+    print()
+    print(f"  {pred.explanation}")
+
+
 def _cmd_brain_snapshot(*, as_json: bool) -> None:
     from core.brain.brain_state_synthesizer import (
         get_brain_state_synthesizer,
@@ -4623,6 +4715,10 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "predict":
+        _cmd_predict(args)
         return
 
     if args.command == "brain":
