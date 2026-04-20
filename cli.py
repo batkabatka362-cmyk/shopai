@@ -515,6 +515,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # `digest` is taken by the older opportunity scout; use
+    # `report` for the v38-era launch digest.
+    report_p = sub.add_parser(
+        "report",
+        help=(
+            "Launch digest — launches, learnings, "
+            "journal, spend, insights (v38+)"
+        ),
+    )
+    report_p.add_argument(
+        "--hours", type=float, default=24.0 * 7,
+        help="Window in hours (default 168 / 7d)",
+    )
+    report_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── System commands ──────────────────────────────────────
     sub.add_parser("health", help="System health check (module imports)")
     doctor_p = sub.add_parser(
@@ -2402,6 +2419,20 @@ def _cmd_distill(
             print(f"      note: {p.note[:70]}")
 
 
+def _cmd_report(
+    *, hours: float, as_json: bool,
+) -> None:
+    """Compose + render the launch digest (v38+)."""
+    from agents.learning.launch_digest import (
+        compose_digest,
+    )
+    digest = compose_digest(period_hours=hours)
+    if as_json:
+        print(json.dumps(digest.as_dict(), indent=2))
+        return
+    print(digest.as_text())
+
+
 def _cmd_publications(
     *, limit: int, as_json: bool,
 ) -> None:
@@ -2839,6 +2870,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "distill":
         _cmd_distill(
             window=int(args.window),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "report":
+        _cmd_report(
+            hours=float(args.hours),
             as_json=bool(args.json),
         )
         return
