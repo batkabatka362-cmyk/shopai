@@ -660,6 +660,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── L2 source trust ──────────────────────────────────────
+    trust_p = sub.add_parser(
+        "trust",
+        help=(
+            "Source trust calibrator — per-source hit-rate "
+            "× freshness"
+        ),
+    )
+    trust_sub = trust_p.add_subparsers(
+        dest="trust_action",
+    )
+    trust_sub.add_parser(
+        "status",
+        help="Ranked list of all registered sources",
+    )
+    trust_set = trust_sub.add_parser(
+        "baseline",
+        help="Set baseline trust for a source",
+    )
+    trust_set.add_argument("--source", required=True)
+    trust_set.add_argument(
+        "--trust", type=float, required=True,
+    )
+
     # ── L3 memory consolidator ───────────────────────────────
     mem_p = sub.add_parser(
         "memory",
@@ -2992,6 +3016,48 @@ def _cmd_activations(
         )
 
 
+def _cmd_trust_status() -> None:
+    from core.data.source_trust_calibrator import (
+        get_calibrator,
+    )
+    c = get_calibrator()
+    ranked = c.ranked()
+    if not ranked:
+        print(
+            "No sources registered yet. Use 'shopai trust "
+            "baseline --source NAME --trust 0.5' to add one."
+        )
+        return
+    print("Source trust (ranked):")
+    print(
+        f"  {'Source':<22} {'Trust':>6}  "
+        f"{'Samples':>8}  {'Win EMA':>8}  "
+        f"{'Err EMA':>8}"
+    )
+    for name, trust in ranked:
+        stats = c.get(name)
+        print(
+            f"  {name:<22} {trust:>6.2f}  "
+            f"{stats.samples:>8d}  "
+            f"{stats.win_ema:>8.2%}  "
+            f"{stats.error_rate_ema:>8.2%}"
+        )
+
+
+def _cmd_trust_set_baseline(
+    *, source: str, trust_value: float,
+) -> None:
+    from core.data.source_trust_calibrator import (
+        get_calibrator,
+    )
+    c = get_calibrator()
+    c.register(source, baseline_trust=trust_value)
+    print(
+        f"✓ {source} baseline trust set to "
+        f"{trust_value:.2f}"
+    )
+
+
 def _cmd_memory_status() -> None:
     from core.memory.consolidator import get_consolidator
     c = get_consolidator()
@@ -4293,6 +4359,19 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "trust":
+        action = (
+            getattr(args, "trust_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_trust_status()
+        elif action == "baseline":
+            _cmd_trust_set_baseline(
+                source=args.source,
+                trust_value=float(args.trust),
+            )
         return
 
     if args.command == "memory":
