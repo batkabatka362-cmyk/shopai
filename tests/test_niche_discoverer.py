@@ -452,5 +452,72 @@ class TestTrendScorer(unittest.TestCase):
         self.assertEqual(r[0].trend_signal_score, 0.0)
 
 
+class TestDefaultFactory(unittest.TestCase):
+    """build_default_niche_discoverer() attaches the Google
+    Trends scorer so ranked_score mixes external trend signal
+    into every discover() call."""
+
+    def tearDown(self):
+        from agents.research.niche_discoverer import (
+            reset_default_niche_discoverer_for_tests,
+        )
+        reset_default_niche_discoverer_for_tests()
+
+    def test_factory_without_scorer_works(self):
+        from agents.research.niche_discoverer import (
+            build_default_niche_discoverer,
+        )
+        d = build_default_niche_discoverer(
+            db_path=None,
+            attach_trend_scorer=False,
+        )
+        r = d.discover(
+            [_candidate(title="Dog Toy")], persist=False,
+        )
+        self.assertEqual(r[0].trend_signal_score, 0.0)
+
+    def test_factory_with_injected_adapter(self):
+        from agents.research.niche_discoverer import (
+            build_default_niche_discoverer,
+        )
+        from unittest.mock import MagicMock
+
+        # Fake Trends adapter returning 2/4 "pet" hits per geo
+        class _FakeTrend:
+            def __init__(self, kw):
+                self.keyword = kw
+
+        adapter = MagicMock()
+        adapter.top_searches.return_value = [
+            _FakeTrend("pet feeder"),
+            _FakeTrend("pet costume"),
+            _FakeTrend("kitchen gadget"),
+            _FakeTrend("yoga mat"),
+        ]
+        d = build_default_niche_discoverer(
+            db_path=None,
+            trends_adapter=adapter,
+            eu_weight=0.0,
+        )
+        r = d.discover(
+            [_candidate(title="Dog Toy")], persist=False,
+        )
+        pet = next(x for x in r if x.label == "pet")
+        self.assertAlmostEqual(
+            pet.trend_signal_score, 0.5, places=4,
+        )
+        self.assertGreater(pet.ranked_score, pet.rollup_score)
+
+    def test_singleton_accessor(self):
+        from agents.research.niche_discoverer import (
+            get_default_niche_discoverer,
+            reset_default_niche_discoverer_for_tests,
+        )
+        reset_default_niche_discoverer_for_tests()
+        a = get_default_niche_discoverer()
+        b = get_default_niche_discoverer()
+        self.assertIs(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()

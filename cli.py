@@ -640,6 +640,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── L2 niche discovery ───────────────────────────────────
+    niches_p = sub.add_parser(
+        "niches",
+        help=(
+            "Discover + rank niches from the winner pool "
+            "(trend-enriched by Google Trends)"
+        ),
+    )
+    niches_p.add_argument(
+        "--candidates", type=int, default=50,
+        help="Max candidates to pull from sources",
+    )
+    niches_p.add_argument(
+        "--limit", type=int, default=10,
+        help="Top niches to show",
+    )
+    niches_p.add_argument(
+        "--no-trends", action="store_true",
+        help=(
+            "Skip Google Trends scoring (pure rollup ranking)"
+        ),
+    )
+    niches_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── L4 long-horizon planning ─────────────────────────────
     plan_p = sub.add_parser(
         "plan-quarter",
@@ -2856,6 +2882,79 @@ def _cmd_activations(
         )
 
 
+def _cmd_niches(
+    *,
+    candidate_limit: int,
+    show_limit: int,
+    skip_trends: bool,
+    as_json: bool,
+) -> None:
+    """Discover + rank niches from winner sources. Trend-enriched
+    by default unless --no-trends."""
+    from agents.research.niche_discoverer import (
+        build_default_niche_discoverer,
+    )
+    # Pull candidates from the autopilot's shared winner searcher
+    try:
+        from agents.research.winner_searcher import (
+            WinnerSearcher,
+        )
+        from agents.research.sources.manual_seed import (
+            ManualSeedSource,
+        )
+        searcher = WinnerSearcher(
+            sources=[ManualSeedSource()],
+        )
+        search_result = searcher.search(
+            per_source_limit=candidate_limit,
+            top_n=max(candidate_limit, show_limit),
+            publish=False,
+        )
+        pool = [s.candidate for s in search_result.ranked]
+    except Exception as exc:
+        print(f"Winner search failed: {exc}")
+        return
+    discoverer = build_default_niche_discoverer(
+        attach_trend_scorer=not skip_trends,
+    )
+    reports = discoverer.discover(pool, persist=True)[:show_limit]
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in reports], indent=2,
+        ))
+        return
+    if not reports:
+        print(
+            "No niches discovered. Seed winners with "
+            "winner_seeds.json or configure CJ/AliExpress."
+        )
+        return
+    print(
+        f"Top {len(reports)} niches "
+        + ("(trend-enriched)" if not skip_trends else "(rollup only)")
+    )
+    print()
+    print(
+        f"  {'Niche':<12} {'Cnt':>4} {'Mgn':>6} "
+        f"{'Dmd':>6} {'Sat':>5} {'Trend':>6} "
+        f"{'Rank':>7}  Dir"
+    )
+    for r in reports:
+        arrow = {
+            "rising": "↑",
+            "falling": "↓",
+            "stable": "·",
+        }.get(r.trend_direction, "?")
+        print(
+            f"  {r.label:<12} {r.candidate_count:>4} "
+            f"{r.avg_margin:>6.0%} "
+            f"{r.avg_demand:>6.1f} "
+            f"{r.saturation_score:>5.2f} "
+            f"{r.trend_signal_score:>6.2f} "
+            f"{r.ranked_score:>7.3f}  {arrow}"
+        )
+
+
 def _cmd_plan_quarter(args) -> None:
     from core.planning.quarterly_planner import (
         QuarterlyGoal,
@@ -3846,6 +3945,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "activations":
         _cmd_activations(
             limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "niches":
+        _cmd_niches(
+            candidate_limit=int(args.candidates),
+            show_limit=int(args.limit),
+            skip_trends=bool(args.no_trends),
             as_json=bool(args.json),
         )
         return

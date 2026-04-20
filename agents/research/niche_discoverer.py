@@ -445,3 +445,83 @@ class NicheDiscoverer:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
+
+
+# ── Default factory ─────────────────────────────────────────
+
+_DEFAULT_SINGLETON: NicheDiscoverer | None = None
+_SINGLETON_LOCK = threading.Lock()
+
+
+def build_default_niche_discoverer(
+    *,
+    db_path: str | None = "data/niches.db",
+    trends_adapter: Any = None,
+    eu_weight: float = 0.5,
+    attach_trend_scorer: bool = True,
+) -> NicheDiscoverer:
+    """Return a NicheDiscoverer pre-wired with the Google Trends
+    scorer so ``ranked_score`` mixes external trend signal into
+    every discover() call.
+
+    ``attach_trend_scorer=False`` disables the scorer (useful for
+    offline tests). ``trends_adapter`` is injected for tests;
+    production leaves it None so a default ``GoogleTrendsAdapter``
+    is constructed.
+    """
+    scorer = None
+    if attach_trend_scorer:
+        try:
+            from agents.research.trend_scorer import (
+                make_google_trends_scorer,
+            )
+            if trends_adapter is None:
+                from core.adapters.trends import (
+                    GoogleTrendsAdapter,
+                )
+                trends_adapter = GoogleTrendsAdapter()
+            scorer = make_google_trends_scorer(
+                trends_adapter,
+                geo="US",
+                eu_weight=eu_weight,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "trend scorer wire-in failed, "
+                "degrading to scorer=None: %s",
+                exc,
+            )
+            scorer = None
+    return NicheDiscoverer(
+        db_path=db_path,
+        trend_scorer=scorer,
+    )
+
+
+def get_default_niche_discoverer() -> NicheDiscoverer:
+    """Module-level singleton — first call builds, subsequent
+    calls return the cached instance."""
+    global _DEFAULT_SINGLETON
+    if _DEFAULT_SINGLETON is None:
+        with _SINGLETON_LOCK:
+            if _DEFAULT_SINGLETON is None:
+                _DEFAULT_SINGLETON = (
+                    build_default_niche_discoverer()
+                )
+    return _DEFAULT_SINGLETON
+
+
+def reset_default_niche_discoverer_for_tests() -> None:
+    """Clear the singleton (test-only helper)."""
+    global _DEFAULT_SINGLETON
+    with _SINGLETON_LOCK:
+        if _DEFAULT_SINGLETON is not None:
+            try:
+                _DEFAULT_SINGLETON.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "reset niche discoverer close "
+                    "skipped: %s",
+                    exc,
+                )
+        _DEFAULT_SINGLETON = None
