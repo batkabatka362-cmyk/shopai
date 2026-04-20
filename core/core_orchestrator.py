@@ -257,6 +257,8 @@ class CoreOrchestrator:
             "customers": len(data.get("customers", [])),
             "source": data.get("_source", "unknown"),
         }
+        # Feed products/orders/customers into brain learners
+        self._brain_ingest_data(data)
 
         # ── Phase 2: FINANCIAL ANALYSIS ──
         financial = self._phase_financial(data)
@@ -343,6 +345,22 @@ class CoreOrchestrator:
             results["delayed"] = True
             results["delay_reason"] = judgment.get("reason", "Conditions not optimal")
             logger.info("Cycle %s DELAYED by judgment: %s", cycle_id, judgment.get("reason"))
+
+        # ── BRAIN: readiness gate (stand_down → block) ──
+        readiness = self._brain_check_readiness(intel, judgment)
+        if readiness:
+            results["readiness"] = readiness
+            if readiness.get("verdict") == "stand_down":
+                if not results.get("blocked"):
+                    results["blocked"] = True
+                    results["block_reason"] = (
+                        "readiness stand_down: "
+                        + str(readiness.get("reason", "low confidence"))
+                    )
+                    logger.warning(
+                        "Cycle %s BLOCKED by readiness gate: %s",
+                        cycle_id, readiness.get("reason"),
+                    )
 
         # ── Phase 15: EXECUTION (only if not blocked/delayed) ──
         if not results.get("blocked") and not results.get("delayed"):
@@ -1028,6 +1046,110 @@ class CoreOrchestrator:
                 (time.monotonic() - start) * 1000.0,
                 ok,
             )
+
+    def _brain_ingest_data(
+        self, data: dict[str, Any],
+    ) -> None:
+        """Feed fetched Shopify data into brain learning modules.
+
+        - Orders flow into the revenue_funnel (purchase stage) and
+          observation_stream_reducer.
+        - Product + customer counts become ingest events so
+          observation_stream_reducer surfaces latest aggregates.
+
+        Gated by SHOPAI_BRAIN_HOOKS=1. Best-effort.
+        """
+        if not self._brain_hooks_enabled:
+            return
+        if not isinstance(data, dict):
+            return
+        try:
+            from core.brain.brain_facade import brain
+            b = brain()
+            products = data.get("products") or []
+            orders = data.get("orders") or []
+            customers = data.get("customers") or []
+            # Funnel: one purchase per order (best signal we have
+            # without impression/click data here). return_rate is
+            # computed later if refund data surfaces.
+            for _ in orders:
+                b.record_funnel_event("purchase", 1)
+            # Aggregates as observations
+            b.ingest_observation(
+                "fetch_summary",
+                {
+                    "products": len(products),
+                    "orders": len(orders),
+                    "customers": len(customers),
+                },
+            )
+            # Product-level observations (bounded so we don't flood)
+            for p in products[:20]:
+                if not isinstance(p, dict):
+                    continue
+                sku = str(p.get("sku") or p.get("id") or "")
+                if not sku:
+                    continue
+                b.ingest_observation(
+                    "product",
+                    {
+                        "sku": sku,
+                        "price": float(p.get("price") or 0.0),
+                        "stock": int(p.get("inventory", 0) or 0),
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "brain_ingest_data skipped: %s", exc,
+            )
+
+    def _brain_check_readiness(
+        self,
+        intel: dict[str, Any],
+        judgment: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Ask readiness_gate whether we have enough evidence.
+
+        Soft signal: ``stand_down`` blocks execution, ``gather`` and
+        ``warm_up`` are advisory and surface in results. ``go`` means
+        the pipeline proceeds unchanged. Returns ``None`` when hooks
+        are disabled or the brain raises.
+        """
+        if not self._brain_hooks_enabled:
+            return None
+        try:
+            from core.brain.brain_facade import brain
+            b = brain()
+            mood = b.mood_snapshot() or {}
+            decision = intel.get("decision", {}) or {}
+            raw_conf = decision.get("confidence")
+            if isinstance(raw_conf, (int, float)):
+                prob = max(
+                    0.0,
+                    min(1.0, float(raw_conf) / 100.0
+                        if raw_conf > 1.0 else float(raw_conf)),
+                )
+            else:
+                prob = 0.5
+            gap = max(0.0, min(1.0, 1.0 - prob))
+            fresh = 0.7  # default until knowledge_freshness wired
+            temp = float(mood.get("temperature", 0.3))
+            urgency = 0
+            risk = judgment.get("risk") or 0
+            if isinstance(risk, (int, float)) and risk >= 0.7:
+                urgency = 2
+            return b.check_readiness(
+                evidence_probability=prob,
+                evidence_gap=gap,
+                knowledge_freshness=fresh,
+                mood_temperature=temp,
+                urgency=urgency,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "brain_check_readiness skipped: %s", exc,
+            )
+            return None
 
     def _brain_ingest_campaigns(
         self,
