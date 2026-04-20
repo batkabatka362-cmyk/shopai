@@ -617,6 +617,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ── LX.6 owner dialog ────────────────────────────────────
+    poll_p = sub.add_parser(
+        "owner-poll",
+        help=(
+            "Poll Telegram for owner commands and dispatch "
+            "to brain handlers (approve/reject/status/etc.)"
+        ),
+    )
+    poll_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    poll_p.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Process commands without sending replies back"
+        ),
+    )
+    poll_p.add_argument(
+        "--json", action="store_true",
+    )
+
     notify_p = sub.add_parser(
         "notify",
         help=(
@@ -3422,6 +3442,55 @@ def _infer_store_name() -> str:
     return domain.replace("-", " ").title() or "Your Store"
 
 
+def _cmd_owner_poll(
+    *, limit: int, dry_run: bool, as_json: bool,
+) -> None:
+    """One-shot poll Telegram → dispatch to brain handlers."""
+    from agents.owner_dialog.dispatcher import (
+        OwnerDialogDispatcher,
+        build_default_handlers,
+    )
+    from core.adapters.telegram_bot import (
+        TelegramBotAdapter,
+    )
+    bot = TelegramBotAdapter()
+    if not bot.is_available():
+        print(
+            "Telegram not configured — set "
+            "TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID."
+        )
+        return
+    dispatcher = OwnerDialogDispatcher(
+        bot=bot,
+        handlers=build_default_handlers(),
+    )
+    results = dispatcher.poll_and_dispatch(
+        limit=limit, reply=not dry_run,
+    )
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in results], indent=2,
+        ))
+        return
+    if not results:
+        print("No new owner commands.")
+        return
+    print(f"Dispatched {len(results)} command(s):")
+    for r in results:
+        icon = "✓" if r.ok else "✗"
+        print(
+            f"  {icon} [{r.update_id}] "
+            f"{r.verb or '(unknown)':10s}  "
+            + (
+                f"→ replied (id={r.sent_message_id})"
+                if r.sent_message_id
+                else "no reply sent"
+            )
+        )
+        if r.error:
+            print(f"      error: {r.error}")
+
+
 def _cmd_notify(
     *, hours: float, dry_run: bool,
     chat_id: str | None, as_json: bool,
@@ -4033,6 +4102,14 @@ def main(argv: list[str] | None = None) -> None:
             store=args.store or "",
             email=args.email or "",
             kind=args.kind,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "owner-poll":
+        _cmd_owner_poll(
+            limit=int(args.limit),
+            dry_run=bool(args.dry_run),
             as_json=bool(args.json),
         )
         return
