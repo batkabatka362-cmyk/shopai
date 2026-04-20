@@ -532,6 +532,44 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── L7 legal templates ───────────────────────────────────
+    legal_p = sub.add_parser(
+        "legal",
+        help=(
+            "Render region-aware legal pages (privacy / terms "
+            "/ returns / shipping / cookies)"
+        ),
+    )
+    legal_p.add_argument(
+        "--region", default="US",
+        choices=("US", "EU", "UK"),
+    )
+    legal_p.add_argument(
+        "--store", default="",
+        help=(
+            "Store name (defaults to SHOPAI_SHOPIFY_URL "
+            "subdomain)"
+        ),
+    )
+    legal_p.add_argument(
+        "--email", default="",
+        help=(
+            "Contact email (defaults to SHOPAI_CONTACT_EMAIL)"
+        ),
+    )
+    legal_p.add_argument(
+        "--kind",
+        choices=(
+            "privacy", "terms", "returns",
+            "shipping", "cookies",
+        ),
+        default=None,
+        help="Render just one page (default: all five)",
+    )
+    legal_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── LX.6 owner dialog ────────────────────────────────────
     notify_p = sub.add_parser(
         "notify",
@@ -2564,6 +2602,61 @@ def _cmd_activations(
         )
 
 
+def _cmd_legal(
+    *,
+    region: str,
+    store: str,
+    email: str,
+    kind: str | None,
+    as_json: bool,
+) -> None:
+    """Render L7 legal pages for a region."""
+    from core.legal.compliance import render_legal_pages
+
+    store_name = store or _infer_store_name()
+    contact = email or os.environ.get(
+        "SHOPAI_CONTACT_EMAIL", "",
+    )
+    if not contact:
+        print(
+            "Missing contact email — pass --email or set "
+            "SHOPAI_CONTACT_EMAIL.",
+        )
+        return
+    try:
+        pageset = render_legal_pages(
+            store_name=store_name,
+            contact_email=contact,
+            region=region,
+            include=(kind,) if kind else None,
+        )
+    except ValueError as exc:
+        print(f"Invalid input: {exc}")
+        return
+    if as_json:
+        print(json.dumps(pageset.as_dict(), indent=2))
+        return
+    for page in pageset.pages:
+        print(f"# ── {page.title} ({page.region}) ──")
+        print()
+        print(page.markdown)
+        print()
+        print()
+
+
+def _infer_store_name() -> str:
+    raw = os.environ.get("SHOPAI_SHOPIFY_URL", "")
+    if not raw:
+        return "Your Store"
+    domain = (
+        raw.replace("https://", "")
+        .replace("http://", "")
+        .replace(".myshopify.com", "")
+        .strip("/")
+    )
+    return domain.replace("-", " ").title() or "Your Store"
+
+
 def _cmd_notify(
     *, hours: float, dry_run: bool,
     chat_id: str | None, as_json: bool,
@@ -3087,6 +3180,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "activations":
         _cmd_activations(
             limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "legal":
+        _cmd_legal(
+            region=args.region,
+            store=args.store or "",
+            email=args.email or "",
+            kind=args.kind,
             as_json=bool(args.json),
         )
         return
