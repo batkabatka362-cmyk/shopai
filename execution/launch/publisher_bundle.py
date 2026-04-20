@@ -490,6 +490,104 @@ class PublisherBundle:
             )
             return None
 
+    def _build_schema_script(
+        self,
+        *,
+        request: LaunchRequest,
+        ad_copy: dict[str, Any],
+    ) -> str:
+        """Produce the full @graph JSON-LD (Product + Offer +
+        AggregateRating + FAQPage + Organization + Brand + author
+        entity) ready to embed in <script type="application/
+        ld+json">. Returns an empty string when the module
+        can't load or the product has no title — never raises."""
+        try:
+            from execution.seo.schema_stack import (
+                AuthorEntity,
+                build_schema_stack,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "schema_stack import failed: %s", exc,
+            )
+            return ""
+        title = str(
+            request.winner.get("title") or "",
+        ).strip()
+        if not title:
+            return ""
+        shop_url = (request.shop_url or "").strip()
+        site_url = (
+            f"https://{shop_url}"
+            if shop_url and not shop_url.startswith("http")
+            else shop_url
+        )
+        store_name = (
+            shop_url.replace(".myshopify.com", "")
+            .replace("https://", "")
+            .replace("http://", "")
+            .strip("/")
+            .replace("-", " ")
+            .title()
+            or "ShopAI Store"
+        )
+        author = AuthorEntity(
+            entity_id=(
+                f"{site_url}/#publisher" if site_url
+                else "#publisher"
+            ),
+            name=store_name,
+            kind="Organization",
+            url=site_url,
+        )
+        faqs: list[dict[str, str]] = []
+        for f in request.winner.get("faqs") or []:
+            if isinstance(f, dict) and f.get("q"):
+                faqs.append({
+                    "q": str(f.get("q", "")),
+                    "a": str(f.get("a", "")),
+                })
+        product = {
+            "title": title,
+            "handle": request.winner.get("handle")
+                or _slugify(title),
+            "description": (
+                ad_copy.get("body")
+                or request.winner.get("description", "")
+            ),
+            "image": (
+                request.winner.get("image_url")
+                or request.winner.get("image", "")
+            ),
+            "price": float(
+                request.winner.get("price", 0) or 0,
+            ),
+            "currency": request.store_currency or "USD",
+            "sku": str(
+                request.winner.get("sku")
+                or request.winner.get("external_id", ""),
+            ),
+            "brand": request.winner.get("brand") or store_name,
+            "availability": "InStock",
+            "rating": request.winner.get("rating"),
+            "review_count": request.winner.get(
+                "review_count",
+            ),
+        }
+        try:
+            stack = build_schema_stack(
+                product,
+                site_url=site_url,
+                author=author,
+                faqs=faqs or None,
+            )
+            return stack.as_script_tag()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "schema_stack build failed: %s", exc,
+            )
+            return ""
+
     def _step_create_product(
         self,
         request: LaunchRequest,
@@ -532,6 +630,27 @@ class PublisherBundle:
                 product_payload["tags"] = ", ".join(
                     seo_bundle.keywords,
                 )
+        # Wave A-3 wiring: full schema stack (≥3 types with
+        # author entity) — +13% LLM citation per 2026 GEO
+        # research. Added as a product metafield so the
+        # theme can render it in <script type="application/
+        # ld+json">.
+        schema_script = self._build_schema_script(
+            request=request,
+            ad_copy=ad_copy,
+        )
+        if schema_script:
+            # Metafields list format Shopify Admin API accepts
+            metafields = list(
+                product_payload.get("metafields") or [],
+            )
+            metafields.append({
+                "namespace": "shopai",
+                "key": "jsonld",
+                "type": "json",
+                "value": schema_script,
+            })
+            product_payload["metafields"] = metafields
         if dry_run:
             log = StepLog(
                 name="create_product",

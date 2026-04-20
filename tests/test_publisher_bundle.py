@@ -435,6 +435,73 @@ class TestSEOEnrichment(unittest.TestCase):
         )
 
 
+class TestSchemaStackWire(unittest.TestCase):
+    """Wave A3 wiring — schema stack emitted as Shopify product
+    metafield JSON-LD."""
+
+    def setUp(self):
+        self._orig = os.environ.pop(
+            "SHOPAI_ENABLE_LIVE_EXECUTION", None,
+        )
+        self.bundle = pb.PublisherBundle(
+            content_generator=_FakeContent(),
+            product_creator=_FakeProducts(),
+            ad_adapter=_FakeAds(),
+            outcome_recorder=_FakeOutcomes(),
+            rationale_builder=_FakeRationale(),
+        )
+
+    def tearDown(self):
+        if self._orig is not None:
+            os.environ[
+                "SHOPAI_ENABLE_LIVE_EXECUTION"
+            ] = self._orig
+
+    def test_dry_run_payload_has_jsonld_metafield(self):
+        result = self.bundle.launch(_request(live=False))
+        step = next(
+            s for s in result.steps
+            if s.name == "create_product"
+        )
+        metafields = (
+            step.data.get("payload", {}).get("metafields", [])
+        )
+        jsonld_meta = next(
+            (
+                m for m in metafields
+                if m.get("namespace") == "shopai"
+                and m.get("key") == "jsonld"
+            ),
+            None,
+        )
+        self.assertIsNotNone(jsonld_meta)
+        self.assertIn(
+            "schema.org", jsonld_meta["value"],
+        )
+        self.assertIn(
+            "Product", jsonld_meta["value"],
+        )
+
+    def test_jsonld_contains_author_entity(self):
+        result = self.bundle.launch(_request(live=False))
+        step = next(
+            s for s in result.steps
+            if s.name == "create_product"
+        )
+        metafields = (
+            step.data.get("payload", {}).get("metafields", [])
+        )
+        jsonld = next(
+            (
+                m["value"] for m in metafields
+                if m.get("namespace") == "shopai"
+                and m.get("key") == "jsonld"
+            ),
+            "",
+        )
+        self.assertIn("#publisher", jsonld)
+
+
 class TestEUAIActGateWire(unittest.TestCase):
     """Wave A1 wiring — publisher_bundle calls
     EUAIActGate.verify() on every ai_creative when EU market
