@@ -463,6 +463,58 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # ── Self-revision journal (Sprint 2 #6) ──────────────────
+    pending_p = sub.add_parser(
+        "pending",
+        help=(
+            "Show proposals in self_revision_journal "
+            "awaiting owner approval"
+        ),
+    )
+    pending_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    pending_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    approve_p = sub.add_parser(
+        "approve",
+        help=(
+            "Approve a pending revision by id "
+            "(launches the rule into applied state)"
+        ),
+    )
+    approve_p.add_argument("revision_id")
+    approve_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "Also mark as applied (default: just accepted)"
+        ),
+    )
+
+    reject_p = sub.add_parser(
+        "reject",
+        help="Reject a pending revision by id",
+    )
+    reject_p.add_argument("revision_id")
+
+    # ── Launch learning (Sprint 2 #2) ────────────────────────
+    distill_p = sub.add_parser(
+        "distill",
+        help=(
+            "Run launch_learner over recent episodes — "
+            "promotes patterns to pending proposals"
+        ),
+    )
+    distill_p.add_argument(
+        "--window", type=int, default=200,
+        help="Episode window (default 200)",
+    )
+    distill_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── System commands ──────────────────────────────────────
     sub.add_parser("health", help="System health check (module imports)")
     doctor_p = sub.add_parser(
@@ -2247,6 +2299,109 @@ def _cmd_autopilot(
         sys.exit(1)
 
 
+# ── Self-revision journal (Sprint 2) ────────────────────────
+
+def _cmd_pending(
+    *, limit: int, as_json: bool,
+) -> None:
+    """Show revision_journal proposals awaiting owner approval."""
+    from core.brain.brain_facade import _revision_journal
+    journal = _revision_journal()
+    pending = journal.by_status("proposed")
+    pending = pending[:limit]
+    if as_json:
+        print(json.dumps(
+            [p.as_dict() for p in pending], indent=2,
+        ))
+        return
+    if not pending:
+        print("No pending proposals.")
+        return
+    print(f"Pending proposals ({len(pending)}):")
+    for p in pending:
+        print(
+            f"  [{p.id[:10]}] kind={p.kind} "
+            f"target={p.target} "
+            f"evidence={p.evidence_score:.2f}"
+        )
+        print(f"      new: {p.new_value}")
+        print(f"      why: {p.reason}")
+
+
+def _cmd_approve(
+    *, revision_id: str, apply_too: bool,
+) -> None:
+    """Approve a pending revision → accepted (or applied)."""
+    from core.brain.brain_facade import _revision_journal
+    journal = _revision_journal()
+    try:
+        rev = journal.accept(revision_id)
+    except ValueError as exc:
+        print(f"[approve] {exc}")
+        sys.exit(2)
+    print(
+        f"[approve ✓] {rev.id[:10]} → accepted "
+        f"(target={rev.target})"
+    )
+    if apply_too:
+        try:
+            applied = journal.mark_applied(rev.id)
+            print(
+                f"[apply ✓] {applied.id[:10]} → applied"
+            )
+        except ValueError as exc:
+            print(f"[apply] {exc}")
+            sys.exit(2)
+
+
+def _cmd_reject(*, revision_id: str) -> None:
+    """Reject a pending revision."""
+    from core.brain.brain_facade import _revision_journal
+    journal = _revision_journal()
+    try:
+        rev = journal.reject(revision_id)
+    except ValueError as exc:
+        print(f"[reject] {exc}")
+        sys.exit(2)
+    print(
+        f"[reject ✗] {rev.id[:10]} → rejected "
+        f"(target={rev.target})"
+    )
+
+
+def _cmd_distill(
+    *, window: int, as_json: bool,
+) -> None:
+    """Run launch_learner — episodes → rules → journal."""
+    from agents.learning.launch_learner import LaunchLearner
+    learner = LaunchLearner()
+    report = learner.distill(window_limit=window)
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(
+        f"[distill] examined={report.episodes_examined} "
+        f"clusters={report.clusters_formed} "
+        f"proposals={len(report.proposals)} "
+        f"accepted={report.accepted}"
+    )
+    for p in report.proposals:
+        icon = {
+            "accept": "✓", "defer": "?", "skip": "-",
+            "reject_all": "✗",
+        }.get(p.arbitration_verdict, "?")
+        print(
+            f"  [{icon}] {p.statement[:80]}"
+        )
+        if p.journal_revision_id:
+            print(
+                f"      → journal rev "
+                f"{p.journal_revision_id[:10]}"
+            )
+        elif p.note:
+            print(f"      note: {p.note[:70]}")
+
+
 def _cmd_publications(
     *, limit: int, as_json: bool,
 ) -> None:
@@ -2659,6 +2814,31 @@ def main(argv: list[str] | None = None) -> None:
             platform=args.platform,
             auto_activate=not args.no_activate,
             live=bool(args.live),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "pending":
+        _cmd_pending(
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "approve":
+        _cmd_approve(
+            revision_id=args.revision_id,
+            apply_too=bool(args.apply),
+        )
+        return
+
+    if args.command == "reject":
+        _cmd_reject(revision_id=args.revision_id)
+        return
+
+    if args.command == "distill":
+        _cmd_distill(
+            window=int(args.window),
             as_json=bool(args.json),
         )
         return
