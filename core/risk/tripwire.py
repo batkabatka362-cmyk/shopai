@@ -646,6 +646,8 @@ def reset_risk_tripwire_for_tests() -> None:
         if _SINGLETON is not None:
             try:
                 _SINGLETON.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "reset_risk_tripwire close skipped: %s", exc,
+                )
         _SINGLETON = None
