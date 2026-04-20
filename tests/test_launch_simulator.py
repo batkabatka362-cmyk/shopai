@@ -216,5 +216,75 @@ class TestEdgeCases(unittest.TestCase):
         )
 
 
+class TestLandedCostFactory(unittest.TestCase):
+    """Wave A-2 wiring: LaunchCandidate.from_landed_cost."""
+
+    def test_cn_us_under_deminimis_small_cost(self):
+        c = LaunchCandidate.from_landed_cost(
+            fob_usd=10.0,
+            destination="US",
+            origin="CN",
+            shipping_usd=3.0,
+            price=30.0,
+            daily_budget_usd=20.0,
+            days=3,
+            de_minimis_override="active",
+        )
+        # Under $800 threshold → no duty, no US VAT
+        # cost ≈ 10 + 3 + 0 + 0 + 10*0.029 = 13.29
+        self.assertAlmostEqual(c.cost, 13.29, places=2)
+        self.assertEqual(c.price, 30.0)
+
+    def test_cn_eu_applies_vat(self):
+        c = LaunchCandidate.from_landed_cost(
+            fob_usd=50.0,
+            destination="EU",
+            origin="CN",
+            price=150.0,
+            daily_budget_usd=20.0,
+        )
+        # 20% VAT on (fob+shipping+duty) inflates cost above
+        # bare FOB path
+        self.assertGreater(c.cost, 50.0)
+
+    def test_suspended_cn_increases_cost(self):
+        active = LaunchCandidate.from_landed_cost(
+            fob_usd=10.0,
+            destination="US",
+            origin="CN",
+            price=30.0,
+            daily_budget_usd=20.0,
+            de_minimis_override="active",
+        )
+        suspended = LaunchCandidate.from_landed_cost(
+            fob_usd=10.0,
+            destination="US",
+            origin="CN",
+            price=30.0,
+            daily_budget_usd=20.0,
+            de_minimis_override="suspended_cn",
+        )
+        self.assertGreater(
+            suspended.cost, active.cost,
+        )
+
+    def test_simulator_runs_on_landed_candidate(self):
+        c = LaunchCandidate.from_landed_cost(
+            fob_usd=5.0,
+            destination="US",
+            origin="CN",
+            price=30.0,
+            daily_budget_usd=20.0,
+            days=3,
+            est_cvr_mean=0.05,
+            est_cvr_stddev=0.005,
+            est_cpc_mean=1.0,
+            est_cpc_stddev=0.1,
+            de_minimis_override="active",
+        )
+        p = simulate_launch(c, seed=42)
+        self.assertEqual(p.verdict, "go")
+
+
 if __name__ == "__main__":
     unittest.main()

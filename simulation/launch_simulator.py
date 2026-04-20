@@ -86,6 +86,61 @@ class LaunchCandidate:
             return 0.0
         return max(0.0, (self.price - self.cost) / self.price)
 
+    @classmethod
+    def from_landed_cost(
+        cls,
+        *,
+        fob_usd: float,
+        destination: str,
+        origin: str = "CN",
+        hts_code: str = "",
+        shipping_usd: float = 0.0,
+        price: float,
+        daily_budget_usd: float,
+        days: int = 3,
+        est_cvr_mean: float = 0.02,
+        est_cvr_stddev: float = 0.01,
+        est_cpc_mean: float = 1.20,
+        est_cpc_stddev: float = 0.40,
+        refund_rate: float = 0.05,
+        fixed_cost_per_day: float = 0.0,
+        de_minimis_override: str | None = None,
+    ) -> "LaunchCandidate":
+        """Build a candidate whose ``cost`` is the *landed* cost
+        (FOB + duty + VAT + payment + shipping + fulfillment fee)
+        — not just the supplier FOB. Wires Wave A-2 of 2026
+        plan so the Monte Carlo profit projection reflects
+        real per-unit cost including 2026 de-minimis / tariff
+        policy.
+        """
+        from execution.fulfillment.landed_cost import (
+            LandedCostInput,
+            calculate_landed_cost,
+        )
+        inp = LandedCostInput(
+            fob_usd=float(fob_usd),
+            destination=destination,
+            origin=origin,
+            hts_code=hts_code,
+            shipping_usd=float(shipping_usd),
+        )
+        breakdown = calculate_landed_cost(
+            inp,
+            de_minimis_override=de_minimis_override,
+        )
+        return cls(
+            cost=float(breakdown.total_usd),
+            price=float(price),
+            daily_budget_usd=float(daily_budget_usd),
+            days=int(days),
+            est_cvr_mean=float(est_cvr_mean),
+            est_cvr_stddev=float(est_cvr_stddev),
+            est_cpc_mean=float(est_cpc_mean),
+            est_cpc_stddev=float(est_cpc_stddev),
+            refund_rate=float(refund_rate),
+            fixed_cost_per_day=float(fixed_cost_per_day),
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "cost": round(self.cost, 4),
