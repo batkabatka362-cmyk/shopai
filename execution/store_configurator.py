@@ -82,6 +82,7 @@ ALL_FEATURES = (
     "payments",
     "pages",
     "policies",
+    "menus",
 )
 
 
@@ -390,6 +391,112 @@ mutation shopPolicyUpdate($policy: ShopPolicyInput!) {
 """.strip()
 
 
+# ── Menu templates (store builder expansion Phase 1b) ───────────────
+
+
+_MENUS_QUERY = """
+query listMenus {
+  menus(first: 20) {
+    nodes { id handle title }
+  }
+}
+""".strip()
+
+
+_MENU_UPDATE_MUTATION = """
+mutation menuUpdate(
+    $id: ID!,
+    $title: String!,
+    $items: [MenuItemUpdateInput!]!,
+    $handle: String!,
+) {
+  menuUpdate(id: $id, title: $title, items: $items,
+             handle: $handle) {
+    menu { id handle title items { title url } }
+    userErrors { field message }
+  }
+}
+""".strip()
+
+
+def _menu_items_for_niche(niche: str) -> dict[str, list[dict[str, str]]]:
+    """Return {handle: [MenuItemCreateInput]} for the two
+    default Shopify menus (main-menu + footer).
+
+    Main-menu drives top-level store navigation. Footer drives
+    legal / contact links that every page shows. Both use
+    simple HTTP relative URLs so this works on any domain /
+    market config.
+
+    Items are niche-aware at the Shop vs Collections level —
+    a home-decor store shows "Rooms" where a fashion store
+    shows "New Arrivals".
+    """
+    # Collection-ish link for the niche (falls back to
+    # /collections/all when the niche label doesn't map
+    # cleanly). Niche names come from NICHE_CONFIGS keys.
+    niche_label = {
+        "home": "Shop Home",
+        "fashion": "New Arrivals",
+        "tech": "Gadgets",
+        "beauty": "Skincare",
+        "general": "Shop All",
+    }.get(niche, "Shop All")
+
+    main_menu = [
+        {"title": "Home", "type": "FRONTPAGE", "url": "/"},
+        {
+            "title": niche_label,
+            "type": "HTTP",
+            "url": "/collections/all",
+        },
+        {
+            "title": "About",
+            "type": "HTTP", "url": "/pages/about",
+        },
+        {
+            "title": "FAQ",
+            "type": "HTTP", "url": "/pages/faq",
+        },
+        {
+            "title": "Contact",
+            "type": "HTTP", "url": "/pages/contact",
+        },
+    ]
+    footer = [
+        {
+            "title": "About Us",
+            "type": "HTTP", "url": "/pages/about",
+        },
+        {
+            "title": "Contact",
+            "type": "HTTP", "url": "/pages/contact",
+        },
+        {
+            "title": "FAQ",
+            "type": "HTTP", "url": "/pages/faq",
+        },
+        {
+            "title": "Privacy Policy",
+            "type": "HTTP", "url": "/policies/privacy-policy",
+        },
+        {
+            "title": "Refund Policy",
+            "type": "HTTP", "url": "/policies/refund-policy",
+        },
+        {
+            "title": "Shipping Policy",
+            "type": "HTTP",
+            "url": "/policies/shipping-policy",
+        },
+        {
+            "title": "Terms of Service",
+            "type": "HTTP", "url": "/policies/terms-of-service",
+        },
+    ]
+    return {"main-menu": main_menu, "footer": footer}
+
+
 # Niche → loyalty point rules
 _LOYALTY_RULES = {
     "beauty":  {"earn_per_dollar": 2, "redeem_value_cents": 1, "welcome_bonus": 100},
@@ -474,6 +581,10 @@ class StoreConfigurator:
         if "policies" in selected:
             results["policies"] = self._setup_policies(
                 client, niche, store_name,
+            )
+        if "menus" in selected:
+            results["menus"] = self._setup_menus(
+                client, niche, config,
             )
 
         self._record(results)
@@ -1709,6 +1820,140 @@ class StoreConfigurator:
                 "publishing live — hard-coded safe defaults "
                 "may need business-specific edits."
             ),
+        }
+
+    # ── Feature: Navigation menus (main-menu + footer) ─────────
+
+    def _setup_menus(
+        self, client: ShopifyClient, niche: str, config: dict,
+    ) -> dict[str, Any]:
+        """Update the two default Shopify menus (main-menu +
+        footer) with niche-appropriate items.
+
+        Shopify creates main-menu + footer automatically on
+        every new store. We find them by handle then call
+        `menuUpdate` with our item list. Handle uniqueness
+        makes this idempotent — run it N times, the menu
+        ends the same.
+
+        Works via GraphQL (Shopify's Menu API is GraphQL-only
+        since API 2024-04). Falls through cleanly when the
+        GraphQL call fails so the rest of configure() keeps
+        running.
+        """
+        plan = _menu_items_for_niche(niche)
+        updated: list[str] = []
+        errors: list[dict[str, Any]] = []
+
+        if self._dry_run:
+            for handle, items in plan.items():
+                self._plan.append({
+                    "action": "update_menu",
+                    "path": "graphql.json",
+                    "method": "POST",
+                    "handle": handle,
+                    "item_count": len(items),
+                    "body_preview": ", ".join(
+                        i["title"] for i in items
+                    )[:80],
+                    "description": (
+                        f"Update menu '{handle}' "
+                        f"({len(items)} items)"
+                    ),
+                })
+                updated.append(handle)
+            return {
+                "status": "dry_run",
+                "updated": updated,
+                "errors": errors,
+                "niche": niche,
+            }
+
+        # Discover menu IDs by handle
+        try:
+            resp = client.graphql(_MENUS_QUERY)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "error",
+                "updated": updated,
+                "errors": [
+                    {"handle": "*", "error": str(exc)},
+                ],
+                "niche": niche,
+            }
+        if "error" in resp:
+            return {
+                "status": "error",
+                "updated": updated,
+                "errors": [
+                    {"handle": "*", "error": resp["error"]},
+                ],
+                "niche": niche,
+            }
+        nodes = (
+            resp.get("data", {}).get("menus", {}).get(
+                "nodes", [],
+            ) or []
+        )
+        by_handle: dict[str, dict[str, Any]] = {
+            str(n.get("handle", "")): n for n in nodes
+            if isinstance(n, dict)
+        }
+
+        for handle, items in plan.items():
+            menu = by_handle.get(handle)
+            if menu is None:
+                errors.append({
+                    "handle": handle,
+                    "error": "menu not found",
+                })
+                continue
+            try:
+                resp = client.graphql(
+                    _MENU_UPDATE_MUTATION,
+                    variables={
+                        "id": menu["id"],
+                        "handle": handle,
+                        "title": str(menu.get(
+                            "title", handle,
+                        )),
+                        "items": items,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "handle": handle,
+                    "error": str(exc),
+                })
+                continue
+            if "error" in resp:
+                errors.append({
+                    "handle": handle,
+                    "error": resp.get("error"),
+                })
+                continue
+            data = resp.get("data") or {}
+            mutation = data.get("menuUpdate") or {}
+            user_errors = mutation.get("userErrors") or []
+            if user_errors:
+                errors.append({
+                    "handle": handle,
+                    "error": "; ".join(
+                        e.get("message", "?")
+                        for e in user_errors
+                    ),
+                })
+                continue
+            updated.append(handle)
+        return {
+            "status": (
+                "success" if not errors else (
+                    "partial" if updated else "error"
+                )
+            ),
+            "updated": updated,
+            "errors": errors,
+            "niche": niche,
         }
 
     # ── Recording ──────────────────────────────────────────────

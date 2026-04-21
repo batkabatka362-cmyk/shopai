@@ -1909,6 +1909,10 @@ def _format_feature_summary(name: str, data: dict) -> str:
         updated = data.get("updated") or []
         errs = len(data.get("errors") or [])
         return f"updated={len(updated)}, errors={errs}"
+    if name == "menus":
+        updated = data.get("updated") or []
+        errs = len(data.get("errors") or [])
+        return f"updated={len(updated)}, errors={errs}"
     return str(data)[:60]
 
 
