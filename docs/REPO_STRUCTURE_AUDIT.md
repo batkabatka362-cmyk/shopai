@@ -222,7 +222,7 @@
 |---|---|---|---|
 | ~~`brain/`~~ | `core/brain/` | `core/brain/` | ✅ DELETED 2026-04-20 (C1) |
 | `memory/` | `core/memory/` | `core/memory/` | audit + consolidate `memory/` (C3 — LIVE code uses top-level `memory/`; consolidation is non-trivial) |
-| `knowledge/` | `core/memory/` + `vault/Knowledge/` | clarify | rename or merge |
+| `knowledge/` | `core/memory/` + `vault/Knowledge/` | ✅ distinct (author-owned vs learned vs owner-notes) — documented in knowledge/README.md 2026-04-20 |
 | `infrastructure/` | `core/system/` | verify | check overlap |
 | ~~`testing/`~~ | `tests/` | `tests/` | ✅ DELETED 2026-04-20 (C1) |
 
