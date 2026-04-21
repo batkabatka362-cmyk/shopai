@@ -476,6 +476,19 @@ def _notify_errors_handler(
     return result.as_dict()
 
 
+def _webhook_rate_limit_status_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the per-IP webhook rate-limiter stats:
+    active buckets, total consumed, total rejected, configured
+    rate + burst. Owner asks Claude Desktop "is anyone
+    spamming our webhook?" and gets a structured answer."""
+    from core.webhooks.rate_limiter import (
+        get_webhook_rate_limiter,
+    )
+    return get_webhook_rate_limiter().stats()
+
+
 def _autopilot_status_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -853,6 +866,16 @@ def build_default_registry() -> ToolRegistry:
         },
         handler=_notify_errors_handler,
         write=True,
+    ))
+    reg.register(ToolSpec(
+        name="webhook_rate_limit_status",
+        description=(
+            "Per-IP webhook rate-limiter stats — active "
+            "buckets, consumed/rejected counters, configured "
+            "rate + burst. Flags webhook-endpoint abuse."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        handler=_webhook_rate_limit_status_handler,
     ))
     reg.register(ToolSpec(
         name="autopilot_status",

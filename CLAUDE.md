@@ -642,6 +642,8 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | notify-errors digest | `25a0888` | Telegram cycle-error digest |
 | TikTok Shop foundation | `12f5ac5` | HMAC signer + read-only Z6 adapter |
 | Webhook HMAC audit | `9d1100d` | env fallback + fail-closed gate (security) |
+| Tracker + rationale + wave11 | `3aa62c3` | CLAUDE.md §8 + moby gate stamp + tiktok wave11 fix |
+| Webhook rate limiter | (this commit) | per-IP token bucket (P0.2 security defence) |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
@@ -652,8 +654,9 @@ P0 — money/security path:
 1. **TikTok Shop write-path** — ProductCreator + OrderListener
    (Z6 mission, dollar distance 5; high-risk because it's live
    money on a new platform).
-2. **Webhook rate limiter** — DDoS the endpoint can starve
-   HMAC verification CPU (security defence-in-depth).
+2. ✅ **Webhook rate limiter** — done. Per-IP token bucket in
+   `core/webhooks/rate_limiter.py`; api/server.py 429s
+   abusive callers ahead of the HMAC compare.
 
 P1 — owner experience:
 3. **Owner dialog → MCP tool dispatcher** — Telegram message

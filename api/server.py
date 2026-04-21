@@ -387,6 +387,49 @@ class ShopAIHandler(BaseHTTPRequestHandler):
 
     def _handle_webhook(self, body: dict) -> None:
         """Handle Shopify webhook event — triggers engines + records experience."""
+        # Defence-in-depth: per-IP token-bucket rate limit
+        # ahead of HMAC verification. An attacker who only
+        # sends garbage can otherwise burn CPU on the HMAC
+        # compare path. 429 + Retry-After tells legit
+        # callers when to back off.
+        try:
+            from core.webhooks.rate_limiter import (
+                get_webhook_rate_limiter,
+            )
+            client_ip = (
+                self.client_address[0]
+                if isinstance(
+                    getattr(self, "client_address", None),
+                    tuple,
+                ) and self.client_address
+                else "_unknown"
+            )
+            rl = get_webhook_rate_limiter().consume(
+                client_ip,
+            )
+            if not rl.allowed:
+                self.send_response(429)
+                self.send_header(
+                    "Content-Type", "application/json",
+                )
+                self.send_header(
+                    "Retry-After",
+                    str(max(1, int(rl.retry_after_s + 0.5))),
+                )
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps({
+                        "error": "rate limit exceeded",
+                        "retry_after_s": round(
+                            rl.retry_after_s, 2,
+                        ),
+                    }).encode(),
+                )
+                return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "rate limiter unavailable: %s", exc,
+            )
         topic, err = validate_webhook_topic(
             self.headers.get("X-Shopify-Topic", body.get("topic", "")))
         if err:
