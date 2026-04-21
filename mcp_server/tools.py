@@ -426,6 +426,58 @@ def _predict_outcome_handler(
     return pred.as_dict()
 
 
+def _recent_cycles_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Tail the autopilot daemon log so the owner can ask
+    Claude Desktop "what happened overnight" and get a
+    structured summary.  Missing log file means the daemon
+    hasn't started yet — handler returns a clean empty
+    payload rather than crashing."""
+    import json as _json
+    from pathlib import Path as _P
+    log_path = str(
+        args.get("log_path")
+        or "data/autopilot_loop.log",
+    )
+    try:
+        limit = int(args.get("limit", 20) or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 1000))
+    path = _P(log_path)
+    if not path.exists():
+        return {
+            "log_path": log_path,
+            "total": 0,
+            "returned": 0,
+            "cycles": [],
+            "note": "log file does not exist yet",
+        }
+    cycles: list[dict[str, Any]] = []
+    try:
+        with path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cycles.append(_json.loads(line))
+                except _json.JSONDecodeError:
+                    continue
+    except OSError as exc:
+        raise ToolError(
+            f"cannot read log: {exc}",
+        ) from exc
+    tail = cycles[-limit:]
+    return {
+        "log_path": log_path,
+        "total": len(cycles),
+        "returned": len(tail),
+        "cycles": tail,
+    }
+
+
 def _oauth_status_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -666,6 +718,34 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_fal_budget_handler,
+    ))
+    reg.register(ToolSpec(
+        name="recent_cycles",
+        description=(
+            "Tail the autopilot daemon log — recent "
+            "24/7-loop cycles with launch counts, "
+            "success counts, durations and errors."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Cycles to return (1-1000, "
+                        "default 20)"
+                    ),
+                },
+                "log_path": {
+                    "type": "string",
+                    "description": (
+                        "Override path to autopilot log "
+                        "(default data/autopilot_loop.log)"
+                    ),
+                },
+            },
+        },
+        handler=_recent_cycles_handler,
     ))
     reg.register(ToolSpec(
         name="oauth_status",

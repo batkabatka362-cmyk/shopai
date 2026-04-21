@@ -258,6 +258,26 @@ def build_parser() -> argparse.ArgumentParser:
     launches_p.add_argument("--json", action="store_true",
                             help="Emit raw JSON instead of a table")
 
+    cycles_p = sub.add_parser(
+        "cycles",
+        help=(
+            "Tail the autopilot_loop log — recent daemon "
+            "cycles with launch counts + errors + duration"
+        ),
+    )
+    cycles_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Number of recent cycles to show (default 20)",
+    )
+    cycles_p.add_argument(
+        "--log",
+        default="data/autopilot_loop.log",
+        help="Path to autopilot log (default data/autopilot_loop.log)",
+    )
+    cycles_p.add_argument(
+        "--json", action="store_true",
+    )
+
     kill_p = sub.add_parser("kill",
                             help="Force-kill a launch regardless of ROAS")
     kill_p.add_argument("launch_id", help="launch_<id> to kill")
@@ -2469,6 +2489,99 @@ def _cmd_launch(args) -> None:
     if result.failed_step:
         print(f"\n  aborted at {result.failed_step}: {result.failure_reason}")
         sys.exit(3)
+
+
+def _cmd_cycles(
+    *, log_path: str, limit: int, as_json: bool,
+) -> None:
+    """Tail the autopilot daemon log and print recent cycle
+    summaries. Each line in the log is a CycleSummary as_dict.
+    Missing log file means the daemon hasn't run yet."""
+    from pathlib import Path as _P
+    path = _P(log_path)
+    if not path.exists():
+        if as_json:
+            print(json.dumps({
+                "log_path": log_path,
+                "cycles": [],
+                "note": "log file does not exist yet",
+            }, indent=2))
+            return
+        print(
+            f"No autopilot log at {log_path}. Start the "
+            "daemon (`python scripts/run_daemon.py` or "
+            "systemctl start shopai-daemon) to populate it.",
+        )
+        return
+    limit = max(1, min(int(limit), 1000))
+    cycles: list[dict] = []
+    try:
+        with path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cycles.append(json.loads(line))
+                except json.JSONDecodeError:
+                    # Skip malformed lines rather than fail;
+                    # daemon may have crashed mid-write.
+                    continue
+    except OSError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}, indent=2))
+            return
+        print(f"Could not read log: {exc}")
+        return
+    tail = cycles[-limit:]
+    if as_json:
+        print(json.dumps({
+            "log_path": log_path,
+            "total": len(cycles),
+            "returned": len(tail),
+            "cycles": tail,
+        }, indent=2))
+        return
+    if not tail:
+        print(f"Log at {log_path} is empty.")
+        return
+    print(
+        f"Autopilot cycles ({len(tail)} of "
+        f"{len(cycles)} recorded):"
+    )
+    print(
+        f"  {'#':>5}  {'ts':<19}  {'mode':<7}  "
+        f"{'launches':>8}  {'ok':>4}  {'dur':>6}  error"
+    )
+    for c in tail:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%S",
+            time.localtime(float(c.get("ts", 0))),
+        )
+        dur = float(c.get("duration_s", 0))
+        err = str(c.get("error", ""))[:40]
+        print(
+            f"  {int(c.get('cycle', 0)):>5}  {ts:<19}  "
+            f"{str(c.get('mode', ''))[:7]:<7}  "
+            f"{int(c.get('launches', 0)):>8}  "
+            f"{int(c.get('successful', 0)):>4}  "
+            f"{dur:>6.2f}  {err}"
+        )
+    # Aggregate
+    total_launches = sum(
+        int(c.get("launches", 0)) for c in tail
+    )
+    total_ok = sum(
+        int(c.get("successful", 0)) for c in tail
+    )
+    errors = sum(
+        1 for c in tail if c.get("error")
+    )
+    print()
+    print(
+        f"  Totals: launches={total_launches}  "
+        f"successful={total_ok}  cycles_with_errors={errors}"
+    )
 
 
 def _cmd_launches(args) -> None:
@@ -5141,6 +5254,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "launches":
         _cmd_launches(args)
+        return
+
+    if args.command == "cycles":
+        _cmd_cycles(
+            log_path=str(args.log),
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
         return
 
     if args.command == "kill":
