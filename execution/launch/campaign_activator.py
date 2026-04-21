@@ -411,6 +411,21 @@ class CampaignActivator:
             ts=time.time(),
         ))
 
+        # 4.4 Structured-decision record — capture the
+        #     5-pillar reasoning (outcome / directions /
+        #     constraints / refines / awareness) for this
+        #     activation BEFORE execute fires. Pure
+        #     observability: never blocks, never alters the
+        #     verdict. Owner reads via MCP
+        #     ``recent_deliberations`` to see HOW the daemon
+        #     thought through each launch.
+        self._record_structured_decision(
+            request=request,
+            decision_id=decision_id,
+            steps=steps,
+            dry_run=dry_run,
+        )
+
         # 4.5 Moby vote-comparator — log the case where ShopAI
         #     voted "activate" and Moby's recommendation for this
         #     campaign_id is different. Passive: just records,
@@ -1051,6 +1066,178 @@ class CampaignActivator:
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "moby rationale.add skipped: %s", exc,
+            )
+
+    def _record_structured_decision(
+        self,
+        *,
+        request: ActivateRequest,
+        decision_id: str,
+        steps: list[StepLog],
+        dry_run: bool,
+    ) -> None:
+        """Build a 5-pillar Deliberation summarising the
+        activation reasoning + push it to the in-process
+        recent log. Soft-fail: a failing recorder must NEVER
+        block the activation, so the whole body lives inside
+        a wide try/except that logs at debug.
+
+        The Deliberation is descriptive (records what the
+        existing pipeline already decided), not prescriptive
+        (doesn't change the verdict). Constraints map 1-to-1
+        from the gates that ran upstream:
+
+          crisis      → hard
+          preflight   → hard
+          tripwire    → hard
+          simulator   → soft (advisory above caution)
+          readiness   → hard
+          constraints → soft
+
+        Each gate's StepLog status becomes the constraint's
+        satisfied flag — already-blocked steps wouldn't have
+        reached this point so by construction every hard
+        constraint passes here, but the structure remains
+        visible for ``shopai brain`` / MCP
+        ``recent_deliberations`` to read.
+        """
+        try:
+            from core.brain.structured_decision import (
+                Constraint,
+                OutcomeSpec,
+                SelfAwareness,
+                ThinkingDirection,
+                deliberate,
+                record_deliberation,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "structured_decision import failed: %s",
+                exc,
+            )
+            return
+
+        try:
+            outcome = OutcomeSpec(
+                what=(
+                    f"activate campaign "
+                    f"{request.campaign_id}"
+                ),
+                why=(
+                    f"daemon decision-pipeline cleared "
+                    f"with {len(steps)} gates "
+                    f"(decision_id={decision_id})"
+                ),
+                measurable=(
+                    "7-day campaign ROAS "
+                    "≥ tripwire floor"
+                ),
+                value_usd=float(
+                    request.daily_budget_usd or 0,
+                ) * 7.0,
+            )
+            # Two directions captured: the path we took and
+            # the alternative we considered (skip). Owner
+            # auditing post-hoc can see "we considered
+            # holding" alongside "we went live".
+            directions = [
+                ThinkingDirection(
+                    label="activate",
+                    action={
+                        "campaign_id": request.campaign_id,
+                        "daily_budget_usd": float(
+                            request.daily_budget_usd or 0,
+                        ),
+                        "dry_run": dry_run,
+                    },
+                    reasoning=(
+                        "all gates passed; readiness ok; "
+                        "tripwire headroom present"
+                    ),
+                    expected_value=float(
+                        request.daily_budget_usd or 0,
+                    ) * 0.5,
+                    confidence=float(
+                        request.claimed_confidence or 0.6,
+                    ),
+                ),
+                ThinkingDirection(
+                    label="hold",
+                    action={
+                        "campaign_id": request.campaign_id,
+                        "daily_budget_usd": 0.0,
+                        "dry_run": True,
+                    },
+                    reasoning=(
+                        "preserve cap; revisit next cycle "
+                        "if winner signal strengthens"
+                    ),
+                    expected_value=0.0,
+                    confidence=0.5,
+                ),
+            ]
+            # Map every step into a constraint.  Constraint
+            # evaluators are static (not dependent on the
+            # candidate direction) because the upstream
+            # pipeline already produced the truth value;
+            # we're just shaping it for the framework.
+            kind_for = {
+                "crisis": "hard",
+                "preflight": "hard",
+                "tripwire": "hard",
+                "readiness": "hard",
+                "simulator": "soft",
+                "constraints": "soft",
+                "approval": "hard",
+            }
+            constraints: list[Constraint] = []
+            for step in steps:
+                kind = kind_for.get(step.name)
+                if kind is None:
+                    continue
+                # Capture the step's status so the audit
+                # trail records what each gate said.
+                passed = step.status in (
+                    "ok", "success",
+                )
+
+                def _make_eval(passed_flag: bool):
+                    def _eval(_direction):
+                        return (
+                            passed_flag,
+                            1.0 if passed_flag else 0.0,
+                            "pipeline-evaluated",
+                        )
+                    return _eval
+
+                constraints.append(Constraint(
+                    name=step.name,
+                    kind=kind,
+                    reason=step.note or step.name,
+                    evaluator=_make_eval(passed),
+                ))
+            awareness = SelfAwareness(
+                loop_check="aligned",
+                # money path → distance 0 (this IS the
+                # money gate)
+                dollar_distance=0,
+                plumbing_vs_capability="capability",
+                notes=(
+                    f"campaign={request.campaign_id}",
+                    f"dry_run={dry_run}",
+                ),
+            )
+            d = deliberate(
+                outcome=outcome,
+                directions=directions,
+                constraints=constraints,
+                awareness=awareness,
+            )
+            record_deliberation(d)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "structured-decision record skipped: %s",
+                exc,
             )
 
     def _step_execute(
