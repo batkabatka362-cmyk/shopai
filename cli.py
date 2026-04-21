@@ -1851,6 +1851,14 @@ def _format_feature_summary(name: str, data: dict) -> str:
         return f"templates={data.get('template_count', 0)} ({', '.join(data.get('templates', []))})"
     if name == "payments":
         return f"active={data.get('active_count', 0)}, missing={data.get('missing_count', 0)}"
+    if name == "pages":
+        created = data.get("created") or []
+        skipped = data.get("skipped") or []
+        errs = len(data.get("errors") or [])
+        return (
+            f"created={len(created)}, skipped={len(skipped)}, "
+            f"errors={errs}"
+        )
     return str(data)[:60]
 
 

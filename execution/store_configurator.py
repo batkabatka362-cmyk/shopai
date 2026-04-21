@@ -80,6 +80,7 @@ ALL_FEATURES = (
     "referral",
     "emails",
     "payments",
+    "pages",
 )
 
 
@@ -192,6 +193,87 @@ _SHIPPING_ZONES = {
 }
 
 
+# ── Page templates (store builder expansion Phase 1a) ───────────────
+
+_PAGE_TONES: dict[str, str] = {
+    "home": "cozy, welcoming, domestic-expert",
+    "fashion": "confident, trend-aware, style-forward",
+    "tech": "precise, benefit-focused, concise",
+    "beauty": "caring, sensorial, gentle",
+    "general": "friendly, clear, trustworthy",
+}
+
+
+def _page_templates(
+    niche: str, store_display: str,
+) -> list[dict[str, str]]:
+    """Return the three trust-signal page definitions for a
+    niche. Hard-coded safe copy (no LLM cost, deterministic);
+    later versions can LLM-augment the tone.
+    """
+    tone = _PAGE_TONES.get(niche, _PAGE_TONES["general"])
+    store_display = (store_display or "").strip() or "Our Store"
+    about = (
+        f"<h1>About {store_display}</h1>"
+        f"<p>Welcome to {store_display}. We curate "
+        f"products carefully chosen for quality, value, "
+        f"and customer delight. Our storefront focuses "
+        f"on a {tone} experience for every shopper.</p>"
+        f"<p>Questions? Visit our Contact page or email "
+        f"hello@{store_display.lower().replace(' ', '')}"
+        f".com.</p>"
+    )
+    contact = (
+        f"<h1>Contact {store_display}</h1>"
+        f"<p>We respond to every message within one "
+        f"business day.</p>"
+        f"<ul>"
+        f"<li><strong>Email:</strong> support@"
+        f"{store_display.lower().replace(' ', '')}.com</li>"
+        f"<li><strong>Order questions:</strong> include "
+        f"your order number for fastest help</li>"
+        f"<li><strong>Returns &amp; refunds:</strong> see "
+        f"our refund policy page</li>"
+        f"</ul>"
+    )
+    faq = (
+        f"<h1>Frequently Asked Questions</h1>"
+        f"<h2>How fast will my order ship?</h2>"
+        f"<p>Most orders ship within 1-2 business days. "
+        f"Delivery takes 3-7 business days to most US "
+        f"addresses.</p>"
+        f"<h2>What's your return policy?</h2>"
+        f"<p>Unused items can be returned within 30 days "
+        f"for a full refund. See our refund policy page "
+        f"for full details.</p>"
+        f"<h2>Do you ship internationally?</h2>"
+        f"<p>Yes. We currently ship to the US, Canada, "
+        f"the UK, and Australia. Rates and delivery "
+        f"times vary by destination.</p>"
+        f"<h2>Can I cancel or change my order?</h2>"
+        f"<p>If your order has not yet shipped, email "
+        f"us within 12 hours and we will do our best "
+        f"to adjust or cancel it.</p>"
+    )
+    return [
+        {
+            "handle": "about",
+            "title": f"About {store_display}",
+            "body_html": about,
+        },
+        {
+            "handle": "contact",
+            "title": "Contact Us",
+            "body_html": contact,
+        },
+        {
+            "handle": "faq",
+            "title": "FAQ",
+            "body_html": faq,
+        },
+    ]
+
+
 # Niche → loyalty point rules
 _LOYALTY_RULES = {
     "beauty":  {"earn_per_dollar": 2, "redeem_value_cents": 1, "welcome_bonus": 100},
@@ -269,6 +351,10 @@ class StoreConfigurator:
             results["emails"] = self._setup_emails(client, niche, store_name)
         if "payments" in selected:
             results["payments"] = self._setup_payments(client, niche)
+        if "pages" in selected:
+            results["pages"] = self._setup_pages(
+                client, niche, store_name,
+            )
 
         self._record(results)
 
@@ -1316,6 +1402,107 @@ class StoreConfigurator:
             "missing_gateways": missing,
             "country": country,
             "currency": currency,
+        }
+
+    # ── Feature: Pages (About / Contact / FAQ) ─────────────────
+
+    def _setup_pages(
+        self, client: ShopifyClient, niche: str, store_name: str,
+    ) -> dict[str, Any]:
+        """Create the three trust-signal pages every storefront
+        needs: About, Contact, FAQ.
+
+        Why this matters (Store Builder Expansion plan, Phase 1a):
+        a fresh Shopify store defaults to zero content pages.
+        Visitors landing from Meta Ads drop off at a policy-less
+        storefront — they can't tell whether the shop is real.
+        Three trust pages jump conversion + unblock Meta's
+        automatic policy auditor.
+
+        Shopify REST ``pages`` API is idempotent on handle — we
+        query existing pages, skip any that already exist by
+        handle, and create the rest. Dry-run logs the planned
+        inserts without calling the API.
+        """
+        store_display = store_name or "Our Store"
+        pages_plan = _page_templates(niche, store_display)
+        existing_handles: set[str] = set()
+        try:
+            resp = client.get(
+                "pages.json", params={"limit": 250},
+            )
+            if "error" not in resp:
+                for p in resp.get("pages", []) or []:
+                    h = str(p.get("handle") or "").strip()
+                    if h:
+                        existing_handles.add(h)
+            else:
+                logger.warning(
+                    "pages fetch failed: %s",
+                    resp.get("error"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "pages fetch raised: %s", exc,
+            )
+
+        created: list[str] = []
+        skipped: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for page in pages_plan:
+            handle = page["handle"]
+            if handle in existing_handles:
+                skipped.append(handle)
+                continue
+            if self._dry_run:
+                self._plan.append({
+                    "action": "create_page",
+                    "path": "pages.json",
+                    "method": "POST",
+                    "handle": handle,
+                    "title": page["title"],
+                    "body_preview": page["body_html"][:80],
+                    "description": (
+                        f"Create page '{page['title']}' "
+                        f"(handle={handle})"
+                    ),
+                })
+                created.append(handle)
+                continue
+            body = {
+                "page": {
+                    "title": page["title"],
+                    "handle": handle,
+                    "body_html": page["body_html"],
+                    "published": True,
+                },
+            }
+            try:
+                resp = client.post(
+                    "pages.json", json=body,
+                )
+                if "error" in resp:
+                    errors.append({
+                        "handle": handle,
+                        "error": resp["error"],
+                    })
+                    continue
+                created.append(handle)
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "handle": handle,
+                    "error": str(exc),
+                })
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "created": created,
+            "skipped": skipped,
+            "errors": errors,
+            "niche": niche,
         }
 
     # ── Recording ──────────────────────────────────────────────
