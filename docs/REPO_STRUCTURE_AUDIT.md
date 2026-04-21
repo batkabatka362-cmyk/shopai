@@ -259,9 +259,14 @@ dir without one is a bug.
    by cli.py, api/server.py, tests.
 2. ~~Rename `testing/` → `test_harness/`~~ — moot; testing/
    was dead and got deleted.
-3. **Consolidate `memory/` into `core/memory/`** — deferred
-   (5 live import sites). Non-trivial without breaking
-   changes; revisit as a separate ticket.
+3. ✅ **Consolidate `memory/` into `core/memory/`** — done
+   2026-04-20 via re-export: `core/memory/__init__.py` now
+   exposes ShortTermCache / PersistentStore / VectorDB /
+   EmbeddingManager through the canonical path. All 5 known
+   call sites migrated to `from core.memory import …`. The
+   top-level `memory/` package remains as a back-compat
+   shim; physical move deferred to a later pass since both
+   import paths resolve to the same class object.
 4. ✅ **Add `docs/nav_{folder}.md` for each of the 12
    concepts** — 2026-04-20 (B).
 5. ✅ **Ship remaining 4 facades (`feedback/`, `evaluation/`,

@@ -111,6 +111,8 @@ class UnifiedMemory:
         status["cross_cache"] = self._try_init("cross_cache", _load_cross_cache)
 
         def _load_persistent():
+            # Direct module import (rather than core.memory facade)
+            # to avoid a circular import during the facade's own load.
             from memory.long_term.persistent_store import PersistentStore
             self._persistent = PersistentStore()
         status["persistent"] = self._try_init("persistent", _load_persistent)

@@ -3520,7 +3520,7 @@ class LearningPipeline:
     def _store_episode(self, store_id: str, cycle_id: str, learning: dict[str, Any]) -> None:
         """Store learning episode in long-term memory."""
         try:
-            from memory.long_term.persistent_store import PersistentStore
+            from core.memory import PersistentStore
             store = PersistentStore()
             store.store(
                 namespace="learning_history",
