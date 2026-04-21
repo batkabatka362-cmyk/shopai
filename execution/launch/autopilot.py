@@ -160,6 +160,17 @@ def _live_enabled() -> bool:
     return os.getenv("SHOPAI_ENABLE_LIVE_EXECUTION", "") == "1"
 
 
+def _video_generation_enabled() -> bool:
+    """§4b/G paranoid-mode: video generation costs real money
+    (fal.ai call per launch), so autopilot only auto-populates
+    ``video_prompts`` when the owner explicitly opts in via
+    ``SHOPAI_VIDEO_GENERATE=1``. Default is OFF — owner must
+    consciously enable. Owner-curated prompts on a candidate
+    bypass this gate (they're already explicit intent).
+    """
+    return os.getenv("SHOPAI_VIDEO_GENERATE", "") == "1"
+
+
 def _default_video_prompts(winner: Any) -> list[dict[str, Any]]:
     """Build 2 volume-tier fal.ai video prompts per winner —
     deterministic, no LLM cost.  The PublisherBundle video
@@ -170,13 +181,17 @@ def _default_video_prompts(winner: Any) -> list[dict[str, Any]]:
     Owners who want richer prompts can attach their own
     ``video_prompts`` to a ``ProductCandidate`` — we leave
     non-empty lists untouched via a ``hasattr`` guard on
-    the candidate.
+    the candidate. Auto-generation is opt-in via the
+    ``SHOPAI_VIDEO_GENERATE=1`` env gate.
     """
-    # Respect owner-curated prompts if the winner already
-    # carries them on the dataclass.
+    # Respect owner-curated prompts even when the env gate
+    # is off — owner explicitness wins over policy.
     existing = getattr(winner, "video_prompts", None)
     if isinstance(existing, (list, tuple)) and existing:
         return [dict(p) for p in existing if isinstance(p, dict)]
+    # Opt-in gate for auto-generation
+    if not _video_generation_enabled():
+        return []
     title = str(getattr(winner, "title", "") or "product")
     image_url = str(getattr(winner, "image_url", "") or "")
     prompts: list[dict[str, Any]] = [
