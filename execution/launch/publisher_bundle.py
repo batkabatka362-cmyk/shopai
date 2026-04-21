@@ -1430,11 +1430,91 @@ class PublisherBundle:
             dry_run=dry_run,
             note=note,
         )
+        # On failure (ok=False, not counting dry_run), run
+        # root-cause analysis and stash the lesson on the
+        # result so the owner sees it via explain_decision +
+        # MCP recent_decisions. Audit batch 3 follow-up
+        # wire-up — previously RCA was owner-only (manual
+        # query). Now every live failure generates a lesson.
+        if not ok and not dry_run:
+            lesson = self._analyse_failure(
+                decision_id=decision_id,
+                steps=steps,
+                note=note,
+            )
+            if lesson:
+                result.note = (
+                    f"{note} | lesson: {lesson}"
+                    if note else f"lesson: {lesson}"
+                )
         with self._lock:
             self._history.append(result)
             if len(self._history) > 200:
                 del self._history[: len(self._history) - 200]
         return result
+
+    def _analyse_failure(
+        self,
+        *,
+        decision_id: str,
+        steps: list[StepLog],
+        note: str,
+    ) -> str:
+        """Run RCA on a failed launch + return the single-
+        sentence lesson. Soft-fail: RCA exceptions are
+        logged + swallowed so they never block the
+        launch's finalise path (§4b.E)."""
+        try:
+            from core.learning.root_cause_analyzer import (
+                get_root_cause_analyzer,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "RCA import failed on publisher "
+                "finalise: %s", exc,
+            )
+            return ""
+        # Build a minimal episode shape RCA understands.
+        # Failing step = the first step with status="error";
+        # context = the step's error message plus surrounding
+        # metadata we already track.
+        failing = next(
+            (s for s in steps if s.status == "error"),
+            None,
+        )
+        episode = {
+            "decision_id": decision_id,
+            "decision_type": "launch",
+            "action": (
+                getattr(failing, "name", "") or "unknown"
+            ),
+            "context": {
+                "note": note,
+                "step_name": (
+                    getattr(failing, "name", "")
+                    or "unknown"
+                ),
+                "step_error": str(
+                    getattr(failing, "error", "") or "",
+                ),
+                "step_status": str(
+                    getattr(failing, "status", "") or "",
+                ),
+            },
+        }
+        try:
+            report = get_root_cause_analyzer(
+            ).analyze_failure(episode)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "RCA raised for %s: %s",
+                decision_id, exc,
+            )
+            return ""
+        if not isinstance(report, dict):
+            return ""
+        lesson = str(report.get("lesson") or "").strip()
+        return lesson[:240]
 
     # ── Queries ──────────────────────────────────────────
 
