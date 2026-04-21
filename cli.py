@@ -574,7 +574,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Inspect the RuleBook's quality via lift — which "
             "learned rules are true positives, which are noise, "
             "which are false positives. Answers the T2 KPI "
-            "'PatternMiner true-positive rate ≥ 60%'."
+            "'PatternMiner true-positive rate >= 60%%'."
         ),
     )
     rule_quality_p.add_argument(
