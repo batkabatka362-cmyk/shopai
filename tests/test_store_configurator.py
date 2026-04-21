@@ -1122,7 +1122,7 @@ class TestAllFeaturesIncludesNewOnes:
         from execution.store_configurator import ALL_FEATURES
         for name in ("gifts", "loyalty", "referral", "emails", "payments"):
             assert name in ALL_FEATURES
-        assert len(ALL_FEATURES) == 19
+        assert len(ALL_FEATURES) == 20
 
 
 class TestConfigureCLI:
@@ -1169,7 +1169,7 @@ class TestConfigureCLI:
                         "product_tags", "ai_config", "gifts", "loyalty",
                         "referral", "emails", "payments", "pages", "policies",
                         "menus", "brand", "redirects", "blog", "webhooks",
-                        "script_tags"):
+                        "script_tags", "metafield_definitions"):
             assert feature in out
 
     def test_configure_respects_only_filter(self, tmp_path, monkeypatch, capsys):

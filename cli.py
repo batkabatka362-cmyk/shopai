@@ -1959,6 +1959,14 @@ def _format_feature_summary(name: str, data: dict) -> str:
             f"installed={len(installed)}, "
             f"existing={len(existing)}, errors={errs}"
         )
+    if name == "metafield_definitions":
+        created = data.get("created") or []
+        existing = data.get("existing") or []
+        errs = len(data.get("errors") or [])
+        return (
+            f"created={len(created)}, "
+            f"existing={len(existing)}, errors={errs}"
+        )
     return str(data)[:60]
 
 

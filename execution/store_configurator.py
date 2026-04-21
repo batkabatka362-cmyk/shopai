@@ -89,6 +89,7 @@ ALL_FEATURES = (
     "blog",
     "webhooks",
     "script_tags",
+    "metafield_definitions",
 )
 
 
@@ -407,6 +408,72 @@ query listMenus {
   }
 }
 """.strip()
+
+
+# ── Metafield definitions (Phase 2f) ────────────────────────────────
+
+_METAFIELD_DEF_CREATE_MUTATION = """
+mutation metafieldDefinitionCreate(
+    $definition: MetafieldDefinitionInput!,
+) {
+  metafieldDefinitionCreate(definition: $definition) {
+    createdDefinition { id name key namespace type { name } }
+    userErrors { field message code }
+  }
+}
+""".strip()
+
+
+# The base set of product metafields every consumer storefront
+# benefits from — once defined, products can populate them from
+# the admin UI, PIM exports, or product_creator itself, and the
+# data surfaces in Schema.org JSON-LD + Storefront API.
+#
+# Shape: name, key, description, type. Namespace always "custom"
+# (Shopify's reserved namespace for storefront-facing metafields
+# in 2024.01+).
+_PRODUCT_METAFIELD_DEFINITIONS: list[dict[str, str]] = [
+    {
+        "name": "Warranty",
+        "key": "warranty",
+        "description": (
+            "Warranty terms (e.g., '1-year limited')"
+        ),
+        "type": "single_line_text_field",
+    },
+    {
+        "name": "Materials",
+        "key": "materials",
+        "description": (
+            "Materials or ingredients, one per line"
+        ),
+        "type": "list.single_line_text_field",
+    },
+    {
+        "name": "Care instructions",
+        "key": "care_instructions",
+        "description": (
+            "How to use + care for the product"
+        ),
+        "type": "multi_line_text_field",
+    },
+    {
+        "name": "Country of origin",
+        "key": "country_of_origin",
+        "description": (
+            "ISO country code or full name"
+        ),
+        "type": "single_line_text_field",
+    },
+    {
+        "name": "Video URL",
+        "key": "video_url",
+        "description": (
+            "Hero video URL (YouTube / fal.ai / Vimeo)"
+        ),
+        "type": "url",
+    },
+]
 
 
 _MENU_UPDATE_MUTATION = """
@@ -771,6 +838,10 @@ class StoreConfigurator:
         if "script_tags" in selected:
             results["script_tags"] = self._setup_script_tags(
                 client,
+            )
+        if "metafield_definitions" in selected:
+            results["metafield_definitions"] = (
+                self._setup_metafield_definitions(client)
             )
 
         self._record(results)
@@ -2198,6 +2269,108 @@ class StoreConfigurator:
                 store_name or "Our Store"
             ),
             "written": written,
+            "errors": errors,
+        }
+
+    # ── Feature: Product metafield definitions ─────────────────
+
+    def _setup_metafield_definitions(
+        self, client: ShopifyClient,
+    ) -> dict[str, Any]:
+        """Create typed metafield definitions at the PRODUCT
+        ownerType so every product can carry structured data
+        the storefront theme + Schema.org JSON-LD + Storefront
+        API read.
+
+        5 definitions (warranty / materials / care_instructions
+        / country_of_origin / video_url) chosen for the
+        intersection of Schema.org Product properties +
+        conversion-critical trust signals.
+
+        Idempotent — Shopify returns
+        ``userErrors.code=TAKEN`` on re-creation, which we
+        translate into the ``existing`` bucket so a second
+        configure run is a clean no-op.
+        """
+        existing: list[str] = []
+        created: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for defn in _PRODUCT_METAFIELD_DEFINITIONS:
+            key = defn["key"]
+            if self._dry_run:
+                self._plan.append({
+                    "action": "create_metafield_definition",
+                    "path": "graphql.json",
+                    "method": "POST",
+                    "namespace": "custom",
+                    "key": key,
+                    "type": defn["type"],
+                    "description": (
+                        f"Create product metafield "
+                        f"definition custom.{key} "
+                        f"({defn['type']})"
+                    ),
+                })
+                created.append(key)
+                continue
+            variables = {
+                "definition": {
+                    "namespace": "custom",
+                    "key": key,
+                    "name": defn["name"],
+                    "description": defn["description"],
+                    "type": defn["type"],
+                    "ownerType": "PRODUCT",
+                },
+            }
+            try:
+                resp = client.graphql(
+                    _METAFIELD_DEF_CREATE_MUTATION,
+                    variables=variables,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "key": key,
+                    "error": str(exc),
+                })
+                continue
+            if "error" in resp:
+                errors.append({
+                    "key": key,
+                    "error": resp.get("error"),
+                })
+                continue
+            data = resp.get("data") or {}
+            mutation = (
+                data.get("metafieldDefinitionCreate") or {}
+            )
+            user_errors = mutation.get("userErrors") or []
+            if user_errors:
+                # TAKEN code = already exists → bucket as
+                # "existing" so idempotent reruns stay clean.
+                codes = {
+                    e.get("code") for e in user_errors
+                }
+                if "TAKEN" in codes:
+                    existing.append(key)
+                    continue
+                errors.append({
+                    "key": key,
+                    "error": "; ".join(
+                        e.get("message", "?")
+                        for e in user_errors
+                    ),
+                })
+                continue
+            created.append(key)
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "created": created,
+            "existing": existing,
             "errors": errors,
         }
 
