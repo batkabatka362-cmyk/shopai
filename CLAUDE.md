@@ -533,6 +533,131 @@ Commit хийхээсээ өмнө дараах хоёр шалгалтыг **х
 
 ---
 
+## 4d. ЧАНАРТАЙ БОДОХ + ӨӨРИЙГӨӨ ШҮҮМЖЛЭХ ЦИКЛ
+
+*Энэ хэсэг нь бидний цар хүрээний зорилго (AGI tier autonomous
+business operator) ба ажил хийх стандартыг гарын авлага
+болгож тогтоосон. Claude (агент)-д хамаатай, мөн ШопAI-ийн
+runtime AI-д хамаатай. Гол зарчим: их код биш — чанартай
+код. Жижиг хэсэг бүр **амьд + сайн + алдаагүй**. Тугс
+хувилбар шуурхай хийх боломжтой бол нэн даруй хий.
+100%-ийн боломж байвал зогсолтгүйгээр ахиулсаар бай.*
+
+### A. Цар хүрээ (mission scope)
+
+ШопAI-ийн зорилго нь **AGI түвшний биеэ даасан AI бизнес
+оператор бас драйвер** болох. Энэ түвшинд хүрэхэд:
+
+- 400k мөр код байлаа гэж чадваргүй бол их тоо л үлдэнэ.
+- Том зорилго → маш олон жижиг сайжруулалт. Хэсэг бүр
+  өөрөө сайн.
+- Зорилго бол төгс биш, харин **амьд + сайн + алдаагүй**.
+- Гэхдээ төгс болгох боломж шууд гарвал шуурхай хий.
+  100% хүртэл боломжтой бол хийсээр л бай.
+- Алдаагаа олоод сайжруул → шинэ түвшинд гарга → дараагийн
+  төгс хувилбарыг бод → одоо дээрээ сайжруул.
+
+Hostni салгах бус, **хэсэг бүрийг холбоо нэмэгдсэн, ажилладаг,
+сайжирсан** болго. CLAUDE.md §4c-ийн "сул талыг устгахгүй,
+сайжруулна" зарчмыг үргэлжлүүл.
+
+### B. 6 өөрийгөө асуух асуулт (өмнө бодох)
+
+Code commit, design сонголт, эсвэл owner-ы хариу гаргахын
+өмнө дараах 6-г бодох:
+
+1. **Яаж ажиллах вэ?** — workflow + sequencing
+2. **Яаж бодох вэ?** — framing + alternatives
+3. **Юу хийж байна вэ?** — current state honest read
+4. **Юу хийх вэ?** — next concrete unit
+5. **Ямар алдаа үүсэж байна вэ?** — error scan
+6. **Яаж сайжруулж болох вэ?** — refine path
+
+Энэ 6 нь Claude-д хамаатай, ШопAI-ийн runtime AI-д хамаатай,
+бас 5-тулгуурын `core/brain/structured_decision.py`
+framework-ын footprint-ийг яг тогтоодог.
+
+### C. 5 тулгуурын чанартай шийдэл (5 pillars)
+
+Аливаа значительны шийдвэр (commit, runtime decision, owner
+reply) дараах 5 пиллараар дамжина:
+
+| # | Тулгуур | Утга | Кодон дахь дүрс |
+|---|---|---|---|
+| 1 | **Outcome** | Ямар үр хэрэгтэй вэ? Яагаад? Хэрхэн хэмжих вэ? | `OutcomeSpec(what, why, measurable, value_usd)` |
+| 2 | **Thinking directions** | Олон чиглэл бод. Зөвхөн анхных биш. | `ThinkingDirection(label, action, reasoning)` |
+| 3 | **Constraints** | Юу барьмталах ёстой? Hard vs soft. | `Constraint(name, kind, evaluator)` |
+| 4 | **Refine + learn loop** | Score, iterate, record. Сэргэх. | `RefineStep(score, hard_violations, note)` |
+| 5 | **Free thinking + self-awareness** | Meta-check: буруу гогцоо уу? Plumbing vs capability? Dollar distance? | `SelfAwareness(loop_check, dollar_distance, plumbing_vs_capability)` |
+
+Бодит wire-up: `core/brain/structured_decision.py`. Бодит
+runtime use: `CampaignActivator._record_structured_decision`,
+`PublisherBundle._record_structured_decision`. Owner Claude
+Desktop-аас инспекц: MCP `recent_deliberations`.
+
+### D. Өөрийгөө шүүмжлэх + сайжруулах цикл
+
+Гарсан зүйлээ өөрөө шүүмж шүү:
+
+```
+   гаргасан зүйлээ өөрөө шүү
+   → сул талыг ол
+   → сайжруулсан 2 дахь хувилбар гарга
+   → хамгийн сайн хувилбараа сонго
+```
+
+Нэг код блок, нэг алхам, нэг шийдвэр гаргаснаас хойш:
+
+1. **Өөрөө уншиж шалга** — энэ үнэхээр мисс-г шийдэж байна
+   уу? Style, naming, error handling, edge case дотор сул
+   тал юу вэ?
+2. **2 дахь хувилбар бод** — энэ кодыг арай өөрөөр (more
+   defensive, more concise, simpler dependencies, etc.)
+   яаж бичих вэ? Хэн ямар алдаа гаргах вэ? Үргэлж
+   1 alternative хувилбарыг бичсэнтэй адил бод.
+3. **Сонгох** — хоёрын алийн нь сайн нь? Хэрэв 2-р хувилбар
+   нь онцгой бол одоог нь шинэчил.
+4. **Тестээр баталгаажуул** — сонгосон хувилбарыг тест
+   нэмж бүрхэгдсэн, edge case-уудыг ч сэтгэх.
+
+Энэ цикл нь Claude (агент)-ы commit бүрт хамаатай, мөн
+ШопAI-ийн `structured_decision.refine` алхамд хамаатай.
+
+### E. Юу үлдэх вэ? Quality vs Quantity
+
+Нэмэх нь сайн биш — **сайжруулах нь сайн**. Code shed-ийг
+жигдрүүлэх (DRY, де-дупликация, contract drift засах) нь
+шинэ feature нэмэхтэй адил үнэ цэнэтэй. Үнэн цэнтэй
+хариулт болохгүй commit-ыг ship хийхгүй. Жижиг улам сайжруулсан
+хэсгүүд → том чанартай систем.
+
+Жишээ зарчим (audit pass-аас):
+- 3 хуулбар бүхий live-execution gate → 1 канон функц + 3
+  delegating wrapper. Кодын тоо бараг өөрчлөгдөөгүй;
+  drift боломж 0 болсон.
+- ToolResult 5 талбар → 10 талбар + factory; existing
+  callers зүгээр хэвээр; шинэ adapter callers cost track
+  хийх боломжтой.
+
+### F. Cross-check pre-commit (extension of §4c)
+
+§4c-ын technical + strategic шалгалтууд + энэ §4d-ийн 6
+асуулт + 5 пилларыг нэг хүснэгт:
+
+1. Tests pass — тиймээ
+2. Mission aligned — тиймээ
+3. Plumbing/capability ratio зөв уу
+4. Dollar distance ≤ 4 уу
+5. Outcome тодорхой бичигдсэн үү (commit message-д)
+6. Self-critique хийгдсэн үү — 2-р хувилбарыг бодсон
+   эсэхийг шалгасан уу
+7. 5 пилларын аль нь алгасагдсан бол яагаад
+
+Хариу бүгд "тиймээ" эсвэл "ухамсартай үгүй" → commit.
+Эс бөгөөс refine.
+
+---
+
 ## 5. LLM / MODEL ТОХИРГОО (3-Agent Architecture)
 
 ShopAI-ийн brain нь 3 тусдаа LLM-ыг чиг үүрэгтэй:
