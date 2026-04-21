@@ -339,8 +339,11 @@ class TikTokShopAdapter:
                                     )
                                 except (
                                     TypeError, ValueError,
-                                ):
-                                    pass
+                                ) as exc:
+                                    logger.debug(
+                                        "skip bad sku price: %s",
+                                        exc,
+                                    )
                     if prices:
                         min_p = min(prices)
                         max_p = max(prices)

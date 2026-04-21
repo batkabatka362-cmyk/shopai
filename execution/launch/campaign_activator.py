@@ -407,12 +407,15 @@ class CampaignActivator:
         #     voted "activate" and Moby's recommendation for this
         #     campaign_id is different. Passive: just records,
         #     never blocks. Resolves once a purchase outcome lands
-        #     (wired in OutcomeRecorder.record).
+        #     (wired in OutcomeRecorder.record). Rationale-aware:
+        #     stamps a gate entry on the decision so
+        #     ``shopai explain <id>`` shows the trust signal.
         self._step_moby_compare(
             request,
             steps,
             decision_id=decision_id,
             shopai_action="activate",
+            rationale=rationale,
         )
 
         # 5. execute
@@ -886,11 +889,19 @@ class CampaignActivator:
         *,
         decision_id: str,
         shopai_action: str,
+        rationale: Any = None,
     ) -> StepLog:
         """Fetch Moby's recommendation for this campaign and log
         any disagreement. Passive / best-effort: never blocks
         the launch. Silent no-op when Moby isn't configured.
+
+        When ``rationale`` is supplied, also stamps a gate-kind
+        entry on the decision so ``shopai explain <id>`` and
+        the MCP ``explain_decision`` tool both surface the
+        Moby trust signal.
         """
+        moby_outcome = "no_match"
+        moby_detail = ""
         comparator = self._get_moby()
         if comparator is None:
             log = StepLog(
@@ -900,6 +911,11 @@ class CampaignActivator:
                 ts=time.time(),
             )
             steps.append(log)
+            self._add_moby_rationale(
+                rationale, decision_id,
+                outcome="unavailable",
+                detail="comparator not configured",
+            )
             return log
         # Fetch Moby campaigns-scope recommendations.
         try:
@@ -924,6 +940,14 @@ class CampaignActivator:
                 ts=time.time(),
             )
             steps.append(log)
+            self._add_moby_rationale(
+                rationale, decision_id,
+                outcome="no_recs",
+                detail=(
+                    "moby returned no recommendations for "
+                    "campaigns scope"
+                ),
+            )
             return log
         try:
             from core.brain.moby_vote_comparator import (
@@ -939,11 +963,21 @@ class CampaignActivator:
                 note=f"campaign_activator:{shopai_action}",
             )
             report = comparator.compare_votes([vote], recs)
-            note = (
-                "agreement" if vote.decision_id in report.agreements
-                else "disagreement logged"
-                if vote.decision_id in report.disagreements_logged
-                else "no matching moby rec"
+            if vote.decision_id in report.agreements:
+                moby_outcome = "agreement"
+                note = "agreement"
+            elif (
+                vote.decision_id
+                in report.disagreements_logged
+            ):
+                moby_outcome = "disagreement"
+                note = "disagreement logged"
+            else:
+                moby_outcome = "no_match"
+                note = "no matching moby rec"
+            moby_detail = (
+                f"shopai={shopai_action} "
+                f"campaign={request.campaign_id}"
             )
             log = StepLog(
                 name="moby_vote_compare",
@@ -961,8 +995,55 @@ class CampaignActivator:
                 note=f"skipped: {exc}",
                 ts=time.time(),
             )
+            moby_outcome = "error"
+            moby_detail = str(exc)[:80]
         steps.append(log)
+        self._add_moby_rationale(
+            rationale, decision_id,
+            outcome=moby_outcome,
+            detail=moby_detail,
+        )
         return log
+
+    @staticmethod
+    def _add_moby_rationale(
+        rationale: Any,
+        decision_id: str,
+        *,
+        outcome: str,
+        detail: str,
+    ) -> None:
+        """Record the Moby comparison outcome on the rationale
+        ledger. Best-effort — a failing rationale module never
+        blocks the activation."""
+        if rationale is None:
+            return
+        # Map outcome → severity weight so the explanation tree
+        # ranks meaningful disagreements above silent no-ops.
+        weight_map = {
+            "agreement": 0.5,
+            "disagreement": 0.85,
+            "no_match": 0.2,
+            "no_recs": 0.1,
+            "unavailable": 0.05,
+            "error": 0.1,
+        }
+        weight = weight_map.get(outcome, 0.3)
+        headline = (
+            f"moby:{outcome}"
+            + (f" — {detail}" if detail else "")
+        )
+        try:
+            rationale.add(
+                decision_id,
+                kind="gate",
+                headline=headline[:120],
+                weight=weight,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "moby rationale.add skipped: %s", exc,
+            )
 
     def _step_execute(
         self,

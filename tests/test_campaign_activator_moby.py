@@ -134,6 +134,120 @@ class TestAgreementAndDisagreement(unittest.TestCase):
         self.assertIn("no matching", step.note)
 
 
+class TestRationaleStamp(unittest.TestCase):
+    """Verify the moby step now adds a rationale-ledger gate
+    entry so ``shopai explain <id>`` shows the trust signal."""
+
+    def _capturing_rationale(self):
+        rationale = MagicMock()
+        rationale.added = []
+
+        def _add(decision_id, **kw):
+            rationale.added.append({
+                "decision_id": decision_id, **kw,
+            })
+            return MagicMock()
+
+        rationale.add.side_effect = _add
+        return rationale
+
+    def test_agreement_logs_rationale_gate(self):
+        adapter = _tmp_moby()
+        adapter.recommendations = MagicMock(
+            return_value=[_rec("camp_abc", "activate")],
+        )
+        comparator = MobyVoteComparator(adapter=adapter)
+        rationale = self._capturing_rationale()
+        activator = _activator_with_moby(comparator)
+        activator._rationale = rationale  # type: ignore[attr-defined]
+        activator.activate(_req())
+        gate_adds = [
+            r for r in rationale.added
+            if r.get("kind") == "gate"
+            and "moby:" in r.get("headline", "")
+        ]
+        self.assertEqual(len(gate_adds), 1)
+        self.assertIn(
+            "agreement", gate_adds[0]["headline"],
+        )
+
+    def test_disagreement_higher_weight(self):
+        adapter = _tmp_moby()
+        adapter.recommendations = MagicMock(
+            return_value=[_rec("camp_abc", "pause")],
+        )
+        comparator = MobyVoteComparator(adapter=adapter)
+        rationale = self._capturing_rationale()
+        activator = _activator_with_moby(comparator)
+        activator._rationale = rationale  # type: ignore[attr-defined]
+        activator.activate(_req())
+        gate = next(
+            r for r in rationale.added
+            if "moby:" in r.get("headline", "")
+        )
+        self.assertIn("disagreement", gate["headline"])
+        # Disagreement weight (0.85) > agreement weight (0.5)
+        self.assertGreater(gate["weight"], 0.7)
+
+    def test_no_recs_records_no_recs_outcome(self):
+        adapter = _tmp_moby()
+        adapter.recommendations = MagicMock(return_value=[])
+        comparator = MobyVoteComparator(adapter=adapter)
+        rationale = self._capturing_rationale()
+        activator = _activator_with_moby(comparator)
+        activator._rationale = rationale  # type: ignore[attr-defined]
+        activator.activate(_req())
+        gate = next(
+            r for r in rationale.added
+            if "moby:" in r.get("headline", "")
+        )
+        self.assertIn("no_recs", gate["headline"])
+
+    def test_unavailable_comparator_records(self):
+        # When the activator's _get_moby() returns None
+        # (e.g. moby_vote_comparator import failed), the
+        # rationale gate captures "unavailable".
+        rationale = self._capturing_rationale()
+        activator = _activator_with_moby(comparator=None)
+        activator._get_moby = lambda: None  # type: ignore[method-assign]
+        activator._rationale = rationale  # type: ignore[attr-defined]
+        activator.activate(_req())
+        gate = next(
+            r for r in rationale.added
+            if "moby:" in r.get("headline", "")
+        )
+        self.assertIn("unavailable", gate["headline"])
+
+    def test_no_adapter_records_no_recs(self):
+        # When the comparator exists but its underlying
+        # adapter is None, we get the no_recs outcome.
+        comparator = MobyVoteComparator(adapter=None)
+        comparator._get_adapter = lambda: None  # type: ignore[method-assign]
+        rationale = self._capturing_rationale()
+        activator = _activator_with_moby(comparator)
+        activator._rationale = rationale  # type: ignore[attr-defined]
+        activator.activate(_req())
+        gate = next(
+            r for r in rationale.added
+            if "moby:" in r.get("headline", "")
+        )
+        self.assertIn("no_recs", gate["headline"])
+
+    def test_rationale_failure_does_not_block(self):
+        adapter = _tmp_moby()
+        adapter.recommendations = MagicMock(
+            return_value=[_rec("camp_abc", "pause")],
+        )
+        comparator = MobyVoteComparator(adapter=adapter)
+        rationale = MagicMock()
+        rationale.add.side_effect = RuntimeError("ledger down")
+        activator = _activator_with_moby(comparator)
+        activator._rationale = rationale  # type: ignore[attr-defined]
+        # Activation must still complete despite rationale failure
+        result = activator.activate(_req())
+        self.assertNotEqual(result.verdict, "blocked")
+
+
 class TestEngineOutcomeBusEmission(unittest.TestCase):
     def test_activation_reports_to_bus(self):
         comparator = MobyVoteComparator(adapter=None)

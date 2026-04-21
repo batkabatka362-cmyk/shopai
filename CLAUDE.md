@@ -598,3 +598,91 @@ note-ийг down-rate хийвэл `feedback_learner` авсансан байн�
 - Test-ийг `--no-verify` эсвэл skip-ээр алгасахгүй.
 - Mongolian + English доктентуудыг задалж алдалахгүй — одоо байгаа
   стиль (ARCHITECTURE.md, README_SHOPAI.md)-ийг үргэлжлүүл.
+
+---
+
+## 8. SESSION TRACKER (одоо ажиллаж байгаа branch)
+
+Энэ хэсэг fresh agent-д "хаана яваа вэ" гэдгийг өгнө. Бүрэн detail
+docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
+`claude/update-shop-ai-docs-dVyQc`.
+
+### 8a. Аль хэдийн ship хийсэн (2026-04-20→21 wave)
+
+| Wave | Гол commit | Ажил |
+|---|---|---|
+| A1 EU AI Act | (in-tree) | Article 50 C2PA gate `execution/compliance/eu_ai_act_gate.py`; PublisherBundle-д wire |
+| A2 Landed cost | (in-tree) | `LaunchCandidate.from_landed_cost()` — de-minimis aware COGS |
+| A3 Schema stack | (in-tree) | JSON-LD @graph metafield in `_step_create_product` |
+| A4 Agentic webhook | `bb85e22` | OrderWebhookHandler classifies chatgpt/perplexity/copilot/gemini |
+| A5 MCP stdio | `fbd9ae8` | JSON-RPC 2.0 transport + `python -m mcp_server.server` |
+| A6 fal.ai videos | `b43bf82` | PublisherBundle._step_generate_videos |
+| A7 Moby comparator | `c154a11` | Vote-disagreement log + auto-resolve on outcome |
+| B nav docs | `663a97b` | 12 per-concept `docs/nav_*.md` |
+| C1+C2 dead scaffolds | `d53a9a1` | brain/, integrations/, testing/ deleted (~1400 LOC) |
+| C3 memory consolidation | `97c4d8a` | core.memory re-export of 4 legacy primitives |
+| C4+C5 docs-only deferral | `33ff98f` | scripts/ + cli.py split documented; physical move deferred |
+| D1 OAuth | `f56bc84` + `63a4c57` | `core/auth/token_resolver.py` + daemon wire |
+| D2 Post-write verifier | `a777a60` | ProductUpdater.update_product/update_price `verify=True` default |
+| Owner CLI surfaces | `7fe79a8` | `shopai moby/fal/oauth/cycles` commands |
+| Owner MCP brain tools | `9d8436d` | trust_status / memory_ladder / recent_decisions / predict_outcome |
+| Knowledge boundary doc | `0b95dfd` | knowledge/ vs core/memory/ vs vault/Knowledge/ |
+| Meta v25 + attribution | `7c7b57c` | v21→v25 + 7dv→1dv translation |
+| Autopilot smoke test | `6d18aeb` | Real publisher+activator E2E |
+| Dashboard panels | `fdf0449` + `a5a2dfc` | agentic / moby / fal / autopilot daemon panels |
+| Cycles CLI+MCP | `fbe6e44` | `shopai cycles` autopilot log tail |
+| Moby cache | `f5e6f95` | 5-min TTL on recommendations |
+| Video opt-in gate | `340713d` | SHOPAI_VIDEO_GENERATE=1 (money safety) |
+| Engine bus emit | `1ac5fd6` | activator → engine_outcome_bus |
+| Doctor probe MCP | `887a848` | core.readiness.doctor + 5 probes |
+| GEO quote-sandwich | `03bcfd9` + `325168f` | Princeton +40% LLM citation pattern + opt-in wire |
+| llms.txt serving | `d710cec` | CLI build + API serve routes |
+| Brain snapshot rollup | `a02ef7c` | agentic/moby/fal fields on BrainState |
+| Pidfile + autopilot-status | `80221e8` | Daemon liveness CLI + MCP |
+| notify-errors digest | `25a0888` | Telegram cycle-error digest |
+| TikTok Shop foundation | `12f5ac5` | HMAC signer + read-only Z6 adapter |
+| Webhook HMAC audit | `9d1100d` | env fallback + fail-closed gate (security) |
+
+**Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
+`9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
+
+### 8b. Дараагийн ажил (priority queue)
+
+P0 — money/security path:
+1. **TikTok Shop write-path** — ProductCreator + OrderListener
+   (Z6 mission, dollar distance 5; high-risk because it's live
+   money on a new platform).
+2. **Webhook rate limiter** — DDoS the endpoint can starve
+   HMAC verification CPU (security defence-in-depth).
+
+P1 — owner experience:
+3. **Owner dialog → MCP tool dispatcher** — Telegram message
+   like "halt launches" → MCP `emergency_halt`. Closes the
+   "owner can fully drive ShopAI without code" loop.
+4. **Brain rationale ledger trace for Moby step** — every
+   activation's `explain_decision` shows whether Moby agreed.
+5. **Dashboard live mode auto-refresh of A-D panels** —
+   currently --live re-renders but caches block fresh
+   data; force=True on bridge.status() per cycle.
+
+P2 — capability extensions:
+6. **GEO quote-sandwich citation harvest** — semi-auto pull
+   real reviews/research from product spec sheets to populate
+   `citations` (without fabricating).
+7. **fal.ai video pre-generation cache** — render once, reuse
+   across SKUs in same niche to amortise cost.
+
+P3 — research wave:
+8. **Q3 2026 market research refresh** — Sora successor,
+   Shopify Spring '26 edition, Meta Andromeda v2.
+
+### 8c. Wrong-loop detector (§4c.K) — checkpoint
+
+- Mission: Z1 autonomy + Z4 revenue + Z6 multi-platform —
+  ALIGNED.
+- Plumbing/capability ratio (last 5 commits): 1:4 capability —
+  HEALTHY.
+- Dollar distance (last 5 commits): 0-3 — HEALTHY.
+- Month-tomorrow test: shipping doctor + cycle-errors +
+  pidfile + HMAC fix means a fresh deploy has live-money
+  safety gates → real orders can land safely. PASS.
