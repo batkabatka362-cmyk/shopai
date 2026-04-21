@@ -263,6 +263,69 @@ class BrainFacade:
     def __init__(self) -> None:
         self._last_cycle_report: Any = None
         self._last_decision: Any = None
+        # Quality-audit item #9: let future brain modules
+        # self-register with a (name → zero-arg factory)
+        # pair instead of editing the 5400-line facade. The
+        # stored factories are looked up lazily by
+        # ``module(name)``; exceptions there surface as None
+        # so a broken plugin never crashes callers.
+        self._module_factories: dict[str, Any] = {}
+        self._module_cache: dict[str, Any] = {}
+        self._module_lock = threading.Lock()
+
+    # ── Module registrar (audit #9) ──────────────────────
+
+    def register_module(
+        self, name: str, factory: Any,
+    ) -> None:
+        """Register a zero-arg ``factory`` under ``name``.
+        Calling ``brain().module(name)`` later returns the
+        factory's result (cached), or ``None`` if the
+        factory raises. Re-registering under the same name
+        replaces the factory and clears the cache.
+        """
+        if not name or not callable(factory):
+            raise ValueError(
+                "register_module needs non-empty "
+                "name + callable factory",
+            )
+        with self._module_lock:
+            self._module_factories[name] = factory
+            self._module_cache.pop(name, None)
+
+    def unregister_module(self, name: str) -> bool:
+        with self._module_lock:
+            had = name in self._module_factories
+            self._module_factories.pop(name, None)
+            self._module_cache.pop(name, None)
+            return had
+
+    def module(self, name: str) -> Any:
+        """Return the lazily-constructed module, or None on
+        miss / factory error. Caches the first success."""
+        with self._module_lock:
+            if name in self._module_cache:
+                return self._module_cache[name]
+            factory = self._module_factories.get(name)
+        if factory is None:
+            return None
+        try:
+            instance = factory()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "module factory %s raised: %s", name, exc,
+            )
+            return None
+        with self._module_lock:
+            self._module_cache[name] = instance
+        return instance
+
+    def registered_modules(self) -> tuple[str, ...]:
+        """Alphabetised tuple of registered names."""
+        with self._module_lock:
+            return tuple(sorted(
+                self._module_factories.keys(),
+            ))
 
     # ── think ──────────────────────────────────────────────
 
