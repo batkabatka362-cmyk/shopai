@@ -356,6 +356,7 @@ class PublisherBundle:
             steps=steps,
             product_handle=product_handle,
             dry_run=dry_run,
+            rationale=rationale,
         )
 
         # 3. meta ads campaign
@@ -1170,6 +1171,7 @@ class PublisherBundle:
         steps: list[StepLog],
         product_handle: str,
         dry_run: bool,
+        rationale: Any = None,
     ) -> None:
         """Build a 5-pillar Deliberation summarising the
         launch reasoning + push to the in-process recent
@@ -1308,6 +1310,32 @@ class PublisherBundle:
             # the §4d pillar 4 refine+learn loop.
             d.decision_id = str(decision_id)
             record_deliberation(d)
+            # Mirror 5 pillars into the rationale ledger so
+            # ``shopai explain <decision_id>`` shows the
+            # launch's structured reasoning alongside the
+            # existing gate-level entries.
+            if rationale is not None:
+                for entry in d.as_rationale_entries():
+                    try:
+                        rationale.add(
+                            decision_id,
+                            kind=str(
+                                entry.get("kind", "meta"),
+                            ),
+                            headline=str(
+                                entry.get(
+                                    "headline", "",
+                                ),
+                            )[:120],
+                            weight=float(
+                                entry.get("weight", 0.3),
+                            ),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "rationale.add pillar "
+                            "skipped: %s", exc,
+                        )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "publisher structured-decision record "

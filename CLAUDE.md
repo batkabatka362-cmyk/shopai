@@ -779,7 +779,8 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | Activator → deliberation wire | `c7d1293` | Every activation records a 5-pillar Deliberation visible via MCP `recent_deliberations`; verdict unchanged |
 | Publisher → deliberation wire | `658ed6f` | Every product launch records a 5-pillar Deliberation symmetric to the activator wire; budget-commit point captured |
 | §4d quality + self-critique | `20e2ac1` | Mission scope + 6 self-questions + 5 pillars + self-critique cycle codified in CLAUDE.md |
-| Refine+learn loop wire | (this commit) | Order webhook back-fills the matching Deliberation with measured revenue; predicted-vs-observed visible via MCP |
+| Refine+learn loop wire | `5936015` | Order webhook back-fills the matching Deliberation with measured revenue; predicted-vs-observed visible via MCP |
+| Pillar mirror → rationale ledger | (this commit) | Activator + Publisher push 5-pillar entries into rationale.add so `shopai explain <decision_id>` shows structured reasoning alongside gate-level entries |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).

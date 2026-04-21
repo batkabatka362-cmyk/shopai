@@ -424,6 +424,7 @@ class CampaignActivator:
             decision_id=decision_id,
             steps=steps,
             dry_run=dry_run,
+            rationale=rationale,
         )
 
         # 4.5 Moby vote-comparator — log the case where ShopAI
@@ -1075,6 +1076,7 @@ class CampaignActivator:
         decision_id: str,
         steps: list[StepLog],
         dry_run: bool,
+        rationale: Any = None,
     ) -> None:
         """Build a 5-pillar Deliberation summarising the
         activation reasoning + push it to the in-process
@@ -1241,6 +1243,33 @@ class CampaignActivator:
             # the §4d pillar 4 refine+learn loop.
             d.decision_id = str(decision_id)
             record_deliberation(d)
+            # Mirror the 5 pillars into the rationale
+            # ledger so ``shopai explain <decision_id>``
+            # shows the structured reasoning alongside
+            # the existing gate-level entries. One
+            # unified explanation surface.
+            if rationale is not None:
+                for entry in d.as_rationale_entries():
+                    try:
+                        rationale.add(
+                            decision_id,
+                            kind=str(
+                                entry.get("kind", "meta"),
+                            ),
+                            headline=str(
+                                entry.get(
+                                    "headline", "",
+                                ),
+                            )[:120],
+                            weight=float(
+                                entry.get("weight", 0.3),
+                            ),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "rationale.add pillar "
+                            "skipped: %s", exc,
+                        )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "structured-decision record skipped: %s",
