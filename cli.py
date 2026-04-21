@@ -1928,6 +1928,15 @@ def _format_feature_summary(name: str, data: dict) -> str:
             f"created={len(created)}, "
             f"skipped={len(skipped)}, errors={errs}"
         )
+    if name == "blog":
+        created = data.get("created", "") or ""
+        skipped = data.get("skipped", "") or ""
+        errs = len(data.get("errors") or [])
+        if created:
+            return f"created={created}, errors={errs}"
+        if skipped:
+            return f"skipped={skipped}, errors={errs}"
+        return f"status={data.get('status', '?')}, errors={errs}"
     return str(data)[:60]
 
 

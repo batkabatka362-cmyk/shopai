@@ -85,6 +85,7 @@ ALL_FEATURES = (
     "menus",
     "brand",
     "redirects",
+    "blog",
 )
 
 
@@ -553,6 +554,59 @@ _BRAND_VOICES: dict[str, dict[str, Any]] = {
 }
 
 
+def _blog_welcome_article(
+    niche: str, store_display: str,
+) -> dict[str, Any]:
+    """Return a welcome article dict Shopify REST expects.
+
+    Niche-aware body + SEO summary. No author / image —
+    Shopify defaults both. Handle is stable per store so
+    re-running the configurator doesn't duplicate the
+    article.
+    """
+    tone = _PAGE_TONES.get(niche, _PAGE_TONES["general"])
+    niche_word = {
+        "home": "home essentials",
+        "fashion": "wardrobe staples",
+        "tech": "everyday tech",
+        "beauty": "self-care picks",
+        "general": "curated essentials",
+    }.get(niche, "curated essentials")
+    slug = store_display.lower().replace(" ", "-")
+    handle = f"welcome-to-{slug}"[:63]
+    title = f"Welcome to {store_display}"
+    body_html = (
+        f"<h2>Hello, and thanks for stopping by.</h2>"
+        f"<p>{store_display} is a {tone} storefront "
+        f"curating {niche_word}. Every product here is "
+        f"chosen for quality, value, and customer delight — "
+        f"no filler, no pressure.</p>"
+        f"<h3>What to expect</h3>"
+        f"<ul>"
+        f"<li>Fast shipping within 1-2 business days</li>"
+        f"<li>30-day returns on most items</li>"
+        f"<li>Friendly support — real people, quick "
+        f"replies</li>"
+        f"</ul>"
+        f"<p>Got questions? Check our <a "
+        f"href=\"/pages/faq\">FAQ</a> or email us from the "
+        f"<a href=\"/pages/contact\">Contact</a> page. We "
+        f"read every message.</p>"
+    )
+    summary_html = (
+        f"Welcome to {store_display}. Here's what you can "
+        f"expect from our {niche_word} curation."
+    )
+    return {
+        "title": title,
+        "handle": handle,
+        "body_html": body_html,
+        "summary_html": summary_html,
+        "published": True,
+        "tags": f"welcome,{niche}",
+    }
+
+
 def _brand_metafields(
     niche: str, store_display: str,
 ) -> list[dict[str, Any]]:
@@ -702,6 +756,10 @@ class StoreConfigurator:
         if "redirects" in selected:
             results["redirects"] = self._setup_redirects(
                 client, niche,
+            )
+        if "blog" in selected:
+            results["blog"] = self._setup_blog(
+                client, niche, store_name,
             )
 
         self._record(results)
@@ -2131,6 +2189,120 @@ class StoreConfigurator:
             "written": written,
             "errors": errors,
         }
+
+    # ── Feature: Blog welcome article ──────────────────────────
+
+    def _setup_blog(
+        self,
+        client: ShopifyClient,
+        niche: str,
+        store_name: str,
+    ) -> dict[str, Any]:
+        """Seed the default `news` blog with one welcome
+        article per niche. A fresh Shopify blog shows "no
+        posts yet" which damages first-visit trust. One
+        welcome post + SEO meta fields keeps the blog
+        looking alive from day one.
+
+        Idempotent by article handle (welcome-to-{slug}).
+        Find the `news` blog by handle. If no `news` blog
+        exists (rare — Shopify creates it by default),
+        skip without error.
+        """
+        store_display = (store_name or "").strip() or "Our Store"
+        article = _blog_welcome_article(niche, store_display)
+        result: dict[str, Any] = {
+            "niche": niche,
+            "blog_id": None,
+            "created": "",
+            "skipped": "",
+            "errors": [],
+        }
+        # Find blog by handle
+        try:
+            resp = client.get(
+                "blogs.json", params={"limit": 50},
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append({
+                "step": "list_blogs",
+                "error": str(exc),
+            })
+            result["status"] = "error"
+            return result
+        if "error" in resp:
+            result["errors"].append({
+                "step": "list_blogs",
+                "error": resp["error"],
+            })
+            result["status"] = "error"
+            return result
+        blogs = resp.get("blogs", []) or []
+        target = None
+        for b in blogs:
+            h = str(b.get("handle") or "").strip()
+            if h in ("news", "blog"):
+                target = b
+                break
+        if target is None:
+            result["status"] = "skipped"
+            result["errors"].append({
+                "step": "find_default_blog",
+                "error": "no 'news' or 'blog' handle found",
+            })
+            return result
+        blog_id = target.get("id")
+        result["blog_id"] = blog_id
+
+        # Check existing articles for our handle
+        existing_handle = article["handle"]
+        if not self._dry_run and blog_id:
+            try:
+                art_resp = client.get(
+                    f"blogs/{blog_id}/articles.json",
+                    params={"limit": 250},
+                )
+                if "error" not in art_resp:
+                    for a in (
+                        art_resp.get("articles", []) or []
+                    ):
+                        h = str(a.get("handle") or "")
+                        if h == existing_handle:
+                            result["skipped"] = existing_handle
+                            result["status"] = "skipped"
+                            return result
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "blog articles fetch raised: %s", exc,
+                )
+
+        # Write the welcome article
+        write_result = self._write(
+            client, "POST",
+            f"blogs/{blog_id}/articles.json",
+            {"article": article},
+            description=(
+                f"Create welcome article "
+                f"'{article['title']}'"
+            ),
+        )
+        if write_result.get("error"):
+            result["errors"].append({
+                "step": "create_article",
+                "error": str(write_result["error"]),
+            })
+            result["status"] = "error"
+            return result
+        if write_result.get("article") or write_result.get(
+            "dry_run",
+        ):
+            result["created"] = existing_handle
+            result["status"] = (
+                "dry_run" if self._dry_run else "success"
+            )
+        else:
+            result["status"] = "error"
+        return result
 
     # ── Feature: 301 Redirects (marketing URL aliases) ─────────
 
