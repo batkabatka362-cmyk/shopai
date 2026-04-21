@@ -152,6 +152,47 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub.add_parser("check", help="Validate env vars against schema")
     config_sub.add_parser("show", help="Show current config values + defaults")
 
+    # ── Build llms.txt artifacts (Wave E-1) ───────────────────
+    llms_p = sub.add_parser(
+        "build-llms-txt",
+        help=(
+            "Generate llms.txt, llms-full.txt + per-product "
+            "markdown mirrors under data/llms/. Served by "
+            "api/server.py at /llms.txt + /llms-full.txt."
+        ),
+    )
+    llms_p.add_argument(
+        "--store-name",
+        default="",
+        help=(
+            "Store display name (defaults to the active "
+            "store's name)"
+        ),
+    )
+    llms_p.add_argument(
+        "--store-url",
+        default="",
+        help=(
+            "Canonical store URL (defaults to "
+            "SHOPAI_SHOPIFY_URL env)"
+        ),
+    )
+    llms_p.add_argument(
+        "--products-json", default="",
+        help=(
+            "Optional path to a JSON file with a list of "
+            "product dicts. When omitted, uses the owner's "
+            "Shopify store via the connector."
+        ),
+    )
+    llms_p.add_argument(
+        "--out-dir", default="data/llms",
+        help="Output directory (default data/llms)",
+    )
+    llms_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── Cognitive (Mind) commands ────────────────────────────
     mind_p = sub.add_parser("mind", help="Inspect / drive the cognitive Mind")
     mind_sub = mind_p.add_subparsers(dest="mind_action")
@@ -2489,6 +2530,131 @@ def _cmd_launch(args) -> None:
     if result.failed_step:
         print(f"\n  aborted at {result.failed_step}: {result.failure_reason}")
         sys.exit(3)
+
+
+def _cmd_build_llms_txt(
+    *,
+    store_name: str,
+    store_url: str,
+    products_json: str,
+    out_dir: str,
+    as_json: bool,
+) -> None:
+    """Build llms.txt artifacts for the active store and write
+    them to disk under ``out_dir``. The API server at
+    ``api/server.py`` serves these files at /llms.txt,
+    /llms-full.txt, and /llms-mirror/<slug>.md.
+    """
+    from pathlib import Path as _P
+    from execution.seo.llms_txt import build_llms_txt
+
+    store_url = (
+        store_url
+        or os.environ.get("SHOPAI_SHOPIFY_URL", "")
+    )
+    if not store_url:
+        print(
+            "SHOPAI_SHOPIFY_URL not set — pass --store-url "
+            "or add it to .env",
+        )
+        sys.exit(2)
+    if not store_name:
+        store_name = store_url.split(".")[0] or "Store"
+
+    products: list[dict] = []
+    if products_json:
+        path = _P(products_json)
+        if not path.exists():
+            print(f"File not found: {products_json}")
+            sys.exit(2)
+        try:
+            products = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            print(f"Bad JSON: {exc}")
+            sys.exit(2)
+        if not isinstance(products, list):
+            print("JSON must be a list of product dicts")
+            sys.exit(2)
+    else:
+        # Pull live products via the connector.
+        try:
+            from core.bridge.shopify_connector import (
+                ShopifyLiveConnector,
+            )
+            conn = ShopifyLiveConnector()
+            data = conn.fetch_store_data()
+            raw = data.get("products") or []
+            if isinstance(raw, list):
+                products = [
+                    p for p in raw
+                    if isinstance(p, dict)
+                ]
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"Could not fetch products from "
+                f"Shopify: {exc}",
+            )
+            sys.exit(2)
+
+    if not products:
+        print(
+            "No products found. Either sync Shopify first "
+            "(`shopai sync`) or pass --products-json.",
+        )
+        sys.exit(2)
+
+    index = build_llms_txt(
+        store_name=store_name,
+        store_url=store_url,
+        products=products,
+    )
+
+    out = _P(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "llms.txt").write_text(index.short_txt)
+    (out / "llms-full.txt").write_text(index.full_txt)
+    mirror_dir = out / "products"
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    # Clear stale mirrors so deleted products don't linger
+    for existing in mirror_dir.glob("*.md"):
+        existing.unlink()
+    for path, body in index.product_mirrors:
+        rel = path.lstrip("/")
+        if rel.startswith("products/"):
+            rel = rel[len("products/"):]
+        (mirror_dir / rel).write_text(body)
+
+    summary = {
+        "out_dir": str(out.resolve()),
+        "store_name": store_name,
+        "store_url": store_url,
+        "products_written": len(products),
+        "short_txt_chars": len(index.short_txt),
+        "full_txt_chars": len(index.full_txt),
+        "mirrors_written": len(index.product_mirrors),
+    }
+    if as_json:
+        print(json.dumps(summary, indent=2))
+        return
+    print(f"✓ llms.txt artifacts written to {out.resolve()}")
+    print(
+        f"  products:        {summary['products_written']}"
+    )
+    print(
+        f"  llms.txt:        "
+        f"{summary['short_txt_chars']} chars"
+    )
+    print(
+        f"  llms-full.txt:   "
+        f"{summary['full_txt_chars']} chars"
+    )
+    print(
+        f"  mirrors:         {summary['mirrors_written']}"
+    )
+    print(
+        "  Served by API at /llms.txt + /llms-full.txt + "
+        "/llms-mirror/<slug>.md"
+    )
 
 
 def _cmd_cycles(
@@ -5260,6 +5426,16 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cycles(
             log_path=str(args.log),
             limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "build-llms-txt":
+        _cmd_build_llms_txt(
+            store_name=str(args.store_name),
+            store_url=str(args.store_url),
+            products_json=str(args.products_json),
+            out_dir=str(args.out_dir),
             as_json=bool(args.json),
         )
         return

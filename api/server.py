@@ -84,7 +84,16 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/webhooks": self._list_webhooks,
             "/api/stores": self._list_stores,
             "/api/launches": self._list_launches,
+            # Wave E-1: llms.txt + llms-full.txt served from disk
+            "/llms.txt": self._llms_txt,
+            "/llms-full.txt": self._llms_full_txt,
         }
+
+        if path.startswith("/llms-mirror/") and path.endswith(".md"):
+            # Serve one product mirror as markdown
+            slug = path[len("/llms-mirror/"):-len(".md")]
+            self._llms_mirror(slug)
+            return
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
             engine_name, err = validate_safe_name(path.split("/")[-1], "engine")
@@ -128,6 +137,82 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": f"Not found: {path}"})
 
     # --- GET handlers ---
+
+    def _text_response(
+        self,
+        status: int,
+        body: str,
+        *,
+        content_type: str = "text/plain; charset=utf-8",
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header(
+            "Access-Control-Allow-Origin", "*",
+        )
+        encoded = body.encode("utf-8")
+        self.send_header(
+            "Content-Length", str(len(encoded)),
+        )
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _llms_txt(self) -> None:
+        """Serve ``data/llms/llms.txt`` if it exists."""
+        self._serve_llms_file(
+            relative="llms.txt",
+            content_type="text/plain; charset=utf-8",
+        )
+
+    def _llms_full_txt(self) -> None:
+        self._serve_llms_file(
+            relative="llms-full.txt",
+            content_type="text/plain; charset=utf-8",
+        )
+
+    def _llms_mirror(self, slug: str) -> None:
+        """Serve a product markdown mirror. Slug is
+        untrusted input — guard against path traversal."""
+        import re
+        if not re.match(r"^[a-z0-9\-]{1,80}$", slug):
+            self._text_response(
+                400, "invalid slug",
+            )
+            return
+        self._serve_llms_file(
+            relative=f"products/{slug}.md",
+            content_type="text/markdown; charset=utf-8",
+        )
+
+    def _serve_llms_file(
+        self, *, relative: str, content_type: str,
+    ) -> None:
+        from pathlib import Path as _P
+        root = _P("data/llms")
+        target = (root / relative).resolve()
+        # Path-traversal guard: must stay under the root.
+        try:
+            target.relative_to(root.resolve())
+        except ValueError:
+            self._text_response(400, "bad path")
+            return
+        if not target.is_file():
+            self._text_response(
+                404,
+                "Not built yet. Run "
+                "`shopai build-llms-txt` first.",
+            )
+            return
+        try:
+            body = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            self._text_response(
+                500, f"read error: {exc}",
+            )
+            return
+        self._text_response(
+            200, body, content_type=content_type,
+        )
 
     def _liveness(self) -> None:
         """Lightweight liveness probe. Returns immediately without any
