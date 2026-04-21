@@ -235,3 +235,209 @@ declare_module(
         "calls snapshot(); dashboards + MCP read from here."
     ),
 )
+declare_module(
+    "decision_brain",
+    category="active",
+    reason=(
+        "Core decision orchestrator — brain.think() called "
+        "by publisher + activator + autopilot on every cycle."
+    ),
+)
+declare_module(
+    "decision_rationale_builder",
+    category="active",
+    reason=(
+        "Rationale ledger primary writer; Deliberation "
+        "mirror pipes pillars through here. `shopai explain "
+        "<decision_id>` reads back the tree."
+    ),
+)
+declare_module(
+    "compute_budget",
+    category="active",
+    reason=(
+        "LLM cost cap (§4b.C) — orchestrator consults on "
+        "every outbound LLM call, CLAUDE.md §4b.C capped at "
+        "$0.10/cycle."
+    ),
+)
+
+# Additional experimental modules (0 non-test callers today):
+declare_module(
+    "active_query_planner",
+    category="experimental",
+    reason=(
+        "Plan query sequence to reduce uncertainty. Wire "
+        "when owner_dialog grows multi-turn reasoning."
+    ),
+)
+declare_module(
+    "adaptive_prompts",
+    category="experimental",
+    reason=(
+        "Dynamically adjust system prompts from outcomes. "
+        "Wire when SmartRouter grows prompt-tuning."
+    ),
+)
+declare_module(
+    "answer_synthesizer",
+    category="experimental",
+    reason=(
+        "Multi-source answer fusion. Wire after research "
+        "agent gains multi-search capability."
+    ),
+)
+declare_module(
+    "auto_tagger",
+    category="experimental",
+    reason=(
+        "Automatic taxonomy tag emitter. Wire into "
+        "product_creator for catalog normalisation."
+    ),
+)
+declare_module(
+    "belief_state",
+    category="experimental",
+    reason=(
+        "Hypothesis probability tracker. Wire into "
+        "world_model_calibration for uncertainty-aware "
+        "prediction."
+    ),
+)
+declare_module(
+    "budget_allocator",
+    category="experimental",
+    reason=(
+        "Spend split across campaigns. Wire after Meta "
+        "Ads adapter grows multi-campaign orchestration."
+    ),
+)
+declare_module(
+    "bundle_recommender",
+    category="experimental",
+    reason=(
+        "Cross-product bundle suggestion. Wire when AOV "
+        "optimization agent ships."
+    ),
+)
+declare_module(
+    "causal_discovery",
+    category="experimental",
+    reason=(
+        "Causal graph induction from outcomes. Wire after "
+        "≥1000 outcomes accumulated in RuleBook."
+    ),
+)
+declare_module(
+    "checkpoint",
+    category="experimental",
+    reason=(
+        "Brain state checkpoint/restore. Wire for multi-"
+        "store federated rule sharing (Z3)."
+    ),
+)
+declare_module(
+    "churn_predictor",
+    category="experimental",
+    reason=(
+        "Customer churn probability. Wire after ≥100 repeat "
+        "customers recorded."
+    ),
+)
+declare_module(
+    "cohort_analyzer",
+    category="experimental",
+    reason=(
+        "Customer cohort analysis. Wire for retention "
+        "metric in monthly KPI."
+    ),
+)
+declare_module(
+    "clarification_dialog",
+    category="experimental",
+    reason=(
+        "Ambiguity-driven owner follow-up. Wire when "
+        "owner_dialog dispatcher can't resolve intent."
+    ),
+)
+declare_module(
+    "counterfactual",
+    category="experimental",
+    reason=(
+        "What-if branch analysis. Wire after RCA pipeline "
+        "gains success-comparison adapter (episodic_memory)."
+    ),
+)
+declare_module(
+    "counterfactual_simulator",
+    category="experimental",
+    reason=(
+        "Monte-Carlo branch simulator. Wire after "
+        "world_model_calibration gains enough samples."
+    ),
+)
+declare_module(
+    "creative_orchestrator",
+    category="experimental",
+    reason=(
+        "Cross-engine creative generation router. Wire when "
+        "fal.ai + content_generator need co-ordination."
+    ),
+)
+declare_module(
+    "debate",
+    category="experimental",
+    reason=(
+        "Multi-agent decision debate. Wire after "
+        "model_coordinator ships multi-model voting."
+    ),
+)
+declare_module(
+    "dream_replay",
+    category="experimental",
+    reason=(
+        "Offline replay for consolidation. Replay-orders "
+        "tool covers the live variant; wire this for "
+        "overnight batch learning."
+    ),
+)
+declare_module(
+    "drift_detector",
+    category="experimental",
+    reason=(
+        "KPI distribution drift watcher. Wire after "
+        "feedback_store accumulates ≥30 days of data."
+    ),
+)
+declare_module(
+    "dual_process",
+    category="experimental",
+    reason=(
+        "Fast/slow reasoning router (System 1 / System 2). "
+        "Wire when decide() grows latency-aware paths."
+    ),
+)
+declare_module(
+    "economic_simulator",
+    category="experimental",
+    reason=(
+        "Unit-economics forecaster. Wire into LaunchRequest "
+        "pre-flight once cost-model is trained."
+    ),
+)
+declare_module(
+    "exploration_manager",
+    category="experimental",
+    reason=(
+        "Epsilon-greedy explore/exploit. Wire when "
+        "ab_bandit ships."
+    ),
+)
+declare_module(
+    "forecaster",
+    category="experimental",
+    reason=(
+        "Time-series revenue forecast. Wire when daemon "
+        "has ≥30 cycles of revenue signal."
+    ),
+)

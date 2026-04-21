@@ -99,6 +99,46 @@ class TestModuleCatalog(unittest.TestCase):
         self.assertIsInstance(s, ModuleStatus)
 
 
+class TestCatalogScale(unittest.TestCase):
+    """Catalog expansion tracker — CLAUDE.md §8 tracker
+    claims ≥25 declarations. This test asserts the floor so
+    future accidental deletions are caught."""
+
+    def test_at_least_25_declarations(self):
+        s = catalog_summary()
+        self.assertGreaterEqual(
+            s["total_declared"], 25,
+            msg=(
+                f"Catalog shrunk to "
+                f"{s['total_declared']} — check if "
+                f"bootstrap declarations got removed."
+            ),
+        )
+
+    def test_at_least_5_active_declarations(self):
+        actives = modules_by_category("active")
+        self.assertGreaterEqual(len(actives), 5)
+        # Spot-check: decision_brain + compute_budget must be
+        # active (they're in the hot path)
+        names = {s.name for s in actives}
+        self.assertIn("decision_brain", names)
+        self.assertIn("compute_budget", names)
+
+    def test_major_orphans_declared(self):
+        """Previously-flagged orphans (from the audit) now
+        have an explicit category."""
+        for name in (
+            "causal_discovery", "churn_predictor",
+            "drift_detector", "counterfactual",
+            "economic_simulator", "forecaster",
+        ):
+            s = module_status(name)
+            self.assertNotEqual(
+                s.category, "unknown",
+                msg=f"{name} must be declared",
+            )
+
+
 class TestMCPBrainModuleCatalog(unittest.TestCase):
     def test_tool_registered_read_only(self):
         from mcp_server.tools import build_default_registry
