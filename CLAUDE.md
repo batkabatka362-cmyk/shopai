@@ -645,7 +645,8 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | Tracker + rationale + wave11 | `3aa62c3` | CLAUDE.md §8 + moby gate stamp + tiktok wave11 fix |
 | Webhook rate limiter | `ddeb627` | per-IP token bucket (P0.2 security defence) |
 | Owner tool dispatcher | `dccbfa1` | Telegram phrase → MCP tool with confirm-gate (P1.3) |
-| Dashboard live fresh | (this commit) | `--live` passes force=True so cached agentic status refreshes each cycle (P1.5) |
+| Dashboard live fresh | `a21fbb4` | `--live` passes force=True so cached agentic status refreshes each cycle (P1.5) |
+| fal video pre-gen cache | (this commit) | prompt-hash cache dedupes identical prompts across SKUs (P2.7) |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
@@ -677,8 +678,11 @@ P2 — capability extensions:
 6. **GEO quote-sandwich citation harvest** — semi-auto pull
    real reviews/research from product spec sheets to populate
    `citations` (without fabricating).
-7. **fal.ai video pre-generation cache** — render once, reuse
-   across SKUs in same niche to amortise cost.
+7. ✅ **fal.ai video pre-generation cache** — done.
+   Prompt-hash-keyed SQLite cache in FalVideoRouter; generic
+   prompts reuse the cached URL across SKUs at $0. TTL
+   configurable via `SHOPAI_VIDEO_CACHE_TTL_DAYS` (default
+   30d).
 
 P3 — research wave:
 8. **Q3 2026 market research refresh** — Sora successor,

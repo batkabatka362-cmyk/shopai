@@ -27,6 +27,7 @@ Pure stdlib + requests. Thread-safe (RLock). LLM-free.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -48,6 +49,41 @@ _DEFAULT_TIMEOUT = 120.0   # video generation is slow
 _ENV_KEY = "FAL_KEY"
 _ENV_WEEKLY_CAP = "SHOPAI_VIDEO_BUDGET_SKU_WEEK_USD"
 _DEFAULT_WEEKLY_CAP_USD = 10.0
+_ENV_CACHE_TTL_DAYS = "SHOPAI_VIDEO_CACHE_TTL_DAYS"
+_DEFAULT_CACHE_TTL_DAYS = 30.0
+
+
+def _prompt_hash(
+    *,
+    model_id: str,
+    prompt: str,
+    aspect: str,
+    duration_s: float,
+    reference_image_url: str = "",
+    seed: int = 0,
+) -> str:
+    """Deterministic SHA-256 hash of the tuple that defines a
+    cached video. Reused across SKUs so a generic "pet bowl
+    lifestyle shot" prompt produces one URL regardless of
+    which product requested it.
+
+    ``seed`` is included so a caller that WANTS uniqueness
+    per SKU can pass seed=sku_hash and bypass the cache.
+    """
+    blob = json.dumps(
+        [
+            str(model_id),
+            str(prompt).strip().lower(),
+            str(aspect),
+            round(float(duration_s), 2),
+            str(reference_image_url),
+            int(seed or 0),
+        ],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(
+        blob.encode("utf-8"),
+    ).hexdigest()
 
 
 _SCHEMA = """
@@ -61,6 +97,23 @@ CREATE TABLE IF NOT EXISTS fal_spend (
 );
 CREATE INDEX IF NOT EXISTS idx_fal_spend_sku_ts
     ON fal_spend(sku, created_at);
+
+-- P2.7: pre-generation cache. Generic prompts (e.g.
+-- "pet bowl — lifestyle shot, 9:16") often apply to
+-- multiple SKUs in the same niche. A hit returns the
+-- cached video URL at zero cost; cost tracking still
+-- fires on the original miss.
+CREATE TABLE IF NOT EXISTS fal_cache (
+    prompt_hash   TEXT PRIMARY KEY,
+    model_id      TEXT NOT NULL,
+    duration_s    REAL NOT NULL,
+    aspect        TEXT NOT NULL,
+    video_url     TEXT NOT NULL,
+    created_at    REAL NOT NULL,
+    hits          INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_fal_cache_ts
+    ON fal_cache(created_at);
 """
 
 
@@ -197,6 +250,7 @@ class FalVideoRouter:
         weekly_cap_usd: float | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
         now_fn: Any = None,
+        cache_ttl_days: float | None = None,
     ) -> None:
         self._api_key = (
             api_key
@@ -224,6 +278,21 @@ class FalVideoRouter:
         self._http = http
         self._now_fn = now_fn or time.time
         self._lock = threading.RLock()
+        # Cache TTL in seconds — 30 days default; ``0``
+        # disables expiry (caller can use clear_cache()).
+        if cache_ttl_days is not None:
+            ttl_days = float(cache_ttl_days)
+        else:
+            try:
+                ttl_days = float(
+                    os.environ.get(
+                        _ENV_CACHE_TTL_DAYS,
+                        _DEFAULT_CACHE_TTL_DAYS,
+                    ),
+                )
+            except (TypeError, ValueError):
+                ttl_days = _DEFAULT_CACHE_TTL_DAYS
+        self._cache_ttl_s = max(0.0, ttl_days * 86400.0)
         self._path = Path(db_path)
         self._path.parent.mkdir(
             parents=True, exist_ok=True,
@@ -334,13 +403,6 @@ class FalVideoRouter:
     def generate(
         self, request: VideoRequest,
     ) -> VideoResult:
-        if not self.is_available():
-            return VideoResult(
-                ok=False,
-                skipped_reason=(
-                    f"{_ENV_KEY} not set"
-                ),
-            )
         model = self.pick_model(request)
         if model is None:
             return VideoResult(
@@ -348,6 +410,36 @@ class FalVideoRouter:
                 skipped_reason=(
                     "no model meets quality + aspect + "
                     "duration"
+                ),
+            )
+        # P2.7: cache lookup BEFORE availability/cap checks —
+        # a cached hit has zero cost so we can honour the
+        # request even when FAL_KEY is unset or the weekly
+        # cap has been breached. Key is stable across SKUs
+        # so generic prompts get re-used.
+        prompt_hash = _prompt_hash(
+            model_id=model.model_id,
+            prompt=request.prompt,
+            aspect=request.aspect,
+            duration_s=request.duration_s,
+            reference_image_url=request.reference_image_url,
+            seed=request.seed,
+        )
+        cached_url = self._lookup_cache(prompt_hash)
+        if cached_url:
+            return VideoResult(
+                ok=True,
+                model_id=model.model_id,
+                video_url=cached_url,
+                cost_usd=0.0,
+                duration_s=request.duration_s,
+                request_id="cache",
+            )
+        if not self.is_available():
+            return VideoResult(
+                ok=False,
+                skipped_reason=(
+                    f"{_ENV_KEY} not set"
                 ),
             )
         cost = self.estimate_cost(
@@ -437,6 +529,13 @@ class FalVideoRouter:
             duration_s=request.duration_s,
             cost_usd=cost,
         )
+        self._cache_video(
+            prompt_hash=prompt_hash,
+            model_id=model.model_id,
+            duration_s=request.duration_s,
+            aspect=request.aspect,
+            video_url=video_url,
+        )
         return VideoResult(
             ok=True,
             model_id=model.model_id,
@@ -445,6 +544,104 @@ class FalVideoRouter:
             duration_s=request.duration_s,
             request_id=request_id,
         )
+
+    # ── Cache (P2.7) ────────────────────────────────────
+
+    def _lookup_cache(
+        self, prompt_hash: str,
+    ) -> str | None:
+        """Return the cached ``video_url`` for a prompt hash,
+        or None on miss / expiry. Updates the hit counter so
+        ``stats()`` can surface cache effectiveness."""
+        if not prompt_hash:
+            return None
+        ttl = self._cache_ttl_s
+        cutoff = (
+            float(self._now_fn()) - ttl
+            if ttl > 0 else 0.0
+        )
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT video_url, created_at "
+                "FROM fal_cache WHERE prompt_hash=?",
+                (prompt_hash,),
+            ).fetchone()
+            if not row:
+                return None
+            video_url, created_at = row
+            if ttl > 0 and float(created_at) < cutoff:
+                # Expired — drop the row so re-generation
+                # replaces it on the next cache miss.
+                self._conn.execute(
+                    "DELETE FROM fal_cache "
+                    "WHERE prompt_hash=?",
+                    (prompt_hash,),
+                )
+                self._conn.commit()
+                return None
+            self._conn.execute(
+                "UPDATE fal_cache "
+                "SET hits = hits + 1 "
+                "WHERE prompt_hash=?",
+                (prompt_hash,),
+            )
+            self._conn.commit()
+        return str(video_url)
+
+    def _cache_video(
+        self,
+        *,
+        prompt_hash: str,
+        model_id: str,
+        duration_s: float,
+        aspect: str,
+        video_url: str,
+    ) -> None:
+        """Persist a freshly generated video under its prompt
+        hash so future requests with the same (prompt, model,
+        duration, aspect) reuse the URL at zero cost."""
+        if not prompt_hash or not video_url:
+            return
+        now = float(self._now_fn())
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO fal_cache("
+                "prompt_hash, model_id, duration_s, "
+                "aspect, video_url, created_at, hits) "
+                "VALUES(?, ?, ?, ?, ?, ?, 0)",
+                (
+                    prompt_hash, model_id,
+                    float(duration_s), str(aspect),
+                    str(video_url), now,
+                ),
+            )
+            self._conn.commit()
+
+    def clear_cache(self) -> int:
+        """Drop every cached video. Returns the row count
+        deleted so an admin CLI can confirm the purge."""
+        with self._lock:
+            n = int(self._conn.execute(
+                "SELECT COUNT(*) FROM fal_cache",
+            ).fetchone()[0])
+            self._conn.execute("DELETE FROM fal_cache")
+            self._conn.commit()
+        return n
+
+    def cache_stats(self) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*), "
+                "COALESCE(SUM(hits), 0) "
+                "FROM fal_cache",
+            ).fetchone()
+            return {
+                "entries": int(row[0]),
+                "total_hits": int(row[1]),
+                "ttl_days": round(
+                    self._cache_ttl_s / 86400.0, 2,
+                ) if self._cache_ttl_s > 0 else 0,
+            }
 
     # ── Diagnostics ─────────────────────────────────────
 
@@ -461,6 +658,13 @@ class FalVideoRouter:
                     "SELECT COUNT(*) FROM fal_spend",
                 ).fetchone()[0],
             )
+            cache_row = self._conn.execute(
+                "SELECT COUNT(*), "
+                "COALESCE(SUM(hits), 0) "
+                "FROM fal_cache",
+            ).fetchone()
+            cache_entries = int(cache_row[0])
+            cache_hits = int(cache_row[1])
         return {
             "adapter": "fal_video",
             "configured": bool(self._api_key),
@@ -468,6 +672,8 @@ class FalVideoRouter:
             "total_spend_usd": round(total, 4),
             "total_generations": calls,
             "catalogue_size": len(self._catalogue),
+            "cache_entries": cache_entries,
+            "cache_hits": cache_hits,
         }
 
     def close(self) -> None:

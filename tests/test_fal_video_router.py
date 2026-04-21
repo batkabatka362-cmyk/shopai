@@ -151,9 +151,12 @@ class TestCostAndCap(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             r = _build(tmp, http=http, cap=10.0)
-            for _ in range(3):
+            # Vary prompts so each call is a cache miss
+            # (P2.7 cache dedupes identical prompts to $0).
+            for i in range(3):
                 res = r.generate(VideoRequest(
-                    sku="sku1", prompt="t",
+                    sku="sku1",
+                    prompt=f"prompt {i}",
                     duration_s=5,
                 ))
                 self.assertTrue(res.ok)
