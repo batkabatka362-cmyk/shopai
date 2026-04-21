@@ -688,6 +688,54 @@ def _replay_orders_handler(
     return stats.as_dict()
 
 
+def _engine_feedback_stats_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return per-engine feedback stats (success rate, avg
+    elapsed, trend, common errors). Read from the same
+    FeedbackStore the engine_outcome_bus feeds on every
+    activator / publisher outcome."""
+    from core.learning.feedback_store import (
+        get_feedback_store,
+    )
+    store = get_feedback_store()
+    engine = str(args.get("engine") or "").strip()
+    if engine:
+        return {"engine": engine, **store.get_stats(engine)}
+    return {
+        "engines": store.get_all_stats(),
+        "persist_errors": store.get_persist_errors(),
+    }
+
+
+def _improvements_summary_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return summary of learning-engine improvement
+    proposals + applied count + by-type distribution. Owner
+    reads this to see what the system wants to change next."""
+    from core.learning.improvement_tracker import (
+        ImprovementTracker,
+    )
+    # ImprovementTracker has no singleton by design — it's
+    # per-learning-source. Instantiate one on the default
+    # path for the read.
+    tracker = ImprovementTracker()
+    summary = tracker.summary()
+    try:
+        limit = int(args.get("limit", 20) or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 1000))
+    summary["proposed_samples"] = tracker.list_proposed()[
+        :limit
+    ]
+    summary["applied_samples"] = tracker.list_applied()[
+        :limit
+    ]
+    return summary
+
+
 def _rule_quality_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1172,6 +1220,50 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_recent_cycles_handler,
+    ))
+    reg.register(ToolSpec(
+        name="engine_feedback_stats",
+        description=(
+            "Per-engine execution ledger: success rate, avg "
+            "elapsed, trend (improving / stable / declining), "
+            "top errors. Populated automatically from every "
+            "activator + publisher outcome via the engine "
+            "outcome bus. Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "engine": {
+                    "type": "string",
+                    "description": (
+                        "Return one engine's detail; omit for "
+                        "all-engines summary."
+                    ),
+                },
+            },
+        },
+        handler=_engine_feedback_stats_handler,
+    ))
+    reg.register(ToolSpec(
+        name="improvements_summary",
+        description=(
+            "Proposed improvements across learning engines — "
+            "count + by-type distribution + samples of "
+            "proposed / applied entries. Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Sample size for proposed / applied "
+                        "lists (default 20)."
+                    ),
+                },
+            },
+        },
+        handler=_improvements_summary_handler,
     ))
     reg.register(ToolSpec(
         name="rule_quality",

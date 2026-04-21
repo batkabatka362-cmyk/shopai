@@ -116,6 +116,7 @@ class EngineOutcomeBus:
         world_calibration: Any = None,
         trust_calibrator: Any = None,
         freshness_tracker: Any = None,
+        feedback_store: Any = None,
         mine_every: int = _DEFAULT_MINE_EVERY,
         pattern_window: int = _DEFAULT_PATTERN_WINDOW,
         now_fn: Any = None,
@@ -132,6 +133,7 @@ class EngineOutcomeBus:
         self._world_calib = world_calibration
         self._trust = trust_calibrator
         self._freshness = freshness_tracker
+        self._feedback = feedback_store
         self._mine_every = int(mine_every)
         self._buf: deque[EngineOutcome] = deque(
             maxlen=int(pattern_window),
@@ -203,6 +205,19 @@ class EngineOutcomeBus:
                 )
         return self._freshness
 
+    def _get_feedback(self) -> Any:
+        if self._feedback is None:
+            try:
+                from core.learning.feedback_store import (
+                    get_feedback_store,
+                )
+                self._feedback = get_feedback_store()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "feedback_store lazy load: %s", exc,
+                )
+        return self._feedback
+
     # ── Report ────────────────────────────────────────────
 
     def report(self, outcome: EngineOutcome) -> BusReport:
@@ -263,6 +278,36 @@ class EngineOutcomeBus:
                 invoked.append("freshness")
             except Exception as exc:  # noqa: BLE001
                 errors["freshness"] = str(exc)
+        # Feedback store — per-engine ledger of ok/fail,
+        # elapsed, and KPI snapshot. Rescues the previously
+        # orphaned core.learning.feedback_store module (audit
+        # batch 3 wire-up): every activator / publisher outcome
+        # now shows up in `feedback_store.get_all_stats()`.
+        fb = self._get_feedback()
+        if fb is not None:
+            try:
+                fb.record(
+                    engine_name=outcome.engine,
+                    task_id=outcome.rationale_id or "",
+                    status=(
+                        "completed" if outcome.ok else "failed"
+                    ),
+                    elapsed_seconds=0.0,
+                    input_summary=dict(outcome.context or {}),
+                    output_summary={
+                        "kpi": outcome.kpi,
+                        "kpi_value": outcome.value,
+                    },
+                    quality_score=(
+                        float(outcome.value)
+                        if isinstance(
+                            outcome.value, (int, float),
+                        ) else None
+                    ),
+                )
+                invoked.append("feedback_store")
+            except Exception as exc:  # noqa: BLE001
+                errors["feedback_store"] = str(exc)
         # Pattern miner (every `mine_every` reports)
         mined = False
         proposals = 0

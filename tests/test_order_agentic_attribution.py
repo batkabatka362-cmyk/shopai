@@ -54,6 +54,10 @@ class TestAgenticAttribution(unittest.TestCase):
         )
 
     def test_bus_report_called_on_agentic_order(self):
+        """Agentic order fires two bus reports: the
+        agentic_storefront channel-level event (§4b wire) and
+        the wider order_webhook event (audit batch 3 wire so
+        organic orders also feed the learning ledger)."""
         fake_bus = MagicMock()
         with patch(
             "core.integration.engine_outcome_bus"
@@ -63,14 +67,28 @@ class TestAgenticAttribution(unittest.TestCase):
             h = OrderWebhookHandler()
             out = h.handle_order_paid(_order())
         self.assertTrue(out.get("agentic_bus_reported"))
-        fake_bus.report.assert_called_once()
-        reported = fake_bus.report.call_args[0][0]
-        self.assertEqual(reported.engine, "agentic_storefront")
+        self.assertTrue(out.get("order_bus_reported"))
+        self.assertEqual(fake_bus.report.call_count, 2)
+        engines = [
+            call.args[0].engine
+            for call in fake_bus.report.call_args_list
+        ]
+        self.assertIn("agentic_storefront", engines)
+        self.assertIn("order_webhook", engines)
+        # agentic call still carries the channel-level shape
+        agentic_call = next(
+            call for call in fake_bus.report.call_args_list
+            if call.args[0].engine == "agentic_storefront"
+        )
+        reported = agentic_call.args[0]
         self.assertEqual(reported.source, "chatgpt")
         self.assertEqual(reported.kpi, "gmv")
         self.assertAlmostEqual(reported.value, 30.0)
 
-    def test_bus_not_called_when_no_channel(self):
+    def test_bus_report_on_non_agentic_order(self):
+        """Organic (non-agentic) order still fires the wider
+        order_webhook bus event so feedback_store + pattern
+        miner receive signal (audit batch 3 wire-up)."""
         fake_bus = MagicMock()
         with patch(
             "core.integration.engine_outcome_bus"
@@ -78,8 +96,13 @@ class TestAgenticAttribution(unittest.TestCase):
             return_value=fake_bus,
         ):
             h = OrderWebhookHandler()
-            h.handle_order_paid(_order(source_name="web"))
-        fake_bus.report.assert_not_called()
+            out = h.handle_order_paid(_order(source_name="web"))
+        # Only one emit (no agentic channel)
+        self.assertEqual(fake_bus.report.call_count, 1)
+        reported = fake_bus.report.call_args.args[0]
+        self.assertEqual(reported.engine, "order_webhook")
+        self.assertEqual(reported.source, "organic")
+        self.assertTrue(out.get("order_bus_reported"))
 
     def test_classify_failure_is_soft(self):
         with patch(

@@ -299,6 +299,40 @@ class OrderWebhookHandler:
                 )
                 recorded["agentic_bus_reported"] = False
 
+        # 4c. General order_paid outcome on the engine bus.
+        #     Separate from 4b: even organic (non-agentic)
+        #     orders feed the learning ledger — feedback_store
+        #     + freshness_tracker + pattern_miner benefit from
+        #     every outcome, not just attributable ones. Audit
+        #     batch 3 wire-up — keeps the replay-orders CLI a
+        #     real learning exerciser rather than a silent
+        #     no-op for organic payloads.
+        try:
+            from core.integration.engine_outcome_bus import (
+                EngineOutcome,
+                get_engine_outcome_bus,
+            )
+            get_engine_outcome_bus().report(EngineOutcome(
+                engine="order_webhook",
+                kpi="revenue",
+                value=float(revenue),
+                ok=revenue > 0,
+                source=(
+                    agentic_channel or "organic"
+                ),
+                context={
+                    "order_id": order_id,
+                    "items": item_count,
+                },
+                rationale_id=str(decision_id or ""),
+            ))
+            recorded["order_bus_reported"] = True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "order bus report failed: %s", exc,
+            )
+            recorded["order_bus_reported"] = False
+
         # 5. Optional CJ fulfillment dispatch (LX.2 wire-in).
         #    Opt-in via SHOPAI_ENABLE_CJ_FULFILL=1 so owners who
         #    only want analytics don't trigger live supplier

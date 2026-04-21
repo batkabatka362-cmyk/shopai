@@ -278,3 +278,34 @@ class FeedbackStore:
                     "up corrupted file (%s)", engine_name, exc, move_exc,
                 )
             return []
+
+
+# ── Singleton ────────────────────────────────────────────────
+
+_SINGLETON: FeedbackStore | None = None
+_SINGLETON_LOCK = threading.Lock()
+
+
+def get_feedback_store() -> FeedbackStore:
+    """Module-level accessor used by the engine_outcome_bus
+    sink and MCP tools — single shared instance so every
+    launch feeds the same learning ledger."""
+    global _SINGLETON
+    if _SINGLETON is None:
+        with _SINGLETON_LOCK:
+            if _SINGLETON is None:
+                _SINGLETON = FeedbackStore()
+    return _SINGLETON
+
+
+def reset_feedback_store_for_tests(
+    store_dir: str | None = None,
+) -> None:
+    """Reset the module singleton — used by tests to isolate
+    runs."""
+    global _SINGLETON
+    with _SINGLETON_LOCK:
+        _SINGLETON = (
+            FeedbackStore(store_dir=store_dir)
+            if store_dir is not None else None
+        )
