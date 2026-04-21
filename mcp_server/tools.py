@@ -64,6 +64,17 @@ class ToolResult:
     content: Any = None
     error: str = ""
     latency_ms: float = 0.0
+    # Telemetry — mirrors ``core.adapters.base.AdapterResult``
+    # so an MCP tool that wraps an adapter call can preserve
+    # the vendor's cost + token accounting instead of losing
+    # it at the boundary. Defaults are zeros so existing
+    # in-process handlers (no external call) keep their
+    # previous payload shape.
+    cost_usd: float = 0.0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    model: str = ""
+    adapter: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -72,7 +83,60 @@ class ToolResult:
             "content": self.content,
             "error": self.error,
             "latency_ms": round(self.latency_ms, 2),
+            "cost_usd": round(self.cost_usd, 6),
+            "tokens_in": int(self.tokens_in),
+            "tokens_out": int(self.tokens_out),
+            "model": self.model,
+            "adapter": self.adapter,
         }
+
+    @classmethod
+    def from_adapter_result(
+        cls,
+        tool: str,
+        adapter_result: Any,
+    ) -> "ToolResult":
+        """Factory that copies the telemetry + ok/error
+        shape from a ``core.adapters.base.AdapterResult`` so
+        MCP tools that wrap adapter calls preserve vendor
+        cost accounting end-to-end.
+        """
+        ok = bool(getattr(adapter_result, "ok", False))
+        content = getattr(adapter_result, "data", None)
+        error_obj = getattr(adapter_result, "error", None)
+        # AdapterResult.error is an AdapterError dataclass;
+        # stringify when present.
+        err_text = str(error_obj) if error_obj else ""
+        return cls(
+            tool=tool,
+            ok=ok,
+            content=content,
+            error=err_text,
+            latency_ms=float(
+                getattr(adapter_result, "latency_ms", 0.0)
+                or 0.0,
+            ),
+            cost_usd=float(
+                getattr(adapter_result, "cost_usd", 0.0)
+                or 0.0,
+            ),
+            tokens_in=int(
+                getattr(adapter_result, "tokens_in", 0)
+                or 0,
+            ),
+            tokens_out=int(
+                getattr(adapter_result, "tokens_out", 0)
+                or 0,
+            ),
+            model=str(
+                getattr(adapter_result, "model", "")
+                or "",
+            ),
+            adapter=str(
+                getattr(adapter_result, "adapter", "")
+                or "",
+            ),
+        )
 
     def to_mcp(self) -> dict[str, Any]:
         """Shape MCP protocol expects on a CallToolResult."""
