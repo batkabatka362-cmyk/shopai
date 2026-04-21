@@ -23,6 +23,10 @@ class _EnvSandbox:
         "FAL_KEY",
         "TRIPLE_WHALE_API_KEY",
         "OBSIDIAN_VAULT_PATH",
+        "TIKTOK_SHOP_APP_KEY",
+        "TIKTOK_SHOP_APP_SECRET",
+        "TIKTOK_SHOP_ACCESS_TOKEN",
+        "TIKTOK_SHOP_SHOP_ID",
     )
 
     def __enter__(self):
@@ -217,6 +221,35 @@ class TestVaultProbe(unittest.TestCase):
         self.assertFalse(r.ok)
 
 
+class TestTikTokShopProbe(unittest.TestCase):
+    def test_no_config_skipped(self):
+        with _EnvSandbox():
+            r = dr._probe_tiktok_shop()
+        self.assertTrue(r.skipped)
+        self.assertIn("Z6", r.detail)
+
+    def test_partial_config_fails(self):
+        with _EnvSandbox():
+            os.environ["TIKTOK_SHOP_APP_KEY"] = "k"
+            os.environ["TIKTOK_SHOP_APP_SECRET"] = "s"
+            # token + shop_id missing
+            r = dr._probe_tiktok_shop()
+        self.assertFalse(r.ok)
+        self.assertFalse(r.skipped)
+        self.assertIn("partial", r.detail)
+
+    def test_full_config_ok(self):
+        with _EnvSandbox():
+            os.environ.update({
+                "TIKTOK_SHOP_APP_KEY": "k",
+                "TIKTOK_SHOP_APP_SECRET": "s",
+                "TIKTOK_SHOP_ACCESS_TOKEN": "tok",
+                "TIKTOK_SHOP_SHOP_ID": "1",
+            })
+            r = dr._probe_tiktok_shop()
+        self.assertTrue(r.ok)
+
+
 class TestMobyProbe(unittest.TestCase):
     def test_no_key_skipped(self):
         with _EnvSandbox():
@@ -272,6 +305,10 @@ class TestRun(unittest.TestCase):
                 "FAL_KEY": "fal",
                 "OBSIDIAN_VAULT_PATH": td,
                 "TRIPLE_WHALE_API_KEY": "tw",
+                "TIKTOK_SHOP_APP_KEY": "k",
+                "TIKTOK_SHOP_APP_SECRET": "s",
+                "TIKTOK_SHOP_ACCESS_TOKEN": "tok",
+                "TIKTOK_SHOP_SHOP_ID": "1",
             })
             http, _ = _http({
                 "/shop.json": (

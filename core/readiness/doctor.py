@@ -451,6 +451,49 @@ def _probe_moby(
     )
 
 
+def _probe_tiktok_shop() -> ProbeResult:
+    """Config-level check for TikTok Shop — we don't hit the
+    live signed endpoint because that requires a valid
+    HMAC'd timestamp + responsive shop. Just report whether
+    the 4 required env vars are set + flag the adapter as
+    ready."""
+    missing: list[str] = []
+    for env in (
+        "TIKTOK_SHOP_APP_KEY",
+        "TIKTOK_SHOP_APP_SECRET",
+        "TIKTOK_SHOP_ACCESS_TOKEN",
+        "TIKTOK_SHOP_SHOP_ID",
+    ):
+        if not os.environ.get(env, ""):
+            missing.append(env)
+    if len(missing) == 4:
+        return ProbeResult(
+            name="tiktok_shop",
+            ok=False,
+            skipped=True,
+            detail="not configured (Z6 multi-platform optional)",
+            fix=(
+                "Set TIKTOK_SHOP_APP_KEY + APP_SECRET + "
+                "ACCESS_TOKEN + SHOP_ID to enable"
+            ),
+        )
+    if missing:
+        return ProbeResult(
+            name="tiktok_shop",
+            ok=False,
+            detail=f"partial config; missing {len(missing)}",
+            fix=(
+                "Set "
+                + ", ".join(missing)
+            ),
+        )
+    return ProbeResult(
+        name="tiktok_shop",
+        ok=True,
+        detail="all 4 env vars set (connectivity not probed)",
+    )
+
+
 # Critical probes = those required for revenue. Optional probes
 # are "nice to have" and a missing/failed one only adds a warning.
 _CRITICAL_NAMES = frozenset({"shopify", "meta_ads"})
@@ -462,6 +505,7 @@ def run(
     timeout: float = _DEFAULT_TIMEOUT_S,
     include_moby: bool = True,
     include_vault: bool = True,
+    include_tiktok: bool = True,
 ) -> DoctorReport:
     """Run every probe and return a DoctorReport.
 
@@ -497,6 +541,15 @@ def run(
         ))
     if include_vault:
         results.append(_probe_vault())
+    if include_tiktok:
+        try:
+            results.append(_probe_tiktok_shop())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("tiktok probe raised: %s", exc)
+            results.append(ProbeResult(
+                name="tiktok_shop", ok=False,
+                detail=f"probe raised: {exc}",
+            ))
     if include_moby:
         try:
             results.append(_probe_moby(http_fn, timeout))

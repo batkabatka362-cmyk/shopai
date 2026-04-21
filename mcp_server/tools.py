@@ -439,10 +439,12 @@ def _doctor_handler(
         timeout = 8.0
     include_moby = bool(args.get("include_moby", True))
     include_vault = bool(args.get("include_vault", True))
+    include_tiktok = bool(args.get("include_tiktok", True))
     report = _run_doctor(
         timeout=timeout,
         include_moby=include_moby,
         include_vault=include_vault,
+        include_tiktok=include_tiktok,
     )
     return report.as_dict()
 
