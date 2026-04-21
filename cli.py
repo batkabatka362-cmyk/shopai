@@ -447,14 +447,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay_p.add_argument(
         "path",
+        nargs="?",
+        default="",
         help=(
-            "JSONL file of Shopify order dicts "
-            "(one per line)"
+            "JSONL file of Shopify order dicts (one per "
+            "line). Optional when --synthesize N is passed."
         ),
     )
     replay_p.add_argument(
         "--throttle", type=float, default=0.0,
         help="Seconds between orders (default 0)",
+    )
+    replay_p.add_argument(
+        "--synthesize", type=int, default=0,
+        help=(
+            "Skip the file + generate N deterministic "
+            "synthetic orders instead. Useful before a T1 "
+            "live deploy to validate the learning loop."
+        ),
+    )
+    replay_p.add_argument(
+        "--seed", type=int, default=42,
+        help="Seed for --synthesize (default 42)",
+    )
+    replay_p.add_argument(
+        "--attach-decision-rate", type=float, default=0.6,
+        help=(
+            "--synthesize only: fraction of orders that get a "
+            "fake shopai_decision_id note attribute "
+            "(default 0.6)"
+        ),
     )
     replay_p.add_argument(
         "--json", action="store_true",
@@ -3136,18 +3158,42 @@ def _cmd_replay_orders(
     path: str,
     throttle_s: float,
     as_json: bool,
+    synthesize: int = 0,
+    seed: int = 42,
+    attach_decision_rate: float = 0.6,
 ) -> None:
-    """Feed a JSONL file of Shopify order payloads through
-    the live webhook pipeline. Exercises the entire learning
-    loop on historical / synthetic data."""
-    from agents.replay import replay_orders_from_file
-    try:
-        stats = replay_orders_from_file(
-            path, throttle_s=throttle_s,
+    """Feed a JSONL file of Shopify order payloads (or
+    generate ``synthesize`` synthetic ones) through the live
+    webhook pipeline. Exercises the entire learning loop on
+    historical / synthetic data."""
+    from agents.replay import (
+        replay_orders,
+        replay_orders_from_file,
+        synthesize_orders_with_random_decisions,
+    )
+    if synthesize > 0:
+        orders = synthesize_orders_with_random_decisions(
+            count=synthesize,
+            seed=seed,
+            attach_rate=attach_decision_rate,
         )
-    except FileNotFoundError:
-        print(f"File not found: {path}")
-        sys.exit(2)
+        stats = replay_orders(
+            orders, throttle_s=throttle_s,
+        )
+    else:
+        if not path:
+            print(
+                "Replay requires either a JSONL path or "
+                "--synthesize N",
+            )
+            sys.exit(2)
+        try:
+            stats = replay_orders_from_file(
+                path, throttle_s=throttle_s,
+            )
+        except FileNotFoundError:
+            print(f"File not found: {path}")
+            sys.exit(2)
     if as_json:
         print(json.dumps(stats.as_dict(), indent=2))
         return
@@ -6002,9 +6048,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "replay-orders":
         _cmd_replay_orders(
-            path=str(args.path),
+            path=str(args.path or ""),
             throttle_s=float(args.throttle),
             as_json=bool(args.json),
+            synthesize=int(args.synthesize),
+            seed=int(args.seed),
+            attach_decision_rate=float(
+                args.attach_decision_rate,
+            ),
         )
         return
 
