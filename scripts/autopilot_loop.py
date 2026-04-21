@@ -235,12 +235,22 @@ class AutopilotLoop:
             shop_url = os.environ.get(
                 "SHOPAI_SHOPIFY_URL", "",
             )
-            api_key = os.environ.get(
-                "SHOPAI_SHOPIFY_KEY",
-                os.environ.get(
-                    "SHOPAI_SHOPIFY_CLIENT_SECRET", "",
-                ),
-            )
+            # D1: resolve through the expiring-token auth so
+            # public-app stores keep writing past the
+            # 2026-04-01 OAuth deadline. Falls through to
+            # SHOPAI_SHOPIFY_KEY for legacy custom apps.
+            try:
+                from core.auth.token_resolver import (
+                    resolve_access_token,
+                )
+                api_key = resolve_access_token(shop_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "token resolver fallback: %s", exc,
+                )
+                api_key = os.environ.get(
+                    "SHOPAI_SHOPIFY_KEY", "",
+                )
             meta_account = os.environ.get(
                 "META_ADS_ACCOUNT_ID",
                 os.environ.get(

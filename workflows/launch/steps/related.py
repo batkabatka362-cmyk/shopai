@@ -43,7 +43,15 @@ class RelatedProductsStep(Step):
             raise StepSkip("no shopify product yet — skip related")
 
         shop = os.environ.get("SHOPAI_SHOPIFY_URL", "")
-        token = os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+        try:
+            from core.auth.token_resolver import (
+                resolve_access_token,
+            )
+            token = resolve_access_token(shop)
+        except Exception:  # noqa: BLE001
+            token = os.environ.get(
+                "SHOPAI_SHOPIFY_KEY", "",
+            )
         if not shop or not token:
             raise StepSkip("shopify creds missing for related fetch")
 

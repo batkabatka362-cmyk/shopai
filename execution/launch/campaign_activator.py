@@ -166,6 +166,7 @@ class CampaignActivator:
         risk_tripwire: Any = None,
         launch_simulator: Any = None,
         crisis_responder: Any = None,
+        moby_comparator: Any = None,
         max_daily_budget_usd: float = _DEFAULT_MAX_DAILY_BUDGET_USD,
     ) -> None:
         if max_daily_budget_usd <= 0:
@@ -181,6 +182,7 @@ class CampaignActivator:
         self._tripwire = risk_tripwire
         self._simulator = launch_simulator
         self._crisis = crisis_responder
+        self._moby = moby_comparator
         self._max_budget = float(max_daily_budget_usd)
         self._history: list[ActivationResult] = []
 
@@ -192,6 +194,21 @@ class CampaignActivator:
         from core.adapters.ads.meta_ads import MetaAdsAdapter
         self._ads = MetaAdsAdapter()
         return self._ads
+
+    def _get_moby(self) -> Any:
+        if self._moby is not None:
+            return self._moby
+        try:
+            from core.brain.moby_vote_comparator import (
+                get_moby_vote_comparator,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "moby comparator lazy import: %s", exc,
+            )
+            return None
+        self._moby = get_moby_vote_comparator()
+        return self._moby
 
     def _get_readiness(self) -> Any:
         if self._readiness is not None:
@@ -385,6 +402,18 @@ class CampaignActivator:
             ),
             ts=time.time(),
         ))
+
+        # 4.5 Moby vote-comparator — log the case where ShopAI
+        #     voted "activate" and Moby's recommendation for this
+        #     campaign_id is different. Passive: just records,
+        #     never blocks. Resolves once a purchase outcome lands
+        #     (wired in OutcomeRecorder.record).
+        self._step_moby_compare(
+            request,
+            steps,
+            decision_id=decision_id,
+            shopai_action="activate",
+        )
 
         # 5. execute
         exec_log = self._step_execute(
@@ -811,6 +840,91 @@ class CampaignActivator:
                         a.as_dict() for a in result.alerts
                     ],
                 },
+                ts=time.time(),
+            )
+        steps.append(log)
+        return log
+
+    def _step_moby_compare(
+        self,
+        request: ActivateRequest,
+        steps: list[StepLog],
+        *,
+        decision_id: str,
+        shopai_action: str,
+    ) -> StepLog:
+        """Fetch Moby's recommendation for this campaign and log
+        any disagreement. Passive / best-effort: never blocks
+        the launch. Silent no-op when Moby isn't configured.
+        """
+        comparator = self._get_moby()
+        if comparator is None:
+            log = StepLog(
+                name="moby_vote_compare",
+                status="ok",
+                note="comparator unavailable",
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        # Fetch Moby campaigns-scope recommendations.
+        try:
+            adapter = comparator._get_adapter()
+            recs = []
+            if adapter is not None and hasattr(
+                adapter, "recommendations",
+            ):
+                recs = adapter.recommendations(
+                    scope="campaigns", limit=50,
+                ) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "moby recs fetch skipped: %s", exc,
+            )
+            recs = []
+        if not recs:
+            log = StepLog(
+                name="moby_vote_compare",
+                status="ok",
+                note="no moby recommendations returned",
+                ts=time.time(),
+            )
+            steps.append(log)
+            return log
+        try:
+            from core.brain.moby_vote_comparator import (
+                ShopAIVote,
+            )
+            vote = ShopAIVote(
+                decision_id=decision_id,
+                entity_id=str(request.campaign_id),
+                action=shopai_action,
+                confidence=float(
+                    request.claimed_confidence or 0.6,
+                ),
+                note=f"campaign_activator:{shopai_action}",
+            )
+            report = comparator.compare_votes([vote], recs)
+            note = (
+                "agreement" if vote.decision_id in report.agreements
+                else "disagreement logged"
+                if vote.decision_id in report.disagreements_logged
+                else "no matching moby rec"
+            )
+            log = StepLog(
+                name="moby_vote_compare",
+                status="ok",
+                note=note,
+                ts=time.time(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "moby compare skipped: %s", exc,
+            )
+            log = StepLog(
+                name="moby_vote_compare",
+                status="ok",
+                note=f"skipped: {exc}",
                 ts=time.time(),
             )
         steps.append(log)

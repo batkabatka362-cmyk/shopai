@@ -30,7 +30,17 @@ class ShopifyCreateStep(Step):
             raise StepFailure("missing title — cannot create Shopify product")
 
         shop_url = os.environ.get("SHOPAI_SHOPIFY_URL", "")
-        api_key = os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+        # D1: resolve through expiring-token auth when public-
+        # app OAuth is configured; falls back to legacy KEY.
+        try:
+            from core.auth.token_resolver import (
+                resolve_access_token,
+            )
+            api_key = resolve_access_token(shop_url)
+        except Exception:  # noqa: BLE001
+            api_key = os.environ.get(
+                "SHOPAI_SHOPIFY_KEY", "",
+            )
         if not shop_url or not api_key:
             raise StepFailure("SHOPAI_SHOPIFY_URL / SHOPAI_SHOPIFY_KEY not set")
 
