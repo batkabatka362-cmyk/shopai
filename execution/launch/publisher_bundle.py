@@ -1302,6 +1302,11 @@ class PublisherBundle:
                 constraints=constraints,
                 awareness=awareness,
             )
+            # Stamp the decision_id so order_paid webhooks
+            # carrying ``shopai_decision_id`` can back-fill
+            # the actual revenue + items here — closes
+            # the §4d pillar 4 refine+learn loop.
+            d.decision_id = str(decision_id)
             record_deliberation(d)
         except Exception as exc:  # noqa: BLE001
             logger.debug(

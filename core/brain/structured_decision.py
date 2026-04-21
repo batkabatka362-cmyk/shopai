@@ -290,6 +290,17 @@ class Deliberation:
     awareness: SelfAwareness
     decision: ThinkingDirection | None = None
     created_ts: float = 0.0
+    # Audit + learn loop: caller links a decision_id so
+    # observed outcomes (e.g. an order_paid webhook for
+    # the launched product) can back-fill the actual
+    # measured value via :func:`record_outcome_for_decision`.
+    # The owner reads the predicted-vs-observed pair via
+    # MCP ``recent_deliberations`` to spot drift.
+    decision_id: str = ""
+    observation: dict[str, Any] = field(
+        default_factory=dict,
+    )
+    observed_ts: float = 0.0
 
     def best_direction(self) -> ThinkingDirection | None:
         if not self.refines:
@@ -325,6 +336,9 @@ class Deliberation:
                 if self.decision else None
             ),
             "created_ts": self.created_ts,
+            "decision_id": self.decision_id,
+            "observation": dict(self.observation),
+            "observed_ts": self.observed_ts,
         }
 
     def as_rationale_entries(self) -> list[dict[str, Any]]:
@@ -503,3 +517,50 @@ def recent_deliberations(
 def reset_recent_for_tests() -> None:
     with _LOCK:
         _RECENT.clear()
+
+
+def record_outcome_for_decision(
+    decision_id: str,
+    observation: dict[str, Any],
+    *,
+    now_fn: Any = None,
+) -> bool:
+    """Back-fill the actual measured outcome onto the
+    Deliberation that drove the decision. Closes the
+    refine + learn loop (CLAUDE.md §4d pillar 4 / §4b/B
+    closed-loop telemetry).
+
+    Looked up by ``decision_id``. Returns True if a
+    matching Deliberation was found and updated, False
+    otherwise (caller decides whether to log).
+
+    The most recent matching Deliberation wins — a
+    re-decision under the same id (rare, but possible)
+    overwrites earlier observations rather than silently
+    dropping data.
+    """
+    if not decision_id:
+        return False
+    if not isinstance(observation, dict):
+        return False
+    now = float((now_fn or time.time)())
+    with _LOCK:
+        for d in reversed(_RECENT):
+            if d.decision_id == decision_id:
+                d.observation = dict(observation)
+                d.observed_ts = now
+                return True
+    return False
+
+
+def find_deliberation_by_decision_id(
+    decision_id: str,
+) -> Deliberation | None:
+    """Lookup helper used by tests + future MCP tools."""
+    if not decision_id:
+        return None
+    with _LOCK:
+        for d in reversed(_RECENT):
+            if d.decision_id == decision_id:
+                return d
+    return None

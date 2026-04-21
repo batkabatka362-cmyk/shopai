@@ -1233,6 +1233,13 @@ class CampaignActivator:
                 constraints=constraints,
                 awareness=awareness,
             )
+            # Stamp the decision_id so downstream
+            # observed-outcome events (e.g. order_paid
+            # webhooks) can back-fill the actual measured
+            # value for this Deliberation via
+            # ``record_outcome_for_decision`` — closes
+            # the §4d pillar 4 refine+learn loop.
+            d.decision_id = str(decision_id)
             record_deliberation(d)
         except Exception as exc:  # noqa: BLE001
             logger.debug(

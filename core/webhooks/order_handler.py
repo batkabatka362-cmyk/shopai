@@ -237,6 +237,40 @@ class OrderWebhookHandler:
             logger.debug("brain outcome record failed: %s", exc)
             recorded["brain_recorded"] = False
 
+        # 4a. Refine + learn loop — back-fill the
+        #     5-pillar Deliberation that drove this
+        #     decision with the actual measured revenue.
+        #     CLAUDE.md §4d pillar 4. Soft-fail: missing
+        #     module / no matching record → debug log + move
+        #     on; never blocks the webhook.
+        if decision_id:
+            try:
+                from core.brain.structured_decision import (
+                    record_outcome_for_decision,
+                )
+                back_filled = record_outcome_for_decision(
+                    str(decision_id),
+                    {
+                        "kind": "purchase",
+                        "revenue_usd": float(revenue),
+                        "subtotal_usd": float(subtotal),
+                        "items": int(item_count),
+                        "order_id": str(order_id),
+                        "agentic_channel": (
+                            agentic_channel or ""
+                        ),
+                    },
+                )
+                recorded["deliberation_observed"] = (
+                    bool(back_filled)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "deliberation back-fill failed: %s",
+                    exc,
+                )
+                recorded["deliberation_observed"] = False
+
         # 4b. Agentic channel outcome on the engine bus so
         #     per-channel ROAS rebalancing has real evidence.
         if agentic_channel:
