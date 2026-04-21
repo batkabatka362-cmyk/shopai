@@ -426,6 +426,27 @@ def _predict_outcome_handler(
     return pred.as_dict()
 
 
+def _doctor_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Run doctor probes and return the structured report.
+    Owner asks Claude Desktop "is everything connected?" and
+    gets a real answer instead of a schema check."""
+    from core.readiness.doctor import run as _run_doctor
+    try:
+        timeout = float(args.get("timeout", 8.0) or 8.0)
+    except (TypeError, ValueError):
+        timeout = 8.0
+    include_moby = bool(args.get("include_moby", True))
+    include_vault = bool(args.get("include_vault", True))
+    report = _run_doctor(
+        timeout=timeout,
+        include_moby=include_moby,
+        include_vault=include_vault,
+    )
+    return report.as_dict()
+
+
 def _recent_cycles_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -718,6 +739,29 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_fal_budget_handler,
+    ))
+    reg.register(ToolSpec(
+        name="doctor",
+        description=(
+            "Real connectivity probes — actually call "
+            "Shopify, Meta Ads, fal.ai, Moby, and check the "
+            "Obsidian vault path. Returns per-system ok + "
+            "latency + fix hints."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "timeout": {
+                    "type": "number",
+                    "description": (
+                        "HTTP timeout seconds (default 8)"
+                    ),
+                },
+                "include_moby": {"type": "boolean"},
+                "include_vault": {"type": "boolean"},
+            },
+        },
+        handler=_doctor_handler,
     ))
     reg.register(ToolSpec(
         name="recent_cycles",
