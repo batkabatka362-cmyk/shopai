@@ -688,6 +688,24 @@ def _replay_orders_handler(
     return stats.as_dict()
 
 
+def _rule_quality_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Read-only lift-based quality metric across every rule
+    in the RuleBook. Answers "are my learned rules actually
+    helping?" — owner's T2 KPI. No LLM, no writes."""
+    from core.learning.rule_quality import evaluate_rulebook
+    report = evaluate_rulebook()
+    try:
+        limit = int(args.get("limit", 100) or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 10000))
+    d = report.as_dict()
+    d["rules"] = d["rules"][:limit]
+    return d
+
+
 def _recent_cycles_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1154,6 +1172,27 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_recent_cycles_handler,
+    ))
+    reg.register(ToolSpec(
+        name="rule_quality",
+        description=(
+            "Lift-based quality read across every rule in the "
+            "RuleBook — true positives, false positives, "
+            "uncertain, insufficient data. Answers the T2 KPI "
+            "'PatternMiner true-positive rate ≥ 60%'. Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max rules to return (default 100)."
+                    ),
+                },
+            },
+        },
+        handler=_rule_quality_handler,
     ))
     reg.register(ToolSpec(
         name="replay_orders",

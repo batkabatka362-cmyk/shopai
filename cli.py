@@ -480,6 +480,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    rule_quality_p = sub.add_parser(
+        "rule-quality",
+        help=(
+            "Inspect the RuleBook's quality via lift — which "
+            "learned rules are true positives, which are noise, "
+            "which are false positives. Answers the T2 KPI "
+            "'PatternMiner true-positive rate ≥ 60%'."
+        ),
+    )
+    rule_quality_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Rules to surface in the table (default 20)",
+    )
+    rule_quality_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of a table",
+    )
+
     kill_p = sub.add_parser("kill",
                             help="Force-kill a launch regardless of ROAS")
     kill_p.add_argument("launch_id", help="launch_<id> to kill")
@@ -3155,6 +3173,66 @@ def _cmd_replay_orders(
                     f"  {r.order_id:<20} "
                     f"{r.error[:80]}"
                 )
+
+
+def _cmd_rule_quality(
+    *, limit: int, as_json: bool,
+) -> None:
+    """Print the RuleBook's lift-based quality read.
+
+    Owner asks: "Are my learned rules actually helping, or are
+    they false positives?" The answer comes as a true-positive
+    rate + a per-rule table sorted active-first, lift-desc.
+    """
+    from core.learning.rule_quality import evaluate_rulebook
+    report = evaluate_rulebook()
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(
+        f"RuleBook quality — "
+        f"{report.total_rules} total, "
+        f"{report.applied_rules} applied, "
+        f"baseline win rate "
+        f"{report.baseline_win_rate:.2%}"
+    )
+    print(
+        f"  true_positives:    {report.true_positives}"
+    )
+    print(
+        f"  uncertain:         {report.uncertain}"
+    )
+    print(
+        f"  false_positives:   {report.false_positives}"
+    )
+    print(
+        f"  insufficient:      {report.insufficient_data}"
+    )
+    print(
+        f"  true-positive rate: "
+        f"{report.true_positive_rate:.2%} "
+        f"(T2 KPI ≥ 60%)"
+    )
+    if not report.rules:
+        print()
+        print("(RuleBook empty — nothing to evaluate yet.)")
+        return
+    print()
+    print(
+        f"{'rule_id':<14} {'status':<10} "
+        f"{'applied':>8} {'ema':>6} {'lift':>6} "
+        f"{'verdict':<18} pattern → action"
+    )
+    for q in report.rules[:int(limit)]:
+        pat = (q.pattern or "")[:24]
+        act = (q.action or "")[:24]
+        print(
+            f"{q.rule_id[:12]:<14} {q.status:<10} "
+            f"{q.applied_count:>8d} "
+            f"{q.win_rate_ema:>6.2f} "
+            f"{q.lift:>6.2f} "
+            f"{q.verdict:<18} {pat} → {act}"
+        )
 
 
 def _cmd_cycles(
@@ -5926,6 +6004,13 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_replay_orders(
             path=str(args.path),
             throttle_s=float(args.throttle),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "rule-quality":
+        _cmd_rule_quality(
+            limit=int(args.limit),
             as_json=bool(args.json),
         )
         return
