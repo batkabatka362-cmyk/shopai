@@ -160,6 +160,50 @@ def _live_enabled() -> bool:
     return os.getenv("SHOPAI_ENABLE_LIVE_EXECUTION", "") == "1"
 
 
+def _default_video_prompts(winner: Any) -> list[dict[str, Any]]:
+    """Build 2 volume-tier fal.ai video prompts per winner —
+    deterministic, no LLM cost.  The PublisherBundle video
+    step sees these and runs the fal router; cost stays
+    inside the SHOPAI_VIDEO_BUDGET_SKU_WEEK_USD cap (default
+    $10/wk, 2×5s×$0.07 = $0.70 per cycle).
+
+    Owners who want richer prompts can attach their own
+    ``video_prompts`` to a ``ProductCandidate`` — we leave
+    non-empty lists untouched via a ``hasattr`` guard on
+    the candidate.
+    """
+    # Respect owner-curated prompts if the winner already
+    # carries them on the dataclass.
+    existing = getattr(winner, "video_prompts", None)
+    if isinstance(existing, (list, tuple)) and existing:
+        return [dict(p) for p in existing if isinstance(p, dict)]
+    title = str(getattr(winner, "title", "") or "product")
+    image_url = str(getattr(winner, "image_url", "") or "")
+    prompts: list[dict[str, Any]] = [
+        {
+            "prompt": (
+                f"{title} — lifestyle product shot, "
+                "vertical composition, warm cinematic lighting"
+            ),
+            "aspect": "9:16",
+            "duration_s": 5.0,
+            "quality_floor": "volume",
+        },
+        {
+            "prompt": (
+                f"{title} — close-up demonstration, "
+                "subtle motion, neutral background"
+            ),
+            "aspect": "9:16",
+            "duration_s": 5.0,
+            "quality_floor": "volume",
+        },
+    ]
+    if image_url:
+        prompts[0]["reference_image_url"] = image_url
+    return prompts
+
+
 class Autopilot:
     """End-to-end winner → publish → activate orchestrator.
 
@@ -284,6 +328,13 @@ class Autopilot:
             "product_type": (
                 winner.tags[0] if winner.tags else ""
             ),
+            # A6 wire-through: default 2 volume-tier video
+            # prompts per winner so the fal router pipeline
+            # actually runs in the daemon. If the candidate
+            # already carries ``video_prompts`` (e.g. owner
+            # hand-curated) we honour those untouched.
+            "video_prompts": _default_video_prompts(winner),
+            "sku": winner.external_id,
         }
         # 2. publish (uses publisher_bundle)
         from execution.launch.publisher_bundle import (
