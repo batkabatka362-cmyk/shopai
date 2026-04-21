@@ -157,7 +157,12 @@ class AutopilotRun:
 
 
 def _live_enabled() -> bool:
-    return os.getenv("SHOPAI_ENABLE_LIVE_EXECUTION", "") == "1"
+    """Delegates to ``core.system.live_execution`` so every
+    write path in ShopAI uses one definition of "live"."""
+    from core.system.live_execution import (
+        is_live_execution_enabled,
+    )
+    return is_live_execution_enabled()
 
 
 def _video_generation_enabled() -> bool:

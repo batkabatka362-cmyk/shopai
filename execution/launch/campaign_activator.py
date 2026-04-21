@@ -145,7 +145,15 @@ class ActivationResult:
 
 
 def _enable_live_execution() -> bool:
-    return os.getenv("SHOPAI_ENABLE_LIVE_EXECUTION", "") == "1"
+    """Delegates to the single source of truth at
+    ``core.system.live_execution.is_live_execution_enabled()``.
+    Wrapper kept so existing callers of this symbol in
+    ``execution.launch.campaign_activator`` keep working.
+    """
+    from core.system.live_execution import (
+        is_live_execution_enabled,
+    )
+    return is_live_execution_enabled()
 
 
 class CampaignActivator:

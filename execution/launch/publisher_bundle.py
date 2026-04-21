@@ -146,8 +146,17 @@ def _slugify(text: str) -> str:
 
 def _enable_live_execution() -> bool:
     """Match the config/settings.json convention — live writes are
-    opt-in via a single env flag plus the per-request ``live`` bit."""
-    return os.getenv("SHOPAI_ENABLE_LIVE_EXECUTION", "") == "1"
+    opt-in via a single env flag plus the per-request ``live`` bit.
+
+    Delegates to ``core.system.live_execution.is_live_execution_enabled()``
+    so every write path in ShopAI agrees on what "live" means.
+    Wrapper kept for backward compatibility with any caller that
+    imports this symbol from publisher_bundle.
+    """
+    from core.system.live_execution import (
+        is_live_execution_enabled,
+    )
+    return is_live_execution_enabled()
 
 
 def _tracking_url(
