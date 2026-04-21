@@ -171,6 +171,46 @@ measurable evidence олох.
 
 ---
 
+## 6b. T1 validation recipe (live-env-гүй)
+
+Живэ store энвирон-гүйгээр learning loop-г бодитоор туршдаг богино skript. Live deploy хийхээс өмнө энэ дарааллыг ажлуулж зорилтот үр дүн гарвал Т1-т шилжинэ.
+
+```bash
+# 1. Бүх тест ногоон
+PYTHONPATH=. pytest tests/test_order_replay.py \
+    tests/test_replay_synthesize.py \
+    tests/test_rule_quality.py \
+    tests/test_live_execution_gate.py -q
+
+# 2. 100 synthetic order-ийг жинхэнэ webhook pipeline-руу нэвтрүүл
+PYTHONPATH=. python cli.py replay-orders --synthesize 100 --seed 42
+# Expected: "Replayed 100 orders (100 ok, 0 failed, 0 skipped)"
+# Revenue ≈ $8,000 (deterministic under seed=42)
+
+# 3. RuleBook-ыг судал — PatternMiner rule санал болгосон эсэх
+PYTHONPATH=. python cli.py rule-quality
+# Expected: total_rules ≥ 1 (PatternMiner replay signature-ээс
+# rule proposed), баtalgаа нь insufficient_data (applied_count=0)
+
+# 4. Recent deliberations + observations
+PYTHONPATH=. python cli.py ask "recent deliberations"
+# Эсвэл Claude Desktop-аас:
+#   use tool recent_deliberations
+
+# 5. Live health
+PYTHONPATH=. python cli.py autopilot-status
+PYTHONPATH=. python cli.py doctor
+```
+
+Зорилтот үр дүн:
+- 100/100 орд амжилттай орж хэвэл webhook pipeline OK
+- RuleBook > 0 rule санал → PatternMiner ажиллаж байна
+- Doctor "ready" гэж хариулах → T1-д орох нөхцөл бэлэн
+
+Хэрвээ дээрх 5 алхамын аль нь failed болвол T1 live-deploy хийхгүй.
+
+---
+
 ## 7. Нэг асуулт (owner-д)
 
 **Та одоо тестийн Shopify store + Meta Ads sandbox account-той юу?**
