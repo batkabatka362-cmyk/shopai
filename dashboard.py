@@ -49,6 +49,7 @@ class Dashboard:
         self._agent_stats()
         self._workflow_stats()
         self._metrics()
+        self._autopilot_panel()
         self._agentic_channels()
         self._moby_trust()
         self._fal_budget()
@@ -166,6 +167,96 @@ class Dashboard:
         event_stats = status.get("event_stats", {})
         if event_stats.get("published", 0) > 0:
             print(f"  Events: published={event_stats.get('published', 0)}  delivered={event_stats.get('delivered', 0)}  subscribers={event_stats.get('subscriber_count', 0)}")
+        print()
+
+    def _autopilot_panel(self):
+        """Wave pidfile — is the 24/7 daemon running + last cycle."""
+        print(color(
+            "── AUTOPILOT DAEMON ──────────────────────────────────────────",
+            "bold",
+        ))
+        try:
+            from core.system.pidfile import read_status
+            status = read_status("daemon")
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"  {color('—', 'dim')}  pidfile unavailable "
+                f"({exc})"
+            )
+            print()
+            return
+        if status.running:
+            uptime_h = status.uptime_s / 3600
+            print(
+                f"  running: {color('✓', 'green')}  "
+                f"pid={status.pid}  "
+                f"uptime={uptime_h:.1f}h"
+            )
+        else:
+            print(
+                f"  running: {color('✗', 'red')}  "
+                f"{status.detail}"
+            )
+            print(color(
+                "  (start with `python scripts/run_daemon.py` "
+                "or systemctl start shopai-daemon)",
+                "dim",
+            ))
+        # Latest cycle
+        from pathlib import Path as _P
+        log_path = _P("data/autopilot_loop.log")
+        if not log_path.exists():
+            print(color(
+                "  No cycle log yet — no cycles recorded.",
+                "dim",
+            ))
+            print()
+            return
+        last_cycle = None
+        try:
+            import json as _json
+            for line in reversed(
+                log_path.read_text().splitlines(),
+            ):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    last_cycle = _json.loads(line)
+                    break
+                except _json.JSONDecodeError:
+                    continue
+        except OSError as exc:
+            print(f"  (log read failed: {exc})")
+            print()
+            return
+        if last_cycle is None:
+            print(color(
+                "  No cycles recorded.",
+                "dim",
+            ))
+            print()
+            return
+        ts = time.strftime(
+            "%H:%M:%S",
+            time.localtime(
+                float(last_cycle.get("ts", 0)),
+            ),
+        )
+        err = str(last_cycle.get("error", ""))
+        launches = int(last_cycle.get("launches", 0))
+        ok = int(last_cycle.get("successful", 0))
+        err_mark = (
+            color('!', 'red') if err
+            else color('·', 'dim')
+        )
+        print(
+            f"  last cycle #{last_cycle.get('cycle', '?')}  "
+            f"@ {ts}  "
+            f"launches={launches} ok={ok}  "
+            f"dur={float(last_cycle.get('duration_s', 0)):.2f}s  "
+            f"{err_mark} {err[:40]}"
+        )
         print()
 
     def _agentic_channels(self):

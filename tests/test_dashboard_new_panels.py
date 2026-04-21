@@ -17,6 +17,58 @@ def _dashboard_no_orch():
     return d
 
 
+class TestAutopilotPanel(unittest.TestCase):
+    def test_not_running_shows_start_hint(self):
+        d = _dashboard_no_orch()
+        fake_status = MagicMock(
+            running=False,
+            detail="pidfile not found",
+            pid=0, uptime_s=0,
+        )
+        buf = io.StringIO()
+        with patch(
+            "core.system.pidfile.read_status",
+            return_value=fake_status,
+        ):
+            with redirect_stdout(buf):
+                d._autopilot_panel()
+        out = buf.getvalue()
+        self.assertIn("AUTOPILOT DAEMON", out)
+        self.assertIn("running:", out)
+        self.assertIn("run_daemon.py", out)
+
+    def test_running_shows_pid_and_uptime(self):
+        d = _dashboard_no_orch()
+        fake_status = MagicMock(
+            running=True,
+            pid=12345,
+            uptime_s=3600 * 5,
+            detail="",
+        )
+        buf = io.StringIO()
+        with patch(
+            "core.system.pidfile.read_status",
+            return_value=fake_status,
+        ):
+            with redirect_stdout(buf):
+                d._autopilot_panel()
+        out = buf.getvalue()
+        self.assertIn("pid=12345", out)
+        self.assertIn("uptime=5.0h", out)
+
+    def test_pidfile_raise_is_soft(self):
+        d = _dashboard_no_orch()
+        buf = io.StringIO()
+        with patch(
+            "core.system.pidfile.read_status",
+            side_effect=RuntimeError("boom"),
+        ):
+            with redirect_stdout(buf):
+                d._autopilot_panel()
+        out = buf.getvalue()
+        self.assertIn("pidfile unavailable", out)
+
+
 class TestAgenticChannelsPanel(unittest.TestCase):
     def test_renders_channel_table(self):
         d = _dashboard_no_orch()
