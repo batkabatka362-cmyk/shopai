@@ -134,6 +134,38 @@ class TestAgreementAndDisagreement(unittest.TestCase):
         self.assertIn("no matching", step.note)
 
 
+class TestEngineOutcomeBusEmission(unittest.TestCase):
+    def test_activation_reports_to_bus(self):
+        comparator = MobyVoteComparator(adapter=None)
+        comparator._get_adapter = lambda: None  # type: ignore[method-assign]
+        activator = _activator_with_moby(comparator)
+
+        reported = []
+
+        class _FakeBus:
+            def report(self, ev):
+                reported.append(ev)
+
+        with unittest.mock.patch(
+            "core.integration.engine_outcome_bus"
+            ".get_engine_outcome_bus",
+            return_value=_FakeBus(),
+        ):
+            activator.activate(_req())
+        self.assertEqual(len(reported), 1)
+        ev = reported[0]
+        self.assertEqual(ev.engine, "campaign_activator")
+        self.assertEqual(ev.kpi, "activation")
+        self.assertEqual(ev.value, 1.0)
+        self.assertEqual(ev.source, "meta_ads")
+        self.assertIn(
+            "campaign_id", ev.context,
+        )
+
+
+import unittest.mock  # placed here to minimise diff footprint
+
+
 class TestFailureIsolation(unittest.TestCase):
     def test_moby_raise_does_not_block_activation(self):
         adapter = _tmp_moby()

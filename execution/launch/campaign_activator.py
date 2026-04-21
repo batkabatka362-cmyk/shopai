@@ -453,6 +453,40 @@ class CampaignActivator:
                 "outcome record at-activate skipped: %s", exc,
             )
 
+        # 6.5. Engine outcome bus — fan the activation event to
+        #      every learner (PatternMiner, WorldModelCalibration,
+        #      SourceTrustCalibrator, FreshnessTracker). Separate
+        #      from OutcomeRecorder above because the bus watches
+        #      for engine-level patterns across all activations,
+        #      not just decision-level outcomes.
+        try:
+            from core.integration.engine_outcome_bus import (
+                EngineOutcome,
+                get_engine_outcome_bus,
+            )
+            get_engine_outcome_bus().report(EngineOutcome(
+                engine="campaign_activator",
+                kpi="activation",
+                value=1.0,
+                ok=True,
+                source="meta_ads",
+                context={
+                    "campaign_id": request.campaign_id,
+                    "daily_budget_usd": (
+                        request.daily_budget_usd
+                    ),
+                    "dry_run": dry_run,
+                    "platform": getattr(
+                        request, "platform", "meta",
+                    ),
+                },
+                rationale_id=decision_id,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine bus report at-activate skipped: %s", exc,
+            )
+
         if not dry_run and request.daily_budget_usd > 0:
             try:
                 self._get_tripwire().record_spend(
