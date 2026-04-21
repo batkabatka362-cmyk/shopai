@@ -651,7 +651,8 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | GEO citation store | `9424313` | Niche-keyed `data/citations/<niche>.json` auto-injects into content_generator quote-sandwich |
 | Quality audit pass | `4c23d23` `73d30f5` `048e621` `5b79338` | Live-execution centralised, ToolResult telemetry, AgentManager facade, BrainFacade.register_module |
 | 5-pillar structured decision | `f0a603a` | `core/brain/structured_decision.py` — Outcome / Directions / Constraints / Refines / SelfAwareness for every significant decision; MCP `recent_deliberations` |
-| Activator → deliberation wire | (this commit) | Every activation records a 5-pillar Deliberation visible via MCP `recent_deliberations`; verdict unchanged |
+| Activator → deliberation wire | `c7d1293` | Every activation records a 5-pillar Deliberation visible via MCP `recent_deliberations`; verdict unchanged |
+| Publisher → deliberation wire | (this commit) | Every product launch records a 5-pillar Deliberation symmetric to the activator wire; budget-commit point captured |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).

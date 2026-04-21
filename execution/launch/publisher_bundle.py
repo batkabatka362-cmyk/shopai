@@ -344,6 +344,20 @@ class PublisherBundle:
                     + compliance_log.error
                 ),
             )
+        # 2.9 Structured-decision recorder — capture the
+        #     5-pillar reasoning for this launch BEFORE
+        #     the Meta campaign step commits ad budget.
+        #     Pure observability: never blocks, never
+        #     alters the verdict. Owner reads via MCP
+        #     ``recent_deliberations``.
+        self._record_structured_decision(
+            request=request,
+            decision_id=decision_id,
+            steps=steps,
+            product_handle=product_handle,
+            dry_run=dry_run,
+        )
+
         # 3. meta ads campaign
         campaign_log = self._step_launch_campaign(
             request, steps,
@@ -1147,6 +1161,154 @@ class PublisherBundle:
             )
         steps.append(log)
         return log
+
+    def _record_structured_decision(
+        self,
+        *,
+        request: LaunchRequest,
+        decision_id: str,
+        steps: list[StepLog],
+        product_handle: str,
+        dry_run: bool,
+    ) -> None:
+        """Build a 5-pillar Deliberation summarising the
+        launch reasoning + push to the in-process recent
+        log. Mirror of CampaignActivator's recorder — same
+        pattern applied to the second high-stakes decision
+        path.
+
+        Soft-fail: a failing recorder must NEVER block the
+        launch. Behaviour parity is the contract.
+        """
+        try:
+            from core.brain.structured_decision import (
+                Constraint,
+                OutcomeSpec,
+                SelfAwareness,
+                ThinkingDirection,
+                deliberate,
+                record_deliberation,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "structured_decision import failed: %s",
+                exc,
+            )
+            return
+        try:
+            title = str(
+                request.winner.get(
+                    "title", "product",
+                ),
+            )
+            outcome = OutcomeSpec(
+                what=(
+                    f"launch '{title}' (handle="
+                    f"{product_handle})"
+                ),
+                why=(
+                    f"winner cleared discovery + "
+                    f"compliance gates "
+                    f"({len(steps)} steps run)"
+                ),
+                measurable=(
+                    "first 7-day campaign ROAS "
+                    "≥ tripwire floor"
+                ),
+                value_usd=float(
+                    request.ad_budget_daily or 0,
+                ) * 7.0,
+            )
+            directions = [
+                ThinkingDirection(
+                    label="launch",
+                    action={
+                        "product_handle": product_handle,
+                        "platform": request.platform,
+                        "ad_budget_daily": float(
+                            request.ad_budget_daily or 0,
+                        ),
+                        "dry_run": dry_run,
+                    },
+                    reasoning=(
+                        "all gates passed; product "
+                        "created; EU compliance ok"
+                    ),
+                    expected_value=float(
+                        request.ad_budget_daily or 0,
+                    ) * 0.5,
+                    confidence=0.6,
+                ),
+                ThinkingDirection(
+                    label="defer",
+                    action={
+                        "product_handle": product_handle,
+                        "ad_budget_daily": 0.0,
+                        "dry_run": True,
+                    },
+                    reasoning=(
+                        "publish product but hold ads "
+                        "until next cycle re-evaluates"
+                    ),
+                    expected_value=0.0,
+                    confidence=0.5,
+                ),
+            ]
+            kind_for = {
+                "generate_copy": "soft",
+                "create_product": "hard",
+                "video_generate": "soft",
+                "eu_ai_compliance": "hard",
+            }
+            constraints: list[Constraint] = []
+            for step in steps:
+                kind = kind_for.get(step.name)
+                if kind is None:
+                    continue
+                passed = step.status in (
+                    "ok", "success", "dry_run",
+                )
+
+                def _make_eval(passed_flag: bool):
+                    def _eval(_direction):
+                        return (
+                            passed_flag,
+                            1.0 if passed_flag else 0.0,
+                            "pipeline-evaluated",
+                        )
+                    return _eval
+
+                constraints.append(Constraint(
+                    name=step.name,
+                    kind=kind,
+                    reason=step.error or step.name,
+                    evaluator=_make_eval(passed),
+                ))
+            awareness = SelfAwareness(
+                loop_check="aligned",
+                # publish-then-ads is the literal money
+                # commit path — distance 0.
+                dollar_distance=0,
+                plumbing_vs_capability="capability",
+                notes=(
+                    f"product_handle={product_handle}",
+                    f"platform={request.platform}",
+                    f"dry_run={dry_run}",
+                ),
+            )
+            d = deliberate(
+                outcome=outcome,
+                directions=directions,
+                constraints=constraints,
+                awareness=awareness,
+            )
+            record_deliberation(d)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "publisher structured-decision record "
+                "skipped: %s",
+                exc,
+            )
 
     def _compensate_unpublish(
         self,
