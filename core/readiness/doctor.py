@@ -451,6 +451,46 @@ def _probe_moby(
     )
 
 
+def _probe_webhook_secret() -> ProbeResult:
+    """Shopify webhook HMAC-secret config check. Pre-audit,
+    the production webhook endpoint silently accepted every
+    request because no secret was configured. Flag this as a
+    critical warning so the owner knows."""
+    secret = (
+        os.environ.get("SHOPAI_SHOPIFY_WEBHOOK_SECRET", "")
+        or os.environ.get("SHOPIFY_WEBHOOK_SECRET", "")
+    )
+    required = (
+        os.environ.get(
+            "SHOPAI_WEBHOOK_VERIFY_REQUIRED", "",
+        ) == "1"
+    )
+    if not secret:
+        return ProbeResult(
+            name="webhook_secret",
+            ok=False,
+            detail=(
+                "not set — webhook endpoint would accept "
+                "unsigned POSTs"
+            ),
+            fix=(
+                "Set SHOPAI_SHOPIFY_WEBHOOK_SECRET to the "
+                "value Shopify shows in the webhook config, "
+                "and optionally set "
+                "SHOPAI_WEBHOOK_VERIFY_REQUIRED=1 to fail-"
+                "closed even while testing"
+            ),
+        )
+    detail = f"secret set ({len(secret)} chars)"
+    if required:
+        detail += ", fail-closed enabled"
+    return ProbeResult(
+        name="webhook_secret",
+        ok=True,
+        detail=detail,
+    )
+
+
 def _probe_tiktok_shop() -> ProbeResult:
     """Config-level check for TikTok Shop — we don't hit the
     live signed endpoint because that requires a valid
@@ -541,6 +581,14 @@ def run(
         ))
     if include_vault:
         results.append(_probe_vault())
+    try:
+        results.append(_probe_webhook_secret())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("webhook probe raised: %s", exc)
+        results.append(ProbeResult(
+            name="webhook_secret", ok=False,
+            detail=f"probe raised: {exc}",
+        ))
     if include_tiktok:
         try:
             results.append(_probe_tiktok_shop())

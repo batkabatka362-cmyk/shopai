@@ -12,6 +12,7 @@ import copy
 import hashlib
 import hmac
 import json
+import os
 import time
 import threading
 from typing import Any, Callable
@@ -103,10 +104,45 @@ class WebhookEvent:
 
 
 class ShopifyWebhookHandler:
-    """Handles incoming Shopify webhooks and routes to engines."""
+    """Handles incoming Shopify webhooks and routes to engines.
 
-    def __init__(self, webhook_secret: str = "") -> None:
-        self._secret = webhook_secret
+    Security: Shopify signs every webhook's raw body with
+    HMAC-SHA256 + base64 in ``X-Shopify-Hmac-SHA256``. When a
+    secret is configured we verify against the raw bytes and
+    reject mismatches. When no secret is configured we ACCEPT
+    every webhook — that's a production hole the instance-
+    level secret fixes.
+
+    Resolution order for the secret (first non-empty wins):
+      1. ``webhook_secret`` kwarg (explicit)
+      2. ``SHOPAI_SHOPIFY_WEBHOOK_SECRET`` env var
+      3. ``SHOPIFY_WEBHOOK_SECRET`` env var
+         (standard Shopify convention)
+
+    Set ``SHOPAI_WEBHOOK_VERIFY_REQUIRED=1`` to reject every
+    incoming webhook when no secret is configured rather than
+    silently accepting them — the safe default for production.
+    """
+
+    def __init__(
+        self, webhook_secret: str = "",
+    ) -> None:
+        if webhook_secret:
+            self._secret = webhook_secret
+        else:
+            self._secret = (
+                os.environ.get(
+                    "SHOPAI_SHOPIFY_WEBHOOK_SECRET", "",
+                )
+                or os.environ.get(
+                    "SHOPIFY_WEBHOOK_SECRET", "",
+                )
+            )
+        self._verify_required = (
+            os.environ.get(
+                "SHOPAI_WEBHOOK_VERIFY_REQUIRED", "",
+            ) == "1"
+        )
         self._event_log: list[dict[str, Any]] = []
         self._custom_handlers: dict[str, list[Callable]] = {}
         self._lock = threading.Lock()
@@ -151,7 +187,23 @@ class ShopifyWebhookHandler:
             self._stats["received"] += 1
 
         # HMAC verification — fail CLOSED when a secret is
-        # configured.
+        # configured, and (via SHOPAI_WEBHOOK_VERIFY_REQUIRED=1)
+        # also when NO secret is set. The optional "required"
+        # flag blocks silent-accept in production where the
+        # operator forgot to set the secret.
+        if not self._secret and self._verify_required:
+            with self._lock:
+                self._stats["skipped"] += 1
+            logger.warning(
+                "Webhook %s rejected: no webhook secret set "
+                "and SHOPAI_WEBHOOK_VERIFY_REQUIRED=1",
+                topic,
+            )
+            return {
+                "event_id": event.event_id,
+                "status": "rejected",
+                "reason": "webhook_secret_not_configured",
+            }
         if self._secret:
             if not hmac_header:
                 with self._lock:

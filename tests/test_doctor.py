@@ -27,6 +27,9 @@ class _EnvSandbox:
         "TIKTOK_SHOP_APP_SECRET",
         "TIKTOK_SHOP_ACCESS_TOKEN",
         "TIKTOK_SHOP_SHOP_ID",
+        "SHOPAI_SHOPIFY_WEBHOOK_SECRET",
+        "SHOPIFY_WEBHOOK_SECRET",
+        "SHOPAI_WEBHOOK_VERIFY_REQUIRED",
     )
 
     def __enter__(self):
@@ -221,6 +224,45 @@ class TestVaultProbe(unittest.TestCase):
         self.assertFalse(r.ok)
 
 
+class TestWebhookSecretProbe(unittest.TestCase):
+    def test_no_secret_fails_with_fix_hint(self):
+        with _EnvSandbox():
+            r = dr._probe_webhook_secret()
+        self.assertFalse(r.ok)
+        self.assertIn(
+            "SHOPAI_SHOPIFY_WEBHOOK_SECRET", r.fix,
+        )
+
+    def test_shopai_secret_ok(self):
+        with _EnvSandbox():
+            os.environ[
+                "SHOPAI_SHOPIFY_WEBHOOK_SECRET"
+            ] = "abcdef12"
+            r = dr._probe_webhook_secret()
+        self.assertTrue(r.ok)
+        self.assertIn("secret set", r.detail)
+
+    def test_standard_secret_ok(self):
+        with _EnvSandbox():
+            os.environ[
+                "SHOPIFY_WEBHOOK_SECRET"
+            ] = "abcdef12"
+            r = dr._probe_webhook_secret()
+        self.assertTrue(r.ok)
+
+    def test_required_flag_surfaces_in_detail(self):
+        with _EnvSandbox():
+            os.environ[
+                "SHOPAI_SHOPIFY_WEBHOOK_SECRET"
+            ] = "abcdef12"
+            os.environ[
+                "SHOPAI_WEBHOOK_VERIFY_REQUIRED"
+            ] = "1"
+            r = dr._probe_webhook_secret()
+        self.assertTrue(r.ok)
+        self.assertIn("fail-closed", r.detail)
+
+
 class TestTikTokShopProbe(unittest.TestCase):
     def test_no_config_skipped(self):
         with _EnvSandbox():
@@ -309,6 +351,7 @@ class TestRun(unittest.TestCase):
                 "TIKTOK_SHOP_APP_SECRET": "s",
                 "TIKTOK_SHOP_ACCESS_TOKEN": "tok",
                 "TIKTOK_SHOP_SHOP_ID": "1",
+                "SHOPAI_SHOPIFY_WEBHOOK_SECRET": "whsec",
             })
             http, _ = _http({
                 "/shop.json": (
