@@ -23,6 +23,7 @@ store_registry.py stays stable.
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, Optional
 
@@ -86,6 +87,7 @@ ALL_FEATURES = (
     "brand",
     "redirects",
     "blog",
+    "webhooks",
 )
 
 
@@ -760,6 +762,10 @@ class StoreConfigurator:
         if "blog" in selected:
             results["blog"] = self._setup_blog(
                 client, niche, store_name,
+            )
+        if "webhooks" in selected:
+            results["webhooks"] = self._setup_webhooks(
+                client, shop_url, token,
             )
 
         self._record(results)
@@ -2187,6 +2193,122 @@ class StoreConfigurator:
                 store_name or "Our Store"
             ),
             "written": written,
+            "errors": errors,
+        }
+
+    # ── Feature: Webhook subscriptions (T1 prereq) ─────────────
+
+    def _setup_webhooks(
+        self,
+        client: ShopifyClient,
+        shop_url: str,
+        token: str,
+    ) -> dict[str, Any]:
+        """Subscribe ShopAI's webhook endpoint to the Shopify
+        topics the reward loop + pattern miner need.
+
+        Reads ``SHOPAI_WEBHOOK_CALLBACK_URL`` from env — must
+        be an https URL Shopify can reach. Without it the
+        feature returns ``{"status": "skipped", "reason":
+        "SHOPAI_WEBHOOK_CALLBACK_URL not set"}`` — still
+        useful during T0 (no-op is OK) and non-blocking for
+        the rest of configure().
+
+        Idempotent — core.webhooks.register.register_all()
+        treats an already-subscribed topic as "exists".
+        Topics subscribed: orders/create, orders/paid,
+        orders/cancelled, products/update, app/uninstalled.
+
+        This is what turns a configured store into a T1-ready
+        store — without webhook subscriptions the handler
+        never fires and the learning loop stays dark.
+        """
+        callback = os.environ.get(
+            "SHOPAI_WEBHOOK_CALLBACK_URL", "",
+        ).strip()
+        if not callback:
+            return {
+                "status": "skipped",
+                "reason": (
+                    "SHOPAI_WEBHOOK_CALLBACK_URL not set "
+                    "— export to enable webhook "
+                    "subscription"
+                ),
+                "subscribed": [],
+                "existing": [],
+                "errors": [],
+            }
+        if not callback.startswith("https://"):
+            return {
+                "status": "error",
+                "reason": (
+                    "SHOPAI_WEBHOOK_CALLBACK_URL must be "
+                    "https (Shopify rejects http)"
+                ),
+                "subscribed": [],
+                "existing": [],
+                "errors": [{"error": "non-https URL"}],
+            }
+
+        from core.webhooks.register import (
+            _TOPICS, register_all,
+        )
+
+        if self._dry_run:
+            for topic in _TOPICS:
+                self._plan.append({
+                    "action": "register_webhook",
+                    "path": "webhooks.json",
+                    "method": "POST",
+                    "topic": topic,
+                    "address": callback,
+                    "description": (
+                        f"Subscribe webhook "
+                        f"{topic} → {callback}"
+                    ),
+                })
+            return {
+                "status": "dry_run",
+                "callback": callback,
+                "subscribed": list(_TOPICS),
+                "existing": [],
+                "errors": [],
+            }
+
+        try:
+            status_map = register_all(
+                shop_url, token, callback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "error",
+                "callback": callback,
+                "subscribed": [],
+                "existing": [],
+                "errors": [{"error": str(exc)}],
+            }
+
+        subscribed: list[str] = []
+        existing: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for topic, st in status_map.items():
+            if st == "created":
+                subscribed.append(topic)
+            elif st == "exists":
+                existing.append(topic)
+            else:
+                errors.append({"topic": topic, "error": st})
+        return {
+            "status": (
+                "success" if not errors else (
+                    "partial" if (
+                        subscribed or existing
+                    ) else "error"
+                )
+            ),
+            "callback": callback,
+            "subscribed": subscribed,
+            "existing": existing,
             "errors": errors,
         }
 

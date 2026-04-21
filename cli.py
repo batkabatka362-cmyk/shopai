@@ -1937,6 +1937,17 @@ def _format_feature_summary(name: str, data: dict) -> str:
         if skipped:
             return f"skipped={skipped}, errors={errs}"
         return f"status={data.get('status', '?')}, errors={errs}"
+    if name == "webhooks":
+        subscribed = data.get("subscribed") or []
+        existing = data.get("existing") or []
+        errs = len(data.get("errors") or [])
+        status = data.get("status", "?")
+        if status == "skipped":
+            return f"skipped ({data.get('reason', '')[:40]})"
+        return (
+            f"subscribed={len(subscribed)}, "
+            f"existing={len(existing)}, errors={errs}"
+        )
     return str(data)[:60]
 
 
