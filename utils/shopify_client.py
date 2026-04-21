@@ -106,6 +106,48 @@ class ShopifyClient:
     def delete(self, path: str) -> dict[str, Any]:
         return self._request("DELETE", path)
 
+    def graphql(
+        self,
+        query: str,
+        variables: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """Send a GraphQL Admin API request.
+
+        Why this exists (store_builder Phase 1 — policies,
+        menus, notifications, markets, shop-details): Shopify
+        exposes many write paths ONLY through GraphQL.
+        Previously every caller that needed GraphQL had to
+        reach around ShopifyClient; this keeps the rate-limiter
+        + retry + auth header path shared.
+
+        Returns the parsed JSON response dict. On error
+        returns ``{"error": "..."}`` matching the REST
+        helper shape. GraphQL semantic errors (inside
+        ``errors[]`` in the response) surface under the
+        ``error`` key too so callers can do a single
+        ``if "error" in resp:`` check.
+        """
+        body: dict[str, Any] = {"query": query}
+        if variables is not None:
+            body["variables"] = variables
+        # GraphQL endpoint lives beside the REST version.
+        resp = self._request(
+            "POST", "graphql.json", json_body=body,
+        )
+        if isinstance(resp, dict):
+            errs = resp.get("errors")
+            if errs:
+                return {
+                    "error": (
+                        errs[0].get("message")
+                        if isinstance(errs, list) and errs
+                        else str(errs)
+                    ),
+                    "errors": errs,
+                    "data": resp.get("data"),
+                }
+        return resp
+
     # ── Internal ───────────────────────────────────────────────
 
     def _build_url(self, path: str, params: Optional[dict]) -> str:

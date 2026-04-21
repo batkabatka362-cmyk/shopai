@@ -1905,6 +1905,10 @@ def _format_feature_summary(name: str, data: dict) -> str:
             f"created={len(created)}, skipped={len(skipped)}, "
             f"errors={errs}"
         )
+    if name == "policies":
+        updated = data.get("updated") or []
+        errs = len(data.get("errors") or [])
+        return f"updated={len(updated)}, errors={errs}"
     return str(data)[:60]
 
 

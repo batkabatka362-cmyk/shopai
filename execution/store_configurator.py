@@ -81,6 +81,7 @@ ALL_FEATURES = (
     "emails",
     "payments",
     "pages",
+    "policies",
 )
 
 
@@ -274,6 +275,121 @@ def _page_templates(
     ]
 
 
+# ── Policy templates (store builder expansion Phase 1f) ─────────────
+
+# Shopify GraphQL ShopPolicyType → human title.
+_POLICY_TYPES = {
+    "PRIVACY_POLICY": "Privacy Policy",
+    "REFUND_POLICY": "Refund Policy",
+    "TERMS_OF_SERVICE": "Terms of Service",
+    "SHIPPING_POLICY": "Shipping Policy",
+}
+
+
+def _policy_templates(
+    niche: str, store_display: str,
+) -> dict[str, str]:
+    """Return {policy_type: body_html} for the four policies
+    every consumer storefront needs.
+
+    Hard-coded safe templates (no LLM cost, deterministic,
+    no fabricated details). Owner reviews + customises
+    before publishing live — the configurator can stage them
+    via dry_run.
+    """
+    store_display = (store_display or "").strip() or "Our Store"
+    privacy = (
+        f"<h1>Privacy Policy</h1>"
+        f"<p>{store_display} respects your privacy. "
+        f"We collect the minimum personal data needed to "
+        f"fulfil orders and improve our service.</p>"
+        f"<h2>What we collect</h2>"
+        f"<ul>"
+        f"<li>Name + email + shipping address (to "
+        f"fulfil orders)</li>"
+        f"<li>Payment details (processed by our payment "
+        f"provider; never stored by us)</li>"
+        f"<li>Browser / device info (to detect fraud and "
+        f"improve site performance)</li>"
+        f"</ul>"
+        f"<h2>Your rights</h2>"
+        f"<p>You can request a copy of the data we hold "
+        f"about you, or ask us to delete it, by emailing "
+        f"privacy@"
+        f"{store_display.lower().replace(' ', '')}.com.</p>"
+    )
+    refund = (
+        f"<h1>Refund Policy</h1>"
+        f"<p>We offer a 30-day return window for most "
+        f"products. Items must be unused, in original "
+        f"packaging, and include a copy of the order "
+        f"confirmation.</p>"
+        f"<h2>How to start a return</h2>"
+        f"<ol>"
+        f"<li>Email returns@"
+        f"{store_display.lower().replace(' ', '')}.com with "
+        f"your order number</li>"
+        f"<li>We will send you a return shipping label</li>"
+        f"<li>Once the item is received and inspected, we "
+        f"will issue a refund to your original payment "
+        f"method within 5 business days</li>"
+        f"</ol>"
+        f"<p>Sale items and personalised products are "
+        f"final sale and cannot be returned.</p>"
+    )
+    tos = (
+        f"<h1>Terms of Service</h1>"
+        f"<p>By using {store_display} you agree to these "
+        f"terms. Please read them carefully.</p>"
+        f"<h2>Order acceptance</h2>"
+        f"<p>We reserve the right to refuse or cancel any "
+        f"order, for any reason, at our discretion. If we "
+        f"cancel your order after payment, you will be "
+        f"refunded in full.</p>"
+        f"<h2>Accuracy</h2>"
+        f"<p>We do our best to describe products "
+        f"accurately. Colours may appear slightly "
+        f"different on different screens.</p>"
+        f"<h2>Liability</h2>"
+        f"<p>Our maximum liability for any claim is the "
+        f"amount you paid for the order.</p>"
+    )
+    shipping = (
+        f"<h1>Shipping Policy</h1>"
+        f"<p>We aim to ship every order within 1-2 "
+        f"business days of receiving it.</p>"
+        f"<h2>Delivery times</h2>"
+        f"<ul>"
+        f"<li>United States: 3-7 business days</li>"
+        f"<li>Canada: 5-10 business days</li>"
+        f"<li>United Kingdom: 7-14 business days</li>"
+        f"<li>Australia: 7-14 business days</li>"
+        f"</ul>"
+        f"<h2>Tracking</h2>"
+        f"<p>You will receive a tracking link by email "
+        f"as soon as your order ships. Contact support@"
+        f"{store_display.lower().replace(' ', '')}.com if "
+        f"your package hasn't arrived within the "
+        f"estimated window.</p>"
+    )
+    return {
+        "PRIVACY_POLICY": privacy,
+        "REFUND_POLICY": refund,
+        "TERMS_OF_SERVICE": tos,
+        "SHIPPING_POLICY": shipping,
+    }
+
+
+_POLICY_UPDATE_MUTATION = """
+mutation shopPolicyUpdate($policy: ShopPolicyInput!) {
+  shopPolicyUpdate(shopPolicy: $policy) {
+    userErrors { field message }
+    shopPolicy { id type body }
+  }
+}
+""".strip()
+
+
 # Niche → loyalty point rules
 _LOYALTY_RULES = {
     "beauty":  {"earn_per_dollar": 2, "redeem_value_cents": 1, "welcome_bonus": 100},
@@ -353,6 +469,10 @@ class StoreConfigurator:
             results["payments"] = self._setup_payments(client, niche)
         if "pages" in selected:
             results["pages"] = self._setup_pages(
+                client, niche, store_name,
+            )
+        if "policies" in selected:
+            results["policies"] = self._setup_policies(
                 client, niche, store_name,
             )
 
@@ -1503,6 +1623,92 @@ class StoreConfigurator:
             "skipped": skipped,
             "errors": errors,
             "niche": niche,
+        }
+
+    # ── Feature: Policies (Privacy / Refund / ToS / Shipping) ──
+
+    def _setup_policies(
+        self, client: ShopifyClient, niche: str, store_name: str,
+    ) -> dict[str, Any]:
+        """Write the four legal policies via GraphQL
+        ``shopPolicyUpdate``. Store-details REST returns
+        policies read-only — mutations require GraphQL.
+
+        Meta's ads policy auditor + GDPR both need these
+        live on the storefront before paid acquisition. Hard-
+        coded safe templates today; LLM augmentation deferred
+        (paranoid mode — policies are legal text, don't fabricate).
+        """
+        templates = _policy_templates(niche, store_name)
+        updated: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for policy_type, body_html in templates.items():
+            if self._dry_run:
+                self._plan.append({
+                    "action": "update_policy",
+                    "path": "graphql.json",
+                    "method": "POST",
+                    "policy_type": policy_type,
+                    "body_preview": body_html[:80],
+                    "description": (
+                        f"Update {_POLICY_TYPES[policy_type]} "
+                        f"policy"
+                    ),
+                })
+                updated.append(policy_type)
+                continue
+            variables = {
+                "policy": {
+                    "type": policy_type,
+                    "body": body_html,
+                },
+            }
+            try:
+                resp = client.graphql(
+                    _POLICY_UPDATE_MUTATION,
+                    variables=variables,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "policy_type": policy_type,
+                    "error": str(exc),
+                })
+                continue
+            if "error" in resp:
+                errors.append({
+                    "policy_type": policy_type,
+                    "error": resp.get("error"),
+                })
+                continue
+            # Shopify puts shopPolicyUpdate.userErrors inside
+            # data even when HTTP status is 200.
+            data = resp.get("data") or {}
+            mutation = data.get("shopPolicyUpdate") or {}
+            user_errors = mutation.get("userErrors") or []
+            if user_errors:
+                errors.append({
+                    "policy_type": policy_type,
+                    "error": "; ".join(
+                        e.get("message", "?")
+                        for e in user_errors
+                    ),
+                })
+                continue
+            updated.append(policy_type)
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "updated": updated,
+            "errors": errors,
+            "niche": niche,
+            "note": (
+                "Owner should review each policy before "
+                "publishing live — hard-coded safe defaults "
+                "may need business-specific edits."
+            ),
         }
 
     # ── Recording ──────────────────────────────────────────────
