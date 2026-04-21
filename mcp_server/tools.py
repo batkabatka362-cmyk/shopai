@@ -447,6 +447,33 @@ def _doctor_handler(
     return report.as_dict()
 
 
+def _notify_errors_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Push a cycle-error digest to Telegram (or return the
+    composed text when dry_run=True)."""
+    from agents.owner_dialog.cycle_error_digest import (
+        send_error_digest,
+    )
+    try:
+        hours = float(args.get("hours", 24.0) or 24.0)
+    except (TypeError, ValueError):
+        hours = 24.0
+    log_path = str(
+        args.get("log_path")
+        or "data/autopilot_loop.log",
+    )
+    dry_run = bool(args.get("dry_run", False))
+    chat_id = args.get("chat_id")
+    result = send_error_digest(
+        hours=hours,
+        log_path=log_path,
+        dry_run=dry_run,
+        chat_id=chat_id if isinstance(chat_id, str) else None,
+    )
+    return result.as_dict()
+
+
 def _autopilot_status_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -800,6 +827,30 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_doctor_handler,
+    ))
+    reg.register(ToolSpec(
+        name="notify_errors",
+        description=(
+            "Compose + push a Telegram digest of recent "
+            "autopilot cycle errors. Use dry_run=true to "
+            "preview without sending."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "hours": {
+                    "type": "number",
+                    "description": (
+                        "Window to scan (hours, default 24)"
+                    ),
+                },
+                "log_path": {"type": "string"},
+                "dry_run": {"type": "boolean"},
+                "chat_id": {"type": "string"},
+            },
+        },
+        handler=_notify_errors_handler,
+        write=True,
     ))
     reg.register(ToolSpec(
         name="autopilot_status",

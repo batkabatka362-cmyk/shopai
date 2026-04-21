@@ -153,6 +153,36 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub.add_parser("show", help="Show current config values + defaults")
 
     # ── Autopilot daemon status (pidfile-driven) ──────────────
+    notify_errors_p = sub.add_parser(
+        "notify-errors",
+        help=(
+            "Push cycle-error digest from the daemon log to "
+            "Telegram. Counterpart to `shopai notify` which "
+            "sends launch summaries."
+        ),
+    )
+    notify_errors_p.add_argument(
+        "--hours", type=float, default=24.0,
+        help="Window to scan (hours, default 24)",
+    )
+    notify_errors_p.add_argument(
+        "--log", default="data/autopilot_loop.log",
+    )
+    notify_errors_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Compose but do not send",
+    )
+    notify_errors_p.add_argument(
+        "--chat-id", default=None,
+        help=(
+            "Override Telegram chat id (default "
+            "TELEGRAM_CHAT_ID env)"
+        ),
+    )
+    notify_errors_p.add_argument(
+        "--json", action="store_true",
+    )
+
     autopilot_status_p = sub.add_parser(
         "autopilot-status",
         help=(
@@ -2551,6 +2581,48 @@ def _cmd_launch(args) -> None:
     if result.failed_step:
         print(f"\n  aborted at {result.failed_step}: {result.failure_reason}")
         sys.exit(3)
+
+
+def _cmd_notify_errors(
+    *,
+    hours: float,
+    log_path: str,
+    dry_run: bool,
+    chat_id: str | None,
+    as_json: bool,
+) -> None:
+    """Scan the autopilot log for errors in the last N hours
+    and push a digest to Telegram."""
+    from agents.owner_dialog.cycle_error_digest import (
+        send_error_digest,
+    )
+    result = send_error_digest(
+        log_path=log_path,
+        hours=hours,
+        dry_run=dry_run,
+        chat_id=chat_id,
+    )
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    if result.sent:
+        print(
+            f"✓ Sent error digest to Telegram "
+            f"(message_id={result.message_id}, "
+            f"{result.errors_found} errors in "
+            f"{result.cycles_scanned} cycles)"
+        )
+        return
+    if result.reason == "dry_run":
+        print("— dry run — composed message below —")
+        print()
+        print(result.text)
+        return
+    print(f"✗ Not sent: {result.reason}")
+    if result.text:
+        print()
+        print("Preview:")
+        print(result.text)
 
 
 def _cmd_autopilot_status(
@@ -5548,6 +5620,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "autopilot-status":
         _cmd_autopilot_status(
             log_path=str(args.log),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "notify-errors":
+        _cmd_notify_errors(
+            hours=float(args.hours),
+            log_path=str(args.log),
+            dry_run=bool(args.dry_run),
+            chat_id=args.chat_id,
             as_json=bool(args.json),
         )
         return
