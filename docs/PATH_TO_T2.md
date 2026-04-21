@@ -46,7 +46,7 @@ measurable evidence олох.
 
 | № | Chain | Prerequisite | Dollar distance |
 |---|---|---|---|
-| P0-A | `docs/T1_GO_LIVE.md` — checklist, .env template, systemd-friendly commands | None | 3 (setup → launch → ord) |
+| P0-A | ✅ `docs/T1_GO_LIVE.md` shipped — 11-step checklist + §4d cross-check | None | 3 (setup → launch → ord) |
 | P0-B | `shopai replay-orders <jsonl>` — historical/synthetic ord-г webhook pipeline-д feed | None | 2 (replay → learn → next launch better) |
 | P0-C | RuleBook lift-based quality gate — `core/learning/rule_quality.py` + `shopai rule-quality` CLI + MCP tool | ✅ done | 3 (quality gate → compounding) |
 | P1-A | Audit batch 1 (A1+A2+A3: money-path logging + dry_run assertion) | Audit done | 2 |
