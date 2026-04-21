@@ -37,8 +37,24 @@ try:
 except Exception:  # noqa: BLE001
     TelegramBotAdapter = None          # type: ignore[assignment]
 
+# Quality-audit item #10: AgentManager is a first-class
+# owner-facing surface (lifecycle + registry for every
+# specialised agent) but it wasn't reachable through the
+# interface facade. Re-export + expose the canonical
+# singleton so CLI / dashboard / MCP callers don't have to
+# reach into ``agents.manager``.
+try:
+    from agents.manager import (  # noqa: F401
+        AgentManager,
+        get_agent_manager,
+    )
+except Exception:  # noqa: BLE001
+    AgentManager = None                # type: ignore[assignment]
+    get_agent_manager = None           # type: ignore[assignment]
+
 
 __all__ = [
+    "AgentManager",
     "OwnerDialogDispatcher",
     "TelegramBotAdapter",
     "ToolCall",
@@ -46,5 +62,6 @@ __all__ = [
     "ToolResult",
     "build_default_handlers",
     "build_default_registry",
+    "get_agent_manager",
     "notify_owner",
 ]

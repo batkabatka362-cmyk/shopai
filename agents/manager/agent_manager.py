@@ -103,3 +103,28 @@ class AgentManager:
             if agent_id not in self._agents:
                 raise KeyError(f"Unknown agent: {agent_id}")
             return self._agents[agent_id].get("status", "unknown")
+
+
+# ── Singleton ─────────────────────────────────────────────
+
+_SINGLETON: "AgentManager | None" = None
+_SINGLETON_LOCK = threading.Lock()
+
+
+def get_agent_manager() -> "AgentManager":
+    """Canonical AgentManager for the process. Matches the
+    pattern used by every other facade (brain, memory,
+    moby_vote_comparator, …) so CLI + MCP + daemons all
+    observe the same agent registry."""
+    global _SINGLETON
+    if _SINGLETON is None:
+        with _SINGLETON_LOCK:
+            if _SINGLETON is None:
+                _SINGLETON = AgentManager()
+    return _SINGLETON
+
+
+def reset_agent_manager_for_tests() -> None:
+    global _SINGLETON
+    with _SINGLETON_LOCK:
+        _SINGLETON = None

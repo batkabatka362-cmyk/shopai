@@ -228,6 +228,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ── Build llms.txt artifacts (Wave E-1) ───────────────────
+    agents_p = sub.add_parser(
+        "agents",
+        help=(
+            "Inspect AgentManager — the lifecycle registry "
+            "for every specialised agent (content, finance, "
+            "marketing, research, customer, ops)."
+        ),
+    )
+    agents_sub = agents_p.add_subparsers(
+        dest="agents_action",
+    )
+    agents_list = agents_sub.add_parser(
+        "list",
+        help="Show every registered agent + status",
+    )
+    agents_list.add_argument(
+        "--type",
+        default="",
+        help="Filter by agent type (e.g. content, finance)",
+    )
+    agents_list.add_argument(
+        "--json", action="store_true",
+    )
+    agents_get = agents_sub.add_parser(
+        "get",
+        help="Show one agent record by id",
+    )
+    agents_get.add_argument("agent_id")
+    agents_get.add_argument(
+        "--json", action="store_true",
+    )
+
     cites_p = sub.add_parser(
         "citations",
         help=(
@@ -2805,6 +2837,74 @@ def _cmd_autopilot_status(
             )
     else:
         print("  No cycles recorded yet.")
+
+
+def _cmd_agents_list(
+    *, type_filter: str | None, as_json: bool,
+) -> None:
+    """Show every agent registered with AgentManager, or a
+    subset filtered by type."""
+    from agents.manager import get_agent_manager
+    mgr = get_agent_manager()
+    records = mgr.list_agents(agent_type=type_filter or None)
+    if as_json:
+        print(json.dumps(
+            {
+                "count": len(records),
+                "agents": records,
+            },
+            indent=2,
+        ))
+        return
+    if not records:
+        if type_filter:
+            print(
+                f"No agents of type {type_filter!r}.",
+            )
+        else:
+            print(
+                "No agents registered yet. Register via "
+                "AgentManager.register_agent(id, type, "
+                "config)."
+            )
+        return
+    print(
+        f"Registered agents ({len(records)}):"
+    )
+    print(
+        f"  {'id':<20} {'type':<15} {'status':<12} "
+        f"created"
+    )
+    for r in records:
+        print(
+            f"  {str(r.get('id', ''))[:19]:<20} "
+            f"{str(r.get('type', ''))[:14]:<15} "
+            f"{str(r.get('status', ''))[:11]:<12} "
+            f"{str(r.get('created_at', ''))[:19]}"
+        )
+
+
+def _cmd_agents_get(
+    *, agent_id: str, as_json: bool,
+) -> None:
+    from agents.manager import get_agent_manager
+    try:
+        record = get_agent_manager().get_agent(agent_id)
+    except KeyError:
+        if as_json:
+            print(json.dumps(
+                {"error": f"unknown agent: {agent_id}"},
+                indent=2,
+            ))
+        else:
+            print(f"✗ unknown agent: {agent_id}")
+        sys.exit(1)
+    if as_json:
+        print(json.dumps(record, indent=2))
+        return
+    print(f"Agent {record.get('id', '')}:")
+    for k, v in record.items():
+        print(f"  {k}: {v}")
 
 
 def _cmd_citations_list(*, as_json: bool) -> None:
@@ -5759,6 +5859,23 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "agents":
+        action = (
+            getattr(args, "agents_action", None)
+            or "list"
+        )
+        if action == "list":
+            _cmd_agents_list(
+                type_filter=str(args.type) or None,
+                as_json=bool(args.json),
+            )
+        elif action == "get":
+            _cmd_agents_get(
+                agent_id=str(args.agent_id),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "citations":

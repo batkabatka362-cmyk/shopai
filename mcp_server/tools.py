@@ -540,6 +540,25 @@ def _notify_errors_handler(
     return result.as_dict()
 
 
+def _agents_list_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return every agent registered with AgentManager —
+    the single specialised-agent lifecycle registry. Owner
+    uses this from Claude Desktop to see what agents are
+    alive + filter by type (content, finance, research, …)."""
+    from agents.manager import get_agent_manager
+    type_filter = str(args.get("type", "") or "") or None
+    records = get_agent_manager().list_agents(
+        agent_type=type_filter,
+    )
+    return {
+        "count": len(records),
+        "type_filter": type_filter,
+        "agents": records,
+    }
+
+
 def _citations_show_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -950,6 +969,29 @@ def build_default_registry() -> ToolRegistry:
         },
         handler=_notify_errors_handler,
         write=True,
+    ))
+    reg.register(ToolSpec(
+        name="agents_list",
+        description=(
+            "List every agent registered with AgentManager "
+            "— the lifecycle registry for specialised "
+            "agents (content, finance, marketing, "
+            "research, customer, ops). Optional type "
+            "filter."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "description": (
+                        "Filter by agent type; omit for "
+                        "all."
+                    ),
+                },
+            },
+        },
+        handler=_agents_list_handler,
     ))
     reg.register(ToolSpec(
         name="citations_show",
