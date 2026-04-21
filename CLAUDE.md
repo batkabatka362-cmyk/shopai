@@ -643,7 +643,8 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | TikTok Shop foundation | `12f5ac5` | HMAC signer + read-only Z6 adapter |
 | Webhook HMAC audit | `9d1100d` | env fallback + fail-closed gate (security) |
 | Tracker + rationale + wave11 | `3aa62c3` | CLAUDE.md §8 + moby gate stamp + tiktok wave11 fix |
-| Webhook rate limiter | (this commit) | per-IP token bucket (P0.2 security defence) |
+| Webhook rate limiter | `ddeb627` | per-IP token bucket (P0.2 security defence) |
+| Owner tool dispatcher | (this commit) | Telegram phrase → MCP tool with confirm-gate (P1.3) |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
@@ -659,9 +660,11 @@ P0 — money/security path:
    abusive callers ahead of the HMAC compare.
 
 P1 — owner experience:
-3. **Owner dialog → MCP tool dispatcher** — Telegram message
-   like "halt launches" → MCP `emergency_halt`. Closes the
-   "owner can fully drive ShopAI without code" loop.
+3. ✅ **Owner dialog → MCP tool dispatcher** — done.
+   `agents/owner_dialog/tool_dispatcher.py` parses 17
+   intents → MCP tools. Write tools require "confirm"
+   suffix (paranoid mode). Reachable via
+   `shopai owner-ask "<phrase>"`.
 4. **Brain rationale ledger trace for Moby step** — every
    activation's `explain_decision` shows whether Moby agreed.
 5. **Dashboard live mode auto-refresh of A-D panels** —

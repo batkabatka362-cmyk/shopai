@@ -153,6 +153,30 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub.add_parser("show", help="Show current config values + defaults")
 
     # ── Autopilot daemon status (pidfile-driven) ──────────────
+    owner_ask_p = sub.add_parser(
+        "owner-ask",
+        help=(
+            "Parse an owner phrase + dispatch to the matching "
+            "MCP tool, then send the reply to Telegram. Used "
+            "by the owner_loop daemon; safe to run by hand to "
+            "preview parsing / responses."
+        ),
+    )
+    owner_ask_p.add_argument(
+        "text",
+        help="Owner message text (e.g. 'trust scores')",
+    )
+    owner_ask_p.add_argument(
+        "--no-send", action="store_true",
+        help="Compose the reply but don't push to Telegram",
+    )
+    owner_ask_p.add_argument(
+        "--chat-id", default=None,
+    )
+    owner_ask_p.add_argument(
+        "--json", action="store_true",
+    )
+
     notify_errors_p = sub.add_parser(
         "notify-errors",
         help=(
@@ -2581,6 +2605,51 @@ def _cmd_launch(args) -> None:
     if result.failed_step:
         print(f"\n  aborted at {result.failed_step}: {result.failure_reason}")
         sys.exit(3)
+
+
+def _cmd_owner_ask(
+    *,
+    text: str,
+    send: bool,
+    chat_id: str | None,
+    as_json: bool,
+) -> None:
+    """Parse an owner phrase via the tool dispatcher and
+    optionally push the reply to Telegram. Safe by default —
+    write tools require 'confirm' in the message."""
+    from agents.owner_dialog.tool_dispatcher import (
+        OwnerToolDispatcher,
+    )
+    result = OwnerToolDispatcher().dispatch(
+        text, chat_id=chat_id, send=send,
+    )
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    intent = result.intent
+    if intent is None:
+        print("✗ no intent matched")
+    else:
+        confirm = (
+            " [confirm]" if intent.confirmed
+            else " [needs confirm]" if intent.write
+            else ""
+        )
+        print(
+            f"intent: {intent.tool}{confirm}  "
+            f"args={intent.arguments}"
+        )
+    print()
+    if result.sent:
+        print(
+            f"✓ sent to Telegram "
+            f"(message_id={result.message_id})"
+        )
+    elif result.reason:
+        print(f"— not sent: {result.reason}")
+    print()
+    print("Reply text:")
+    print(result.text)
 
 
 def _cmd_notify_errors(
@@ -5629,6 +5698,15 @@ def main(argv: list[str] | None = None) -> None:
             hours=float(args.hours),
             log_path=str(args.log),
             dry_run=bool(args.dry_run),
+            chat_id=args.chat_id,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "owner-ask":
+        _cmd_owner_ask(
+            text=str(args.text),
+            send=not bool(args.no_send),
             chat_id=args.chat_id,
             as_json=bool(args.json),
         )
