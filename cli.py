@@ -435,6 +435,31 @@ def build_parser() -> argparse.ArgumentParser:
     launches_p.add_argument("--json", action="store_true",
                             help="Emit raw JSON instead of a table")
 
+    replay_p = sub.add_parser(
+        "replay-orders",
+        help=(
+            "Feed historical / synthetic Shopify order "
+            "webhook payloads through the live pipeline. "
+            "Exercises the full learning loop (Deliberation "
+            "back-fill + engine outcome bus + pattern miner) "
+            "without needing real traffic."
+        ),
+    )
+    replay_p.add_argument(
+        "path",
+        help=(
+            "JSONL file of Shopify order dicts "
+            "(one per line)"
+        ),
+    )
+    replay_p.add_argument(
+        "--throttle", type=float, default=0.0,
+        help="Seconds between orders (default 0)",
+    )
+    replay_p.add_argument(
+        "--json", action="store_true",
+    )
+
     cycles_p = sub.add_parser(
         "cycles",
         help=(
@@ -3086,6 +3111,50 @@ def _cmd_build_llms_txt(
         "  Served by API at /llms.txt + /llms-full.txt + "
         "/llms-mirror/<slug>.md"
     )
+
+
+def _cmd_replay_orders(
+    *,
+    path: str,
+    throttle_s: float,
+    as_json: bool,
+) -> None:
+    """Feed a JSONL file of Shopify order payloads through
+    the live webhook pipeline. Exercises the entire learning
+    loop on historical / synthetic data."""
+    from agents.replay import replay_orders_from_file
+    try:
+        stats = replay_orders_from_file(
+            path, throttle_s=throttle_s,
+        )
+    except FileNotFoundError:
+        print(f"File not found: {path}")
+        sys.exit(2)
+    if as_json:
+        print(json.dumps(stats.as_dict(), indent=2))
+        return
+    print(f"Replayed {stats.attempted} orders "
+          f"({stats.successful} ok, "
+          f"{stats.failed} failed, "
+          f"{stats.skipped_non_dict} skipped) "
+          f"in {stats.duration_s:.2f}s")
+    print(
+        f"  revenue replayed:           "
+        f"${stats.total_revenue_usd:.2f}"
+    )
+    print(
+        f"  deliberations back-filled:  "
+        f"{stats.deliberations_observed}"
+    )
+    if stats.failed:
+        print()
+        print("Failures:")
+        for r in stats.results:
+            if not r.ok:
+                print(
+                    f"  {r.order_id:<20} "
+                    f"{r.error[:80]}"
+                )
 
 
 def _cmd_cycles(
@@ -5851,6 +5920,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "launches":
         _cmd_launches(args)
+        return
+
+    if args.command == "replay-orders":
+        _cmd_replay_orders(
+            path=str(args.path),
+            throttle_s=float(args.throttle),
+            as_json=bool(args.json),
+        )
         return
 
     if args.command == "cycles":

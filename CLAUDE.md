@@ -780,10 +780,11 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | Publisher → deliberation wire | `658ed6f` | Every product launch records a 5-pillar Deliberation symmetric to the activator wire; budget-commit point captured |
 | §4d quality + self-critique | `20e2ac1` | Mission scope + 6 self-questions + 5 pillars + self-critique cycle codified in CLAUDE.md |
 | Refine+learn loop wire | `5936015` | Order webhook back-fills the matching Deliberation with measured revenue; predicted-vs-observed visible via MCP |
-| Pillar mirror → rationale ledger | (this commit) | Activator + Publisher push 5-pillar entries into rationale.add so `shopai explain <decision_id>` shows structured reasoning alongside gate-level entries |
+| Pillar mirror → rationale ledger | `03f6b1f` | Activator + Publisher push 5-pillar entries into rationale.add so `shopai explain <decision_id>` shows structured reasoning alongside gate-level entries |
+| Replay orders tool + T2 plan | (this commit) | `agents/replay/order_replay.py` + `shopai replay-orders` CLI + MCP tool (write-gated) — feeds historical/synthetic orders through the live webhook pipeline so Deliberation back-fill + engine outcome bus + pattern miner get real signal without waiting for real traffic. `docs/PATH_TO_T2.md` codifies T0→T2 path + integrates Explore-agent weak-parts audit (money-path silent-Nones, 41 brain orphans, 12+ happy-path-only test suites) |
 
-**Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
-`9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
+**Tests added:** ~270+ new pytest (21 new for replay). **Full-suite
+checkpoint:** `9664+ passed`. **MCP tools:** 25 (эхэнд 12).
 
 ### 8b. Дараагийн ажил (priority queue)
 

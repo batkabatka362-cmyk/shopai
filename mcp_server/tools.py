@@ -659,6 +659,35 @@ def _autopilot_status_handler(
     }
 
 
+def _replay_orders_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Replay a JSONL file of Shopify order payloads
+    through the live webhook pipeline. Mutates learning
+    state (engine_outcome_bus + Deliberation observations),
+    so marked ``write=True`` — owner must confirm through
+    the dispatcher."""
+    from agents.replay import replay_orders_from_file
+    path = str(args.get("path", "") or "")
+    if not path:
+        raise ToolError("path required")
+    try:
+        throttle = float(
+            args.get("throttle_s", 0) or 0,
+        )
+    except (TypeError, ValueError):
+        throttle = 0.0
+    try:
+        stats = replay_orders_from_file(
+            path, throttle_s=throttle,
+        )
+    except FileNotFoundError as exc:
+        raise ToolError(
+            f"file not found: {path}",
+        ) from exc
+    return stats.as_dict()
+
+
 def _recent_cycles_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1125,6 +1154,37 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_recent_cycles_handler,
+    ))
+    reg.register(ToolSpec(
+        name="replay_orders",
+        description=(
+            "Replay a JSONL file of historical or synthetic "
+            "Shopify order payloads through the live webhook "
+            "pipeline — used to exercise the learning loop "
+            "(Deliberation back-fill, engine outcome bus, "
+            "PatternMiner) without waiting for real traffic."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Path to JSONL file, one order per "
+                        "line."
+                    ),
+                },
+                "throttle_s": {
+                    "type": "number",
+                    "description": (
+                        "Sleep between orders (default 0)."
+                    ),
+                },
+            },
+            "required": ["path"],
+        },
+        handler=_replay_orders_handler,
+        write=True,
     ))
     reg.register(ToolSpec(
         name="oauth_status",
