@@ -74,6 +74,11 @@ class LoopConfig:
     max_iterations: int = _DEFAULT_MAX_ITERATIONS
     log_path: str = str(_DEFAULT_LOG_PATH)
     distill_every: int = 5       # distill every N cycles
+    # E-1 GEO: rebuild llms.txt artifacts every N cycles so
+    # new launches are discoverable by ChatGPT / Perplexity /
+    # Gemini crawlers without a manual CLI run. 0 disables.
+    llms_txt_rebuild_every: int = 5
+    llms_txt_out_dir: str = "data/llms"
 
     def __post_init__(self) -> None:
         if self.interval_s <= 0:
@@ -308,8 +313,93 @@ class AutopilotLoop:
                         f"distill raised: {exc}"
                     )
                 )
+        # E-1 GEO auto-refresh — rebuild llms.txt + markdown
+        # mirrors every ``llms_txt_rebuild_every`` cycles so
+        # new launches reach LLM crawlers without a manual
+        # ``shopai build-llms-txt``. Soft-fail — a rebuild
+        # error logs + annotates summary but never aborts the
+        # cycle.
+        if (
+            self._config.llms_txt_rebuild_every > 0
+            and cycle_id
+            % self._config.llms_txt_rebuild_every == 0
+        ):
+            try:
+                self._rebuild_llms_txt(summary)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "llms.txt rebuild failed: %s", exc,
+                )
+                summary.error = (
+                    summary.error or (
+                        f"llms_txt raised: {exc}"
+                    )
+                )
         summary.duration_s = time.time() - start
         return summary
+
+    def _rebuild_llms_txt(
+        self, summary: "CycleSummary",
+    ) -> None:
+        """Pull products from the Shopify connector and emit
+        llms.txt + llms-full.txt + per-product markdown
+        mirrors to disk. No-op when the connector is not
+        configured (no store URL / token)."""
+        shop_url = os.environ.get(
+            "SHOPAI_SHOPIFY_URL", "",
+        )
+        if not shop_url:
+            return
+        try:
+            from core.bridge.shopify_connector import (
+                ShopifyLiveConnector,
+            )
+            from execution.seo.llms_txt import build_llms_txt
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "llms_txt deps unavailable: %s", exc,
+            )
+            return
+        try:
+            data = ShopifyLiveConnector().fetch_store_data()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "shopify fetch for llms.txt skipped: %s",
+                exc,
+            )
+            return
+        products = data.get("products") or []
+        if not isinstance(products, list) or not products:
+            return
+        clean = [
+            p for p in products if isinstance(p, dict)
+        ]
+        if not clean:
+            return
+        store_name = shop_url.split(".")[0] or "store"
+        index = build_llms_txt(
+            store_name=store_name,
+            store_url=shop_url,
+            products=clean,
+        )
+        out = Path(self._config.llms_txt_out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "llms.txt").write_text(index.short_txt)
+        (out / "llms-full.txt").write_text(index.full_txt)
+        mirror_dir = out / "products"
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        for existing in mirror_dir.glob("*.md"):
+            try:
+                existing.unlink()
+            except OSError as exc:
+                logger.debug(
+                    "mirror cleanup: %s", exc,
+                )
+        for path, body in index.product_mirrors:
+            rel = path.lstrip("/")
+            if rel.startswith("products/"):
+                rel = rel[len("products/"):]
+            (mirror_dir / rel).write_text(body)
 
     def _log_summary(self, summary: CycleSummary) -> None:
         """Append one JSON line to the log file."""

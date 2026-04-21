@@ -646,7 +646,8 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | Webhook rate limiter | `ddeb627` | per-IP token bucket (P0.2 security defence) |
 | Owner tool dispatcher | `dccbfa1` | Telegram phrase → MCP tool with confirm-gate (P1.3) |
 | Dashboard live fresh | `a21fbb4` | `--live` passes force=True so cached agentic status refreshes each cycle (P1.5) |
-| fal video pre-gen cache | (this commit) | prompt-hash cache dedupes identical prompts across SKUs (P2.7) |
+| fal video pre-gen cache | `2770975` | prompt-hash cache dedupes identical prompts across SKUs (P2.7) |
+| llms.txt daemon rebuild | (this commit) | Autopilot cycle every N rebuilds llms.txt/mirrors from live Shopify |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
