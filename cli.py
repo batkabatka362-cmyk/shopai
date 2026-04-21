@@ -1920,6 +1920,14 @@ def _format_feature_summary(name: str, data: dict) -> str:
             f"written={len(written)} "
             f"({', '.join(written)}), errors={errs}"
         )
+    if name == "redirects":
+        created = data.get("created") or []
+        skipped = data.get("skipped") or []
+        errs = len(data.get("errors") or [])
+        return (
+            f"created={len(created)}, "
+            f"skipped={len(skipped)}, errors={errs}"
+        )
     return str(data)[:60]
 
 

@@ -84,6 +84,7 @@ ALL_FEATURES = (
     "policies",
     "menus",
     "brand",
+    "redirects",
 )
 
 
@@ -697,6 +698,10 @@ class StoreConfigurator:
         if "brand" in selected:
             results["brand"] = self._setup_brand(
                 client, niche, store_name, config,
+            )
+        if "redirects" in selected:
+            results["redirects"] = self._setup_redirects(
+                client, niche,
             )
 
         self._record(results)
@@ -2124,6 +2129,95 @@ class StoreConfigurator:
                 store_name or "Our Store"
             ),
             "written": written,
+            "errors": errors,
+        }
+
+    # ── Feature: 301 Redirects (marketing URL aliases) ─────────
+
+    def _setup_redirects(
+        self, client: ShopifyClient, niche: str,
+    ) -> dict[str, Any]:
+        """Create the common marketing URL aliases every store
+        needs. Dropshipping ads often link ``/shop`` or
+        ``/store`` — Shopify's default structure is
+        ``/collections/all``, so those vanity URLs 404 without
+        a redirect.
+
+        Seven default redirects keep the usual variants
+        pointing at the right place:
+          /shop, /store, /catalog, /products → /collections/all
+          /blog → /blogs/news
+          /contact → /pages/contact
+          /about → /pages/about
+
+        Idempotent — we query existing redirects first and
+        POST only the ones whose path isn't already claimed.
+        """
+        plan = [
+            ("/shop", "/collections/all"),
+            ("/store", "/collections/all"),
+            ("/catalog", "/collections/all"),
+            ("/products", "/collections/all"),
+            ("/blog", "/blogs/news"),
+            ("/contact", "/pages/contact"),
+            ("/about", "/pages/about"),
+        ]
+        existing_paths: set[str] = set()
+        try:
+            resp = client.get(
+                "redirects.json", params={"limit": 250},
+            )
+            if "error" not in resp:
+                for r in resp.get("redirects", []) or []:
+                    p = str(r.get("path") or "").strip()
+                    if p:
+                        existing_paths.add(p)
+            else:
+                logger.warning(
+                    "redirects fetch failed: %s",
+                    resp.get("error"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "redirects fetch raised: %s", exc,
+            )
+
+        created: list[str] = []
+        skipped: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for path, target in plan:
+            if path in existing_paths:
+                skipped.append(path)
+                continue
+            result = self._write(
+                client, "POST", "redirects.json",
+                {
+                    "redirect": {
+                        "path": path,
+                        "target": target,
+                    },
+                },
+                description=(
+                    f"Create 301 redirect {path} → {target}"
+                ),
+            )
+            if result.get("error"):
+                errors.append({
+                    "path": path,
+                    "error": str(result["error"]),
+                })
+                continue
+            if result.get("redirect") or result.get("dry_run"):
+                created.append(path)
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "niche": niche,
+            "created": created,
+            "skipped": skipped,
             "errors": errors,
         }
 
