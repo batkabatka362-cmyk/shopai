@@ -744,6 +744,19 @@ def _analyze_failure_handler(
         ) from exc
 
 
+def _ready_for_live_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Pre-T1 go-live gate: env + doctor + learning loop +
+    live-health + live-execution state. Returns READY or
+    BLOCKED with a per-check fix list. Read-only."""
+    from core.readiness.go_live_gate import run_go_live_gate
+    skip = bool(args.get("skip_learning_loop", False))
+    return run_go_live_gate(
+        skip_learning_loop=skip,
+    ).as_dict()
+
+
 def _live_health_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1349,6 +1362,29 @@ def build_default_registry() -> ToolRegistry:
             "required": ["failed_episode"],
         },
         handler=_analyze_failure_handler,
+    ))
+    reg.register(ToolSpec(
+        name="ready_for_live",
+        description=(
+            "Pre-T1 go-live gate: env + doctor + learning "
+            "loop (5-order synthetic replay) + live-health "
+            "+ live-execution state. Single-verb verdict "
+            "READY or BLOCKED with per-check fix list. "
+            "Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "skip_learning_loop": {
+                    "type": "boolean",
+                    "description": (
+                        "Skip the synthetic replay step "
+                        "(use when daemon is already live)."
+                    ),
+                },
+            },
+        },
+        handler=_ready_for_live_handler,
     ))
     reg.register(ToolSpec(
         name="live_health",

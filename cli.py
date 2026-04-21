@@ -531,6 +531,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    ready_p = sub.add_parser(
+        "ready-for-live",
+        help=(
+            "Single-verb pre-T1 gate. Runs env + doctor + "
+            "learning loop + live-health checks and emits "
+            "READY or BLOCKED with a fix list."
+        ),
+    )
+    ready_p.add_argument(
+        "--skip-learning-loop",
+        action="store_true",
+        help=(
+            "Don't run the 5-order synthetic replay "
+            "(use when the daemon is already live)"
+        ),
+    )
+    ready_p.add_argument(
+        "--json", action="store_true",
+    )
+
     live_health_p = sub.add_parser(
         "live-health",
         help=(
@@ -3366,6 +3386,36 @@ def _cmd_ingest_knowledge(
         print("Errors:")
         for e in result.errors:
             print(f"  - {e}")
+
+
+def _cmd_ready_for_live(
+    *,
+    skip_learning_loop: bool,
+    as_json: bool,
+) -> None:
+    """Run the pre-T1 go-live gate and print the verdict."""
+    from core.readiness.go_live_gate import run_go_live_gate
+    report = run_go_live_gate(
+        skip_learning_loop=skip_learning_loop,
+    )
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(f"Go-live gate: {report.verdict}")
+    print()
+    for c in report.checks:
+        flag = "✓" if c.ok else "✗"
+        print(
+            f"  {flag} {c.name:<16s} {c.reason}"
+        )
+    if report.verdict == "BLOCKED":
+        print()
+        print("To unblock:")
+        for c in report.blocking():
+            print(
+                f"  • {c.name}: {c.fix}"
+            )
+        sys.exit(2)
 
 
 def _cmd_live_health(
@@ -6264,6 +6314,15 @@ def main(argv: list[str] | None = None) -> None:
             url=str(args.url or ""),
             file=str(args.file or ""),
             subject=str(args.subject or ""),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "ready-for-live":
+        _cmd_ready_for_live(
+            skip_learning_loop=bool(
+                args.skip_learning_loop,
+            ),
             as_json=bool(args.json),
         )
         return
