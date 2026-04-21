@@ -152,6 +152,27 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub.add_parser("check", help="Validate env vars against schema")
     config_sub.add_parser("show", help="Show current config values + defaults")
 
+    # ── Autopilot daemon status (pidfile-driven) ──────────────
+    autopilot_status_p = sub.add_parser(
+        "autopilot-status",
+        help=(
+            "Show whether the 24/7 autopilot daemon "
+            "(run_daemon.py) is running: PID, uptime, and "
+            "latest cycle from the log."
+        ),
+    )
+    autopilot_status_p.add_argument(
+        "--log",
+        default="data/autopilot_loop.log",
+        help=(
+            "Path to autopilot cycle log "
+            "(default data/autopilot_loop.log)"
+        ),
+    )
+    autopilot_status_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── Build llms.txt artifacts (Wave E-1) ───────────────────
     llms_p = sub.add_parser(
         "build-llms-txt",
@@ -2530,6 +2551,90 @@ def _cmd_launch(args) -> None:
     if result.failed_step:
         print(f"\n  aborted at {result.failed_step}: {result.failure_reason}")
         sys.exit(3)
+
+
+def _cmd_autopilot_status(
+    *, log_path: str, as_json: bool,
+) -> None:
+    """Report daemon running status (from pidfile) + the latest
+    cycle from the autopilot log. Exit code is always 0 — this
+    is a status command, not a health gate."""
+    from pathlib import Path as _P
+    from core.system.pidfile import read_status
+    status = read_status("daemon")
+
+    # Latest cycle snippet from the log
+    last_cycle: dict | None = None
+    log = _P(log_path)
+    if log.exists():
+        try:
+            lines = log.read_text().strip().splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    last_cycle = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        except OSError:
+            pass
+
+    payload = {
+        "daemon": status.as_dict(),
+        "latest_cycle": last_cycle,
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2, default=str))
+        return
+    print("Autopilot daemon status")
+    print()
+    if status.running:
+        uptime_h = status.uptime_s / 3600
+        print(
+            f"  running: ✓  pid={status.pid}  "
+            f"uptime={uptime_h:.1f}h"
+        )
+    else:
+        print(f"  running: ✗  {status.detail}")
+        print(
+            "  Start with: `python scripts/run_daemon.py` "
+            "or `systemctl start shopai-daemon`"
+        )
+    print()
+    if last_cycle:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%S",
+            time.localtime(
+                float(last_cycle.get("ts", 0)),
+            ),
+        )
+        print("  Latest cycle:")
+        print(
+            f"    cycle:      "
+            f"{last_cycle.get('cycle', '?')}"
+        )
+        print(f"    ts:         {ts}")
+        print(
+            f"    mode:       "
+            f"{last_cycle.get('mode', '?')}"
+        )
+        print(
+            f"    launches:   "
+            f"{last_cycle.get('launches', 0)} "
+            f"({last_cycle.get('successful', 0)} ok)"
+        )
+        print(
+            f"    duration:   "
+            f"{float(last_cycle.get('duration_s', 0)):.2f}s"
+        )
+        if last_cycle.get("error"):
+            print(
+                f"    error:      {last_cycle['error']}",
+            )
+    else:
+        print("  No cycles recorded yet.")
 
 
 def _cmd_build_llms_txt(
@@ -5436,6 +5541,13 @@ def main(argv: list[str] | None = None) -> None:
             store_url=str(args.store_url),
             products_json=str(args.products_json),
             out_dir=str(args.out_dir),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "autopilot-status":
+        _cmd_autopilot_status(
+            log_path=str(args.log),
             as_json=bool(args.json),
         )
         return

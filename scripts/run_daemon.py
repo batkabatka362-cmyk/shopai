@@ -97,6 +97,13 @@ def run_daemon(store_id="ts0efe-ih", interval=600, max_cycles=0):
     print("=" * 55)
     print()
 
+    # Write pidfile so `shopai autopilot-status` can see us.
+    try:
+        from core.system.pidfile import write as _pf_write
+        _pf_write("daemon")
+    except Exception:
+        pass
+
     cycle_num = 0
     total_insights = 0
     total_actions = 0
@@ -202,6 +209,13 @@ def run_daemon(store_id="ts0efe-ih", interval=600, max_cycles=0):
             if not _running:
                 break
             time.sleep(1)
+
+    # Clear pidfile on clean shutdown.
+    try:
+        from core.system.pidfile import clear as _pf_clear
+        _pf_clear("daemon")
+    except Exception:
+        pass
 
     # Shutdown summary
     print()

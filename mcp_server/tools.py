@@ -447,6 +447,44 @@ def _doctor_handler(
     return report.as_dict()
 
 
+def _autopilot_status_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Report whether the 24/7 autopilot daemon is running +
+    what it last did. Combines pidfile liveness + the tail of
+    autopilot_loop.log. Owner asks Claude Desktop "is the
+    daemon alive?" and gets a structured answer."""
+    import json as _json
+    from pathlib import Path as _P
+    from core.system.pidfile import read_status
+    status = read_status("daemon")
+    log_path = str(
+        args.get("log_path") or "data/autopilot_loop.log",
+    )
+    last_cycle: dict[str, Any] | None = None
+    log = _P(log_path)
+    if log.exists():
+        try:
+            lines = log.read_text().strip().splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    last_cycle = _json.loads(line)
+                    break
+                except _json.JSONDecodeError:
+                    continue
+        except OSError as exc:
+            raise ToolError(
+                f"cannot read log: {exc}",
+            ) from exc
+    return {
+        "daemon": status.as_dict(),
+        "latest_cycle": last_cycle,
+    }
+
+
 def _recent_cycles_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -762,6 +800,27 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_doctor_handler,
+    ))
+    reg.register(ToolSpec(
+        name="autopilot_status",
+        description=(
+            "Is the 24/7 autopilot daemon running? Combines "
+            "pidfile liveness + latest cycle snapshot from "
+            "the cycle log."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "log_path": {
+                    "type": "string",
+                    "description": (
+                        "Override path to autopilot log "
+                        "(default data/autopilot_loop.log)"
+                    ),
+                },
+            },
+        },
+        handler=_autopilot_status_handler,
     ))
     reg.register(ToolSpec(
         name="recent_cycles",
