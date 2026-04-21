@@ -67,6 +67,11 @@ class BrainState:
     rationale_total: int
     priorities: tuple[PriorityItem, ...]
     notes: tuple[str, ...] = ()
+    # Wave A-B-D snapshot fields (default empty so existing
+    # callers that construct BrainState directly keep working).
+    agentic_enabled_channels: tuple[str, ...] = ()
+    moby_win_rate: dict[str, Any] = field(default_factory=dict)
+    fal_weekly_spend_usd: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -90,6 +95,13 @@ class BrainState:
                 p.as_dict() for p in self.priorities
             ],
             "notes": list(self.notes),
+            "agentic_enabled_channels": list(
+                self.agentic_enabled_channels,
+            ),
+            "moby_win_rate": dict(self.moby_win_rate),
+            "fal_weekly_spend_usd": round(
+                self.fal_weekly_spend_usd, 4,
+            ),
         }
 
 
@@ -291,6 +303,13 @@ class BrainStateSynthesizer:
             trust_top=trust_top,
             rationale_total=rationale_total,
         )
+        # Wave A-B-D rollup: agentic channels, moby trust,
+        # fal video budget. Each is best-effort — a failing
+        # source only adds a note, never blocks the snapshot.
+        agentic_channels = self._collect_agentic(notes)
+        moby_rate = self._collect_moby(notes)
+        fal_spend = self._collect_fal(notes)
+
         return BrainState(
             ts=float(self._now_fn()),
             crisis_level=crisis_level,
@@ -303,7 +322,63 @@ class BrainStateSynthesizer:
             rationale_total=rationale_total,
             priorities=tuple(priorities),
             notes=tuple(notes),
+            agentic_enabled_channels=tuple(agentic_channels),
+            moby_win_rate=moby_rate,
+            fal_weekly_spend_usd=fal_spend,
         )
+
+    # ── Wave A-B-D collectors (all best-effort) ──────────
+
+    @staticmethod
+    def _collect_agentic(notes: list[str]) -> list[str]:
+        """Return the list of enabled agentic channels. Silent
+        on missing bridge (returns [])."""
+        try:
+            from core.bridge.agentic_storefront import (
+                get_agentic_bridge,
+            )
+            statuses = get_agentic_bridge().status()
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"agentic bridge: {exc}")
+            return []
+        return [
+            s.channel for s in statuses
+            if bool(getattr(s, "enabled", False))
+        ]
+
+    @staticmethod
+    def _collect_moby(notes: list[str]) -> dict[str, Any]:
+        try:
+            from core.brain.moby_vote_comparator import (
+                get_moby_vote_comparator,
+            )
+            return (
+                get_moby_vote_comparator().win_rate()
+                or {}
+            )
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"moby comparator: {exc}")
+            return {}
+
+    @staticmethod
+    def _collect_fal(notes: list[str]) -> float:
+        """Return ``total_spend_usd`` across all SKUs. That
+        gives the operator a weekly burn number at a glance."""
+        try:
+            from core.adapters.fal.video_router import (
+                FalVideoRouter,
+            )
+            router = FalVideoRouter()
+            try:
+                stats = router.stats()
+            finally:
+                router.close()
+            return float(
+                stats.get("total_spend_usd", 0) or 0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"fal router: {exc}")
+            return 0.0
 
     def _derive_priorities(
         self,
