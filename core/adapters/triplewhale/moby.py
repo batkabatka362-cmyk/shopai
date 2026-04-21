@@ -180,6 +180,15 @@ class MobyAdapter:
             self._conn.commit()
         self._last_error = ""
         self._api_calls = 0
+        # 5-minute TTL cache keyed by (scope, limit). The
+        # autopilot often runs 2-3 activations per cycle;
+        # sharing one upstream call avoids quota burn + 500ms
+        # latency per activation. Safe because the activation
+        # pipeline is inherently a snapshot-at-time-T decision.
+        self._rec_cache: dict[
+            tuple[str, int], tuple[float, list[MobyRecommendation]],
+        ] = {}
+        self._rec_cache_ttl_s = 300.0
 
     def is_available(self) -> bool:
         return bool(self._api_key)
@@ -204,6 +213,7 @@ class MobyAdapter:
         *,
         scope: str = "campaigns",
         limit: int = 20,
+        force: bool = False,
     ) -> list[MobyRecommendation]:
         """Pull Moby's latest recommendations for a scope.
 
@@ -211,7 +221,22 @@ class MobyAdapter:
           * campaigns  — per-campaign budget / status / pause
           * creatives  — creative refresh flags
           * budgets    — cross-channel reallocation
+
+        Results are cached for 5 minutes per (scope, limit)
+        to share upstream calls across burst activations.
+        Pass ``force=True`` to bypass the cache.
         """
+        cache_key = (str(scope), int(limit))
+        if not force:
+            with self._lock:
+                cached = self._rec_cache.get(cache_key)
+            if cached is not None:
+                fetched_at, data = cached
+                if (
+                    float(self._now_fn()) - fetched_at
+                    < self._rec_cache_ttl_s
+                ):
+                    return list(data)
         if not self.is_available():
             with self._lock:
                 self._last_error = (
@@ -259,10 +284,15 @@ class MobyAdapter:
                     f"bad JSON: {exc}"
                 )
             return []
+        parsed = self._parse_recommendations(body, scope)
         with self._lock:
             self._api_calls += 1
             self._last_error = ""
-        return self._parse_recommendations(body, scope)
+            self._rec_cache[cache_key] = (
+                float(self._now_fn()),
+                list(parsed),
+            )
+        return parsed
 
     def _parse_recommendations(
         self, body: Any, scope: str,
