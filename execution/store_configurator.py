@@ -83,6 +83,7 @@ ALL_FEATURES = (
     "pages",
     "policies",
     "menus",
+    "brand",
 )
 
 
@@ -497,6 +498,113 @@ def _menu_items_for_niche(niche: str) -> dict[str, list[dict[str, str]]]:
     return {"main-menu": main_menu, "footer": footer}
 
 
+# ── Brand + SEO metafield templates (Phase 2a) ──────────────────────
+
+# Niche → brand voice + colour + default SEO shape.
+# Every field is the AI-safe starting point; owner edits in
+# admin after first-pass config.
+_BRAND_VOICES: dict[str, dict[str, Any]] = {
+    "home": {
+        "voice": "warm, practical, homey",
+        "tagline": "Make every room feel like yours.",
+        "color_primary": "#8B5E3C",
+        "color_secondary": "#EEE6D4",
+        "typography_heading": "Playfair Display",
+        "typography_body": "Inter",
+        "schema_org_type": "Store",
+    },
+    "fashion": {
+        "voice": "confident, trend-aware, uplifting",
+        "tagline": "Dress like tomorrow.",
+        "color_primary": "#1A1A1A",
+        "color_secondary": "#F5F5F5",
+        "typography_heading": "Cormorant Garamond",
+        "typography_body": "Work Sans",
+        "schema_org_type": "ClothingStore",
+    },
+    "tech": {
+        "voice": "precise, benefit-focused, concise",
+        "tagline": "Smarter tools, simpler life.",
+        "color_primary": "#0F172A",
+        "color_secondary": "#38BDF8",
+        "typography_heading": "JetBrains Mono",
+        "typography_body": "Inter",
+        "schema_org_type": "ElectronicsStore",
+    },
+    "beauty": {
+        "voice": "caring, sensorial, gentle",
+        "tagline": "Glow on your terms.",
+        "color_primary": "#E8B4B4",
+        "color_secondary": "#FFF7F5",
+        "typography_heading": "Libre Caslon Text",
+        "typography_body": "DM Sans",
+        "schema_org_type": "BeautySalon",
+    },
+    "general": {
+        "voice": "friendly, clear, trustworthy",
+        "tagline": "Quality picks, curated for you.",
+        "color_primary": "#1E40AF",
+        "color_secondary": "#F1F5F9",
+        "typography_heading": "Inter",
+        "typography_body": "Inter",
+        "schema_org_type": "Store",
+    },
+}
+
+
+def _brand_metafields(
+    niche: str, store_display: str,
+) -> list[dict[str, Any]]:
+    """Return the list of metafield dicts (namespace=shopai)
+    that encode brand + SEO defaults. Other engines
+    (content_generator, email_templates, ad_copy) read these
+    so brand stays consistent without hard-coding per-engine
+    defaults."""
+    voice = _BRAND_VOICES.get(niche, _BRAND_VOICES["general"])
+    store_display = (
+        (store_display or "").strip() or "Our Store"
+    )
+    brand = {
+        "store_name": store_display,
+        "niche": niche,
+        "voice": voice["voice"],
+        "tagline": voice["tagline"],
+        "color_primary": voice["color_primary"],
+        "color_secondary": voice["color_secondary"],
+        "typography": {
+            "heading": voice["typography_heading"],
+            "body": voice["typography_body"],
+        },
+    }
+    seo_defaults = {
+        "meta_description_template": (
+            f"{store_display} — {voice['tagline']}"
+        ),
+        "og_image_url": "",
+        "schema_org_type": voice["schema_org_type"],
+        "canonical_rules": {
+            "products": "/products/{handle}",
+            "collections": "/collections/{handle}",
+            "pages": "/pages/{handle}",
+        },
+        "robots_default": "index, follow",
+    }
+    return [
+        {
+            "namespace": "shopai",
+            "key": "brand",
+            "type": "json",
+            "value": json.dumps(brand),
+        },
+        {
+            "namespace": "shopai",
+            "key": "seo_defaults",
+            "type": "json",
+            "value": json.dumps(seo_defaults),
+        },
+    ]
+
+
 # Niche → loyalty point rules
 _LOYALTY_RULES = {
     "beauty":  {"earn_per_dollar": 2, "redeem_value_cents": 1, "welcome_bonus": 100},
@@ -585,6 +693,10 @@ class StoreConfigurator:
         if "menus" in selected:
             results["menus"] = self._setup_menus(
                 client, niche, config,
+            )
+        if "brand" in selected:
+            results["brand"] = self._setup_brand(
+                client, niche, store_name, config,
             )
 
         self._record(results)
@@ -1954,6 +2066,65 @@ class StoreConfigurator:
             "updated": updated,
             "errors": errors,
             "niche": niche,
+        }
+
+    # ── Feature: Brand + SEO metafields ────────────────────────
+
+    def _setup_brand(
+        self,
+        client: ShopifyClient,
+        niche: str,
+        store_name: str,
+        config: dict,
+    ) -> dict[str, Any]:
+        """Write niche-aware brand + SEO metafields so every
+        AI engine (content generator, email templates, ad
+        copy, schema-org emitter) reads brand voice / colours /
+        tagline / schema-org type from one structured source.
+
+        Two metafields written to namespace `shopai`:
+          * `brand`       — voice / tagline / colours / typography
+          * `seo_defaults` — meta description template / schema
+            type / canonical rules / robots default
+
+        Idempotent — same POST overwrites the same (namespace,
+        key) pair. Plan entries flow through `_write` so
+        dry_run log shape matches every other feature.
+        """
+        fields = _brand_metafields(niche, store_name)
+        written: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for mf in fields:
+            result = self._write(
+                client, "POST", "metafields.json",
+                {"metafield": mf},
+                description=(
+                    f"Save {mf['namespace']}.{mf['key']} "
+                    f"metafield"
+                ),
+            )
+            if result.get("error"):
+                errors.append({
+                    "key": f"{mf['namespace']}.{mf['key']}",
+                    "error": str(result.get("error")),
+                })
+                continue
+            if result.get("metafield") or result.get(
+                "dry_run",
+            ):
+                written.append(mf["key"])
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "niche": niche,
+            "store_name": (
+                store_name or "Our Store"
+            ),
+            "written": written,
+            "errors": errors,
         }
 
     # ── Recording ──────────────────────────────────────────────

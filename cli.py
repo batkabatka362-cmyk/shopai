@@ -1913,6 +1913,13 @@ def _format_feature_summary(name: str, data: dict) -> str:
         updated = data.get("updated") or []
         errs = len(data.get("errors") or [])
         return f"updated={len(updated)}, errors={errs}"
+    if name == "brand":
+        written = data.get("written") or []
+        errs = len(data.get("errors") or [])
+        return (
+            f"written={len(written)} "
+            f"({', '.join(written)}), errors={errs}"
+        )
     return str(data)[:60]
 
 
