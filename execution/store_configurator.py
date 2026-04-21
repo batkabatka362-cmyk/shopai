@@ -88,6 +88,7 @@ ALL_FEATURES = (
     "redirects",
     "blog",
     "webhooks",
+    "script_tags",
 )
 
 
@@ -766,6 +767,10 @@ class StoreConfigurator:
         if "webhooks" in selected:
             results["webhooks"] = self._setup_webhooks(
                 client, shop_url, token,
+            )
+        if "script_tags" in selected:
+            results["script_tags"] = self._setup_script_tags(
+                client,
             )
 
         self._record(results)
@@ -2193,6 +2198,110 @@ class StoreConfigurator:
                 store_name or "Our Store"
             ),
             "written": written,
+            "errors": errors,
+        }
+
+    # ── Feature: Script tags (tracking pixels) ─────────────────
+
+    def _setup_script_tags(
+        self, client: ShopifyClient,
+    ) -> dict[str, Any]:
+        """Auto-install tracking scripts on the storefront.
+
+        Env-gated so owners who only want analytics-off stores
+        don't accidentally install pixels:
+
+          * ``SHOPAI_META_PIXEL_SRC`` — full https URL of the
+            Meta Pixel helper script
+          * ``SHOPAI_TIKTOK_PIXEL_SRC`` — TikTok equivalent
+          * ``SHOPAI_GA_SRC`` — Google Analytics gtag.js URL
+
+        Script tags API is a legacy surface Shopify has
+        deprecated in favour of Web Pixels, but it still works
+        today and requires no Shopify app install. Idempotent
+        — query existing by src, skip duplicates.
+
+        Missing all three env vars → status=skipped (no-op).
+        """
+        sources: list[tuple[str, str]] = []
+        for label, env in (
+            ("meta_pixel", "SHOPAI_META_PIXEL_SRC"),
+            ("tiktok_pixel", "SHOPAI_TIKTOK_PIXEL_SRC"),
+            ("google_analytics", "SHOPAI_GA_SRC"),
+        ):
+            src = os.environ.get(env, "").strip()
+            if src:
+                if not src.startswith("https://"):
+                    continue
+                sources.append((label, src))
+        if not sources:
+            return {
+                "status": "skipped",
+                "reason": (
+                    "no SHOPAI_META_PIXEL_SRC / "
+                    "SHOPAI_TIKTOK_PIXEL_SRC / SHOPAI_GA_SRC "
+                    "configured — export at least one to "
+                    "enable tracking"
+                ),
+                "installed": [],
+                "existing": [],
+                "errors": [],
+            }
+
+        # Fetch existing script_tags so we can skip duplicates
+        existing_srcs: set[str] = set()
+        try:
+            resp = client.get(
+                "script_tags.json", params={"limit": 250},
+            )
+            if "error" not in resp:
+                for t in resp.get("script_tags", []) or []:
+                    s = str(t.get("src") or "").strip()
+                    if s:
+                        existing_srcs.add(s)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "script_tags fetch raised: %s", exc,
+            )
+
+        installed: list[str] = []
+        existing_labels: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for label, src in sources:
+            if src in existing_srcs:
+                existing_labels.append(label)
+                continue
+            result = self._write(
+                client, "POST", "script_tags.json",
+                {
+                    "script_tag": {
+                        "event": "onload",
+                        "src": src,
+                    },
+                },
+                description=(
+                    f"Install {label} script_tag {src}"
+                ),
+            )
+            if result.get("error"):
+                errors.append({
+                    "label": label,
+                    "src": src,
+                    "error": str(result["error"]),
+                })
+                continue
+            if result.get("script_tag") or result.get(
+                "dry_run",
+            ):
+                installed.append(label)
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "installed": installed,
+            "existing": existing_labels,
             "errors": errors,
         }
 

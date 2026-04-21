@@ -1948,6 +1948,17 @@ def _format_feature_summary(name: str, data: dict) -> str:
             f"subscribed={len(subscribed)}, "
             f"existing={len(existing)}, errors={errs}"
         )
+    if name == "script_tags":
+        installed = data.get("installed") or []
+        existing = data.get("existing") or []
+        errs = len(data.get("errors") or [])
+        status = data.get("status", "?")
+        if status == "skipped":
+            return f"skipped ({data.get('reason', '')[:40]})"
+        return (
+            f"installed={len(installed)}, "
+            f"existing={len(existing)}, errors={errs}"
+        )
     return str(data)[:60]
 
 
