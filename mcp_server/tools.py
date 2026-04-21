@@ -688,6 +688,32 @@ def _replay_orders_handler(
     return stats.as_dict()
 
 
+def _analyze_failure_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Owner asks Claude Desktop 'why did decision X fail?'
+    and gets a structured root-cause read (contributing
+    factors + lesson + prevention rule). Requires a
+    ``failed_episode`` dict with at minimum:
+        {decision_type, action, context: {...}}
+    Read-only — never mutates brain state."""
+    from core.learning.root_cause_analyzer import (
+        get_root_cause_analyzer,
+    )
+    episode = args.get("failed_episode")
+    if not isinstance(episode, dict):
+        raise ToolError(
+            "failed_episode (dict) required",
+        )
+    analyzer = get_root_cause_analyzer()
+    try:
+        return analyzer.analyze_failure(episode)
+    except Exception as exc:  # noqa: BLE001
+        raise ToolError(
+            f"RCA raised: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
 def _live_health_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1249,6 +1275,30 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_recent_cycles_handler,
+    ))
+    reg.register(ToolSpec(
+        name="analyze_failure",
+        description=(
+            "Root-cause analysis for a failed decision — "
+            "contributing factors, lesson, suggested "
+            "prevention rule. Owner supplies a failed "
+            "episode; analyser returns structured read. "
+            "Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "failed_episode": {
+                    "type": "object",
+                    "description": (
+                        "{decision_type, action, "
+                        "context: {...}}"
+                    ),
+                },
+            },
+            "required": ["failed_episode"],
+        },
+        handler=_analyze_failure_handler,
     ))
     reg.register(ToolSpec(
         name="live_health",

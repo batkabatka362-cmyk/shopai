@@ -391,3 +391,36 @@ class RootCauseAnalyzer:
             f"{top['factor']}={top['value']} ({top['frequency']}% of failures). "
             f"Consider blocking {dt} when {top['factor']}={top['value']}."
         )
+
+
+# ── Singleton ────────────────────────────────────────────────
+#
+# Owner-facing access via MCP tool `analyze_failure`. The
+# singleton ships with ``episodic_memory=None`` — the analyser
+# then returns "insufficient_data" for pattern analyses that
+# need success comparisons, but still runs factor attribution
+# on a single failed episode if the caller supplies one.
+# Pipeline-level wire-up (auto-run on publisher_bundle failure)
+# is deferred until an episodic memory adapter lands.
+
+import threading as _threading
+
+_SINGLETON: RootCauseAnalyzer | None = None
+_SINGLETON_LOCK = _threading.Lock()
+
+
+def get_root_cause_analyzer() -> RootCauseAnalyzer:
+    """Module-level accessor — used by the MCP tool so every
+    analysis goes through the same instance."""
+    global _SINGLETON
+    if _SINGLETON is None:
+        with _SINGLETON_LOCK:
+            if _SINGLETON is None:
+                _SINGLETON = RootCauseAnalyzer()
+    return _SINGLETON
+
+
+def reset_rca_for_tests() -> None:
+    global _SINGLETON
+    with _SINGLETON_LOCK:
+        _SINGLETON = None
