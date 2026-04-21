@@ -502,6 +502,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    live_health_p = sub.add_parser(
+        "live-health",
+        help=(
+            "Rolling health digest — doctor probes + recent "
+            "autopilot cycles + per-engine trends fused into "
+            "a single verdict (healthy / degrading / "
+            "needs_attention)."
+        ),
+    )
+    live_health_p.add_argument(
+        "--cycles", type=int, default=20,
+        help="Recent cycles to aggregate (default 20)",
+    )
+    live_health_p.add_argument(
+        "--json", action="store_true",
+    )
+
     rule_quality_p = sub.add_parser(
         "rule-quality",
         help=(
@@ -3227,6 +3244,59 @@ def _cmd_replay_orders(
                     f"  {r.order_id:<20} "
                     f"{r.error[:80]}"
                 )
+
+
+def _cmd_live_health(
+    *, cycles: int, as_json: bool,
+) -> None:
+    """Print the rolling health digest fused from doctor +
+    recent cycles + engine feedback trends."""
+    from core.readiness.health_trend import (
+        compute_live_health,
+    )
+    trend = compute_live_health(cycles_limit=cycles)
+    if as_json:
+        print(json.dumps(trend.as_dict(), indent=2))
+        return
+    print(
+        f"Live health: {trend.verdict.upper()}"
+    )
+    if trend.reasons:
+        print()
+        print("Reasons:")
+        for r in trend.reasons:
+            print(f"  - {r}")
+    print()
+    print(
+        f"Doctor: ok={trend.doctor_ok}, "
+        f"critical={trend.doctor_critical_failures}, "
+        f"warnings={trend.doctor_warnings}"
+    )
+    print(
+        f"Cycles: {trend.cycles_considered} considered, "
+        f"{trend.cycles_with_error} with error, "
+        f"{trend.cycles_live_mode} in live mode"
+    )
+    print(
+        f"Engines: "
+        f"{trend.engines_improving} improving, "
+        f"{trend.engines_stable} stable, "
+        f"{trend.engines_declining} declining"
+    )
+    if trend.recent_cycles:
+        print()
+        print("Recent cycles:")
+        for c in trend.recent_cycles:
+            err = c.get("error") or ""
+            err_flag = "!" if err else " "
+            print(
+                f"  {err_flag} cycle={c.get('cycle', '?')} "
+                f"mode={c.get('mode', '?')} "
+                f"launches={c.get('launches', 0)}/"
+                f"{c.get('successful', 0)} "
+                f"{c.get('duration_s', 0):.1f}s "
+                f"{err[:40]}"
+            )
 
 
 def _cmd_rule_quality(
@@ -6064,6 +6134,13 @@ def main(argv: list[str] | None = None) -> None:
             attach_decision_rate=float(
                 args.attach_decision_rate,
             ),
+        )
+        return
+
+    if args.command == "live-health":
+        _cmd_live_health(
+            cycles=int(args.cycles),
+            as_json=bool(args.json),
         )
         return
 

@@ -688,6 +688,25 @@ def _replay_orders_handler(
     return stats.as_dict()
 
 
+def _live_health_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Rolling health digest fused from doctor probes, recent
+    autopilot cycles, and per-engine feedback trends. Answers
+    'is today worse than yesterday?' without log-trawling."""
+    from core.readiness.health_trend import (
+        compute_live_health,
+    )
+    try:
+        cycles = int(args.get("cycles", 20) or 20)
+    except (TypeError, ValueError):
+        cycles = 20
+    cycles = max(1, min(cycles, 1000))
+    return compute_live_health(
+        cycles_limit=cycles,
+    ).as_dict()
+
+
 def _brain_module_catalog_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1230,6 +1249,28 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_recent_cycles_handler,
+    ))
+    reg.register(ToolSpec(
+        name="live_health",
+        description=(
+            "Rolling health digest — doctor probes + recent "
+            "autopilot cycles + engine feedback trends fused "
+            "into verdict (healthy / degrading / "
+            "needs_attention / unknown). Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "cycles": {
+                    "type": "integer",
+                    "description": (
+                        "Recent cycles to aggregate "
+                        "(default 20, max 1000)."
+                    ),
+                },
+            },
+        },
+        handler=_live_health_handler,
     ))
     reg.register(ToolSpec(
         name="brain_module_catalog",
