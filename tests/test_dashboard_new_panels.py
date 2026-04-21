@@ -116,6 +116,80 @@ class TestAgenticChannelsPanel(unittest.TestCase):
         self.assertIn("bridge unavailable", out)
 
 
+class TestForceFreshPropagation(unittest.TestCase):
+    """P1.5 — ``--live`` must pass force=True so the 5-min
+    agentic bridge cache doesn't make consecutive refreshes
+    show stale data."""
+
+    def test_default_calls_status_without_force(self):
+        d = _dashboard_no_orch()
+        fake_bridge = MagicMock()
+        fake_bridge.status.return_value = []
+        with patch(
+            "core.bridge.agentic_storefront"
+            ".get_agentic_bridge",
+            return_value=fake_bridge,
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._agentic_channels()
+        fake_bridge.status.assert_called_once_with(
+            force=False,
+        )
+
+    def test_force_fresh_true_passes_force(self):
+        d = _dashboard_no_orch()
+        fake_bridge = MagicMock()
+        fake_bridge.status.return_value = []
+        with patch(
+            "core.bridge.agentic_storefront"
+            ".get_agentic_bridge",
+            return_value=fake_bridge,
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._agentic_channels(force_fresh=True)
+        fake_bridge.status.assert_called_once_with(
+            force=True,
+        )
+
+    def test_show_live_forces_fresh(self):
+        """show_live() calls show(force_fresh=True)."""
+        d = _dashboard_no_orch()
+        calls: list[dict] = []
+        d.show = lambda **kw: (
+            calls.append(kw)
+            or (_ for _ in ()).throw(KeyboardInterrupt)
+        )
+        d.show_live(interval=0)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].get("force_fresh"))
+
+    def test_plain_show_does_not_force(self):
+        d = _dashboard_no_orch()
+        fake_bridge = MagicMock()
+        fake_bridge.status.return_value = []
+        with patch(
+            "core.bridge.agentic_storefront"
+            ".get_agentic_bridge",
+            return_value=fake_bridge,
+        ):
+            # Patch out every non-agentic panel so show()
+            # doesn't explode on MagicMock-orch attrs.
+            for name in (
+                "_header", "_system_health", "_engine_stats",
+                "_agent_stats", "_workflow_stats", "_metrics",
+                "_autopilot_panel", "_moby_trust",
+                "_fal_budget", "_recent_activity", "_footer",
+            ):
+                setattr(d, name, lambda *a, **k: None)
+            d.show()
+        # Default show() → force=False
+        fake_bridge.status.assert_called_once_with(
+            force=False,
+        )
+
+
 class TestMobyTrustPanel(unittest.TestCase):
     def test_no_resolved_shows_empty_hint(self):
         d = _dashboard_no_orch()

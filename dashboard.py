@@ -39,8 +39,15 @@ class Dashboard:
             self._orch = MainOrchestrator()
             self._orch.initialize()
 
-    def show(self):
-        """Show full dashboard (single snapshot)."""
+    def show(self, *, force_fresh: bool = False):
+        """Show full dashboard (single snapshot).
+
+        ``force_fresh=True`` bypasses 5-min caches on the
+        adapters so ``--live`` mode shows up-to-the-second
+        data. Single-shot ``show()`` calls use the cached
+        path to avoid slamming upstream APIs when an owner
+        runs the command in a tight loop.
+        """
         self._ensure_orch()
         clear_screen()
         self._header()
@@ -50,19 +57,21 @@ class Dashboard:
         self._workflow_stats()
         self._metrics()
         self._autopilot_panel()
-        self._agentic_channels()
+        self._agentic_channels(force_fresh=force_fresh)
         self._moby_trust()
         self._fal_budget()
         self._recent_activity()
         self._footer()
 
     def show_live(self, interval: int = 5, count: int = 0):
-        """Show live updating dashboard."""
+        """Show live updating dashboard — each cycle forces a
+        fresh adapter read so a 5-min cached status doesn't
+        make ``--live`` effectively static."""
         self._ensure_orch()
         iteration = 0
         try:
             while True:
-                self.show()
+                self.show(force_fresh=True)
                 iteration += 1
                 if count and iteration >= count:
                     break
@@ -259,8 +268,13 @@ class Dashboard:
         )
         print()
 
-    def _agentic_channels(self):
-        """Wave B-1 A4 — per-AI-channel enrollment + GMV snapshot."""
+    def _agentic_channels(self, *, force_fresh: bool = False):
+        """Wave B-1 A4 — per-AI-channel enrollment + GMV snapshot.
+
+        ``--live`` mode passes ``force_fresh=True`` so the
+        5-min cache inside AgenticStorefrontBridge.status()
+        doesn't make consecutive live refreshes show the same
+        stale payload."""
         print(color(
             "── AGENTIC CHANNELS (ChatGPT / Perplexity / …) ───────────────",
             "bold",
@@ -270,7 +284,7 @@ class Dashboard:
                 get_agentic_bridge,
             )
             bridge = get_agentic_bridge()
-            statuses = bridge.status()
+            statuses = bridge.status(force=force_fresh)
         except Exception as exc:  # noqa: BLE001
             print(f"  {color('—', 'dim')}  bridge unavailable ({exc})")
             print()

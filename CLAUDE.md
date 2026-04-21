@@ -644,7 +644,8 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | Webhook HMAC audit | `9d1100d` | env fallback + fail-closed gate (security) |
 | Tracker + rationale + wave11 | `3aa62c3` | CLAUDE.md §8 + moby gate stamp + tiktok wave11 fix |
 | Webhook rate limiter | `ddeb627` | per-IP token bucket (P0.2 security defence) |
-| Owner tool dispatcher | (this commit) | Telegram phrase → MCP tool with confirm-gate (P1.3) |
+| Owner tool dispatcher | `dccbfa1` | Telegram phrase → MCP tool with confirm-gate (P1.3) |
+| Dashboard live fresh | (this commit) | `--live` passes force=True so cached agentic status refreshes each cycle (P1.5) |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
@@ -667,9 +668,10 @@ P1 — owner experience:
    `shopai owner-ask "<phrase>"`.
 4. **Brain rationale ledger trace for Moby step** — every
    activation's `explain_decision` shows whether Moby agreed.
-5. **Dashboard live mode auto-refresh of A-D panels** —
-   currently --live re-renders but caches block fresh
-   data; force=True on bridge.status() per cycle.
+5. ✅ **Dashboard live mode auto-refresh of A-D panels** —
+   done. `show_live()` calls `show(force_fresh=True)`;
+   agentic panel passes `force=True` to bypass the 5-min
+   bridge cache.
 
 P2 — capability extensions:
 6. **GEO quote-sandwich citation harvest** — semi-auto pull
