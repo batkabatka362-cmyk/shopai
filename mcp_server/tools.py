@@ -341,6 +341,91 @@ def _fal_budget_handler(
         router.close()
 
 
+def _trust_status_handler(
+    args: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Source-trust calibrator ranking — which data sources
+    ShopAI weights heaviest. Owner uses this to decide which
+    source to trust when two disagree."""
+    from core.data.source_trust_calibrator import (
+        get_calibrator,
+    )
+    c = get_calibrator()
+    out: list[dict[str, Any]] = []
+    for name, trust in c.ranked():
+        stats = c.get(name)
+        out.append({
+            "source": name,
+            "trust": round(float(trust), 4),
+            "samples": int(stats.samples),
+            "win_ema": round(float(stats.win_ema), 4),
+            "error_rate_ema": round(
+                float(stats.error_rate_ema), 4,
+            ),
+        })
+    return out
+
+
+def _memory_ladder_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Episode → concept → procedure memory ladder counts
+    plus the promotion thresholds.  Owner uses this to
+    understand what ShopAI is learning long-term."""
+    from core.memory.consolidator import get_consolidator
+    return get_consolidator().stats()
+
+
+def _recent_decisions_handler(
+    args: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Recent decisions with their rationale summaries.
+    Pair with the existing ``explain_decision`` tool to
+    drill in."""
+    from core.decision.rationale_ledger import (
+        get_rationale_ledger,
+    )
+    try:
+        limit = int(args.get("limit", 20) or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+    records = get_rationale_ledger().recent(limit=limit)
+    return [r.as_dict() for r in records]
+
+
+def _predict_outcome_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """World-model what-if: given an action/kpi/context,
+    return the bias-adjusted mean + calibrated stdev +
+    confidence band ShopAI would use to decide."""
+    from core.brain.world_model_calibration import (
+        get_world_model_calibration,
+    )
+    action = str(args.get("action", "")).strip()
+    kpi = str(args.get("kpi", "")).strip()
+    if not action or not kpi:
+        raise ToolError("action and kpi required")
+    context = {
+        "niche": str(args.get("niche", "") or ""),
+        "price_band": str(
+            args.get("price_band", "") or "",
+        ),
+        "margin_band": str(
+            args.get("margin_band", "") or "",
+        ),
+        "copy_tone": str(args.get("tone", "") or ""),
+    }
+    pred = get_world_model_calibration().predict(
+        action=action, kpi=kpi, context=context,
+    )
+    return pred.as_dict()
+
+
 def _oauth_status_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -490,6 +575,68 @@ def build_default_registry() -> ToolRegistry:
             "required": ["cost", "price", "daily_budget_usd"],
         },
         handler=_launch_simulate_handler,
+    ))
+    reg.register(ToolSpec(
+        name="trust_status",
+        description=(
+            "Per-source trust ranking — which data feeds "
+            "ShopAI weights heaviest, sorted by current "
+            "trust × freshness."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        handler=_trust_status_handler,
+    ))
+    reg.register(ToolSpec(
+        name="memory_ladder",
+        description=(
+            "Episode → concept → procedure memory counts + "
+            "promotion thresholds. Owner uses this to see "
+            "what long-term patterns ShopAI has captured."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        handler=_memory_ladder_handler,
+    ))
+    reg.register(ToolSpec(
+        name="recent_decisions",
+        description=(
+            "Recent decisions from the rationale ledger "
+            "with their summaries. Pair with "
+            "``explain_decision`` to drill into any row."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max decisions to return (1-200, "
+                        "default 20)"
+                    ),
+                },
+            },
+        },
+        handler=_recent_decisions_handler,
+    ))
+    reg.register(ToolSpec(
+        name="predict_outcome",
+        description=(
+            "World-model what-if — given an action/kpi/"
+            "context, return bias-adjusted mean + "
+            "calibrated stdev + confidence band."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "kpi": {"type": "string"},
+                "niche": {"type": "string"},
+                "price_band": {"type": "string"},
+                "margin_band": {"type": "string"},
+                "tone": {"type": "string"},
+            },
+            "required": ["action", "kpi"],
+        },
+        handler=_predict_outcome_handler,
     ))
     reg.register(ToolSpec(
         name="moby_win_rate",
