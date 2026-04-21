@@ -86,7 +86,24 @@ class ContentGenerator:
         geo_sandwiches: list[dict[str, Any]] = []
         body_html = ""
         if use_geo_sandwich:
+            # Citation resolution: caller-explicit wins, else
+            # fall back to the niche-keyed citation store so
+            # owners curate once per niche and every SKU
+            # benefits. No fabrication.
             raw_citations = product.get("citations") or []
+            if not (
+                isinstance(raw_citations, list)
+                and raw_citations
+            ):
+                try:
+                    from execution.seo.citation_store import (
+                        resolve_citations_for,
+                    )
+                    raw_citations = resolve_citations_for(
+                        product,
+                    )
+                except Exception:  # noqa: BLE001
+                    raw_citations = []
             if (
                 isinstance(raw_citations, list)
                 and raw_citations

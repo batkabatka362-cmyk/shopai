@@ -476,6 +476,26 @@ def _notify_errors_handler(
     return result.as_dict()
 
 
+def _citations_show_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the citation list for a niche — owner uses this
+    to preview the GEO sandwich content before it ships on
+    the next product description."""
+    from execution.seo.citation_store import (
+        available_niches,
+        resolve_citations_for,
+    )
+    niche = str(args.get("niche", "default") or "default")
+    cites = resolve_citations_for({"niche": niche})
+    return {
+        "niche": niche,
+        "available_niches": available_niches(),
+        "citations": cites,
+        "count": len(cites),
+    }
+
+
 def _webhook_rate_limit_status_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -866,6 +886,28 @@ def build_default_registry() -> ToolRegistry:
         },
         handler=_notify_errors_handler,
         write=True,
+    ))
+    reg.register(ToolSpec(
+        name="citations_show",
+        description=(
+            "Preview the owner-curated citations for a "
+            "niche — what the GEO quote-sandwich wire "
+            "would attach to product descriptions when "
+            "use_geo_sandwich=True."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "niche": {
+                    "type": "string",
+                    "description": (
+                        "Niche slug (e.g. pet, beauty); "
+                        "default=\"default\""
+                    ),
+                },
+            },
+        },
+        handler=_citations_show_handler,
     ))
     reg.register(ToolSpec(
         name="webhook_rate_limit_status",

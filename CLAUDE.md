@@ -647,7 +647,8 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | Owner tool dispatcher | `dccbfa1` | Telegram phrase → MCP tool with confirm-gate (P1.3) |
 | Dashboard live fresh | `a21fbb4` | `--live` passes force=True so cached agentic status refreshes each cycle (P1.5) |
 | fal video pre-gen cache | `2770975` | prompt-hash cache dedupes identical prompts across SKUs (P2.7) |
-| llms.txt daemon rebuild | (this commit) | Autopilot cycle every N rebuilds llms.txt/mirrors from live Shopify |
+| llms.txt daemon rebuild | `fbcd05b` | Autopilot cycle every N rebuilds llms.txt/mirrors from live Shopify |
+| GEO citation store | (this commit) | Niche-keyed `data/citations/<niche>.json` auto-injects into content_generator quote-sandwich |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
@@ -676,9 +677,12 @@ P1 — owner experience:
    bridge cache.
 
 P2 — capability extensions:
-6. **GEO quote-sandwich citation harvest** — semi-auto pull
-   real reviews/research from product spec sheets to populate
-   `citations` (without fabricating).
+6. ✅ **GEO quote-sandwich citation store** — done.
+   Owner curates `data/citations/<niche>.json` once per
+   niche; every SKU in the niche auto-inherits when
+   `use_geo_sandwich=True`. No fabrication; explicit
+   product-level citations still win.  CLI `shopai
+   citations list|show` + MCP `citations_show`.
 7. ✅ **fal.ai video pre-generation cache** — done.
    Prompt-hash-keyed SQLite cache in FalVideoRouter; generic
    prompts reuse the cached URL across SKUs at $0. TTL

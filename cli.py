@@ -228,6 +228,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ── Build llms.txt artifacts (Wave E-1) ───────────────────
+    cites_p = sub.add_parser(
+        "citations",
+        help=(
+            "Inspect the owner-curated citation store used by "
+            "the GEO quote-sandwich wire. Files live at "
+            "data/citations/<niche>.json."
+        ),
+    )
+    cites_sub = cites_p.add_subparsers(
+        dest="citations_action",
+    )
+    cites_list = cites_sub.add_parser(
+        "list",
+        help="List every curated niche",
+    )
+    cites_list.add_argument(
+        "--json", action="store_true",
+    )
+    cites_show = cites_sub.add_parser(
+        "show",
+        help="Print citations for one niche (or a product)",
+    )
+    cites_show.add_argument(
+        "niche", help="Niche slug (e.g. pet, beauty)",
+    )
+    cites_show.add_argument(
+        "--json", action="store_true",
+    )
+
     llms_p = sub.add_parser(
         "build-llms-txt",
         help=(
@@ -2776,6 +2805,62 @@ def _cmd_autopilot_status(
             )
     else:
         print("  No cycles recorded yet.")
+
+
+def _cmd_citations_list(*, as_json: bool) -> None:
+    """List every curated niche in the citation store."""
+    from execution.seo.citation_store import (
+        available_niches,
+    )
+    niches = available_niches()
+    if as_json:
+        print(json.dumps({"niches": niches}, indent=2))
+        return
+    if not niches:
+        print(
+            "No citations curated yet. Create "
+            "data/citations/<niche>.json with a list of "
+            "{claim, quote, source_name, source_type, "
+            "citation, citation_url} dicts.",
+        )
+        return
+    print(f"Citation niches ({len(niches)}):")
+    for n in niches:
+        print(f"  • {n}")
+
+
+def _cmd_citations_show(
+    *, niche: str, as_json: bool,
+) -> None:
+    """Print the resolved citations for a niche (or a
+    product dict where product.niche=<niche>). Useful for
+    owner to preview what GEO sandwich would attach."""
+    from execution.seo.citation_store import (
+        resolve_citations_for,
+    )
+    cites = resolve_citations_for({"niche": niche})
+    if as_json:
+        print(json.dumps(
+            {"niche": niche, "citations": cites},
+            indent=2,
+        ))
+        return
+    if not cites:
+        print(
+            f"No citations for niche {niche!r}. "
+            f"Add data/citations/{niche}.json or let "
+            "default.json cover it."
+        )
+        return
+    print(
+        f"Citations for niche {niche!r} "
+        f"({len(cites)} entries):"
+    )
+    for c in cites:
+        print(
+            f"  • {str(c.get('source_name', ''))[:30]:<30}"
+            f"  {str(c.get('claim', ''))[:60]}"
+        )
 
 
 def _cmd_build_llms_txt(
@@ -5674,6 +5759,22 @@ def main(argv: list[str] | None = None) -> None:
             limit=int(args.limit),
             as_json=bool(args.json),
         )
+        return
+
+    if args.command == "citations":
+        action = (
+            getattr(args, "citations_action", None)
+            or "list"
+        )
+        if action == "list":
+            _cmd_citations_list(
+                as_json=bool(args.json),
+            )
+        elif action == "show":
+            _cmd_citations_show(
+                niche=str(args.niche),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "build-llms-txt":
