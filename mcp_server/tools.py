@@ -688,6 +688,16 @@ def _replay_orders_handler(
     return stats.as_dict()
 
 
+def _brain_module_catalog_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the brain module catalog — how many modules are
+    active / experimental / archived / unknown. Owner uses
+    this to see which brain capabilities are live vs parked."""
+    from core.brain.module_catalog import catalog_summary
+    return catalog_summary()
+
+
 def _engine_feedback_stats_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1220,6 +1230,19 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_recent_cycles_handler,
+    ))
+    reg.register(ToolSpec(
+        name="brain_module_catalog",
+        description=(
+            "Honest map of the 225-module brain tree: which "
+            "modules are active (wired into the decision "
+            "flow), experimental (implemented + parked), "
+            "archived, or unknown. Read-only."
+        ),
+        input_schema={
+            "type": "object", "properties": {},
+        },
+        handler=_brain_module_catalog_handler,
     ))
     reg.register(ToolSpec(
         name="engine_feedback_stats",
