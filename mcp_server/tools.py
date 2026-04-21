@@ -540,6 +540,35 @@ def _notify_errors_handler(
     return result.as_dict()
 
 
+def _recent_deliberations_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the last N structured-decision records so the
+    owner can trace how a decision was thought through (5
+    pillars: outcome, directions, constraints, refines,
+    awareness). Complements explain_decision which shows
+    the rationale ledger; this shows the upstream decision
+    process that populates it."""
+    from core.brain.structured_decision import (
+        recent_deliberations,
+    )
+    try:
+        limit = int(args.get("limit", 10) or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+    records = recent_deliberations(limit=limit)
+    return {
+        "count": len(records),
+        "deliberations": [
+            r.as_dict() for r in records
+        ],
+    }
+
+
 def _agents_list_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -969,6 +998,29 @@ def build_default_registry() -> ToolRegistry:
         },
         handler=_notify_errors_handler,
         write=True,
+    ))
+    reg.register(ToolSpec(
+        name="recent_deliberations",
+        description=(
+            "Last N structured decisions (5-pillar "
+            "outcome/directions/constraints/refines/"
+            "awareness records). Upstream of the "
+            "rationale ledger — shows HOW each decision "
+            "was reasoned through."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max records to return (1-200, "
+                        "default 10)"
+                    ),
+                },
+            },
+        },
+        handler=_recent_deliberations_handler,
     ))
     reg.register(ToolSpec(
         name="agents_list",

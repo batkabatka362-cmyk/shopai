@@ -648,7 +648,9 @@ docs/IMPLEMENTATION_PLAN_2026.md дотор. Branch:
 | Dashboard live fresh | `a21fbb4` | `--live` passes force=True so cached agentic status refreshes each cycle (P1.5) |
 | fal video pre-gen cache | `2770975` | prompt-hash cache dedupes identical prompts across SKUs (P2.7) |
 | llms.txt daemon rebuild | `fbcd05b` | Autopilot cycle every N rebuilds llms.txt/mirrors from live Shopify |
-| GEO citation store | (this commit) | Niche-keyed `data/citations/<niche>.json` auto-injects into content_generator quote-sandwich |
+| GEO citation store | `9424313` | Niche-keyed `data/citations/<niche>.json` auto-injects into content_generator quote-sandwich |
+| Quality audit pass | `4c23d23` `73d30f5` `048e621` `5b79338` | Live-execution centralised, ToolResult telemetry, AgentManager facade, BrainFacade.register_module |
+| 5-pillar structured decision | (this commit) | `core/brain/structured_decision.py` — Outcome / Directions / Constraints / Refines / SelfAwareness for every significant decision; MCP `recent_deliberations` |
 
 **Tests added:** ~250+ new pytest. **Full-suite checkpoint:**
 `9663 passed, 0 failed`. **MCP tools:** 20 (эхэнд 12).
