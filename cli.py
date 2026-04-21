@@ -502,6 +502,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    ingest_p = sub.add_parser(
+        "ingest-knowledge",
+        help=(
+            "Pull an external URL / file into the structured "
+            "knowledge base so the oracle has source-cited "
+            "facts (brand docs, changelogs, supplier FAQs). "
+            "Opt-in — owner runs when a new source is "
+            "worth ingesting."
+        ),
+    )
+    ingest_group = ingest_p.add_mutually_exclusive_group(
+        required=True,
+    )
+    ingest_group.add_argument(
+        "--url",
+        help="HTTP(S) URL to fetch + parse",
+    )
+    ingest_group.add_argument(
+        "--file",
+        help="Local file path (markdown / txt / html)",
+    )
+    ingest_p.add_argument(
+        "--subject",
+        help="Override subject label (else first H1/H2)",
+    )
+    ingest_p.add_argument(
+        "--json", action="store_true",
+    )
+
     live_health_p = sub.add_parser(
         "live-health",
         help=(
@@ -3244,6 +3273,37 @@ def _cmd_replay_orders(
                     f"  {r.order_id:<20} "
                     f"{r.error[:80]}"
                 )
+
+
+def _cmd_ingest_knowledge(
+    *,
+    url: str,
+    file: str,
+    subject: str,
+    as_json: bool,
+) -> None:
+    """Pull an external URL or file into the structured KB."""
+    from core.memory.knowledge_ingest import (
+        ingest_file, ingest_url,
+    )
+    if url:
+        result = ingest_url(url, subject=subject or None)
+    else:
+        result = ingest_file(
+            file, subject=subject or None,
+        )
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    print(f"Source:  {result.source}")
+    print(f"Subject: {result.subject}")
+    print(f"Written: {result.facts_written}")
+    print(f"Skipped: {result.facts_skipped}")
+    if result.errors:
+        print()
+        print("Errors:")
+        for e in result.errors:
+            print(f"  - {e}")
 
 
 def _cmd_live_health(
@@ -6134,6 +6194,15 @@ def main(argv: list[str] | None = None) -> None:
             attach_decision_rate=float(
                 args.attach_decision_rate,
             ),
+        )
+        return
+
+    if args.command == "ingest-knowledge":
+        _cmd_ingest_knowledge(
+            url=str(args.url or ""),
+            file=str(args.file or ""),
+            subject=str(args.subject or ""),
+            as_json=bool(args.json),
         )
         return
 

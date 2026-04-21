@@ -688,6 +688,36 @@ def _replay_orders_handler(
     return stats.as_dict()
 
 
+def _ingest_knowledge_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Pull an external URL / file into the structured KB so
+    the oracle has source-cited facts. Owner-gated — marked
+    write=True because it mutates the KB."""
+    from core.memory.knowledge_ingest import (
+        ingest_file,
+        ingest_text,
+        ingest_url,
+    )
+    url = str(args.get("url", "") or "").strip()
+    path = str(args.get("file", "") or "").strip()
+    text = str(args.get("text", "") or "")
+    subject = str(args.get("subject", "") or "") or None
+    if url:
+        return ingest_url(url, subject=subject).as_dict()
+    if path:
+        return ingest_file(
+            path, subject=subject,
+        ).as_dict()
+    if text:
+        return ingest_text(
+            text, subject=subject,
+        ).as_dict()
+    raise ToolError(
+        "one of url / file / text required",
+    )
+
+
 def _analyze_failure_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1275,6 +1305,26 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_recent_cycles_handler,
+    ))
+    reg.register(ToolSpec(
+        name="ingest_knowledge",
+        description=(
+            "Pull an external URL / file / raw text into the "
+            "structured knowledge base so the oracle has "
+            "source-cited facts. One of url / file / text "
+            "required. Owner-gated (write)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "file": {"type": "string"},
+                "text": {"type": "string"},
+                "subject": {"type": "string"},
+            },
+        },
+        handler=_ingest_knowledge_handler,
+        write=True,
     ))
     reg.register(ToolSpec(
         name="analyze_failure",
