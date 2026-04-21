@@ -511,6 +511,92 @@ class TestMarketingAgentAdapterAugmentation:
         )
         assert "copy_generation" not in aug
 
+    def _attach_capture(self):
+        """Attach a list-backed handler to the marketing logger.
+        ``utils.logger.get_logger`` sets ``propagate=False`` which
+        blocks pytest's caplog, so we hook the logger directly."""
+        import logging
+
+        records: list[logging.LogRecord] = []
+        mlog = logging.getLogger("shopai.agent.marketing")
+
+        class _CaptureHandler(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        h = _CaptureHandler(level=logging.WARNING)
+        mlog.addHandler(h)
+        return mlog, h, records
+
+    def test_adapter_failure_logs_warning(self):
+        """§4d audit fix: silent None is invisible degradation.
+        Warning log gives the owner a real signal when the LLM
+        copy augmentation silently declines."""
+        import logging
+
+        from agents.marketing.agent import MarketingAgent
+        get_registry().register(_BrokenAdapter())
+        router = get_router()
+
+        mlog, handler, records = self._attach_capture()
+        try:
+            mk = MarketingAgent()
+            mk.run(
+                goal="Campaign",
+                context=self._make_context(_router=router),
+                constraints={},
+            )
+        finally:
+            mlog.removeHandler(handler)
+        warns = [
+            r for r in records
+            if r.levelno == logging.WARNING
+        ]
+        assert warns, (
+            "marketing copy failure must emit a warning"
+        )
+
+    def test_empty_llm_reply_logs_warning(self):
+        """Empty text from the LLM is degradation, not success
+        — log it at warning level so the owner can see adapter
+        drift in production."""
+        import logging
+
+        from agents.marketing.agent import MarketingAgent
+
+        class _EmptyLLM(BaseAdapter):
+            name = "empty_llm_for_warn"
+            category = AdapterCategory.LLM
+            capabilities = {Capability.CHAT_COMPLETE}
+            priority = 260
+            def is_configured(self): return True
+            def _execute(self, c, p):
+                return AdapterResult.success(
+                    adapter=self.name, capability=c.value,
+                    data={"text": ""}, model="x",
+                )
+        get_registry().register(_EmptyLLM())
+        router = get_router()
+
+        mlog, handler, records = self._attach_capture()
+        try:
+            mk = MarketingAgent()
+            mk.run(
+                goal="Campaign",
+                context=self._make_context(_router=router),
+                constraints={},
+            )
+        finally:
+            mlog.removeHandler(handler)
+        warns = [
+            r for r in records
+            if r.levelno == logging.WARNING
+            and "empty text" in r.getMessage()
+        ]
+        assert warns, (
+            "empty-text adapter must emit an empty-text warning"
+        )
+
 
 # ── Backward compatibility sanity ────────────────────────────
 

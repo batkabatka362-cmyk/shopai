@@ -6,13 +6,19 @@ Pre-audit: three call sites each copy-pasted the same
 tweak in one would silently diverge from the others. This
 test locks in the contract: all three paths now delegate to
 ``core.system.live_execution.is_live_execution_enabled()``.
+
+Also covers the ``check_gate_drift`` invariant — when the
+owner / system flips the env flag mid-launch, the drift is
+logged (never silently overrides the caller's intent).
 """
 from __future__ import annotations
 
+import logging
 import os
 import unittest
 
 from core.system.live_execution import (
+    check_gate_drift,
     is_live_execution_enabled,
 )
 
@@ -109,6 +115,101 @@ class TestCallerConsistency(unittest.TestCase):
                 (_pub(), _act(), _live_enabled()),
                 (True, True, True),
             )
+
+
+class TestGateDrift(unittest.TestCase):
+    """``check_gate_drift`` is a defensive invariant at the
+    money-commit point in publisher + activator. It must log
+    (not raise) when env flips mid-launch, and must not
+    second-guess the caller's computed ``dry_run``."""
+
+    def _attach_capture(self):
+        records: list[logging.LogRecord] = []
+        dlog = logging.getLogger(
+            "shopai.core.system.live_execution",
+        )
+
+        class _H(logging.Handler):
+            def emit(self, r):
+                records.append(r)
+
+        h = _H(level=logging.WARNING)
+        dlog.addHandler(h)
+        return dlog, h, records
+
+    def test_no_drift_silent(self):
+        with _EnvSandbox():
+            # request.live=True, env on → live, no drift vs
+            # initial dry_run=False
+            os.environ["SHOPAI_ENABLE_LIVE_EXECUTION"] = "1"
+            dlog, h, records = self._attach_capture()
+            try:
+                drifted = check_gate_drift(
+                    initial_dry_run=False,
+                    request_live=True,
+                    step="t",
+                )
+            finally:
+                dlog.removeHandler(h)
+            self.assertFalse(drifted)
+            self.assertEqual(records, [])
+
+    def test_env_flip_to_off_detected(self):
+        with _EnvSandbox():
+            # Start live → entry computed dry_run=False.
+            # Env flips to off before commit.
+            os.environ.pop("SHOPAI_ENABLE_LIVE_EXECUTION", None)
+            dlog, h, records = self._attach_capture()
+            try:
+                drifted = check_gate_drift(
+                    initial_dry_run=False,
+                    request_live=True,
+                    step="activate_campaign",
+                )
+            finally:
+                dlog.removeHandler(h)
+            self.assertTrue(drifted)
+            self.assertTrue(records)
+            self.assertIn(
+                "activate_campaign",
+                records[0].getMessage(),
+            )
+
+    def test_env_flip_to_on_detected(self):
+        with _EnvSandbox():
+            # Entry: env off → dry_run=True. Before commit env
+            # flips on. Pipeline must stay dry_run and log.
+            os.environ["SHOPAI_ENABLE_LIVE_EXECUTION"] = "1"
+            dlog, h, records = self._attach_capture()
+            try:
+                drifted = check_gate_drift(
+                    initial_dry_run=True,
+                    request_live=True,
+                    step="launch_campaign",
+                )
+            finally:
+                dlog.removeHandler(h)
+            self.assertTrue(drifted)
+            self.assertTrue(records)
+
+    def test_request_not_live_never_drifts(self):
+        with _EnvSandbox():
+            # request.live=False means dry_run=True always.
+            # Env flip cannot produce drift.
+            for val in ("", "0", "1"):
+                if val:
+                    os.environ[
+                        "SHOPAI_ENABLE_LIVE_EXECUTION"
+                    ] = val
+                else:
+                    os.environ.pop(
+                        "SHOPAI_ENABLE_LIVE_EXECUTION", None,
+                    )
+                self.assertFalse(check_gate_drift(
+                    initial_dry_run=True,
+                    request_live=False,
+                    step="t",
+                ))
 
 
 if __name__ == "__main__":

@@ -117,7 +117,12 @@ class MarketingAgent(BaseAgent):
 
         try:
             from core.adapters import Capability
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "marketing copy augmentation unavailable — "
+                "core.adapters import failed: %s",
+                exc,
+            )
             return None
 
         try:
@@ -131,15 +136,28 @@ class MarketingAgent(BaseAgent):
                 },
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("marketing copy augmentation raised: %s", exc)
+            logger.warning(
+                "marketing copy augmentation raised: %s", exc,
+            )
             return None
 
         if not result.ok:
+            logger.warning(
+                "marketing copy augmentation: router returned "
+                "not-ok (adapter=%s error=%s)",
+                getattr(result, "adapter", "?"),
+                getattr(result, "error", ""),
+            )
             return None
 
         data = result.data or {}
         text = str(data.get("text", "") or "").strip()
         if not text:
+            logger.warning(
+                "marketing copy augmentation: adapter=%s "
+                "returned empty text",
+                getattr(result, "adapter", "?"),
+            )
             return None
         return {
             "adapter": result.adapter,

@@ -359,6 +359,26 @@ class PublisherBundle:
             rationale=rationale,
         )
 
+        # Defensive: confirm the live-gate hasn't drifted
+        # between entry and the ad-budget commit point. A
+        # mid-launch env flip stays with the caller's original
+        # intent (dry_run is never silently overridden), but
+        # the drift is logged so the operator / monitoring can
+        # see it.
+        try:
+            from core.system.live_execution import (
+                check_gate_drift,
+            )
+            check_gate_drift(
+                dry_run,
+                request_live=bool(request.live),
+                step="launch_campaign",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "gate drift check skipped: %s", exc,
+            )
+
         # 3. meta ads campaign
         campaign_log = self._step_launch_campaign(
             request, steps,
