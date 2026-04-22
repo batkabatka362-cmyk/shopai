@@ -16,6 +16,50 @@
 
 ## Open
 
+### 2026-04-22 · Deguar live store · P1 · 21 products, all with only 1 image
+
+Cache-audit (data/shopai.db) showed every single Deguar product
+ships with **exactly one image**. E-commerce research: moving
+from 1 → 4 images lifts CVR 30-50% on impulse / home-decor
+categories. At 2% CVR and $35 AOV across 20 products × 100
+sessions, that's an extra ~$35-60/week lost per product. Across
+the catalog this is easily the single biggest CVR leak.
+
+**Status:** tool shipped (`scripts/deguar_bulk_images.py`, commit
+b823d99), owner action pending — curate image URLs in
+`docs/deguar_images_template.json` + run the uploader.
+
+### 2026-04-22 · Deguar live store · P2 · duplicate phone-mount product
+
+Two products present, both active, same category:
+
+  * id 8987403944164 — `Magnetic Phone Mount for Car`
+    ($12.99, cost $3.50)
+  * id 9006948286692 — `Car Accessories: Magnetic Phone Holder`
+    ($24.99, cost $0.00 — cost not set)
+
+Second listing has no cost recorded so margin reports read 100%
+(misleading). Either a duplicate import or a test SKU that never
+got cleaned up. Neither is in the 11 hero products for "Calm &
+Cozy" so both would normally be drafted, but leaving two of the
+same listing live splits SEO + ad spend.
+
+**Fix:** manual delete in Shopify admin (keep the $12.99 one as
+it has proper cost data; drop the $24.99 one). No automation
+needed — 1-click operation.
+
+### 2026-04-22 · Deguar live store · P2 · stale cache
+
+`data/shopai.db` products table shows all 21 products as
+"active" status, but per `docs/NICHE_STRATEGY.md` + the
+previous session's work, 6 off-niche products were drafted via
+the Shopify API. Cache has not re-synced since that write.
+
+**Fix:** run a fresh cycle once the owner can reach Shopify
+from their environment (sandbox DNS is blocked, so this can't
+be verified in-session). `scripts/deguar_live_audit.py` will
+re-confirm live status when run locally.
+
 ### 2026-04-20 · pre-existing · P2 · duplicate test name, order-flaky
 
 `test_fetch_products_raises_when_unavailable` is defined in **three
