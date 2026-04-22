@@ -856,11 +856,22 @@ def _analyze_competitor_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
     """Scrape one or more public Shopify stores + (optionally)
-    synthesise a strategic take via the LLM gateway. Read-only
-    — never writes, never touches our own Shopify token.
-    Auth-free: pulls from each store's public ``/products.json``
-    + ``/collections.json`` + homepage HTML."""
-    from agents.competitor_intel import analyze_competitors
+    synthesise a strategic take via the LLM gateway. Auth-free:
+    pulls from each store's public ``/products.json`` +
+    ``/collections.json`` + homepage HTML.
+
+    Each scrape appends to ``<storage_dir>/<store>.jsonl`` so
+    repeat calls surface a ``diff`` against the previous run
+    (new SKUs, median-price delta, new/lost apps). Disable with
+    ``persist=false``.
+
+    The tool touches LOCAL storage only (our own data/ dir) —
+    it never writes to any competitor's store, never uses our
+    Shopify token. Stays read-flagged for the MCP registry."""
+    from agents.competitor_intel import (
+        analyze_competitors, diff_vs_last,
+        load_history, save_report,
+    )
 
     stores_arg = args.get("stores") or []
     if isinstance(stores_arg, str):
@@ -877,6 +888,10 @@ def _analyze_competitor_handler(
         args.get("our_store") or "deguar.myshopify.com",
     )
     use_llm = bool(args.get("use_llm", True))
+    persist = bool(args.get("persist", True))
+    storage_dir = str(
+        args.get("storage_dir") or "data/competitor_intel",
+    )
     llm = None
     if use_llm:
         try:
@@ -897,13 +912,107 @@ def _analyze_competitor_handler(
                     )
                 return res.text
 
+    previous: dict[str, dict | None] = {}
+    if persist:
+        for s in stores:
+            try:
+                hist = load_history(
+                    s, storage_dir=storage_dir, limit=1,
+                )
+            except Exception:  # noqa: BLE001
+                hist = []
+            previous[s] = hist[-1] if hist else None
+
     reports = analyze_competitors(
         stores, our_store=our_store, llm=llm,
     )
+
+    if persist:
+        for r in reports:
+            try:
+                save_report(r, storage_dir=storage_dir)
+            except Exception:  # noqa: BLE001
+                pass  # non-fatal; report still returned
+
+    payload_reports: list[dict[str, Any]] = []
+    for r in reports:
+        d = r.as_dict()
+        if persist:
+            d["diff"] = diff_vs_last(
+                r, previous.get(r.store),
+            )
+        payload_reports.append(d)
     return {
         "our_store": our_store,
         "count": len(reports),
-        "reports": [r.as_dict() for r in reports],
+        "persisted": persist,
+        "storage_dir": storage_dir if persist else "",
+        "reports": payload_reports,
+    }
+
+
+def _competitor_history_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Read-only: return the last N persisted scrapes for one
+    competitor store + a diff of the latest vs the one before.
+    Answers the owner's "what changed on gymshark.com since
+    last week?" question without re-scraping."""
+    from agents.competitor_intel import load_history
+    from agents.competitor_intel.agent import CompetitorReport
+
+    store = str(args.get("store") or "").strip()
+    if not store:
+        raise ToolError("store: required")
+    try:
+        limit = int(args.get("limit", 10) or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 500))
+    storage_dir = str(
+        args.get("storage_dir") or "data/competitor_intel",
+    )
+    history = load_history(
+        store, storage_dir=storage_dir, limit=limit,
+    )
+    diff: dict[str, Any] = {}
+    if len(history) >= 2:
+        # Re-hydrate the newest entry enough to run diff_vs_last
+        # without pulling the full agent surface back into memory.
+        from agents.competitor_intel import diff_vs_last
+        from agents.competitor_intel.agent import (
+            HomepageSignals, StoreCatalogSummary,
+        )
+        newest = history[-1]
+        previous = history[-2]
+        cat_d = newest.get("catalog") or {}
+        hp_d = newest.get("homepage") or {}
+        cat = StoreCatalogSummary(
+            store=newest.get("store", store),
+            product_count=int(cat_d.get("product_count") or 0),
+            median_price=float(cat_d.get("median_price") or 0.0),
+            top_products=list(cat_d.get("top_products") or []),
+            newest_products=list(
+                cat_d.get("newest_products") or [],
+            ),
+        )
+        hp = HomepageSignals(
+            apps_detected=list(hp_d.get("apps_detected") or []),
+        )
+        rehydrated = CompetitorReport(
+            store=newest.get("store", store),
+            scraped_at=float(newest.get("scraped_at") or 0.0),
+            catalog=cat, homepage=hp,
+        )
+        diff = diff_vs_last(rehydrated, previous)
+    elif len(history) == 1:
+        diff = {"baseline": True}
+    return {
+        "store": store,
+        "storage_dir": storage_dir,
+        "count": len(history),
+        "history": history,
+        "latest_diff": diff,
     }
 
 
@@ -1598,8 +1707,10 @@ def build_default_registry() -> ToolRegistry:
             "Scrape a public Shopify store's catalog + "
             "theme + installed apps + homepage signals. "
             "Optional LLM-synthesised strategic take. "
-            "Read-only, no auth needed — uses each store's "
-            "public /products.json."
+            "Each run appends to local JSONL history so "
+            "repeat calls surface a diff (new SKUs, price "
+            "moves, new apps). Reads target store's public "
+            "/products.json; writes only our local data/."
         ),
         input_schema={
             "type": "object",
@@ -1625,10 +1736,60 @@ def build_default_registry() -> ToolRegistry:
                         "scrape (default true)."
                     ),
                 },
+                "persist": {
+                    "type": "boolean",
+                    "description": (
+                        "Append to data/competitor_intel/ + "
+                        "compute diff vs previous scrape "
+                        "(default true)."
+                    ),
+                },
+                "storage_dir": {
+                    "type": "string",
+                    "description": (
+                        "Override storage directory "
+                        "(default data/competitor_intel)."
+                    ),
+                },
             },
             "required": ["stores"],
         },
         handler=_analyze_competitor_handler,
+    ))
+    reg.register(ToolSpec(
+        name="competitor_history",
+        description=(
+            "Return the last N persisted scrapes for a "
+            "competitor store + a diff of the latest vs "
+            "the previous scrape. Answers 'what changed "
+            "on gymshark.com since last run?' without "
+            "re-scraping. Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "store": {
+                    "type": "string",
+                    "description": "Competitor domain.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max history rows (default 10, "
+                        "max 500)."
+                    ),
+                },
+                "storage_dir": {
+                    "type": "string",
+                    "description": (
+                        "Override storage directory "
+                        "(default data/competitor_intel)."
+                    ),
+                },
+            },
+            "required": ["store"],
+        },
+        handler=_competitor_history_handler,
     ))
     reg.register(ToolSpec(
         name="emergency_halt",
