@@ -72,12 +72,18 @@ def is_safe_public_url(url: str) -> bool:
     host = (parsed.hostname or "").strip()
     if not host:
         return False
-    # Literal IP in the URL? classify directly.
+    # Literal IP in the URL? classify directly. Non-IP host
+    # (a DNS name) falls through to the resolve path below;
+    # the ValueError is the expected signal + we log it at
+    # debug so the wave11 guard stays clean.
     try:
         ip = ipaddress.ip_address(host)
         return _ip_is_public(ip)
-    except ValueError:
-        pass
+    except ValueError as exc:
+        logger.debug(
+            "url_safety: %s is not a literal IP (%s); "
+            "falling through to DNS", host, exc,
+        )
     # Hostname — resolve and check every returned address.
     try:
         infos = socket.getaddrinfo(
