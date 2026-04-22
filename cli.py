@@ -3412,9 +3412,16 @@ def _cmd_ready_for_live(
         print()
         print("To unblock:")
         for c in report.blocking():
-            print(
-                f"  • {c.name}: {c.fix}"
-            )
+            # Multi-line fix strings (e.g. env check showing
+            # exact export commands) need indenting after the
+            # first line so the bullet alignment stays clean.
+            fix_lines = (c.fix or "").splitlines()
+            if not fix_lines:
+                print(f"  • {c.name}:")
+                continue
+            print(f"  • {c.name}: {fix_lines[0]}")
+            for extra in fix_lines[1:]:
+                print(f"    {extra}")
         sys.exit(2)
 
 

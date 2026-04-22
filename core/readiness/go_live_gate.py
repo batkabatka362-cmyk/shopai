@@ -78,13 +78,26 @@ def _check_env() -> CheckResult:
             missing.append(
                 "SHOPAI_SHOPIFY_KEY (or OAuth creds)",
             )
+        # Concrete export lines so the owner can copy-paste
+        # rather than guess the format.
+        export_hint = []
+        if not url:
+            export_hint.append(
+                "  export SHOPAI_SHOPIFY_URL="
+                "your-store.myshopify.com",
+            )
+        if not key:
+            export_hint.append(
+                "  export SHOPAI_SHOPIFY_KEY=shpat_xxx",
+            )
         return CheckResult(
             name="env",
             ok=False,
             reason=f"missing {', '.join(missing)}",
             fix=(
-                "export the missing vars + rerun. See "
-                "docs/T1_GO_LIVE.md §1 for the full list."
+                "Add to .env or export inline:\n"
+                + "\n".join(export_hint)
+                + "\nFull list: docs/T1_GO_LIVE.md §1"
             ),
         )
     return CheckResult(
