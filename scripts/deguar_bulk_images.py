@@ -43,79 +43,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
-
-def _api(
-    method: str, path: str, body: dict | None = None,
-    *, url: str, token: str, retries: int = 4,
-) -> dict:
-    full = f"https://{url}/admin/api/2024-10/{path}"
-    data = json.dumps(body).encode() if body is not None else None
-    headers = {
-        "X-Shopify-Access-Token": token,
-        "Accept": "application/json",
-        "User-Agent": "ShopAI/bulk-images",
-    }
-    if data is not None:
-        headers["Content-Type"] = "application/json"
-
-    last_exc: Exception | None = None
-    for i in range(retries):
-        try:
-            req = urllib.request.Request(
-                full, data=data, headers=headers, method=method,
-            )
-            with urllib.request.urlopen(req, timeout=30) as r:
-                raw = r.read()
-                return json.loads(raw) if raw else {}
-        except urllib.error.HTTPError as e:
-            last_exc = e
-            if e.code in (429, 502, 503) and i < retries - 1:
-                wait = 2 ** (i + 1)
-                sys.stderr.write(
-                    f"  {e.code} on {path} — retry in {wait}s\n",
-                )
-                time.sleep(wait)
-                continue
-            raise
-        except urllib.error.URLError as e:
-            last_exc = e
-            if i < retries - 1:
-                wait = 2 ** (i + 1)
-                sys.stderr.write(f"  net err — retry in {wait}s\n")
-                time.sleep(wait)
-                continue
-            raise
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("retries exhausted")
+from scripts._shopify_client import ShopifyClient
 
 
 def _fetch_all_products(*, url: str, token: str) -> list[dict]:
-    products: list[dict] = []
-    resp = _api(
-        "GET",
+    client = ShopifyClient(url=url, token=token)
+    resp = client.get(
         "products.json?limit=250&fields=id,title,handle,status,images",
-        url=url, token=token,
     )
-    products = resp.get("products") or []
-    return products
+    return resp.get("products") or []
 
 
 def _upload(
     product_id: str, src: str, alt: str,
     *, url: str, token: str,
 ) -> dict:
-    return _api(
-        "POST", f"products/{product_id}/images.json",
+    client = ShopifyClient(url=url, token=token)
+    return client.post(
+        f"products/{product_id}/images.json",
         {"image": {"src": src, "alt": alt}},
-        url=url, token=token,
     )
 
 
@@ -156,18 +105,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    url = os.environ.get("SHOPAI_SHOPIFY_URL") or ""
-    token = (
-        os.environ.get("SHOPAI_SHOPIFY_KEY")
-        or os.environ.get("SHOPAI_SHOPIFY_TOKEN")
-        or ""
+    from scripts._shopify_client import (
+        ShopifyClient, ShopifyClientMisconfigured,
     )
-    if not url or not token:
-        print(
-            "ERR: set SHOPAI_SHOPIFY_URL + SHOPAI_SHOPIFY_KEY",
-            file=sys.stderr,
-        )
+    try:
+        client = ShopifyClient.from_env()
+    except ShopifyClientMisconfigured as exc:
+        print(f"ERR: {exc}", file=sys.stderr)
         return 2
+    url = client.url
+    token = client.token
 
     try:
         with open(args.config, encoding="utf-8") as fh:

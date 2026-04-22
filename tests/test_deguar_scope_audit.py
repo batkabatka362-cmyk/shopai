@@ -77,14 +77,20 @@ class TestFetchGranted:
                 {"handle": "read_orders"},
             ],
         }
-        with patch.object(mod, "_api", return_value=payload):
+        with patch(
+            "scripts._shopify_client.ShopifyClient.oauth_get",
+            return_value=payload,
+        ):
             out = mod.fetch_granted(url="x.com", token="t")
         assert out == sorted(
             ["read_products", "write_products", "read_orders"],
         )
 
     def test_empty_response(self):
-        with patch.object(mod, "_api", return_value={}):
+        with patch(
+            "scripts._shopify_client.ShopifyClient.oauth_get",
+            return_value={},
+        ):
             out = mod.fetch_granted(url="x.com", token="t")
         assert out == []
 
@@ -95,7 +101,10 @@ class TestFetchGranted:
             {"handle": ""},       # empty, skipped
             {"handle": "write_products"},
         ]}
-        with patch.object(mod, "_api", return_value=payload):
+        with patch(
+            "scripts._shopify_client.ShopifyClient.oauth_get",
+            return_value=payload,
+        ):
             out = mod.fetch_granted(url="x.com", token="t")
         assert out == ["read_products", "write_products"]
 

@@ -18,12 +18,12 @@ No writes, read-only. Safe to re-run.
 """
 from __future__ import annotations
 
-import json
-import os
 import sys
-import time
 import urllib.error
-import urllib.request
+
+from scripts._shopify_client import (
+    ShopifyClient, ShopifyClientMisconfigured,
+)
 
 
 # ── Canonical scope needs ────────────────────────────────
@@ -54,34 +54,11 @@ _NEEDS: list[dict[str, str]] = [
 ]
 
 
-def _api(path: str, *, url: str, token: str, retries: int = 4) -> dict:
-    full = f"https://{url}/admin/{path}"
-    for i in range(retries):
-        try:
-            req = urllib.request.Request(full, headers={
-                "X-Shopify-Access-Token": token,
-                "Accept": "application/json",
-                "User-Agent": "ShopAI/scope-audit",
-            })
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 502, 503) and i < retries - 1:
-                wait = 2 ** (i + 1)
-                print(f"  {e.code} — retry in {wait}s",
-                      file=sys.stderr)
-                time.sleep(wait)
-                continue
-            raise
-    raise RuntimeError("retries exhausted")
-
-
 def fetch_granted(*, url: str, token: str) -> list[str]:
     """Return the list of scope handles currently granted by
     the target store to ShopAI's custom/private app token."""
-    payload = _api(
-        "oauth/access_scopes.json", url=url, token=token,
-    )
+    client = ShopifyClient(url=url, token=token)
+    payload = client.oauth_get("oauth/access_scopes.json")
     scopes = payload.get("access_scopes") or []
     return sorted(
         {s.get("handle", "") for s in scopes if s.get("handle")}
@@ -145,22 +122,15 @@ def print_report(d: dict[str, list[dict]]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    url = os.environ.get("SHOPAI_SHOPIFY_URL") or ""
-    token = (
-        os.environ.get("SHOPAI_SHOPIFY_KEY")
-        or os.environ.get("SHOPAI_SHOPIFY_TOKEN")
-        or ""
-    )
-    if not url or not token:
-        print(
-            "ERR: set SHOPAI_SHOPIFY_URL + SHOPAI_SHOPIFY_KEY",
-            file=sys.stderr,
-        )
+    try:
+        client = ShopifyClient.from_env()
+    except ShopifyClientMisconfigured as exc:
+        print(f"ERR: {exc}", file=sys.stderr)
         return 2
 
-    print(f"Store: {url}\n")
+    print(f"Store: {client.url}\n")
     try:
-        granted = fetch_granted(url=url, token=token)
+        granted = fetch_granted(url=client.url, token=client.token)
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             print("ERR: token rejected — is SHOPAI_SHOPIFY_KEY "
