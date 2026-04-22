@@ -1,0 +1,41 @@
+{
+  "_comment": "Template for scripts/deguar_bulk_images.py. Map each product HANDLE (the URL slug, not title) to a list of public https image URLs. Copy AliExpress gallery images + unsplash/pexels lifestyle shots here. Script picks up to (--min-images - existing) from each list, so safe to over-provide. Delete this _comment line before use.",
+
+  "galaxy-star-projector-night-light": [
+    "https://images.unsplash.com/photo-1572978544-dd4e5c66df40",
+    "https://images.unsplash.com/photo-1573511860302-28c524319d2a",
+    "https://images.pexels.com/photos/1694900/pexels-photo-1694900.jpeg"
+  ],
+  "3d-moon-lamp-night-light": [
+    "https://images.unsplash.com/photo-1532978379173-523e16f371f4",
+    "https://images.pexels.com/photos/2526105/pexels-photo-2526105.jpeg"
+  ],
+  "crystal-aromatherapy-oil-diffuser": [
+    "https://images.unsplash.com/photo-1545958388-33bec52f57ba",
+    "https://images.pexels.com/photos/6707628/pexels-photo-6707628.jpeg"
+  ],
+  "rain-cloud-humidifier-with-led-lights": [
+    "https://images.unsplash.com/photo-1553682544-31d9b25e9a8a"
+  ],
+  "led-sunset-lamp-projector": [
+    "https://images.unsplash.com/photo-1564594736624-def7a10ab047"
+  ],
+  "led-cloud-light": [
+    "https://images.unsplash.com/photo-1519872775884-29dfd4ac4a80"
+  ],
+  "sunrise-alarm-clock-light": [
+    "https://images.unsplash.com/photo-1504198266287-1659872e6590"
+  ],
+  "anti-gravity-humidifier-with-clock-aroma-diffuser": [
+    "https://images.unsplash.com/photo-1585671395534-663c3c8c9c64"
+  ],
+  "smart-aroma-diffuser": [
+    "https://images.unsplash.com/photo-1607435464810-5f2ea0e0c3d2"
+  ],
+  "essential-oil-gift-set-6-pack": [
+    "https://images.unsplash.com/photo-1602928298849-325cec8771c0"
+  ],
+  "galaxy-projector-lamp": [
+    "https://images.unsplash.com/photo-1578083881096-be47a5ce5e5b"
+  ]
+}
