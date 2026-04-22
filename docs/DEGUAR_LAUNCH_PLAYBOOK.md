@@ -271,7 +271,8 @@ Before Meta Ads go live (which you're doing manually):
 - [ ] Images: 3+ per product on all 11 hero products
 - [ ] Checkout: tested with real card, refunded cleanly
 - [ ] Supplier: mapped for ≥3 hero products
-- [ ] Tracking: Meta Pixel installed (Settings → Customer events)
+- [ ] Tracking: Meta Pixel installed (Settings → Customer events).
+      Verify with: `PYTHONPATH=. python scripts/deguar_tracking_check.py`
 - [ ] Returns: refund policy published (Settings → Policies)
 - [ ] Shipping: at least one shipping zone covering your target
       country (US? UK? MN?) with a real rate
@@ -307,6 +308,7 @@ goes wrong:
 | `scripts/deguar_scope_audit.py` | OAuth scope diff | When something silently doesn't write |
 | `scripts/deguar_bulk_images.py` | URL-driven image upload | Once to fix CVR |
 | `scripts/deguar_webhook_check.py` | Order-webhook subscription + URL reachability | Before enabling brain hooks |
+| `scripts/deguar_tracking_check.py` | Meta/TikTok/GA pixel firing check | Before Meta ads launch |
 | `cli.py competitor-intel <stores>` | Scrape + diff competitors | Weekly Monday |
 | `cli.py ready-for-live` | Pre-T1 go/no-go gate | Before switching live_execution on |
 
