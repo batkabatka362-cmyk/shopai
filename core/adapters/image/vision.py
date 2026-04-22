@@ -44,7 +44,10 @@ def is_configured() -> bool:
 def analyze(image_url: str) -> dict[str, Any]:
     """Return a quality report for *image_url*. Empty dict on any
     failure (network, unconfigured, un-parseable JSON)."""
-    if not image_url or not image_url.startswith(("http://", "https://")):
+    # https only — http:// is rejected both to close the
+    # SSRF path (plaintext request leaks + trivial redirection
+    # attacks) and because any production CDN serves https.
+    if not image_url or not image_url.startswith("https://"):
         return {}
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -126,6 +129,18 @@ def analyze_batch(urls: list[str], limit: int = 8) -> list[dict[str, Any]]:
 # ── Helpers ─────────────────────────────────────────────────
 
 def _download(url: str) -> bytes:
+    # SSRF defence (§4b.G): caller-supplied URLs (e.g., from
+    # POST /api/launch manual_payload.gallery_urls) could
+    # otherwise hit cloud metadata, loopback, or private
+    # intranet services. is_safe_public_url rejects every
+    # non-https / private / loopback / link-local / reserved
+    # host before we open the connection.
+    from core.system.url_safety import is_safe_public_url
+    if not is_safe_public_url(url):
+        logger.warning(
+            "image download refused (unsafe URL): %s", url,
+        )
+        return b""
     req = urllib.request.Request(
         url,
         headers={

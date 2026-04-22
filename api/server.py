@@ -109,9 +109,52 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         else:
             self._json_response(404, {"error": f"Not found: {path}"})
 
+    # Write endpoints that mutate state / trigger outbound
+    # HTTP / spend money. These require an API token via the
+    # Authorization: Bearer <token> header. /api/webhook/shopify
+    # is excluded because it has its own HMAC-based auth.
+    _AUTHED_POST_PATHS = frozenset({
+        "/api/task",
+        "/api/chain",
+        "/api/batch",
+        "/api/analyze",
+        "/api/agent",
+        "/api/workflow",
+        "/api/auto/cycle",
+        "/api/store/sync",
+        "/api/launch",
+    })
+
+    def _check_bearer_auth(self) -> bool:
+        """Return True iff the request carries a valid
+        bearer token. On failure emits 401 and returns False
+        so the caller can short-circuit.
+
+        When no master token is configured the APIAuth returns
+        True for any token — caller deployments without
+        SHOPAI_API_TOKEN set retain backward compatibility."""
+        auth_header = self.headers.get("Authorization", "")
+        token = ""
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+        from api.auth import get_api_auth
+        if not get_api_auth().validate(token):
+            self._json_response(
+                401, {"error": "missing or invalid bearer token"},
+            )
+            return False
+        return True
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        # SSRF / unauthorized-action defence: every write
+        # endpoint except /api/webhook/shopify (HMAC-authed)
+        # requires a bearer token matching SHOPAI_API_TOKEN.
+        if path in self._AUTHED_POST_PATHS:
+            if not self._check_bearer_auth():
+                return
 
         body = self._read_body()
         if body is None:
