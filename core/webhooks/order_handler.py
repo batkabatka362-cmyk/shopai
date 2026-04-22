@@ -117,6 +117,24 @@ class OrderWebhookHandler:
         note_attrs = order_data.get("note_attributes") or []
         decision_id = None
         campaign_id = None
+        # Gate-check marker — set by ready-for-live's 5-order
+        # synthetic smoke test. When present we still run the
+        # handler (so the import chain is exercised end-to-end)
+        # but skip the engine_outcome_bus + feedback_store emits
+        # that would otherwise pollute the production learning
+        # ledger with 5 fake entries per gate run.
+        is_gate_check = False
+        if isinstance(note_attrs, list):
+            for attr in note_attrs:
+                if (
+                    isinstance(attr, dict)
+                    and attr.get("name") == "shopai_gate_check"
+                    and str(attr.get("value", "")).lower() in (
+                        "1", "true", "yes",
+                    )
+                ):
+                    is_gate_check = True
+                    break
         if isinstance(note_attrs, list):
             for attr in note_attrs:
                 if isinstance(attr, dict):
@@ -337,7 +355,7 @@ class OrderWebhookHandler:
 
         # 4b. Agentic channel outcome on the engine bus so
         #     per-channel ROAS rebalancing has real evidence.
-        if agentic_channel:
+        if agentic_channel and not is_gate_check:
             try:
                 from core.integration.engine_outcome_bus import (
                     EngineOutcome,
@@ -371,31 +389,35 @@ class OrderWebhookHandler:
         #     batch 3 wire-up — keeps the replay-orders CLI a
         #     real learning exerciser rather than a silent
         #     no-op for organic payloads.
-        try:
-            from core.integration.engine_outcome_bus import (
-                EngineOutcome,
-                get_engine_outcome_bus,
-            )
-            get_engine_outcome_bus().report(EngineOutcome(
-                engine="order_webhook",
-                kpi="revenue",
-                value=float(revenue),
-                ok=revenue > 0,
-                source=(
-                    agentic_channel or "organic"
-                ),
-                context={
-                    "order_id": order_id,
-                    "items": item_count,
-                },
-                rationale_id=str(decision_id or ""),
-            ))
-            recorded["order_bus_reported"] = True
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "order bus report failed: %s", exc,
-            )
+        if is_gate_check:
             recorded["order_bus_reported"] = False
+            recorded["gate_check_skipped_bus"] = True
+        else:
+            try:
+                from core.integration.engine_outcome_bus import (
+                    EngineOutcome,
+                    get_engine_outcome_bus,
+                )
+                get_engine_outcome_bus().report(EngineOutcome(
+                    engine="order_webhook",
+                    kpi="revenue",
+                    value=float(revenue),
+                    ok=revenue > 0,
+                    source=(
+                        agentic_channel or "organic"
+                    ),
+                    context={
+                        "order_id": order_id,
+                        "items": item_count,
+                    },
+                    rationale_id=str(decision_id or ""),
+                ))
+                recorded["order_bus_reported"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "order bus report failed: %s", exc,
+                )
+                recorded["order_bus_reported"] = False
 
         # 5. Optional CJ fulfillment dispatch (LX.2 wire-in).
         #    Opt-in via SHOPAI_ENABLE_CJ_FULFILL=1 so owners who

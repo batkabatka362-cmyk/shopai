@@ -142,17 +142,18 @@ def _check_doctor(doctor_runner: Any = None) -> CheckResult:
 
 
 def _check_learning_loop() -> CheckResult:
-    """Replay 5 synthetic orders + verify feedback_store
-    records them. Validates the webhook → Deliberation →
-    engine bus → feedback_store chain fires end-to-end."""
+    """Replay 5 synthetic orders + verify the webhook handler
+    completes end-to-end. Each synth order carries a
+    ``shopai_gate_check=1`` note attribute so the handler
+    skips its engine_outcome_bus + feedback_store emits (we
+    exercise the import chain but don't pollute the
+    production learning ledger with 5 fake entries per gate
+    run)."""
     try:
         from agents.replay.synthesize import (
             synthesize_orders_with_random_decisions,
         )
         from agents.replay.order_replay import replay_orders
-        from core.learning.feedback_store import (
-            get_feedback_store,
-        )
     except Exception as exc:  # noqa: BLE001
         return CheckResult(
             name="learning_loop",
@@ -164,17 +165,17 @@ def _check_learning_loop() -> CheckResult:
         orders = synthesize_orders_with_random_decisions(
             count=5, seed=7,
         )
-        before = sum(
-            int(v.get("total_runs", 0))
-            for v in get_feedback_store().get_all_stats(
-            ).values()
-        )
+        # Mark every synth order as a gate check so the
+        # handler's bus emit (step 4b/4c) is skipped.
+        for order in orders:
+            attrs = order.setdefault(
+                "note_attributes", [],
+            )
+            attrs.append({
+                "name": "shopai_gate_check",
+                "value": "1",
+            })
         stats = replay_orders(orders)
-        after = sum(
-            int(v.get("total_runs", 0))
-            for v in get_feedback_store().get_all_stats(
-            ).values()
-        )
     except Exception as exc:  # noqa: BLE001
         return CheckResult(
             name="learning_loop",
@@ -199,26 +200,36 @@ def _check_learning_loop() -> CheckResult:
                 "--synthesize 5 --json` for details"
             ),
         )
-    if after <= before:
+    # Verify the gate-skip path actually fired — the handler
+    # reports `gate_check_skipped_bus: True` in its result
+    # when it recognised our marker.
+    gate_seen = sum(
+        1 for r in stats.results
+        if r.ok and r.handler_output.get(
+            "gate_check_skipped_bus",
+        )
+    )
+    if gate_seen != stats.successful:
         return CheckResult(
             name="learning_loop",
             ok=False,
             reason=(
-                "feedback_store did not accumulate from "
-                "the replay (engine_outcome_bus wiring "
-                "may be broken)"
+                f"gate-check marker not honoured by "
+                f"handler ({gate_seen}/{stats.successful} "
+                "skipped bus)"
             ),
             fix=(
-                "inspect core/webhooks/order_handler.py "
-                "step 4c + engine_outcome_bus sinks"
+                "inspect core/webhooks/order_handler.py — "
+                "shopai_gate_check note attribute should "
+                "skip step 4b+4c bus emits"
             ),
         )
     return CheckResult(
         name="learning_loop",
         ok=True,
         reason=(
-            f"5 synthetic orders → "
-            f"{after - before} feedback entries"
+            f"{stats.successful}/5 synthetic orders "
+            "completed (bus emits skipped by gate marker)"
         ),
     )
 

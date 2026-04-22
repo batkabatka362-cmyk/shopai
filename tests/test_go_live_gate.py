@@ -114,22 +114,52 @@ class TestDoctorCheck(unittest.TestCase):
 
 class TestLearningLoopCheck(unittest.TestCase):
     def test_happy_path(self):
-        """Running replay produces feedback entries — the
-        wire from last session should hold."""
+        """Running replay exercises the handler end-to-end
+        with the gate_check marker — no feedback_store
+        pollution, but each synth order still completes."""
+        r = _check_learning_loop()
+        self.assertTrue(
+            r.ok,
+            msg=f"reason={r.reason}",
+        )
+        self.assertIn(
+            "synthetic orders completed", r.reason,
+        )
+        self.assertIn("skipped by gate marker", r.reason)
+
+    def test_gate_check_prevents_feedback_pollution(self):
+        """The gate_check marker must prevent the bus emit
+        path so production feedback_store stays clean."""
         from core.learning.feedback_store import (
+            get_feedback_store,
             reset_feedback_store_for_tests,
         )
         import tempfile
 
-        d = tempfile.mkdtemp(prefix="gate_ll_")
+        d = tempfile.mkdtemp(prefix="gate_pollution_")
         reset_feedback_store_for_tests(store_dir=d)
         try:
-            r = _check_learning_loop()
-            self.assertTrue(
-                r.ok,
-                msg=f"reason={r.reason}",
+            before = sum(
+                int(v.get("total_runs", 0))
+                for v in get_feedback_store().get_all_stats(
+                ).values()
             )
-            self.assertIn("feedback entries", r.reason)
+            r = _check_learning_loop()
+            self.assertTrue(r.ok)
+            after = sum(
+                int(v.get("total_runs", 0))
+                for v in get_feedback_store().get_all_stats(
+                ).values()
+            )
+            # The 5 synth orders must NOT have landed in
+            # feedback_store (bus emit skipped).
+            self.assertEqual(
+                after, before,
+                msg=(
+                    "gate check leaked into feedback_store; "
+                    "expected 0 new entries"
+                ),
+            )
         finally:
             reset_feedback_store_for_tests()
 
