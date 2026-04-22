@@ -164,6 +164,30 @@ _INTENT_TABLE: tuple[
         r"\b(top|learned)\s+(\d+\s+)?rules\b",
         r"\brulebook\b",
     )),
+    ("ready_for_live", False, (
+        r"\bready\s+(for\s+)?live\b",
+        r"\bgo\s*-?\s*live\s+gate\b",
+        r"\bpre\s*-?\s*t1\b",
+        r"\bcan\s+(we|i)\s+go\s+live\b",
+    )),
+    ("live_health", False, (
+        r"\blive\s*-?\s*health\b",
+        r"\bhealth\s+trend\b",
+        r"\bhow\s+healthy\b",
+    )),
+    ("rule_quality", False, (
+        r"\brule\s+quality\b",
+        r"\btrue\s*-?\s*positive(\s+rate)?\b",
+        r"\b(rules?\s+)?lift\b",
+    )),
+    ("engine_feedback_stats", False, (
+        r"\bengine\s+(feedback|stats|trend)\b",
+        r"\bper\s*-?\s*engine\s+stats\b",
+    )),
+    ("brain_module_catalog", False, (
+        r"\bbrain\s+(catalog|modules)\b",
+        r"\bmodule\s+catalog\b",
+    )),
 )
 
 
