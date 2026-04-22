@@ -67,14 +67,78 @@ class SourceStep(Step):
             )
 
         if kind == "supplier_sku":
-            # TODO(brain): wire core/adapters/sourcing/cj_dropshipping.py
-            # to look up SKU directly without scraping.
-            raise StepSkip(
-                "supplier SKU lookup not implemented "
-                "(needs CJ_DROPSHIPPING_API_KEY + adapter wire-up)"
+            return self._resolve_supplier_sku(
+                str(context.goal.supplier_sku or ""),
             )
 
         raise StepSkip(f"unknown source kind: {kind}")
+
+    def _resolve_supplier_sku(
+        self, sourcing_id: str,
+    ) -> dict[str, Any]:
+        """Look up a supplier SKU directly via the CJ adapter
+        (no scraping). Normalises the response into the same
+        shape the manual / alibaba paths produce so downstream
+        steps are source-agnostic."""
+        if not sourcing_id:
+            raise StepSkip(
+                "supplier_sku not set on LaunchGoal",
+            )
+        try:
+            from core.adapters.base import Capability
+            from core.adapters.sourcing.cj_dropshipping import (
+                CJDropshippingAdapter,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise StepSkip(
+                f"CJ adapter import failed: {exc}",
+            )
+        adapter = CJDropshippingAdapter()
+        if not adapter.is_configured():
+            raise StepSkip(
+                "CJ adapter not configured "
+                "(CJ_DROPSHIPPING_API_KEY missing or "
+                "adapter rejected the token)",
+            )
+        result = adapter.execute(
+            Capability.SOURCING_GET_PRODUCT,
+            {"sourcing_id": sourcing_id},
+        )
+        if not result.ok:
+            raise StepSkip(
+                f"CJ get_product failed for "
+                f"sourcing_id={sourcing_id}: "
+                f"{getattr(result, 'error', 'unknown')}",
+            )
+        data = result.data or {}
+        title = str(data.get("title") or "").strip()
+        if not title:
+            raise StepSkip(
+                f"CJ returned no title for "
+                f"sourcing_id={sourcing_id}",
+            )
+        return {
+            "title": title,
+            "price_usd": float(
+                data.get("price_usd") or 0,
+            ),
+            # CJ returns a product URL via `supplier_url` when
+            # present; fall back to an API reference for
+            # traceability.
+            "supplier_url": str(
+                data.get("supplier_url")
+                or data.get("product_url")
+                or f"cj://product/{sourcing_id}",
+            ),
+            "gallery_urls": list(
+                data.get("gallery_urls") or [],
+            ),
+            "attributes": dict(
+                data.get("attributes") or {},
+            ),
+            "sourcing_id": sourcing_id,
+            "_source_kind": "supplier_sku",
+        }
 
     @staticmethod
     def _normalize(payload: dict[str, Any]) -> dict[str, Any]:
