@@ -306,6 +306,7 @@ goes wrong:
 | `scripts/deguar_live_audit.py` | Store state check | Before + after bulk ops |
 | `scripts/deguar_scope_audit.py` | OAuth scope diff | When something silently doesn't write |
 | `scripts/deguar_bulk_images.py` | URL-driven image upload | Once to fix CVR |
+| `scripts/deguar_webhook_check.py` | Order-webhook subscription + URL reachability | Before enabling brain hooks |
 | `cli.py competitor-intel <stores>` | Scrape + diff competitors | Weekly Monday |
 | `cli.py ready-for-live` | Pre-T1 go/no-go gate | Before switching live_execution on |
 
