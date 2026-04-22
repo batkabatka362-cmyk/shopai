@@ -309,6 +309,8 @@ goes wrong:
 | `scripts/deguar_bulk_images.py` | URL-driven image upload | Once to fix CVR |
 | `scripts/deguar_webhook_check.py` | Order-webhook subscription + URL reachability | Before enabling brain hooks |
 | `scripts/deguar_tracking_check.py` | Meta/TikTok/GA pixel firing check | Before Meta ads launch |
+| `scripts/deguar_collection_check.py` | Smart-collection member count + rules | After adding/tagging products |
+| `scripts/deguar_checkout_check.py` | Payment + shipping + URL reachability | Before every ads campaign |
 | `cli.py competitor-intel <stores>` | Scrape + diff competitors | Weekly Monday |
 | `cli.py ready-for-live` | Pre-T1 go/no-go gate | Before switching live_execution on |
 
