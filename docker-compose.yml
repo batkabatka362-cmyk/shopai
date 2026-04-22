@@ -50,6 +50,7 @@ services:
       disable: true
 
   shopai-api:
+    build: .
     image: shopai:latest
     container_name: shopai-api
     command: ["api"]
