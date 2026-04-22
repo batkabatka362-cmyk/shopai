@@ -247,6 +247,7 @@ class OrderWebhookHandler:
             try:
                 from core.brain.structured_decision import (
                     record_outcome_for_decision,
+                    find_deliberation_by_decision_id,
                 )
                 back_filled = record_outcome_for_decision(
                     str(decision_id),
@@ -264,6 +265,69 @@ class OrderWebhookHandler:
                 recorded["deliberation_observed"] = (
                     bool(back_filled)
                 )
+                # 4a.1 Predicted-vs-actual feed so the world
+                # model calibrates from real revenue. The
+                # Deliberation's OutcomeSpec.value_usd is the
+                # prediction the brain committed to; revenue
+                # is the actual. EngineOutcome.predicted
+                # triggers the world_calibration sink inside
+                # the bus (see engine_outcome_bus._get_
+                # world_calib). Without this wire,
+                # predict_outcome returns uncalibrated
+                # estimates forever.
+                if back_filled:
+                    delib = (
+                        find_deliberation_by_decision_id(
+                            str(decision_id),
+                        )
+                    )
+                    predicted_usd = float(
+                        getattr(
+                            getattr(
+                                delib, "outcome", None,
+                            ),
+                            "value_usd", 0.0,
+                        ) or 0.0,
+                    ) if delib is not None else 0.0
+                    if predicted_usd > 0:
+                        try:
+                            from core.integration.engine_outcome_bus import (  # noqa: E501
+                                EngineOutcome,
+                                get_engine_outcome_bus,
+                            )
+                            get_engine_outcome_bus().report(
+                                EngineOutcome(
+                                    engine=(
+                                        "deliberation_"
+                                        "calibration"
+                                    ),
+                                    kpi="revenue",
+                                    value=float(revenue),
+                                    ok=revenue > 0,
+                                    source="order_webhook",
+                                    context={
+                                        "order_id": order_id,
+                                        "decision_id": (
+                                            str(decision_id)
+                                        ),
+                                    },
+                                    predicted=predicted_usd,
+                                    rationale_id=str(
+                                        decision_id,
+                                    ),
+                                ),
+                            )
+                            recorded[
+                                "calibration_fed"
+                            ] = True
+                        except Exception as exc:  # noqa: BLE001, E501
+                            logger.debug(
+                                "calibration feed failed: "
+                                "%s", exc,
+                            )
+                            recorded[
+                                "calibration_fed"
+                            ] = False
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "deliberation back-fill failed: %s",
