@@ -37,7 +37,11 @@ can call in with partial fields.
 from __future__ import annotations
 
 import json
+import logging
 import threading
+
+_logger = logging.getLogger(__name__)
+
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -919,7 +923,10 @@ def _analyze_competitor_handler(
                 hist = load_history(
                     s, storage_dir=storage_dir, limit=1,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                _logger.debug(
+                    "history pre-load failed for %s: %s", s, exc,
+                )
                 hist = []
             previous[s] = hist[-1] if hist else None
 
@@ -931,8 +938,11 @@ def _analyze_competitor_handler(
         for r in reports:
             try:
                 save_report(r, storage_dir=storage_dir)
-            except Exception:  # noqa: BLE001
-                pass  # non-fatal; report still returned
+            except Exception as exc:  # noqa: BLE001
+                _logger.debug(
+                    "persist failed for %s: %s",
+                    r.store, exc,
+                )
 
     payload_reports: list[dict[str, Any]] = []
     for r in reports:
