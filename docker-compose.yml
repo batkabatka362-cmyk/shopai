@@ -98,11 +98,17 @@ services:
       - ollama_models:/root/.ollama
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:11434/api/tags > /dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+      # ollama CLI is guaranteed present inside the image;
+      # `ollama list` returns 0 only when the server is up.
+      # `wget` is NOT shipped in ollama/ollama so the previous
+      # wget-based check failed immediately on Windows Docker
+      # Desktop. Bumped start_period to 90s — first boot on
+      # WSL2 + slow disk can exceed 30s.
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 90s
 
   # GPU-enabled Ollama (NVIDIA only). Activated by:
   #     docker compose --profile gpu up -d
@@ -140,7 +146,7 @@ services:
       - |
         set -e
         echo "[ollama-init] waiting for ollama at ollama:11434..."
-        until wget -q -O - http://ollama:11434/api/tags > /dev/null 2>&1; do
+        until OLLAMA_HOST=http://ollama:11434 ollama list > /dev/null 2>&1; do
           sleep 2
         done
         echo "[ollama-init] ollama is up; pulling models: $$SHOPAI_OLLAMA_MODELS"
