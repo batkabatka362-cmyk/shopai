@@ -682,6 +682,35 @@ def build_parser() -> argparse.ArgumentParser:
     comp_sub.add_parser("list", help="Show tracked URLs + last snapshot")
     comp_sub.add_parser("check", help="Probe every tracked URL now")
 
+    intel_p = sub.add_parser(
+        "competitor-intel",
+        help=(
+            "Scrape a public Shopify store's catalog + "
+            "theme + installed apps + offers. Optional "
+            "LLM-synthesised strategic take."
+        ),
+    )
+    intel_p.add_argument(
+        "stores", nargs="+",
+        help=(
+            "One or more competitor Shopify domains "
+            "(e.g., allbirds.com gymshark.com). "
+            "Uses public /products.json so no auth."
+        ),
+    )
+    intel_p.add_argument(
+        "--our-store", default="deguar.myshopify.com",
+        help="Your store (context for LLM insights)",
+    )
+    intel_p.add_argument(
+        "--no-llm", action="store_true",
+        help="Skip LLM insight synthesis (raw scrape only)",
+    )
+    intel_p.add_argument(
+        "--json", action="store_true",
+        help="Emit full JSON report",
+    )
+
     # ── Publisher bundle (v38+) ──────────────────────────────
     # ``publish`` goes through execution.launch.publisher_bundle
     # which is the v38-era transactional launch pipeline.
@@ -3942,6 +3971,93 @@ def _cmd_competitor(args) -> None:
         sys.exit(2)
 
 
+def _cmd_competitor_intel(args) -> None:
+    """Scrape + analyse one or more public Shopify stores.
+
+    Uses ``/products.json`` + ``/collections.json`` + homepage
+    HTML — no auth needed, no Shopify token used. The LLM step
+    is optional (``--no-llm`` skips it; otherwise we route via
+    ``core.llm_gateway.ask`` which picks the cheapest
+    configured adapter)."""
+    from agents.competitor_intel import analyze_competitors
+
+    llm = None
+    if not args.no_llm:
+        try:
+            from core.llm_gateway import ask as _gateway_ask
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN: llm gateway unavailable ({exc}) — "
+                  f"running raw scrape only", file=sys.stderr)
+            _gateway_ask = None
+        if _gateway_ask is not None:
+            def llm(prompt: str) -> str:
+                res = _gateway_ask(
+                    prompt,
+                    purpose="reasoning",
+                    max_cost=0.02,
+                    max_latency_ms=15_000,
+                )
+                if not res.ok:
+                    raise RuntimeError(res.error or "llm call failed")
+                return res.text
+
+    reports = analyze_competitors(
+        args.stores,
+        our_store=args.our_store,
+        llm=llm,
+    )
+
+    if args.json:
+        print(json.dumps(
+            [r.as_dict() for r in reports], indent=2,
+        ))
+        return
+
+    for r in reports:
+        print(f"\n═══ {r.store} ═══")
+        s = r.summary()
+        if r.errors:
+            print(f"  errors: {', '.join(r.errors)}")
+        if r.catalog and r.catalog.product_count:
+            c = r.catalog
+            print(f"  products: {c.product_count}")
+            print(f"  prices:   ${c.price_range[0]:.2f}–"
+                  f"${c.price_range[1]:.2f} "
+                  f"(median ${c.median_price:.2f})")
+            if c.currencies:
+                print(f"  currencies: {', '.join(c.currencies)}")
+            if c.top_types:
+                print(f"  top types:  "
+                      f"{', '.join(c.top_types[:5])}")
+            if c.top_tags:
+                print(f"  top tags:   "
+                      f"{', '.join(c.top_tags[:8])}")
+            if c.newest_products:
+                print("  newest:")
+                for np in c.newest_products[:3]:
+                    print(f"    - {np['title'][:60]}")
+        else:
+            print("  (catalog empty or private)")
+        if r.homepage:
+            hp = r.homepage
+            if hp.theme_hint:
+                print(f"  theme:     {hp.theme_hint}")
+            if hp.apps_detected:
+                print(f"  apps:      "
+                      f"{', '.join(hp.apps_detected[:10])}")
+            if hp.hero_heading:
+                print(f"  hero H1:   {hp.hero_heading[:100]}")
+            if hp.announcement_bar:
+                print(f"  banner:    "
+                      f"{hp.announcement_bar[:100]}")
+        if r.collection_handles:
+            print(f"  collections: {len(r.collection_handles)}")
+        if r.insights:
+            print("\n  ── strategic take ──")
+            for ln in r.insights.splitlines():
+                print(f"  {ln}")
+
+
 def _cmd_health() -> None:
     import importlib
     from engines.registry import engine_count
@@ -6467,6 +6583,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "competitor":
         _cmd_competitor(args)
+        return
+
+    if args.command == "competitor-intel":
+        _cmd_competitor_intel(args)
         return
 
     if args.command == "health":

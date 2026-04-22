@@ -852,6 +852,61 @@ def _rule_quality_handler(
     return d
 
 
+def _analyze_competitor_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Scrape one or more public Shopify stores + (optionally)
+    synthesise a strategic take via the LLM gateway. Read-only
+    — never writes, never touches our own Shopify token.
+    Auth-free: pulls from each store's public ``/products.json``
+    + ``/collections.json`` + homepage HTML."""
+    from agents.competitor_intel import analyze_competitors
+
+    stores_arg = args.get("stores") or []
+    if isinstance(stores_arg, str):
+        stores = [s.strip() for s in stores_arg.split(",") if s.strip()]
+    else:
+        stores = [
+            str(s).strip()
+            for s in stores_arg
+            if str(s).strip()
+        ]
+    if not stores:
+        raise ToolError("stores: must be a non-empty list")
+    our_store = str(
+        args.get("our_store") or "deguar.myshopify.com",
+    )
+    use_llm = bool(args.get("use_llm", True))
+    llm = None
+    if use_llm:
+        try:
+            from core.llm_gateway import ask as _gateway_ask
+        except Exception:  # noqa: BLE001
+            _gateway_ask = None
+        if _gateway_ask is not None:
+            def llm(prompt: str) -> str:
+                res = _gateway_ask(
+                    prompt,
+                    purpose="reasoning",
+                    max_cost=0.02,
+                    max_latency_ms=15_000,
+                )
+                if not res.ok:
+                    raise RuntimeError(
+                        res.error or "llm call failed",
+                    )
+                return res.text
+
+    reports = analyze_competitors(
+        stores, our_store=our_store, llm=llm,
+    )
+    return {
+        "our_store": our_store,
+        "count": len(reports),
+        "reports": [r.as_dict() for r in reports],
+    }
+
+
 def _recent_cycles_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1536,6 +1591,44 @@ def build_default_registry() -> ToolRegistry:
             },
         },
         handler=_oauth_status_handler,
+    ))
+    reg.register(ToolSpec(
+        name="analyze_competitor",
+        description=(
+            "Scrape a public Shopify store's catalog + "
+            "theme + installed apps + homepage signals. "
+            "Optional LLM-synthesised strategic take. "
+            "Read-only, no auth needed — uses each store's "
+            "public /products.json."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "stores": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Competitor Shopify domains — e.g. "
+                        "['allbirds.com', 'gymshark.com']."
+                    ),
+                },
+                "our_store": {
+                    "type": "string",
+                    "description": (
+                        "Our store (context for LLM insight)."
+                    ),
+                },
+                "use_llm": {
+                    "type": "boolean",
+                    "description": (
+                        "Run LLM synthesis after the raw "
+                        "scrape (default true)."
+                    ),
+                },
+            },
+            "required": ["stores"],
+        },
+        handler=_analyze_competitor_handler,
     ))
     reg.register(ToolSpec(
         name="emergency_halt",
