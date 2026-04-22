@@ -28,6 +28,9 @@ from agents.competitor_intel import (
     CompetitorReport,
     analyze_competitor,
     analyze_competitors,
+    diff_vs_last,
+    load_history,
+    save_report,
 )
 from agents.competitor_intel.agent import (
     _build_catalog_summary,
@@ -35,6 +38,7 @@ from agents.competitor_intel.agent import (
     _detect_theme,
     _fetch_products_json,
     _normalise_host,
+    _slugify,
 )
 
 
@@ -403,3 +407,184 @@ class TestAnalyzeCompetitors:
         assert len(reports) == 3
         # Two sleeps (between store 1→2, 2→3) — not after last
         assert sleep_calls == [0.75, 0.75]
+
+
+# ── Persistence + diff ────────────────────────────────────
+
+
+class TestSlugify:
+    def test_https_scheme_stripped(self):
+        assert _slugify("https://a.b.com") == "a-b-com"
+
+    def test_trailing_slash_stripped(self):
+        assert _slugify("foo.myshopify.com/") == "foo-myshopify-com"
+
+    def test_non_alnum_collapsed(self):
+        assert _slugify("x_y:z") == "x-y-z"
+
+    def test_empty_fallback(self):
+        assert _slugify("") == "unknown"
+
+
+class TestSaveAndLoadHistory:
+    def test_round_trip(self, tmp_path):
+        r = analyze_competitor(
+            "x.com", http_get=_full_http(), llm=None,
+            now_fn=lambda: 1_700_000_000.0,
+        )
+        path = save_report(r, storage_dir=str(tmp_path))
+        assert path.endswith("x-com.jsonl")
+        hist = load_history("x.com", storage_dir=str(tmp_path))
+        assert len(hist) == 1
+        assert hist[0]["store"] == "x.com"
+        assert hist[0]["catalog"]["product_count"] == 2
+
+    def test_append_accumulates(self, tmp_path):
+        r = analyze_competitor(
+            "x.com", http_get=_full_http(), llm=None,
+            now_fn=lambda: 1_700_000_000.0,
+        )
+        save_report(r, storage_dir=str(tmp_path))
+        save_report(r, storage_dir=str(tmp_path))
+        save_report(r, storage_dir=str(tmp_path))
+        hist = load_history("x.com", storage_dir=str(tmp_path))
+        assert len(hist) == 3
+
+    def test_limit_returns_tail(self, tmp_path):
+        for _ in range(5):
+            r = analyze_competitor(
+                "x.com", http_get=_full_http(), llm=None,
+            )
+            save_report(r, storage_dir=str(tmp_path))
+        hist = load_history(
+            "x.com", storage_dir=str(tmp_path), limit=2,
+        )
+        assert len(hist) == 2
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        hist = load_history(
+            "nobody.com", storage_dir=str(tmp_path),
+        )
+        assert hist == []
+
+    def test_corrupt_line_skipped(self, tmp_path):
+        # Pre-plant one valid + one garbage line
+        path = tmp_path / "a-com.jsonl"
+        path.write_text(
+            '{"store":"a.com","catalog":{"product_count":3}}\n'
+            'not-json\n'
+            '{"store":"a.com","catalog":{"product_count":4}}\n'
+        )
+        hist = load_history("a.com", storage_dir=str(tmp_path))
+        assert len(hist) == 2
+        assert hist[0]["catalog"]["product_count"] == 3
+        assert hist[1]["catalog"]["product_count"] == 4
+
+    def test_slug_collision_avoided(self, tmp_path):
+        """Hosts that share a base but differ by subdomain must
+        land in separate files."""
+        r1 = analyze_competitor(
+            "shop.x.com", http_get=_full_http("shop.x.com"),
+            llm=None,
+        )
+        r2 = analyze_competitor(
+            "x.com", http_get=_full_http("x.com"), llm=None,
+        )
+        save_report(r1, storage_dir=str(tmp_path))
+        save_report(r2, storage_dir=str(tmp_path))
+        files = sorted(p.name for p in tmp_path.iterdir())
+        assert "shop-x-com.jsonl" in files
+        assert "x-com.jsonl" in files
+
+
+class TestDiffVsLast:
+    def _mk_report(self, **over):
+        """Build a minimal CompetitorReport for diff tests."""
+        from agents.competitor_intel.agent import (
+            HomepageSignals, StoreCatalogSummary,
+        )
+        cat = StoreCatalogSummary(
+            store="x.com",
+            product_count=over.get("product_count", 10),
+            median_price=over.get("median_price", 25.0),
+            top_products=over.get("top_products", [
+                {"handle": "a"}, {"handle": "b"},
+            ]),
+            newest_products=over.get("newest_products", [
+                {"handle": "a"}, {"handle": "b"},
+            ]),
+        )
+        hp = HomepageSignals(
+            apps_detected=over.get("apps_detected", ["Klaviyo (email/SMS)"]),
+        )
+        return CompetitorReport(
+            store="x.com", scraped_at=over.get("ts", 1_700_000_000.0),
+            catalog=cat, homepage=hp,
+        )
+
+    def test_baseline_when_no_previous(self):
+        r = self._mk_report()
+        d = diff_vs_last(r, None)
+        assert d["baseline"] is True
+        assert d["product_count_delta"] == 0
+
+    def test_product_count_delta(self):
+        prev = self._mk_report(product_count=10).as_dict()
+        cur = self._mk_report(product_count=15)
+        d = diff_vs_last(cur, prev)
+        assert d["product_count_delta"] == 5
+        assert d["baseline"] is False
+
+    def test_median_price_delta(self):
+        prev = self._mk_report(median_price=20.0).as_dict()
+        cur = self._mk_report(median_price=25.5)
+        d = diff_vs_last(cur, prev)
+        assert d["median_price_delta_usd"] == 5.5
+
+    def test_added_and_removed_handles(self):
+        prev = self._mk_report(
+            top_products=[{"handle": "a"}, {"handle": "b"}],
+            newest_products=[{"handle": "a"}],
+        ).as_dict()
+        cur = self._mk_report(
+            top_products=[{"handle": "b"}, {"handle": "c"}],
+            newest_products=[{"handle": "d"}],
+        )
+        d = diff_vs_last(cur, prev)
+        assert "c" in d["added_handles"]
+        assert "d" in d["added_handles"]
+        assert "a" in d["removed_handles"]
+        assert "b" not in d["added_handles"]
+        assert "b" not in d["removed_handles"]
+
+    def test_new_and_lost_apps(self):
+        prev = self._mk_report(
+            apps_detected=["Klaviyo (email/SMS)", "Loox (photo reviews)"],
+        ).as_dict()
+        cur = self._mk_report(
+            apps_detected=[
+                "Klaviyo (email/SMS)",
+                "Meta Pixel",
+            ],
+        )
+        d = diff_vs_last(cur, prev)
+        assert "Meta Pixel" in d["new_apps"]
+        assert "Loox (photo reviews)" in d["lost_apps"]
+        assert "Klaviyo (email/SMS)" not in d["new_apps"]
+
+    def test_no_change_is_empty_sets(self):
+        prev = self._mk_report().as_dict()
+        cur = self._mk_report()
+        d = diff_vs_last(cur, prev)
+        assert d["product_count_delta"] == 0
+        assert d["median_price_delta_usd"] == 0.0
+        assert d["added_handles"] == []
+        assert d["removed_handles"] == []
+        assert d["new_apps"] == []
+        assert d["lost_apps"] == []
+
+    def test_previous_timestamp_preserved(self):
+        prev = self._mk_report(ts=1_699_000_000.0).as_dict()
+        cur = self._mk_report(ts=1_700_000_000.0)
+        d = diff_vs_last(cur, prev)
+        assert d["previous_scraped_at"] == 1_699_000_000.0

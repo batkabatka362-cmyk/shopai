@@ -16,16 +16,30 @@ Usage:
     >>> report.summary     # dict of findings
     >>> report.insights    # LLM-generated strategic take
 
+    >>> from agents.competitor_intel import (
+    ...     save_report, diff_vs_last, load_history,
+    ... )
+    >>> save_report(report)
+    >>> history = load_history("allbirds.com", limit=2)
+    >>> prev = history[-2] if len(history) > 1 else None
+    >>> diff_vs_last(report, prev)     # what changed
+
 Pure stdlib. Dependency-injected HTTP + LLM for offline tests.
 """
 from agents.competitor_intel.agent import (
     CompetitorReport,
     analyze_competitor,
     analyze_competitors,
+    diff_vs_last,
+    load_history,
+    save_report,
 )
 
 __all__ = [
     "CompetitorReport",
     "analyze_competitor",
     "analyze_competitors",
+    "diff_vs_last",
+    "load_history",
+    "save_report",
 ]

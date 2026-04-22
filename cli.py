@@ -710,6 +710,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit full JSON report",
     )
+    intel_p.add_argument(
+        "--no-persist", action="store_true",
+        help=(
+            "Don't write JSONL history (by default "
+            "each run appends to "
+            "data/competitor_intel/<store>.jsonl "
+            "so repeat runs surface diffs)."
+        ),
+    )
+    intel_p.add_argument(
+        "--storage-dir", default="data/competitor_intel",
+        help=(
+            "Where to store longitudinal JSONL history "
+            "(default: data/competitor_intel)."
+        ),
+    )
 
     # ── Publisher bundle (v38+) ──────────────────────────────
     # ``publish`` goes through execution.launch.publisher_bundle
@@ -3978,8 +3994,13 @@ def _cmd_competitor_intel(args) -> None:
     HTML — no auth needed, no Shopify token used. The LLM step
     is optional (``--no-llm`` skips it; otherwise we route via
     ``core.llm_gateway.ask`` which picks the cheapest
-    configured adapter)."""
-    from agents.competitor_intel import analyze_competitors
+    configured adapter). Each run is appended to
+    ``<storage_dir>/<store>.jsonl`` so repeat runs surface
+    diffs (``--no-persist`` to disable)."""
+    from agents.competitor_intel import (
+        analyze_competitors, diff_vs_last,
+        load_history, save_report,
+    )
 
     llm = None
     if not args.no_llm:
@@ -4001,16 +4022,46 @@ def _cmd_competitor_intel(args) -> None:
                     raise RuntimeError(res.error or "llm call failed")
                 return res.text
 
+    # Load previous scrape per store BEFORE running the new one,
+    # so the diff is against what was on disk at invocation time.
+    previous: dict[str, dict | None] = {}
+    if not args.no_persist:
+        for s in args.stores:
+            try:
+                hist = load_history(
+                    s, storage_dir=args.storage_dir, limit=1,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: history load failed for {s}: {exc}",
+                      file=sys.stderr)
+                hist = []
+            previous[s] = hist[-1] if hist else None
+
     reports = analyze_competitors(
         args.stores,
         our_store=args.our_store,
         llm=llm,
     )
 
+    # Persist AFTER the scrape so each file line represents a
+    # completed scrape (partial reports from crashes don't
+    # pollute the history).
+    if not args.no_persist:
+        for r in reports:
+            try:
+                save_report(r, storage_dir=args.storage_dir)
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: persist failed for {r.store}: "
+                      f"{exc}", file=sys.stderr)
+
     if args.json:
-        print(json.dumps(
-            [r.as_dict() for r in reports], indent=2,
-        ))
+        payload = []
+        for r in reports:
+            d = r.as_dict()
+            if not args.no_persist:
+                d["diff"] = diff_vs_last(r, previous.get(r.store))
+            payload.append(d)
+        print(json.dumps(payload, indent=2))
         return
 
     for r in reports:
@@ -4052,6 +4103,38 @@ def _cmd_competitor_intel(args) -> None:
                       f"{hp.announcement_bar[:100]}")
         if r.collection_handles:
             print(f"  collections: {len(r.collection_handles)}")
+        if not args.no_persist:
+            d = diff_vs_last(r, previous.get(r.store))
+            if d.get("baseline"):
+                print("  diff:      (first scrape — no baseline)")
+            else:
+                deltas = []
+                pcd = d["product_count_delta"]
+                if pcd:
+                    deltas.append(f"products {pcd:+d}")
+                mpd = d["median_price_delta_usd"]
+                if abs(mpd) >= 0.01:
+                    deltas.append(f"median ${mpd:+.2f}")
+                if d["new_apps"]:
+                    deltas.append(
+                        f"new apps: {', '.join(d['new_apps'])}",
+                    )
+                if d["lost_apps"]:
+                    deltas.append(
+                        f"lost apps: {', '.join(d['lost_apps'])}",
+                    )
+                if d["added_handles"]:
+                    deltas.append(
+                        f"+{len(d['added_handles'])} SKUs",
+                    )
+                if d["removed_handles"]:
+                    deltas.append(
+                        f"-{len(d['removed_handles'])} SKUs",
+                    )
+                if deltas:
+                    print(f"  diff:      {'; '.join(deltas)}")
+                else:
+                    print("  diff:      (no change since last scrape)")
         if r.insights:
             print("\n  ── strategic take ──")
             for ln in r.insights.splitlines():

@@ -603,3 +603,170 @@ def analyze_competitors(
         if throttle_s > 0 and s != stores[-1]:
             time.sleep(throttle_s)
     return out
+
+
+# ── Persistence + diff (longitudinal watchdog) ────────────
+
+
+def _slugify(store: str) -> str:
+    """Turn a domain like ``https://a.b.com/`` into a
+    filesystem-safe leaf ``a-b-com``."""
+    host = _normalise_host(store)
+    return re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-") or "unknown"
+
+
+def save_report(
+    report: CompetitorReport,
+    *,
+    storage_dir: str = "data/competitor_intel",
+) -> str:
+    """Append the report to ``<storage_dir>/<store-slug>.jsonl``
+    and return the file path. One line per scrape so a simple
+    tail reveals the competitor's trajectory. Safe to call
+    concurrently on different stores; two concurrent writers
+    to the same store may interleave lines but each line stays
+    a valid JSON doc (POSIX append-mode guarantees atomicity
+    for <PIPE_BUF bytes; our rows are typically ~4-6 KB so
+    that safety net is probabilistic, not absolute). Caller
+    that needs strict linearisation can wrap with a file
+    lock."""
+    import os
+    os.makedirs(storage_dir, exist_ok=True)
+    path = os.path.join(
+        storage_dir, f"{_slugify(report.store)}.jsonl",
+    )
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(report.as_dict()) + "\n")
+    return path
+
+
+def load_history(
+    store: str,
+    *,
+    storage_dir: str = "data/competitor_intel",
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Return the last ``limit`` persisted reports for
+    ``store``, oldest first. Empty list if the file doesn't
+    exist (fresh store)."""
+    import os
+    path = os.path.join(
+        storage_dir, f"{_slugify(store)}.jsonl",
+    )
+    if not os.path.exists(path):
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except (TypeError, ValueError):
+                    continue
+    except OSError as exc:
+        logger.debug(
+            "load_history read failed for %s: %s",
+            store, exc,
+        )
+        return []
+    if limit > 0 and len(rows) > limit:
+        rows = rows[-limit:]
+    return rows
+
+
+def diff_vs_last(
+    current: CompetitorReport,
+    previous: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Pure function: what's new / gone / changed in price
+    between ``current`` and the previous persisted scrape?
+
+    Returns a dict with a single ``baseline`` flag set when
+    ``previous`` is ``None`` so callers can surface "first
+    scrape, nothing to compare against" cleanly.
+
+    Signals that actually matter for competitive ad work:
+      * ``product_count_delta`` — did they add / drop SKUs?
+      * ``median_price_delta_usd`` — sitewide pricing move
+      * ``added_handles`` — new products launched since
+        last scrape (first 20)
+      * ``removed_handles`` — discontinued
+      * ``new_apps`` — newly-installed app (e.g. Klaviyo
+        just appeared → they started email marketing)
+      * ``lost_apps`` — uninstalled
+    """
+    if previous is None:
+        return {
+            "baseline": True,
+            "product_count_delta": 0,
+            "median_price_delta_usd": 0.0,
+            "added_handles": [],
+            "removed_handles": [],
+            "new_apps": [],
+            "lost_apps": [],
+        }
+
+    prev_cat = (previous.get("catalog") or {})
+    cur_cat = current.catalog
+
+    prev_handles: set[str] = {
+        p.get("handle", "")
+        for p in (prev_cat.get("top_products") or [])
+        if p.get("handle")
+    }
+    # The newest-products list gives more forward-looking
+    # signal than top_products (which Shopify orders by
+    # Shopify's internal ranking), so fold it in.
+    prev_handles.update({
+        p.get("handle", "")
+        for p in (prev_cat.get("newest_products") or [])
+        if p.get("handle")
+    })
+    cur_handles: set[str] = set()
+    if cur_cat:
+        cur_handles.update(
+            p.get("handle", "")
+            for p in cur_cat.top_products
+            if p.get("handle")
+        )
+        cur_handles.update(
+            p.get("handle", "")
+            for p in cur_cat.newest_products
+            if p.get("handle")
+        )
+    added = sorted(cur_handles - prev_handles)[:20]
+    removed = sorted(prev_handles - cur_handles)[:20]
+
+    prev_count = int(prev_cat.get("product_count") or 0)
+    cur_count = cur_cat.product_count if cur_cat else 0
+
+    prev_median = float(prev_cat.get("median_price") or 0.0)
+    cur_median = (
+        float(cur_cat.median_price) if cur_cat else 0.0
+    )
+
+    prev_apps: set[str] = set(
+        (previous.get("homepage") or {}).get("apps_detected")
+        or [],
+    )
+    cur_apps: set[str] = set(
+        current.homepage.apps_detected if current.homepage
+        else [],
+    )
+    return {
+        "baseline": False,
+        "previous_scraped_at": float(
+            previous.get("scraped_at") or 0.0,
+        ),
+        "product_count_delta": cur_count - prev_count,
+        "median_price_delta_usd": round(
+            cur_median - prev_median, 2,
+        ),
+        "added_handles": added,
+        "removed_handles": removed,
+        "new_apps": sorted(cur_apps - prev_apps),
+        "lost_apps": sorted(prev_apps - cur_apps),
+    }
