@@ -69,7 +69,11 @@ class TestPlannerShape(unittest.TestCase):
         root = ts.State(open_launches=1)
         trace = self.planner.plan(root, simulations=5000,
                                   time_budget_s=0.2)
-        self.assertLess(trace.elapsed_s, 0.5)
+        # 5× budget — tight enough to catch real regressions,
+        # loose enough to survive CI runner contention (seen
+        # at 0.51s on a slow shared runner — GH Actions job
+        # 72654529421).
+        self.assertLess(trace.elapsed_s, 1.0)
 
 
 class TestPlannerUsesWorldModel(unittest.TestCase):
