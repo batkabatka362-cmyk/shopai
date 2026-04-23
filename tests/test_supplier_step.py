@@ -35,7 +35,8 @@ class TestSupplierGating(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "CJ_DROPSHIPPING_API_KEY": "",
+                "CJ_DROPSHIPPING_EMAIL": "",
+                "CJ_DROPSHIPPING_PASSWORD": "",
                 "AUTODS_API_KEY": "",
             },
             clear=False,
@@ -44,12 +45,16 @@ class TestSupplierGating(unittest.TestCase):
             with self.assertRaises(StepSkip):
                 step.execute(_context())
 
-    def test_autods_only_skips_pending_adapter(self):
+    def test_autods_short_key_rejected(self):
+        """AutoDS adapter rejects short keys (<20 chars) —
+        step should raise StepSkip rather than silently call
+        the adapter with an invalid token."""
         with patch.dict(
             "os.environ",
             {
-                "CJ_DROPSHIPPING_API_KEY": "",
-                "AUTODS_API_KEY": "autods_xxx",
+                "CJ_DROPSHIPPING_EMAIL": "",
+                "CJ_DROPSHIPPING_PASSWORD": "",
+                "AUTODS_API_KEY": "too_short",
             },
             clear=False,
         ):
@@ -57,13 +62,16 @@ class TestSupplierGating(unittest.TestCase):
             with self.assertRaises(StepSkip) as ex:
                 step.execute(_context())
             self.assertIn(
-                "AutoDS", str(ex.exception),
+                "autods", str(ex.exception).lower(),
             )
 
     def test_no_source_info_skips(self):
         with patch.dict(
             "os.environ",
-            {"CJ_DROPSHIPPING_API_KEY": "cj_xxx"},
+            {
+                "CJ_DROPSHIPPING_EMAIL": "ops@shopai.test",
+                "CJ_DROPSHIPPING_PASSWORD": "pw",
+            },
             clear=False,
         ):
             step = SupplierStep()
@@ -104,7 +112,10 @@ class TestSupplierValidation(unittest.TestCase):
     def test_happy_path_records_validated_supplier(self):
         with patch.dict(
             "os.environ",
-            {"CJ_DROPSHIPPING_API_KEY": "cj_xxx"},
+            {
+                "CJ_DROPSHIPPING_EMAIL": "ops@shopai.test",
+                "CJ_DROPSHIPPING_PASSWORD": "pw",
+            },
             clear=False,
         ):
             adapter = self._mock_adapter(ok=True)
@@ -134,7 +145,10 @@ class TestSupplierValidation(unittest.TestCase):
         retries per-order anyway."""
         with patch.dict(
             "os.environ",
-            {"CJ_DROPSHIPPING_API_KEY": "cj_xxx"},
+            {
+                "CJ_DROPSHIPPING_EMAIL": "ops@shopai.test",
+                "CJ_DROPSHIPPING_PASSWORD": "pw",
+            },
             clear=False,
         ):
             adapter = self._mock_adapter(ok=False)
@@ -153,7 +167,10 @@ class TestSupplierValidation(unittest.TestCase):
         call get_product. Record the URL and move on."""
         with patch.dict(
             "os.environ",
-            {"CJ_DROPSHIPPING_API_KEY": "cj_xxx"},
+            {
+                "CJ_DROPSHIPPING_EMAIL": "ops@shopai.test",
+                "CJ_DROPSHIPPING_PASSWORD": "pw",
+            },
             clear=False,
         ):
             step = SupplierStep()
@@ -166,7 +183,10 @@ class TestSupplierValidation(unittest.TestCase):
     def test_unconfigured_adapter_skips(self):
         with patch.dict(
             "os.environ",
-            {"CJ_DROPSHIPPING_API_KEY": "cj_xxx"},
+            {
+                "CJ_DROPSHIPPING_EMAIL": "ops@shopai.test",
+                "CJ_DROPSHIPPING_PASSWORD": "pw",
+            },
             clear=False,
         ):
             adapter = MagicMock()

@@ -200,6 +200,10 @@ ENV_ALIASES: dict[str, str] = {
     # The token TTL is 7 days per CJ's docs.
     "cj_email":         "CJ_DROPSHIPPING_EMAIL",
     "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
+    # AutoDS: paid dropshipping API (Bearer token). US warehouse
+    # + multi-marketplace sourcing (AliExpress, Amazon, Walmart,
+    # CJ, DSers). Fallback to CJ when both are configured.
+    "autods":           "AUTODS_API_KEY",
 
     # ── Automation ────────────────────────
     "zapier_nla":       "ZAPIER_NLA_API_KEY",
@@ -245,6 +249,8 @@ ENV_ALIASES: dict[str, str] = {
     # CJ Dropshipping uses email + password → access token exchange.
     "cj_email":         "CJ_DROPSHIPPING_EMAIL",
     "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
+    # AutoDS — single API key (Bearer).
+    "autods":           "AUTODS_API_KEY",
 }
 
 
