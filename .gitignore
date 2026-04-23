@@ -12,6 +12,7 @@ build/
 !core/data/
 /logs/
 /reports/
+/backups/
 core/reflection/.state/
 *.db
 *.db-shm

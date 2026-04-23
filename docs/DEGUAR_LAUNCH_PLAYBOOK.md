@@ -312,6 +312,7 @@ goes wrong:
 | `scripts/deguar_collection_check.py` | Smart-collection member count + rules | After adding/tagging products |
 | `scripts/deguar_checkout_check.py` | Payment + shipping + URL reachability | Before every ads campaign |
 | `scripts/deguar_health_report.py` | One-command aggregator → markdown report | Monday cron |
+| `scripts/deguar_backup.py` | Snapshot store state to local JSON | Before bulk ops + theme switch + reinstall |
 | `cli.py competitor-intel <stores>` | Scrape + diff competitors | Weekly Monday |
 | `cli.py ready-for-live` | Pre-T1 go/no-go gate | Before switching live_execution on |
 
