@@ -118,6 +118,10 @@ class CycleSummary:
     # post-purchase / win-back).
     emails_sent: int = 0
     emails_failed: int = 0
+    # Win-back daemon sweep — dormant LTV customers enrolled
+    # into the win_back flow this cycle. Capped at
+    # DEFAULT_MAX_PER_CYCLE to avoid backlog dumps.
+    winback_enrolled: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -132,6 +136,7 @@ class CycleSummary:
             "expired_approvals": self.expired_approvals,
             "emails_sent": self.emails_sent,
             "emails_failed": self.emails_failed,
+            "winback_enrolled": self.winback_enrolled,
             "error": self.error,
         }
 
@@ -383,6 +388,23 @@ class AutopilotLoop:
             summary.error = (
                 summary.error
                 or f"email_dispatch raised: {exc}"
+            )
+        # Win-back sweep — enroll up to N dormant LTV
+        # customers per cycle into the win_back flow. Skips
+        # anyone already in the flow. Soft-fail.
+        try:
+            from core.engines.budget_buyer import sweep_winback
+            wb_report = sweep_winback()
+            summary.winback_enrolled = int(
+                wb_report.newly_enrolled,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "winback sweep failed: %s", exc,
+            )
+            summary.error = (
+                summary.error
+                or f"winback_sweep raised: {exc}"
             )
         summary.duration_s = time.time() - start
         return summary

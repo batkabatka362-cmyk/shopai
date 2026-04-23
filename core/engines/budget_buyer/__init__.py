@@ -70,6 +70,10 @@ from core.engines.budget_buyer.ltv import (
     LTVSegment,
     LTVTracker,
 )
+from core.engines.budget_buyer.winback import (
+    WinBackReport,
+    sweep as sweep_winback,
+)
 
 __all__ = [
     "BudgetAllocation",
@@ -79,6 +83,8 @@ __all__ = [
     "LTVSegment",
     "LTVTracker",
     "SKUPerformance",
+    "WinBackReport",
     "get_engine",
     "reset_singleton_for_tests",
+    "sweep_winback",
 ]
