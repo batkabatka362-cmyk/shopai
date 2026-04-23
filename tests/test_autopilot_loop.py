@@ -293,6 +293,126 @@ class TestSummarySerialise(unittest.TestCase):
         self.assertEqual(d["cycle"], 1)
         self.assertEqual(d["mode"], "dry_run")
 
+    def test_expired_approvals_field_serialised(self):
+        """Phase 2d — summary surfaces the queue sweep count."""
+        s = al.CycleSummary(
+            cycle=1, ts=100.0, mode="live",
+            launches=1, successful=1,
+            distilled_proposals=0, accepted=0,
+            duration_s=1.0,
+            expired_approvals=3,
+        )
+        d = s.as_dict()
+        self.assertEqual(d["expired_approvals"], 3)
+
+
+class TestApprovalQueueSweep(unittest.TestCase):
+    """Phase 2d — each cycle sweeps expired approval rows."""
+
+    def setUp(self):
+        import os
+        self._tmp = tempfile.TemporaryDirectory()
+        self._seeds = Path(self._tmp.name) / "seeds.json"
+        self._seeds.write_text(json.dumps([
+            {
+                "title": "x", "price": 30, "cost": 10,
+                "daily_sales": 20, "saturation_score": 0.3,
+            },
+        ]))
+        self._log = Path(self._tmp.name) / "loop.log"
+        self._prior = os.environ.get("SHOPAI_SHOPIFY_URL")
+        os.environ["SHOPAI_SHOPIFY_URL"] = "x.myshopify.com"
+
+    def tearDown(self):
+        import os
+        if self._prior is None:
+            os.environ.pop("SHOPAI_SHOPIFY_URL", None)
+        else:
+            os.environ["SHOPAI_SHOPIFY_URL"] = self._prior
+        self._tmp.cleanup()
+
+    def _config(self, **overrides):
+        base = dict(
+            seeds_path=str(self._seeds),
+            max_iterations=1,
+            interval_s=0.01,
+            log_path=str(self._log),
+        )
+        base.update(overrides)
+        return al.LoopConfig(**base)
+
+    def test_sweep_invoked_and_count_recorded(self):
+        """Plant 1 stale + 1 fresh row in an isolated queue.
+        Verify a cycle sweeps the stale one + records the count."""
+        from unittest.mock import patch
+        from core.contracts import RiskLevel
+        from core.system.approval_queue import (
+            ApprovalQueue, reset_singleton_for_tests,
+        )
+        from core.system import approval_notifier as an
+
+        reset_singleton_for_tests()
+        an.reset_singleton_for_tests()
+        clock = {"t": 1_700_000_000.0}
+        db_path = str(Path(self._tmp.name) / "q.db")
+        q = ApprovalQueue(
+            db_path=db_path,
+            now_fn=lambda: clock["t"],
+        )
+        q.enqueue(
+            "ad_campaign_create",
+            {"daily_budget_usd": 20},
+            RiskLevel.HIGH,
+            ttl_minutes=5,
+        )
+        q.enqueue(
+            "ad_campaign_create",
+            {"daily_budget_usd": 20},
+            RiskLevel.HIGH,
+            ttl_minutes=60,
+        )
+        # Jump 10 minutes into the future — only the 5-min row
+        # should have expired
+        clock["t"] += 600
+        # Monkey-patch the loop's get_queue to return our
+        # tmp queue (with the time-shifted clock)
+        loop = al.AutopilotLoop(
+            self._config(),
+            autopilot=_make_autopilot(),
+            launch_learner=_make_learner(),
+        )
+        with patch(
+            "core.system.approval_queue.get_queue",
+            return_value=q,
+        ):
+            summaries = loop.run()
+        s = summaries[0]
+        self.assertEqual(s.expired_approvals, 1)
+        # Queue state post-sweep
+        self.assertEqual(q.stats()["expired"], 1)
+        self.assertEqual(q.stats()["pending"], 1)
+        reset_singleton_for_tests()
+        an.reset_singleton_for_tests()
+
+    def test_sweep_failure_soft_fails_cycle(self):
+        """If the queue sweep raises, cycle records the error
+        but still completes (doesn't abort the whole run)."""
+        from unittest.mock import patch
+        loop = al.AutopilotLoop(
+            self._config(),
+            autopilot=_make_autopilot(),
+            launch_learner=_make_learner(),
+        )
+        with patch(
+            "core.system.approval_queue.get_queue",
+            side_effect=RuntimeError("disk full"),
+        ):
+            summaries = loop.run()
+        s = summaries[0]
+        self.assertIn("queue_sweep", s.error)
+        # Cycle otherwise complete
+        self.assertEqual(s.launches, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

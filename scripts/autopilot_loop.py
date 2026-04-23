@@ -108,6 +108,11 @@ class CycleSummary:
     accepted: int
     duration_s: float
     error: str = ""
+    # Phase 2d of 4×4 matrix — count of approval-queue rows
+    # auto-expired on this cycle's sweep. Surfaces whether
+    # owner is letting HIGH/CRITICAL prompts rot (which would
+    # signal Telegram pipeline trouble).
+    expired_approvals: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +124,7 @@ class CycleSummary:
             "distilled": self.distilled_proposals,
             "accepted": self.accepted,
             "duration_s": round(self.duration_s, 3),
+            "expired_approvals": self.expired_approvals,
             "error": self.error,
         }
 
@@ -335,6 +341,23 @@ class AutopilotLoop:
                         f"llms_txt raised: {exc}"
                     )
                 )
+        # Phase 2d of 4×4 matrix — sweep expired HIGH/CRITICAL
+        # approval rows every cycle so stale pending items
+        # don't linger past their TTL and pollute the "pending"
+        # view. Soft-fail — queue unavailable (e.g. SQLite
+        # lock) logs + annotates but never aborts the cycle.
+        try:
+            from core.system.approval_queue import get_queue
+            summary.expired_approvals = int(
+                get_queue().expire_old(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "approval queue sweep failed: %s", exc,
+            )
+            summary.error = (
+                summary.error or f"queue_sweep raised: {exc}"
+            )
         summary.duration_s = time.time() - start
         return summary
 
