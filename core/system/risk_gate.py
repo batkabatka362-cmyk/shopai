@@ -226,3 +226,76 @@ def describe(level: RiskLevel) -> str:
             "double-confirm before the write runs."
         ),
     }[level]
+
+
+def check_and_enqueue(
+    action_type: str,
+    payload: dict[str, Any],
+    *,
+    auto_approve: bool = False,
+    live_execution: bool = False,
+    approved_request_id: str | None = None,
+    queue: Any = None,
+    ttl_minutes: int = 30,
+) -> tuple[bool, str, RiskLevel]:
+    """Decide whether a proposed write can proceed.
+
+    Returns ``(proceed, request_id, risk_level)``:
+
+      * ``proceed=True`` + ``request_id=""`` — auto-approved by
+        policy (LOW always, MEDIUM with both flags on, or the
+        caller is in dry-run via ``live_execution=False``).
+      * ``proceed=True`` + ``request_id="<id>"`` — the owner
+        has already approved this action on a prior attempt
+        (caller passed ``approved_request_id``).
+      * ``proceed=False`` + ``request_id="<new_id>"`` —
+        enqueued for owner approval. Caller stops, returns a
+        ``pending_approval`` result, and expects a retry once
+        the owner says yes. The ``request_id`` goes into the
+        pending result so owner can correlate with the
+        Telegram message.
+
+    Dry-run short-circuit: when ``live_execution=False``, no
+    money commits are happening, so we always proceed and
+    never enqueue. This keeps the gate transparent to unit
+    tests + dry-run previews while still protecting real
+    writes.
+
+    ``queue`` is injectable for tests; defaults to the
+    module-level singleton."""
+    level = classify(action_type, payload)
+
+    # Dry-run: no commit, no queue pollution
+    if not live_execution:
+        return True, "", level
+
+    # Owner already approved this on a previous attempt
+    if approved_request_id:
+        if queue is None:
+            from core.system.approval_queue import get_queue
+            queue = get_queue()
+        row = queue.get(approved_request_id)
+        if (
+            row is not None
+            and row.status == "approved"
+            and row.action_type == action_type
+        ):
+            return True, approved_request_id, level
+
+    # Policy check
+    if is_auto_approved(
+        level,
+        auto_approve=auto_approve,
+        live_execution=live_execution,
+    ):
+        return True, "", level
+
+    # Needs owner — enqueue
+    if queue is None:
+        from core.system.approval_queue import get_queue
+        queue = get_queue()
+    req = queue.enqueue(
+        action_type, dict(payload),
+        level, ttl_minutes=ttl_minutes,
+    )
+    return False, req.request_id, level

@@ -61,6 +61,17 @@ class LaunchRequest:
     decision_id: str = ""
     store_currency: str = "USD"
     live: bool = False
+    # Phase 2c of 4×4 matrix — opt-in risk gate. When True, the
+    # ad_campaign_create commit is classified by risk_gate and
+    # HIGH/CRITICAL enqueue for owner approval instead of
+    # committing. Off by default so every existing caller keeps
+    # byte-identical behaviour. Set via CLI / controller flag
+    # once the owner wants the safety net.
+    risk_gate_enabled: bool = False
+    # If the gate previously queued this launch and the owner
+    # has since approved, re-running with the approved id here
+    # lets the gate short-circuit. See check_and_enqueue().
+    approved_request_id: str = ""
     # Wave A-1 of 2026 wiring: EU AI Act Art. 50 compliance
     # gate. When target_markets includes an EU country or
     # ``"EU"`` itself, every entry in ``ai_creatives`` must
@@ -1146,6 +1157,60 @@ class PublisherBundle:
             )
             steps.append(log)
             return log
+        # Phase 2c of 4×4 matrix — opt-in risk-gate money-commit
+        # check. Charges the Meta Ads account, so HIGH/CRITICAL
+        # under the classifier policy. Off by default
+        # (risk_gate_enabled=False) so existing callers keep
+        # byte-identical behaviour. When enabled, the gate
+        # short-circuits to proceed if the owner already
+        # approved a prior attempt (request.approved_request_id);
+        # otherwise it enqueues + returns a pending_approval
+        # StepLog so the pipeline surfaces the wait cleanly.
+        if request.risk_gate_enabled:
+            from core.system.risk_gate import check_and_enqueue
+            proceed, approval_id, level = check_and_enqueue(
+                "ad_campaign_create",
+                {
+                    "daily_budget_usd": float(
+                        request.ad_budget_daily,
+                    ),
+                    "store": request.shop_url,
+                    "platform": request.platform,
+                    "account_id": (
+                        request.meta_account_id or ""
+                    ),
+                    "decision_id": decision_id,
+                },
+                auto_approve=True,
+                live_execution=True,
+                approved_request_id=(
+                    request.approved_request_id or None
+                ),
+            )
+            if not proceed:
+                log = StepLog(
+                    name="launch_campaign",
+                    status="pending_approval",
+                    data={
+                        "request_id": approval_id,
+                        "risk_level": level.value,
+                        "message": (
+                            f"queued for owner approval "
+                            f"(risk={level.value}). Approve "
+                            f"via Telegram or `shopai "
+                            f"approve-request {approval_id}`, "
+                            f"then retry with the "
+                            f"approved_request_id set."
+                        ),
+                        "params": {
+                            k: v for k, v in params.items()
+                            if k not in ("_ad_copy",)
+                        },
+                    },
+                    ts=time.time(),
+                )
+                steps.append(log)
+                return log
         try:
             from core.adapters.base import Capability
             result = self._get_ads().execute(
