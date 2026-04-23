@@ -116,6 +116,12 @@ class ApprovalQueue:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._now = now_fn or time.time
+        #: Post-enqueue hooks — each gets ``ApprovalRequest``
+        #: and runs fire-and-forget (exceptions are swallowed
+        #: to the local log, never block enqueue). Commodity
+        #: adapters (e.g. ``approval_notifier.ApprovalNotifier``)
+        #: register here so enqueue + notify stay decoupled.
+        self._on_enqueue: list[Any] = []
         parent = os.path.dirname(db_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -176,7 +182,26 @@ class ApprovalQueue:
             "enqueued %s request_id=%s level=%s",
             action_type, req.request_id, risk_level.value,
         )
+        # Fire-and-forget hooks — commodity adapters (Telegram
+        # notifier, future email notifier, etc.) register here.
+        # Hook exceptions are logged but never propagate; a
+        # failed notification is recoverable via the CLI poll.
+        for hook in list(self._on_enqueue):
+            try:
+                hook(req)
+            except Exception as exc:  # noqa: BLE001
+                _logger.debug(
+                    "on_enqueue hook %s failed: %s",
+                    getattr(hook, "__name__", hook), exc,
+                )
         return req
+
+    def on_enqueue(self, callback: Any) -> None:
+        """Register a post-enqueue hook. Called with the
+        newly-created ``ApprovalRequest`` on every successful
+        enqueue. Duplicate registrations are allowed — caller
+        owns idempotency if they care."""
+        self._on_enqueue.append(callback)
 
     def approve(
         self,
@@ -340,14 +365,31 @@ _SINGLETON_LOCK = threading.Lock()
 def get_queue(db_path: str | None = None) -> ApprovalQueue:
     """Return the shared process-wide queue. Lazy-init on
     first call. Tests should instantiate ``ApprovalQueue``
-    directly with a tmp path to avoid the singleton."""
+    directly with a tmp path to avoid the singleton.
+
+    On first creation, auto-registers the default Telegram
+    notifier so HIGH/CRITICAL enqueues push to the owner
+    without extra wiring. The notifier degrades gracefully
+    when Telegram isn't configured — no error, no block."""
     global _SINGLETON
     if _SINGLETON is None:
         with _SINGLETON_LOCK:
             if _SINGLETON is None:
-                _SINGLETON = ApprovalQueue(
+                q = ApprovalQueue(
                     db_path=db_path or _DEFAULT_DB_PATH,
                 )
+                # Commodity hook — safe to call when adapter
+                # missing; notifier.notify() just returns False.
+                try:
+                    from core.system.approval_notifier import (
+                        get_notifier,
+                    )
+                    q.on_enqueue(get_notifier().notify)
+                except Exception as exc:  # noqa: BLE001
+                    _logger.debug(
+                        "default notifier wire failed: %s", exc,
+                    )
+                _SINGLETON = q
     return _SINGLETON
 
 

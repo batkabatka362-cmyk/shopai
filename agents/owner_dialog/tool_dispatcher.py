@@ -188,19 +188,43 @@ _INTENT_TABLE: tuple[
         r"\bbrain\s+(catalog|modules)\b",
         r"\bmodule\s+catalog\b",
     )),
+    # ── Risk-gate approval queue (Phase 2 of 4×4 matrix) ──
+    # These three intents let the owner drive the queue from
+    # Telegram. ``approve_request`` / ``deny_request`` carry
+    # the request_id in the message itself — _parse_args
+    # extracts it via REQUEST_ID_RE.
+    ("pending_approvals", False, (
+        r"\bpending\s+(approvals?|requests?)\b",
+        r"\bwhat.?s\s+pending\b",
+        r"\bapproval\s+queue\b",
+    )),
+    ("approve_request", True, (
+        r"\bapprove\s+(?P<request_id>[a-f0-9]{8,32})\b",
+    )),
+    ("deny_request", True, (
+        r"\bdeny\s+(?P<request_id>[a-f0-9]{8,32})\b",
+    )),
 )
 
 
 _LIMIT_RE = re.compile(
     r"\blast\s+(\d+)\b|\btop\s+(\d+)\b",
 )
+_REQUEST_ID_RE = re.compile(
+    r"\b(?:approve|deny)\s+(?P<request_id>[a-f0-9]{8,32})\b",
+    re.IGNORECASE,
+)
+_DENY_REASON_RE = re.compile(
+    r"\bdeny\s+[a-f0-9]{8,32}\s+(?P<reason>.+?)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _parse_args(text: str, tool: str) -> dict[str, Any]:
     """Pull obvious args out of the raw text. Currently
-    handles the ``limit`` integer that recent_* tools accept.
-    Anything more sophisticated belongs in tool-specific
-    parsers (out of scope for this commit)."""
+    handles the ``limit`` integer that recent_* tools accept,
+    plus ``request_id`` for approve/deny and a ``reason``
+    tail on deny commands."""
     args: dict[str, Any] = {}
     m = _LIMIT_RE.search(text)
     if m and tool in (
@@ -211,12 +235,34 @@ def _parse_args(text: str, tool: str) -> dict[str, Any]:
             args["limit"] = int(m.group(1) or m.group(2))
         except (TypeError, ValueError):
             pass
+    if tool in ("approve_request", "deny_request"):
+        m = _REQUEST_ID_RE.search(text)
+        if m:
+            args["request_id"] = m.group("request_id")
+        if tool == "deny_request":
+            rm = _DENY_REASON_RE.search(text)
+            if rm:
+                reason = rm.group("reason").strip()
+                # Ignore trailing "confirm" / "yes" word that
+                # might be interpreted as reason
+                reason = re.sub(
+                    r"\s+(confirm|yes|do it|proceed)\s*$",
+                    "", reason, flags=re.IGNORECASE,
+                ).strip()
+                if reason:
+                    args["reason"] = reason
     return args
 
 
 _CONFIRM_RE = re.compile(
     r"\b(confirm|yes|do it|proceed)\b", re.IGNORECASE,
 )
+
+
+#: Intents where the action word itself ("approve", "deny") is
+#: the confirmation — forcing an additional "confirm" suffix
+#: would feel absurd to the owner.
+_SELF_CONFIRMING_TOOLS = {"approve_request", "deny_request"}
 
 
 def parse_intent(text: str) -> IntentMatch | None:
@@ -234,6 +280,10 @@ def parse_intent(text: str) -> IntentMatch | None:
         for pat in patterns:
             if re.search(pat, cleaned):
                 args = _parse_args(cleaned, tool)
+                # approve/deny carry confirmation in the verb
+                # itself — no separate suffix required.
+                if tool in _SELF_CONFIRMING_TOOLS:
+                    confirmed = True
                 return IntentMatch(
                     tool=tool,
                     arguments=args,
