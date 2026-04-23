@@ -533,6 +533,23 @@ class ShopAIHandler(BaseHTTPRequestHandler):
                     exc,
                 )
 
+        # Welcome flow enrolment. customers/create fires on
+        # email-list signups + first-time guests. Filter is
+        # inside handle_customer_create — only orders_count=0
+        # + accepts_marketing customers get the welcome flow;
+        # buyers with orders take the post_purchase path via
+        # order_handler.
+        if "customers/create" in topic:
+            try:
+                from core.webhooks.customer_handler import (
+                    handle_customer_create,
+                )
+                handle_customer_create(body)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "welcome enrolment skipped: %s", exc,
+                )
+
         # Reward-signal bridge: orders are the closing leg of the
         # decision → action → outcome loop the learning pipeline
         # depends on. Record each order as a memory event tagged

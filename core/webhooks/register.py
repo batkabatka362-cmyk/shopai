@@ -43,6 +43,8 @@ _TOPICS = (
     "app/uninstalled",    # lets us stop pinging a disabled store
     "checkouts/update",   # abandoned-cart — fires ~1-3h after
                           # checkout stalls without conversion
+    "customers/create",   # welcome email flow — fires on
+                          # first-contact opt-in signup
 )
 
 
