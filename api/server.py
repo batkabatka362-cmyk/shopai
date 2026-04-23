@@ -514,6 +514,25 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.debug("Webhook experience/cache: %s", exc)
 
+        # Abandoned-cart enrolment. Shopify fires
+        # ``checkouts/update`` on each mutation to a cart page;
+        # we enroll the buyer into the abandoned_cart email
+        # flow if email + line items are present. The flow's
+        # 1h/1d delays do the waiting — we don't need our own
+        # timer. §4b.D idempotent: engine dedupes by
+        # (recipient × flow × step_id).
+        if "checkouts/update" in topic or "checkouts/create" in topic:
+            try:
+                from core.webhooks.checkout_handler import (
+                    handle_checkout_update,
+                )
+                handle_checkout_update(body)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "abandoned-cart enrolment skipped: %s",
+                    exc,
+                )
+
         # Reward-signal bridge: orders are the closing leg of the
         # decision → action → outcome loop the learning pipeline
         # depends on. Record each order as a memory event tagged

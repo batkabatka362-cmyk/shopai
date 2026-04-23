@@ -94,6 +94,34 @@ def _order_ts(order_data: dict[str, Any]) -> float:
     return float(_time.time())
 
 
+def _cancel_abandoned_cart(
+    *,
+    customer: dict[str, Any],
+    order_data: dict[str, Any],
+) -> int:
+    """Cancel pending abandoned_cart reminder emails for the
+    buyer who just converted. Returns the count cancelled.
+
+    Silent no-op when:
+      * no email on the order
+      * no pending abandoned_cart rows (common — buyer never
+        hit the cart-abandonment trigger)
+    """
+    from core.engines.email_campaigns import get_engine as _ec
+
+    email = str(
+        customer.get("email")
+        or order_data.get("email")
+        or "",
+    ).strip().lower()
+    if not email or "@" not in email:
+        return 0
+    return int(_ec().cancel_flow(
+        email, "abandoned_cart",
+        reason=f"order {order_data.get('id') or ''} placed",
+    ))
+
+
 def _enroll_post_purchase(
     *,
     customer: dict[str, Any],
@@ -569,6 +597,23 @@ class OrderWebhookHandler:
                     "post-purchase enroll failed: %s", exc,
                 )
                 recorded["post_purchase_enrolled"] = False
+
+        # 4.96 Cancel any pending abandoned_cart reminders for
+        # this buyer. Without this, someone who abandons then
+        # converts 30 min later would get the 1h "you left X
+        # behind" email after they already bought. §4b.D
+        # idempotency via email_campaigns.engine.cancel_flow.
+        if not is_gate_check:
+            try:
+                _cancel_abandoned_cart(
+                    customer=customer, order_data=order_data,
+                )
+                recorded["abandoned_cart_cancelled"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "abandoned-cart cancel failed: %s", exc,
+                )
+                recorded["abandoned_cart_cancelled"] = False
 
         # 5. Optional CJ fulfillment dispatch (LX.2 wire-in).
         #    Opt-in via SHOPAI_ENABLE_CJ_FULFILL=1 so owners who

@@ -186,6 +186,18 @@ class EmailCampaignEngine:
             send_fn=send_fn,
         )
 
+    def cancel_flow(
+        self, recipient: str, flow: str,
+        *, reason: str = "",
+    ) -> int:
+        """Bulk-cancel every pending row for (recipient, flow).
+        Used when a buyer converts — kills the remaining
+        abandoned-cart reminders so they don't get 'you left
+        X behind' after they actually checked out."""
+        return self._queue.cancel_pending_for_flow(
+            recipient, flow, reason=reason,
+        )
+
     # ── Unsubscribe surface ─────────────────────────────
 
     def unsubscribe(

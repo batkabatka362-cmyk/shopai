@@ -264,6 +264,46 @@ class ScheduleQueue:
             row_id, "cancelled", error=error,
         )
 
+    def cancel_pending_for_flow(
+        self,
+        recipient: str,
+        flow_id: str,
+        *,
+        reason: str = "",
+    ) -> int:
+        """Bulk-cancel every pending row for a given
+        (recipient, flow) pair. Returns the number of rows
+        transitioned. Terminal rows (sent/failed/expired) are
+        untouched — sticky state. Used by the abandoned-cart
+        flow when a buyer actually completes checkout: we kill
+        the scheduled reminders so the customer doesn't get
+        a 'you left X behind' email after they already bought."""
+        if not recipient or not flow_id:
+            return 0
+        rec = recipient.strip().lower()
+        now = float(self._now())
+        with self._lock, self._conn() as c:
+            # Fetch matching pending row_ids first so we can
+            # transition them one-by-one through the shared
+            # state machine (keeps the log consistent).
+            rows = c.execute(
+                "SELECT row_id FROM scheduled_emails "
+                "WHERE recipient = ? AND flow_id = ? "
+                "AND status = 'pending'",
+                (rec, flow_id),
+            ).fetchall()
+            if not rows:
+                return 0
+            c.execute(
+                "UPDATE scheduled_emails SET status = "
+                "'cancelled', sent_at = ?, error = ? "
+                "WHERE recipient = ? AND flow_id = ? "
+                "AND status = 'pending'",
+                (now, reason or "auto-cancelled", rec, flow_id),
+            )
+            c.commit()
+            return len(rows)
+
     def _transition(
         self,
         row_id: str,

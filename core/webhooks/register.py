@@ -41,6 +41,8 @@ _TOPICS = (
     "orders/cancelled",   # negative signal
     "products/update",    # catalog mutation notice
     "app/uninstalled",    # lets us stop pinging a disabled store
+    "checkouts/update",   # abandoned-cart — fires ~1-3h after
+                          # checkout stalls without conversion
 )
 
 
