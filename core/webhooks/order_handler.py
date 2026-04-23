@@ -68,6 +68,109 @@ def _shopify_lines_to_cj(items: Any) -> list[dict[str, Any]]:
     return out
 
 
+# ── Order-event helpers (LTV + email flow) ──────────────
+
+
+def _order_ts(order_data: dict[str, Any]) -> float:
+    """Best-effort timestamp for an order. Shopify sends
+    ISO-8601 in ``created_at`` / ``processed_at``; fall back to
+    now when absent or malformed. LTV math tolerates slightly
+    stale ts, but a missing one would zero the first_order_at
+    pointer."""
+    import datetime as _dt
+    import time as _time
+    for key in ("processed_at", "created_at", "updated_at"):
+        raw = order_data.get(key)
+        if not raw:
+            continue
+        try:
+            # Shopify uses "2026-04-22T10:30:00-04:00" or
+            # "Z" suffix — fromisoformat handles both on 3.11+.
+            return _dt.datetime.fromisoformat(
+                str(raw).replace("Z", "+00:00"),
+            ).timestamp()
+        except (ValueError, TypeError):
+            continue
+    return float(_time.time())
+
+
+def _enroll_post_purchase(
+    *,
+    customer: dict[str, Any],
+    order_data: dict[str, Any],
+    revenue: float,
+    items: list[dict[str, Any]],
+) -> None:
+    """Enroll the buyer into the post-purchase email flow.
+
+    Context keys consumed by ``flows.post_purchase``:
+      first_name, product_name, review_url, store_name,
+      recommendations, store_url, discount_code
+
+    Missing keys silently cause the dispatcher to skip a send
+    (status=skipped_missing_ctx) — we don't over-validate
+    here, let the dispatcher be the source of truth.
+    """
+    import os as _os
+    from core.engines.email_campaigns import get_engine as _ec
+
+    email = str(
+        customer.get("email")
+        or order_data.get("email")
+        or "",
+    ).strip().lower()
+    if not email or "@" not in email:
+        return  # nothing to enroll without a valid address
+
+    first_name = str(
+        customer.get("first_name")
+        or (email.split("@", 1)[0] or "there"),
+    )
+    product_name = ""
+    if items:
+        first_item = items[0] if isinstance(items[0], dict) else {}
+        product_name = str(
+            first_item.get("title")
+            or first_item.get("name")
+            or "your order",
+        )
+
+    store_url = str(
+        _os.environ.get("SHOPAI_SHOPIFY_URL") or "",
+    ).strip()
+    if store_url and not store_url.startswith("http"):
+        store_url = f"https://{store_url}"
+    store_name = str(
+        _os.environ.get("SHOPAI_STORE_NAME") or "Deguar",
+    )
+    review_url = f"{store_url}/pages/reviews" if store_url else ""
+    recommendations = (
+        # Left blank on first send — brain can back-fill when
+        # cross-sell engine ships. Empty string is an allowed
+        # context value; dispatcher will render it as empty
+        # and the email still goes out with a trimmed body.
+        "Check our best sellers: " + store_url
+        if store_url else "Check our best sellers online."
+    )
+    discount_code = str(
+        _os.environ.get("SHOPAI_EMAIL_COMEBACK_CODE")
+        or "COMEBACK10",
+    )
+
+    _ec().enroll(
+        email, flow="post_purchase",
+        context={
+            "first_name": first_name,
+            "product_name": product_name,
+            "review_url": review_url,
+            "store_name": store_name,
+            "store_url": store_url,
+            "recommendations": recommendations,
+            "discount_code": discount_code,
+        },
+    )
+
+
 class OrderWebhookHandler:
     """Handles order webhooks and records outcomes for learning."""
 
@@ -418,6 +521,54 @@ class OrderWebhookHandler:
                     "order bus report failed: %s", exc,
                 )
                 recorded["order_bus_reported"] = False
+
+        # 4.9 Budget+Buyer LTV ingest. Aggregate this order
+        # into the per-customer LTV tracker so dormant/win-back
+        # logic has live signal. Skip on gate-check synth orders
+        # so the production LTV store isn't polluted with 5
+        # fake customers per go-live probe.
+        if not is_gate_check:
+            try:
+                from core.engines.budget_buyer import get_engine
+                customer_email = str(
+                    customer.get("email")
+                    or order_data.get("email")
+                    or order_data.get("contact_email")
+                    or "",
+                ).strip().lower()
+                if customer_email or customer_id:
+                    get_engine().record_order(
+                        customer_id=customer_id or customer_email,
+                        email=customer_email,
+                        amount_usd=float(revenue or 0),
+                        ts=_order_ts(order_data),
+                    )
+                    recorded["ltv_recorded"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "ltv record failed: %s", exc,
+                )
+                recorded["ltv_recorded"] = False
+
+        # 4.95 Post-purchase email flow auto-enroll. The
+        # email_campaigns engine queues the 3-day + 14-day
+        # emails; dispatcher fires them on the autopilot
+        # cycle. Missing context (no email, no first_name)
+        # silently skips — engine is idempotent so re-enrolls
+        # on duplicate webhooks are no-ops.
+        if not is_gate_check:
+            try:
+                _enroll_post_purchase(
+                    customer=customer, order_data=order_data,
+                    revenue=float(revenue or 0),
+                    items=items if isinstance(items, list) else [],
+                )
+                recorded["post_purchase_enrolled"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "post-purchase enroll failed: %s", exc,
+                )
+                recorded["post_purchase_enrolled"] = False
 
         # 5. Optional CJ fulfillment dispatch (LX.2 wire-in).
         #    Opt-in via SHOPAI_ENABLE_CJ_FULFILL=1 so owners who
