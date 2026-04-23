@@ -727,6 +727,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Deguar health (aggregator wrapper) ───────────────────
+    health_p = sub.add_parser(
+        "deguar-health",
+        help=(
+            "Run all 6 Deguar audit scripts + doctor probe and "
+            "render a single markdown report. Cron-friendly."
+        ),
+    )
+    health_p.add_argument(
+        "--out", default="reports/",
+        help="Report directory (or '-' for stdout only).",
+    )
+    health_p.add_argument(
+        "--skip", default="",
+        help=(
+            "CSV of audit names to skip (doctor, scope_audit, "
+            "collection_check, webhook_check, tracking_check, "
+            "checkout_check, live_audit)."
+        ),
+    )
+
     # ── Publisher bundle (v38+) ──────────────────────────────
     # ``publish`` goes through execution.launch.publisher_bundle
     # which is the v38-era transactional launch pipeline.
@@ -6671,6 +6692,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "competitor-intel":
         _cmd_competitor_intel(args)
         return
+
+    if args.command == "deguar-health":
+        from scripts.deguar_health_report import main as _hr_main
+        argv = ["--out", args.out]
+        if args.skip:
+            argv += ["--skip", args.skip]
+        sys.exit(_hr_main(argv))
 
     if args.command == "health":
         _cmd_health()
