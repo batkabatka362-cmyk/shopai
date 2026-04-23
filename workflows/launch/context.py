@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from core.contracts.business_model import BusinessModel, Channel
+
 
 SourceKind = Literal["alibaba", "spy_url", "manual", "supplier_sku"]
 
@@ -17,7 +19,13 @@ SourceKind = Literal["alibaba", "spy_url", "manual", "supplier_sku"]
 @dataclass
 class LaunchGoal:
     """What the owner asks for. The only required input is *one* source
-    pointer; everything else has owner-overridable defaults."""
+    pointer; everything else has owner-overridable defaults.
+
+    ``business_model`` + ``channel`` locate this launch on the 4×4
+    matrix (docs/BUSINESS_MODEL_MATRIX.md). Defaults reproduce Deguar's
+    existing cell so every current call site keeps working — those two
+    fields are pure metadata today, Phase 2 will use them for
+    adapter routing + risk classification."""
 
     alibaba_url: str | None = None
     spy_url: str | None = None
@@ -33,6 +41,10 @@ class LaunchGoal:
     niche: str = ""                          # optional human label
     copy_tone: Literal["urgent", "friendly", "luxury", "informative"] = "friendly"
     store_id: str = ""                       # which Shopify store to use
+
+    # ── 4×4 matrix placement (Phase 1 — metadata only) ──────
+    business_model: BusinessModel = BusinessModel.DROPSHIPPING
+    channel: Channel = Channel.PAID_ADS
 
     def source_kind(self) -> SourceKind:
         if self.alibaba_url:
