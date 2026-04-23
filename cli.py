@@ -792,6 +792,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit JSON instead of a human table.",
     )
 
+    bpl_p = sub.add_parser(
+        "budget-plans",
+        help=(
+            "List recent autopilot budget plans saved to "
+            "reports/budget_plans/. Read-only review."
+        ),
+    )
+    bpl_p.add_argument(
+        "--limit", type=int, default=5,
+        help="Max recent plans to show (default 5).",
+    )
+    bpl_p.add_argument(
+        "--json", action="store_true",
+        help="Emit full JSON payload.",
+    )
+    bpl_p.add_argument(
+        "--reports-dir", default="reports/budget_plans",
+    )
+
     ls_p = sub.add_parser(
         "ltv-stats",
         help=(
@@ -4391,6 +4410,45 @@ def _cmd_budget_plan(args) -> None:
     print(f"\n  Total: ${total:.2f}")
 
 
+def _cmd_budget_plans(args) -> None:
+    """List recent autopilot-saved budget plans."""
+    from core.engines.budget_buyer import list_plans
+    plans = list_plans(
+        reports_dir=args.reports_dir, limit=args.limit,
+    )
+    if args.json:
+        print(json.dumps(plans, indent=2))
+        return
+    if not plans:
+        print(f"(no plans in {args.reports_dir})")
+        return
+    print(f"Recent budget plans ({len(plans)}):")
+    for plan in plans:
+        allocs = plan.get("allocations") or []
+        total = plan.get("total_daily_usd", 0)
+        print(
+            f"\n  {plan.get('plan_id', '?')} — "
+            f"${total:.2f}/day across "
+            f"{len(allocs)} SKUs "
+            f"(seen {plan.get('campaigns_seen', 0)} "
+            f"campaigns, "
+            f"unmatched {plan.get('campaigns_unmatched', 0)})"
+        )
+        for a in sorted(
+            allocs,
+            key=lambda x: -x.get("recommended_daily_usd", 0),
+        )[:5]:
+            print(
+                f"    {a.get('sku', '?')[:30]:30s} "
+                f"${a.get('recommended_daily_usd', 0):>7.2f} "
+                f"({a.get('share_pct', 0):>4.1f}%) "
+                f"obs ROAS {a.get('observed_roas', 0):>4.2f}"
+            )
+        if len(allocs) > 5:
+            print(f"    ... +{len(allocs) - 5} more")
+    print(f"\nFull plans in: {args.reports_dir}/")
+
+
 def _cmd_ltv_stats(args) -> None:
     """Customer LTV summary + top-N customers."""
     from core.engines.budget_buyer import get_engine
@@ -7107,6 +7165,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "budget-plan":
         _cmd_budget_plan(args)
+        return
+
+    if args.command == "budget-plans":
+        _cmd_budget_plans(args)
         return
 
     if args.command == "ltv-stats":

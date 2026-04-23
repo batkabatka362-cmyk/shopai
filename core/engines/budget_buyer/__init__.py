@@ -70,6 +70,11 @@ from core.engines.budget_buyer.ltv import (
     LTVSegment,
     LTVTracker,
 )
+from core.engines.budget_buyer.plan_runner import (
+    PlanReport,
+    list_plans,
+    run_budget_plan,
+)
 from core.engines.budget_buyer.winback import (
     WinBackReport,
     sweep as sweep_winback,
@@ -82,9 +87,12 @@ __all__ = [
     "CustomerLTV",
     "LTVSegment",
     "LTVTracker",
+    "PlanReport",
     "SKUPerformance",
     "WinBackReport",
     "get_engine",
+    "list_plans",
     "reset_singleton_for_tests",
+    "run_budget_plan",
     "sweep_winback",
 ]

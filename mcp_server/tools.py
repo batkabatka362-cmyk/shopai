@@ -1091,6 +1091,27 @@ def _budget_plan_handler(
     }
 
 
+def _budget_plans_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return recent autopilot-saved budget plans. Read-only
+    — the autopilot cycle writes these, owner reviews via
+    Claude Desktop + applies manually (risk-gated)."""
+    from core.engines.budget_buyer import list_plans
+    try:
+        limit = int(args.get("limit", 5) or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    limit = max(1, min(limit, 200))
+    reports_dir = str(
+        args.get("reports_dir") or "reports/budget_plans",
+    )
+    plans = list_plans(
+        reports_dir=reports_dir, limit=limit,
+    )
+    return {"count": len(plans), "plans": plans}
+
+
 def _ltv_stats_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -2030,6 +2051,34 @@ def build_default_registry() -> ToolRegistry:
             ],
         },
         handler=_budget_plan_handler,
+    ))
+    reg.register(ToolSpec(
+        name="budget_plans",
+        description=(
+            "List recent autopilot-saved budget plans "
+            "(Thompson allocator run against Meta Ads "
+            "insights). Read-only review surface."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max plans to return (default 5, "
+                        "max 200)."
+                    ),
+                },
+                "reports_dir": {
+                    "type": "string",
+                    "description": (
+                        "Override plan directory "
+                        "(default reports/budget_plans)."
+                    ),
+                },
+            },
+        },
+        handler=_budget_plans_handler,
     ))
     reg.register(ToolSpec(
         name="ltv_stats",

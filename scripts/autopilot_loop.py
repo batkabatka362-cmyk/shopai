@@ -79,6 +79,12 @@ class LoopConfig:
     # Gemini crawlers without a manual CLI run. 0 disables.
     llms_txt_rebuild_every: int = 5
     llms_txt_out_dir: str = "data/llms"
+    # Budget allocator — run Thompson plan every N cycles.
+    # Hits Meta Ads insights API so we don't spam it per cycle
+    # (free tier ~100 calls/hour). 4 cycles × 10-min interval
+    # ≈ every 40 min → within Meta rate limits even on a
+    # shared ad account. 0 disables.
+    budget_plan_every: int = 4
 
     def __post_init__(self) -> None:
         if self.interval_s <= 0:
@@ -122,6 +128,11 @@ class CycleSummary:
     # into the win_back flow this cycle. Capped at
     # DEFAULT_MAX_PER_CYCLE to avoid backlog dumps.
     winback_enrolled: int = 0
+    # Budget planner — number of SKUs the Thompson allocator
+    # produced a plan for this cycle. 0 means either the
+    # planner skipped (no budget configured, Meta creds
+    # missing) or no matching campaigns exist yet.
+    budget_plan_skus: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +148,7 @@ class CycleSummary:
             "emails_sent": self.emails_sent,
             "emails_failed": self.emails_failed,
             "winback_enrolled": self.winback_enrolled,
+            "budget_plan_skus": self.budget_plan_skus,
             "error": self.error,
         }
 
@@ -406,6 +418,34 @@ class AutopilotLoop:
                 summary.error
                 or f"winback_sweep raised: {exc}"
             )
+        # Budget allocator — every N cycles, pull Meta Ads
+        # insights + produce a Thompson-sample budget plan.
+        # Logs to reports/budget_plans/<ts>.json for owner
+        # review. Read-only — doesn't push back to Meta Ads
+        # (that's a HIGH risk-gate action handled separately).
+        # Soft-fail: no creds / no campaigns / API down all
+        # skip cleanly without aborting the cycle.
+        if (
+            self._config.budget_plan_every > 0
+            and cycle_id
+            % self._config.budget_plan_every == 0
+        ):
+            try:
+                from core.engines.budget_buyer import (
+                    run_budget_plan,
+                )
+                plan_report = run_budget_plan()
+                summary.budget_plan_skus = int(
+                    plan_report.skus_planned,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "budget plan failed: %s", exc,
+                )
+                summary.error = (
+                    summary.error
+                    or f"budget_plan raised: {exc}"
+                )
         summary.duration_s = time.time() - start
         return summary
 
