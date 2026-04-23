@@ -113,6 +113,11 @@ class CycleSummary:
     # owner is letting HIGH/CRITICAL prompts rot (which would
     # signal Telegram pipeline trouble).
     expired_approvals: int = 0
+    # Email campaign engine — count of scheduled flow emails
+    # dispatched this cycle (welcome / abandoned-cart /
+    # post-purchase / win-back).
+    emails_sent: int = 0
+    emails_failed: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +130,8 @@ class CycleSummary:
             "accepted": self.accepted,
             "duration_s": round(self.duration_s, 3),
             "expired_approvals": self.expired_approvals,
+            "emails_sent": self.emails_sent,
+            "emails_failed": self.emails_failed,
             "error": self.error,
         }
 
@@ -357,6 +364,25 @@ class AutopilotLoop:
             )
             summary.error = (
                 summary.error or f"queue_sweep raised: {exc}"
+            )
+        # Email campaign engine — drain scheduled flow emails
+        # whose send_at is in the past. Soft-fail: engine
+        # unavailable (missing adapter, disk full, etc.) logs
+        # + annotates but never aborts the cycle.
+        try:
+            from core.engines.email_campaigns import (
+                get_engine as _get_email_engine,
+            )
+            report = _get_email_engine().dispatch_due()
+            summary.emails_sent = int(report.sent)
+            summary.emails_failed = int(report.failed)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "email dispatch failed: %s", exc,
+            )
+            summary.error = (
+                summary.error
+                or f"email_dispatch raised: {exc}"
             )
         summary.duration_s = time.time() - start
         return summary

@@ -63,8 +63,13 @@ def _pick_supplier(
 
 def _load_adapter(name: str):
     """Lazy import so an AutoDS-only env doesn't pull CJ (and
-    vice versa) into memory."""
+    vice versa) into memory. Also refreshes the adapter config
+    cache so the adapter instance sees current ``os.environ``
+    (important when this step runs after env mutations — e.g.
+    owner rotating the API key mid-session)."""
     from core.adapters.base import Capability
+    from core.adapters.config import get_config
+    get_config().reload()
     if name == "cj_dropshipping":
         from core.adapters.sourcing.cj_dropshipping import (
             CJDropshippingAdapter,

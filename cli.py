@@ -748,6 +748,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Email campaign engine ───────────────────────────────
+    es_p = sub.add_parser(
+        "email-stats",
+        help=(
+            "Per-flow stats from the email campaign engine "
+            "(welcome / abandoned-cart / post-purchase / "
+            "win-back). Read-only."
+        ),
+    )
+    es_p.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON instead of human table.",
+    )
+
+    eu_p = sub.add_parser(
+        "email-unsubscribe",
+        help=(
+            "Add a recipient to the local unsubscribe list. "
+            "Future enrolls + dispatches will skip them."
+        ),
+    )
+    eu_p.add_argument("email")
+    eu_p.add_argument(
+        "--source", default="cli",
+        help="Audit source tag (default: 'cli').",
+    )
+
     # ── Approval queue (Phase 2 of 4×4 matrix work) ──────────
     pa_p = sub.add_parser(
         "pending-approvals",
@@ -4214,6 +4241,54 @@ def _cmd_competitor_intel(args) -> None:
 # ── Approval queue (Phase 2 of 4×4 matrix) ──────────────
 
 
+def _cmd_email_stats(args) -> None:
+    """Per-flow email campaign stats."""
+    from core.engines.email_campaigns import get_engine
+    engine = get_engine()
+    stats = engine.stats()
+    if args.json:
+        print(json.dumps(stats, indent=2))
+        return
+    totals = stats["totals"]
+    print("Email campaign engine — totals")
+    print(f"  total:    {totals['total']}")
+    print(f"  pending:  {totals['pending']}")
+    print(f"  sent:     {totals['sent']}")
+    print(f"  failed:   {totals['failed']}")
+    print(f"  skipped:  "
+          f"{totals['skipped_missing_ctx']} missing ctx, "
+          f"{totals['skipped_unsubscribed']} unsub, "
+          f"{totals['cancelled']} cancelled")
+    print(f"  unsubscribes: {stats['unsubscribes']}")
+    print()
+    flows = stats.get("flows") or {}
+    if flows:
+        print("Per flow:")
+        for flow_id in sorted(flows):
+            per = flows[flow_id]
+            parts = [
+                f"{k}={v}" for k, v in sorted(per.items())
+                if v
+            ]
+            print(f"  {flow_id:17s} {' · '.join(parts)}")
+    else:
+        print("(no enrollments yet)")
+
+
+def _cmd_email_unsubscribe(args) -> None:
+    """Add a recipient to the unsubscribe list."""
+    from core.engines.email_campaigns import get_engine
+    ok = get_engine().unsubscribe(
+        args.email, source=args.source,
+    )
+    if ok:
+        print(f"✓ unsubscribed {args.email}")
+    else:
+        print(f"ERR: could not unsubscribe {args.email}",
+              file=sys.stderr)
+        sys.exit(2)
+
+
 def _cmd_pending_approvals(args) -> None:
     """List HIGH/CRITICAL actions waiting for owner confirm."""
     from core.system.approval_queue import get_queue
@@ -6843,6 +6918,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "competitor-intel":
         _cmd_competitor_intel(args)
+        return
+
+    if args.command == "email-stats":
+        _cmd_email_stats(args)
+        return
+
+    if args.command == "email-unsubscribe":
+        _cmd_email_unsubscribe(args)
         return
 
     if args.command == "pending-approvals":

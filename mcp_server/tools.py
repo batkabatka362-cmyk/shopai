@@ -1029,6 +1029,17 @@ def _competitor_history_handler(
 # ── Approval queue (Phase 2 of 4×4 matrix) ──────────────
 
 
+def _email_campaign_stats_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Read-only: per-flow stats from the email campaign
+    engine. Owner asks Claude Desktop 'how are my lifecycle
+    emails doing?' and gets pending/sent/failed counts per
+    flow + total unsubscribes."""
+    from core.engines.email_campaigns import get_engine
+    return get_engine().stats()
+
+
 def _pending_approvals_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1898,6 +1909,19 @@ def build_default_registry() -> ToolRegistry:
         },
         handler=_competitor_history_handler,
     ))
+    # ── Email campaigns ─────────────────────────────────
+    reg.register(ToolSpec(
+        name="email_campaign_stats",
+        description=(
+            "Read-only per-flow stats from the email "
+            "campaign engine (welcome / abandoned-cart / "
+            "post-purchase / win-back). Returns "
+            "pending/sent/failed counts + unsubscribes."
+        ),
+        input_schema={"type": "object", "properties": {}},
+        handler=_email_campaign_stats_handler,
+    ))
+
     # ── Approval queue (Phase 2 of 4×4 matrix) ──────────
     reg.register(ToolSpec(
         name="pending_approvals",
