@@ -92,7 +92,13 @@ class TestWebhooksDryRun:
         )
         w = result["results"]["webhooks"]
         assert w["status"] == "dry_run"
-        assert len(w["subscribed"]) == 5  # _TOPICS count
+        # Pull the canonical topic count from the live
+        # register module so this assertion doesn't drift
+        # whenever we add a new webhook topic (e.g. the
+        # checkouts/update + customers/create additions
+        # for abandoned-cart + welcome flow triggers).
+        from core.webhooks.register import _TOPICS
+        assert len(w["subscribed"]) == len(_TOPICS)
         topics = set(w["subscribed"])
         assert "orders/paid" in topics
         assert "orders/create" in topics
