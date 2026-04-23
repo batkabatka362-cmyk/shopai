@@ -1026,6 +1026,103 @@ def _competitor_history_handler(
     }
 
 
+# ── Approval queue (Phase 2 of 4×4 matrix) ──────────────
+
+
+def _pending_approvals_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Read-only: list HIGH/CRITICAL actions queued for owner
+    confirm. Sweeps expired rows before returning so the view
+    never shows stale 'pending' state."""
+    from core.system.approval_queue import get_queue
+    q = get_queue()
+    q.expire_old()
+    try:
+        limit = int(args.get("limit", 20) or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 500))
+    pending = q.pending()[:limit]
+    return {
+        "count": len(pending),
+        "stats": q.stats(),
+        "pending": [r.as_dict() for r in pending],
+    }
+
+
+def _approve_request_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Write-gated: approve a queued action by request_id.
+    Idempotent — re-approving an already-approved row is a
+    no-op (important for retry-prone Telegram webhooks)."""
+    from core.system.approval_queue import get_queue
+    request_id = str(args.get("request_id") or "").strip()
+    if not request_id:
+        raise ToolError("request_id: required")
+    owner_id = str(args.get("owner_id") or "owner")
+    reason = str(args.get("reason") or "")
+    result = get_queue().approve(
+        request_id, owner_id=owner_id, reason=reason,
+    )
+    if result is None:
+        raise ToolError(f"no request with id {request_id}")
+    return {
+        "ok": result.status == "approved",
+        "status": result.status,
+        "request": result.as_dict(),
+    }
+
+
+def _deny_request_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Write-gated: deny a queued action by request_id."""
+    from core.system.approval_queue import get_queue
+    request_id = str(args.get("request_id") or "").strip()
+    if not request_id:
+        raise ToolError("request_id: required")
+    owner_id = str(args.get("owner_id") or "owner")
+    reason = str(args.get("reason") or "")
+    result = get_queue().deny(
+        request_id, owner_id=owner_id, reason=reason,
+    )
+    if result is None:
+        raise ToolError(f"no request with id {request_id}")
+    return {
+        "ok": result.status == "denied",
+        "status": result.status,
+        "request": result.as_dict(),
+    }
+
+
+def _classify_action_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Read-only: ask the risk gate how a given action_type +
+    payload would be classified. Useful for owner introspection
+    ('is this HIGH or CRITICAL?') without triggering the action.
+    """
+    from core.system import risk_gate
+    action_type = str(args.get("action_type") or "").strip()
+    if not action_type:
+        raise ToolError("action_type: required")
+    payload = args.get("payload") or {}
+    if not isinstance(payload, dict):
+        raise ToolError("payload: must be an object")
+    level = risk_gate.classify(action_type, payload)
+    return {
+        "action_type": action_type,
+        "payload": dict(payload),
+        "risk_level": level.value,
+        "rank": level.rank(),
+        "describe": risk_gate.describe(level),
+        "requires_owner_approval":
+            level.requires_owner_approval(),
+    }
+
+
 def _recent_cycles_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1800,6 +1897,113 @@ def build_default_registry() -> ToolRegistry:
             "required": ["store"],
         },
         handler=_competitor_history_handler,
+    ))
+    # ── Approval queue (Phase 2 of 4×4 matrix) ──────────
+    reg.register(ToolSpec(
+        name="pending_approvals",
+        description=(
+            "List HIGH/CRITICAL actions queued for owner "
+            "confirm. Read-only. Expired rows swept before "
+            "return so only actionable rows surface."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max rows (default 20, max 500)."
+                    ),
+                },
+            },
+        },
+        handler=_pending_approvals_handler,
+    ))
+    reg.register(ToolSpec(
+        name="approve_request",
+        description=(
+            "Approve a queued action by request_id. "
+            "Idempotent — re-approving returns the existing "
+            "row. Cannot un-deny or flip after expiry."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "request_id": {
+                    "type": "string",
+                    "description": "Queued request_id.",
+                },
+                "owner_id": {
+                    "type": "string",
+                    "description": (
+                        "Who approved (audit trail; default "
+                        "'owner')."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional decision note.",
+                },
+            },
+            "required": ["request_id"],
+        },
+        handler=_approve_request_handler,
+        write=True,
+    ))
+    reg.register(ToolSpec(
+        name="deny_request",
+        description=(
+            "Deny a queued action by request_id. Idempotent."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "request_id": {
+                    "type": "string",
+                    "description": "Queued request_id.",
+                },
+                "owner_id": {
+                    "type": "string",
+                    "description": "Who denied.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why — visible in audit.",
+                },
+            },
+            "required": ["request_id"],
+        },
+        handler=_deny_request_handler,
+        write=True,
+    ))
+    reg.register(ToolSpec(
+        name="classify_action",
+        description=(
+            "Read-only: ask the risk gate how an action_type "
+            "+ payload would be classified. Useful for owner "
+            "introspection without triggering the action."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "description": (
+                        "Canonical action name (e.g. "
+                        "'ad_campaign_create')."
+                    ),
+                },
+                "payload": {
+                    "type": "object",
+                    "description": (
+                        "Optional payload for "
+                        "escalation-aware classification."
+                    ),
+                },
+            },
+            "required": ["action_type"],
+        },
+        handler=_classify_action_handler,
     ))
     reg.register(ToolSpec(
         name="emergency_halt",

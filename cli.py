@@ -748,6 +748,55 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Approval queue (Phase 2 of 4×4 matrix work) ──────────
+    pa_p = sub.add_parser(
+        "pending-approvals",
+        help=(
+            "List HIGH/CRITICAL actions queued for owner "
+            "confirm. Empty queue prints a clean message."
+        ),
+    )
+    pa_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Max rows (default 20).",
+    )
+    pa_p.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON instead of human table.",
+    )
+
+    ap_p = sub.add_parser(
+        "approve-request",
+        help=(
+            "Approve a queued HIGH/CRITICAL action by "
+            "request_id (risk-gate queue, not the revision "
+            "journal — see `shopai approve` for that)."
+        ),
+    )
+    ap_p.add_argument("request_id")
+    ap_p.add_argument(
+        "--reason", default="",
+        help="Optional decision note (audit trail).",
+    )
+    ap_p.add_argument(
+        "--owner", default="owner",
+        help="Owner identifier (default: 'owner').",
+    )
+
+    dn_p = sub.add_parser(
+        "deny-request",
+        help="Deny a queued HIGH/CRITICAL action by request_id.",
+    )
+    dn_p.add_argument("request_id")
+    dn_p.add_argument(
+        "--reason", default="",
+        help="Why — surfaces in the audit trail.",
+    )
+    dn_p.add_argument(
+        "--owner", default="owner",
+        help="Owner identifier (default: 'owner').",
+    )
+
     # ── Publisher bundle (v38+) ──────────────────────────────
     # ``publish`` goes through execution.launch.publisher_bundle
     # which is the v38-era transactional launch pipeline.
@@ -4162,6 +4211,109 @@ def _cmd_competitor_intel(args) -> None:
                 print(f"  {ln}")
 
 
+# ── Approval queue (Phase 2 of 4×4 matrix) ──────────────
+
+
+def _cmd_pending_approvals(args) -> None:
+    """List HIGH/CRITICAL actions waiting for owner confirm."""
+    from core.system.approval_queue import get_queue
+    from core.system import risk_gate
+
+    q = get_queue()
+    # Sweep stale before showing — owner shouldn't see expired
+    # rows mixed in as "pending"
+    q.expire_old()
+    pending = q.pending()[: args.limit]
+
+    if args.json:
+        print(json.dumps(
+            [r.as_dict() for r in pending], indent=2,
+        ))
+        return
+
+    if not pending:
+        print("(no pending approvals)")
+        stats = q.stats()
+        print(
+            f"  total={stats['total']} "
+            f"approved={stats['approved']} "
+            f"denied={stats['denied']} "
+            f"expired={stats['expired']}"
+        )
+        return
+
+    print(f"Pending ({len(pending)}):\n")
+    for r in pending:
+        age_s = int(time.time() - r.requested_at)
+        ttl_s = int(r.expires_at - time.time())
+        age = f"{age_s // 60}m{age_s % 60}s"
+        ttl = (
+            f"{max(0, ttl_s) // 60}m{max(0, ttl_s) % 60}s"
+            if ttl_s > 0 else "EXPIRED"
+        )
+        print(
+            f"  [{r.risk_level.value.upper():8s}] "
+            f"{r.request_id}  {r.action_type:25s}  "
+            f"age={age:>7s}  ttl={ttl:>7s}"
+        )
+        # One-line payload summary — truncated so a big dict
+        # doesn't swamp the terminal
+        if r.payload:
+            payload_preview = json.dumps(r.payload)[:100]
+            print(f"    payload: {payload_preview}")
+        print(f"    why gated: {risk_gate.describe(r.risk_level)}")
+    print()
+    print("  Approve:  shopai approve <request_id> [--reason ...]")
+    print("  Deny:     shopai deny <request_id> --reason ...")
+
+
+def _cmd_approve_request(args) -> None:
+    """Approve a HIGH/CRITICAL action in the risk-gate queue.
+    Distinct from ``_cmd_approve`` which is for the
+    self-revision journal (separate flow)."""
+    from core.system.approval_queue import get_queue
+    q = get_queue()
+    result = q.approve(
+        args.request_id, owner_id=args.owner, reason=args.reason,
+    )
+    if result is None:
+        print(f"ERR: no request with id {args.request_id}",
+              file=sys.stderr)
+        sys.exit(2)
+    if result.status != "approved":
+        print(
+            f"NOTE: request {args.request_id} is now "
+            f"{result.status} (was already decided or expired)"
+        )
+        sys.exit(1)
+    print(f"✓ Approved {args.request_id}  "
+          f"({result.action_type}, {result.risk_level.value})")
+    if result.decision_reason:
+        print(f"  reason: {result.decision_reason}")
+
+
+def _cmd_deny_request(args) -> None:
+    from core.system.approval_queue import get_queue
+    q = get_queue()
+    result = q.deny(
+        args.request_id, owner_id=args.owner, reason=args.reason,
+    )
+    if result is None:
+        print(f"ERR: no request with id {args.request_id}",
+              file=sys.stderr)
+        sys.exit(2)
+    if result.status != "denied":
+        print(
+            f"NOTE: request {args.request_id} is now "
+            f"{result.status} (was already decided or expired)"
+        )
+        sys.exit(1)
+    print(f"✓ Denied {args.request_id}  "
+          f"({result.action_type}, {result.risk_level.value})")
+    if result.decision_reason:
+        print(f"  reason: {result.decision_reason}")
+
+
 def _cmd_health() -> None:
     import importlib
     from engines.registry import engine_count
@@ -6691,6 +6843,18 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "competitor-intel":
         _cmd_competitor_intel(args)
+        return
+
+    if args.command == "pending-approvals":
+        _cmd_pending_approvals(args)
+        return
+
+    if args.command == "approve-request":
+        _cmd_approve_request(args)
+        return
+
+    if args.command == "deny-request":
+        _cmd_deny_request(args)
         return
 
     if args.command == "deguar-health":
