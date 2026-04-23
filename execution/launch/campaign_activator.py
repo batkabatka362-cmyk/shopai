@@ -74,6 +74,14 @@ class ActivateRequest:
     simulator_cvr_mean: float = 0.02
     simulator_cpc_mean: float = 1.20
     simulator_refund_rate: float = 0.05
+    # Phase 2c-2 of 4×4 matrix — opt-in risk gate. When True,
+    # the PAUSED→ACTIVE resume is classified ("ad_campaign_resume",
+    # always HIGH) and enqueued for owner approval instead of
+    # committing directly. Off by default — existing callers
+    # keep byte-identical behaviour. See
+    # docs/BUSINESS_MODEL_MATRIX.md §Risk classification.
+    risk_gate_enabled: bool = False
+    approved_request_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.campaign_id:
@@ -1314,6 +1322,53 @@ class CampaignActivator:
             )
             steps.append(log)
             return log
+        # Phase 2c-2 — opt-in risk gate for the PAUSED→ACTIVE
+        # resume commit. Symmetric with publisher_bundle's
+        # _step_launch_campaign gate (see commit 69b457b). Off
+        # by default; every existing activator test keeps
+        # byte-identical behaviour. When enabled, HIGH/CRITICAL
+        # actions enqueue + return a 'pending' StepLog instead
+        # of resuming. Owner approves via Telegram/CLI and
+        # retries with approved_request_id set.
+        if request.risk_gate_enabled:
+            from core.system.risk_gate import check_and_enqueue
+            proceed, approval_id, level = check_and_enqueue(
+                "ad_campaign_resume",
+                {
+                    "campaign_id": request.campaign_id,
+                    "daily_budget_usd": float(
+                        request.daily_budget_usd or 0,
+                    ),
+                    "decision_id": (
+                        request.decision_id or ""
+                    ),
+                },
+                auto_approve=bool(request.auto_approve),
+                live_execution=True,
+                approved_request_id=(
+                    request.approved_request_id or None
+                ),
+            )
+            if not proceed:
+                log = StepLog(
+                    name="execute",
+                    status="pending",
+                    note=(
+                        f"queued for owner approval "
+                        f"(risk={level.value}, "
+                        f"request_id={approval_id}). "
+                        f"Approve via Telegram or `shopai "
+                        f"approve-request {approval_id}`, "
+                        f"then retry with approved_request_id."
+                    ),
+                    data={
+                        "request_id": approval_id,
+                        "risk_level": level.value,
+                    },
+                    ts=time.time(),
+                )
+                steps.append(log)
+                return log
         try:
             from core.adapters.base import Capability
             result = self._get_ads().execute(
