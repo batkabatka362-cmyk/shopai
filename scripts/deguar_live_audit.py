@@ -20,7 +20,7 @@ import sys
 from scripts._shopify_client import ShopifyClient
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--only",
@@ -28,7 +28,7 @@ def main() -> int:
         default="all",
         help="Which check to run (default: all).",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     client = ShopifyClient.from_env_or_exit()
 

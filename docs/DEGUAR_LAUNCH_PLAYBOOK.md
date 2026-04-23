@@ -311,8 +311,23 @@ goes wrong:
 | `scripts/deguar_tracking_check.py` | Meta/TikTok/GA pixel firing check | Before Meta ads launch |
 | `scripts/deguar_collection_check.py` | Smart-collection member count + rules | After adding/tagging products |
 | `scripts/deguar_checkout_check.py` | Payment + shipping + URL reachability | Before every ads campaign |
+| `scripts/deguar_health_report.py` | One-command aggregator → markdown report | Monday cron |
 | `cli.py competitor-intel <stores>` | Scrape + diff competitors | Weekly Monday |
 | `cli.py ready-for-live` | Pre-T1 go/no-go gate | Before switching live_execution on |
+
+### Weekly automation
+
+The aggregator is cron-friendly. Set up once:
+
+```bash
+# Crontab — Monday 08:00 every week
+0 8 * * 1  cd ~/shopai && PYTHONPATH=. python \
+    scripts/deguar_health_report.py >> reports/cron.log 2>&1
+```
+
+Each run writes `reports/<YYYY-MM-DD>-health.md`. Verdict line
+(READY / WARNINGS / BLOCKED) appears in stdout — paste straight
+into Telegram/Slack for the team.
 
 ---
 
