@@ -1029,6 +1029,88 @@ def _competitor_history_handler(
 # ── Approval queue (Phase 2 of 4×4 matrix) ──────────────
 
 
+def _budget_plan_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the Thompson-Sampling allocator on caller-supplied
+    SKU performance records. Read-only — doesn't write to
+    Meta Ads, just returns the plan."""
+    from core.engines.budget_buyer import (
+        BudgetAllocator, SKUPerformance,
+    )
+    perf_raw = args.get("performance") or []
+    if not isinstance(perf_raw, list) or not perf_raw:
+        raise ToolError("performance: non-empty list required")
+    try:
+        total = float(args.get("total_daily_usd") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ToolError(
+            f"total_daily_usd: must be number ({exc})",
+        )
+    if total < 0:
+        raise ToolError("total_daily_usd: must be >= 0")
+    min_per = float(args.get("min_per_sku_usd") or 0)
+    max_per_raw = args.get("max_per_sku_usd")
+    max_per = (
+        float(max_per_raw)
+        if max_per_raw not in (None, "", 0, 0.0)
+        else None
+    )
+    seed_raw = args.get("seed")
+    seed = int(seed_raw) if seed_raw is not None else None
+
+    perf: list = []
+    for row in perf_raw:
+        if not isinstance(row, dict):
+            continue
+        try:
+            perf.append(SKUPerformance(
+                sku=str(row.get("sku") or ""),
+                product_id=str(row.get("product_id") or ""),
+                orders=int(row.get("orders") or 0),
+                revenue_usd=float(row.get("revenue_usd") or 0),
+                ad_spend_usd=float(row.get("ad_spend_usd") or 0),
+                impressions=int(row.get("impressions") or 0),
+                clicks=int(row.get("clicks") or 0),
+                days_active=max(
+                    1, int(row.get("days_active") or 1),
+                ),
+            ))
+        except ValueError as exc:
+            raise ToolError(f"performance row: {exc}")
+
+    allocator = BudgetAllocator(seed=seed)
+    allocs = allocator.allocate(
+        total, perf,
+        min_per_sku_usd=min_per,
+        max_per_sku_usd=max_per,
+    )
+    return {
+        "total_daily_usd": total,
+        "allocations": [a.as_dict() for a in allocs],
+    }
+
+
+def _ltv_stats_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Customer LTV summary + optional top-N customers."""
+    from core.engines.budget_buyer import get_engine
+    engine = get_engine()
+    try:
+        top = int(args.get("top", 0) or 0)
+    except (TypeError, ValueError):
+        top = 0
+    payload: dict[str, Any] = {"stats": engine.ltv_stats()}
+    if top > 0:
+        top = min(top, 200)
+        payload["top_customers"] = [
+            c.as_dict()
+            for c in engine.top_customers(limit=top)
+        ]
+    return payload
+
+
 def _email_campaign_stats_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1909,6 +1991,69 @@ def build_default_registry() -> ToolRegistry:
         },
         handler=_competitor_history_handler,
     ))
+    # ── Budget + Buyer engine ────────────────────────────
+    reg.register(ToolSpec(
+        name="budget_plan",
+        description=(
+            "Thompson-Sampling ad budget allocator. Caller "
+            "supplies per-SKU performance (orders, revenue, "
+            "ad_spend); returns recommended daily USD split. "
+            "Read-only — does NOT push to Meta Ads."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "total_daily_usd": {
+                    "type": "number",
+                    "description": "Budget to split.",
+                },
+                "performance": {
+                    "type": "array",
+                    "description": (
+                        "SKU performance records: sku, "
+                        "orders, revenue_usd, ad_spend_usd, "
+                        "clicks, impressions, days_active."
+                    ),
+                    "items": {"type": "object"},
+                },
+                "min_per_sku_usd": {"type": "number"},
+                "max_per_sku_usd": {"type": "number"},
+                "seed": {
+                    "type": "integer",
+                    "description": (
+                        "RNG seed for reproducible samples."
+                    ),
+                },
+            },
+            "required": [
+                "total_daily_usd", "performance",
+            ],
+        },
+        handler=_budget_plan_handler,
+    ))
+    reg.register(ToolSpec(
+        name="ltv_stats",
+        description=(
+            "Customer LTV summary — total customers, "
+            "segment split (VIP / regular / one-time / "
+            "dormant), avg + median LTV + GMV. Optional "
+            "top=N returns the biggest spenders."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "top": {
+                    "type": "integer",
+                    "description": (
+                        "Include top-N customers by spend "
+                        "(0 = skip, max 200)."
+                    ),
+                },
+            },
+        },
+        handler=_ltv_stats_handler,
+    ))
+
     # ── Email campaigns ─────────────────────────────────
     reg.register(ToolSpec(
         name="email_campaign_stats",

@@ -748,6 +748,67 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Budget + Buyer engine ───────────────────────────────
+    bp_p = sub.add_parser(
+        "budget-plan",
+        help=(
+            "Thompson-Sampling ad budget allocator. Reads SKU "
+            "performance from a JSON file + total budget, "
+            "prints recommended daily spend per SKU."
+        ),
+    )
+    bp_p.add_argument(
+        "--input",
+        help=(
+            "Path to JSON file: [{\"sku\": \"...\", "
+            "\"orders\": N, \"revenue_usd\": ..., "
+            "\"ad_spend_usd\": ..., \"days_active\": N}, ...]"
+        ),
+    )
+    bp_p.add_argument(
+        "--total", type=float, required=True,
+        help="Total daily budget in USD.",
+    )
+    bp_p.add_argument(
+        "--min-per-sku", type=float, default=0.0,
+        help=(
+            "Floor per SKU in USD — no active product ever "
+            "gets less than this (keeps long-tail alive)."
+        ),
+    )
+    bp_p.add_argument(
+        "--max-per-sku", type=float, default=0.0,
+        help=(
+            "Cap per SKU in USD — a runaway winner won't eat "
+            "the whole budget (0 = no cap)."
+        ),
+    )
+    bp_p.add_argument(
+        "--seed", type=int, default=0,
+        help="RNG seed for reproducible Thompson samples.",
+    )
+    bp_p.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON instead of a human table.",
+    )
+
+    ls_p = sub.add_parser(
+        "ltv-stats",
+        help=(
+            "Customer Lifetime Value summary — total "
+            "customers, segment split (VIP / regular / "
+            "one-time / dormant), avg + median LTV, GMV."
+        ),
+    )
+    ls_p.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON.",
+    )
+    ls_p.add_argument(
+        "--top", type=int, default=10,
+        help="Show top-N customers by total spend (0 = skip).",
+    )
+
     # ── Email campaign engine ───────────────────────────────
     es_p = sub.add_parser(
         "email-stats",
@@ -4241,6 +4302,130 @@ def _cmd_competitor_intel(args) -> None:
 # ── Approval queue (Phase 2 of 4×4 matrix) ──────────────
 
 
+def _cmd_budget_plan(args) -> None:
+    """Thompson-Sampling ad budget allocator."""
+    from core.engines.budget_buyer import (
+        BudgetAllocator, SKUPerformance,
+    )
+    if not args.input:
+        print(
+            "ERR: --input <path> required — JSON file with "
+            "SKU performance records.\n"
+            "Example: [{\"sku\": \"galaxy\", \"orders\": 30, "
+            "\"revenue_usd\": 600, \"ad_spend_usd\": 100, "
+            "\"days_active\": 7}]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        with open(args.input, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"ERR: cannot read {args.input}: {exc}",
+              file=sys.stderr)
+        sys.exit(2)
+    if not isinstance(raw, list):
+        print(
+            "ERR: --input JSON must be a list of SKU records",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    perf: list = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        try:
+            perf.append(SKUPerformance(
+                sku=str(row.get("sku") or ""),
+                product_id=str(row.get("product_id") or ""),
+                orders=int(row.get("orders") or 0),
+                revenue_usd=float(row.get("revenue_usd") or 0),
+                ad_spend_usd=float(row.get("ad_spend_usd") or 0),
+                impressions=int(row.get("impressions") or 0),
+                clicks=int(row.get("clicks") or 0),
+                days_active=max(
+                    1, int(row.get("days_active") or 1),
+                ),
+            ))
+        except ValueError as exc:
+            print(f"WARN: skipping row: {exc}",
+                  file=sys.stderr)
+    if not perf:
+        print("ERR: no valid SKU records in input",
+              file=sys.stderr)
+        sys.exit(2)
+    seed = args.seed if args.seed else None
+    allocator = BudgetAllocator(seed=seed)
+    max_per = args.max_per_sku if args.max_per_sku > 0 else None
+    allocs = allocator.allocate(
+        total_daily_usd=args.total,
+        performance=perf,
+        min_per_sku_usd=args.min_per_sku,
+        max_per_sku_usd=max_per,
+    )
+    if args.json:
+        print(json.dumps(
+            [a.as_dict() for a in allocs], indent=2,
+        ))
+        return
+    print(f"Budget plan — ${args.total:.2f}/day across "
+          f"{len(allocs)} SKUs")
+    print(f"  seed={seed}  floor=${args.min_per_sku:.2f}  "
+          f"cap={'$' + str(max_per) if max_per else 'none'}")
+    print()
+    print(f"  {'SKU':24s} {'USD/DAY':>10s} {'SHARE':>7s}  "
+          f"{'OBS ROAS':>9s}  ORDERS  REASON")
+    print("  " + "-" * 96)
+    for a in sorted(
+        allocs, key=lambda x: -x.recommended_daily_usd,
+    ):
+        print(
+            f"  {a.sku[:24]:24s} "
+            f"${a.recommended_daily_usd:>9.2f} "
+            f"{a.share_pct:>6.1f}%  "
+            f"{a.observed_roas:>9.2f}  "
+            f"{a.orders_observed:>6d}  "
+            f"{a.reason[:40]}"
+        )
+    total = sum(a.recommended_daily_usd for a in allocs)
+    print(f"\n  Total: ${total:.2f}")
+
+
+def _cmd_ltv_stats(args) -> None:
+    """Customer LTV summary + top-N customers."""
+    from core.engines.budget_buyer import get_engine
+    engine = get_engine()
+    stats = engine.ltv_stats()
+    if args.json:
+        payload = {"stats": stats}
+        if args.top > 0:
+            payload["top_customers"] = [
+                c.as_dict()
+                for c in engine.top_customers(limit=args.top)
+            ]
+        print(json.dumps(payload, indent=2))
+        return
+    print("Customer LTV summary")
+    print(f"  total customers: {stats['total_customers']}")
+    print(f"  total GMV:       ${stats['total_gmv_usd']:.2f}")
+    print(f"  avg LTV:         ${stats['avg_ltv_usd']:.2f}")
+    print(f"  median LTV:      ${stats['median_ltv_usd']:.2f}")
+    print()
+    print("Segment split")
+    for seg, n in sorted(stats["segments"].items()):
+        print(f"  {seg:10s} {n}")
+    if args.top > 0:
+        top = engine.top_customers(limit=args.top)
+        if top:
+            print()
+            print(f"Top {len(top)} by spend:")
+            for c in top:
+                print(
+                    f"  ${c.total_spent_usd:>8.2f}  "
+                    f"{c.orders_count:>3d}×  {c.email}"
+                )
+
+
 def _cmd_email_stats(args) -> None:
     """Per-flow email campaign stats."""
     from core.engines.email_campaigns import get_engine
@@ -6918,6 +7103,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "competitor-intel":
         _cmd_competitor_intel(args)
+        return
+
+    if args.command == "budget-plan":
+        _cmd_budget_plan(args)
+        return
+
+    if args.command == "ltv-stats":
+        _cmd_ltv_stats(args)
         return
 
     if args.command == "email-stats":
