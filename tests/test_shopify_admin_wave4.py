@@ -1,5 +1,5 @@
-"""Tests for Wave 4 of shopify_admin: gift cards (+ wave 4b-e
-land in subsequent commits on the same file)."""
+"""Tests for Wave 4 of shopify_admin: gift cards + collections
+(+ 4c-e land in subsequent commits on the same file)."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -8,6 +8,9 @@ import pytest
 
 from core.adapters.shopify_admin.client import (
     ShopifyAdminClient, ShopifyAdminError,
+)
+from core.adapters.shopify_admin.collections import (
+    Collects, CustomCollections, SmartCollections,
 )
 from core.adapters.shopify_admin.gift_cards import GiftCards
 
@@ -285,3 +288,274 @@ class TestGiftCardsDisable:
         c.post.return_value = {}
         with pytest.raises(ShopifyAdminError):
             GiftCards.disable(c, 42)
+
+
+# ── SmartCollections ──────────────────────────────────────
+
+
+class TestSmartCollections:
+    def test_list_no_filter(self):
+        c = _fake_client()
+        c.get.return_value = {"smart_collections": [
+            {"id": 1, "title": "Winners"},
+        ]}
+        out = SmartCollections.list_collections(c)
+        assert len(out) == 1
+        assert c.get.call_args[0][0] == "smart_collections.json"
+
+    def test_list_by_title(self):
+        c = _fake_client()
+        c.get.return_value = {"smart_collections": []}
+        SmartCollections.list_collections(c, title="VIP")
+        assert c.get.call_args[1]["params"]["title"] == "VIP"
+
+    def test_list_limit_clamped(self):
+        c = _fake_client()
+        c.get.return_value = {"smart_collections": []}
+        SmartCollections.list_collections(c, limit=9999)
+        assert c.get.call_args[1]["params"]["limit"] == 250
+
+    def test_list_skips_non_dict(self):
+        c = _fake_client()
+        c.get.return_value = {
+            "smart_collections": [{"id": 1}, "oops"],
+        }
+        assert len(SmartCollections.list_collections(c)) == 1
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            SmartCollections.get(c, 1)
+
+    def test_create_requires_title(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            SmartCollections.create(
+                c, title="", rules=[{"column": "tag"}],
+            )
+
+    def test_create_requires_rules(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            SmartCollections.create(c, title="x", rules=[])
+
+    def test_create_rejects_bad_sort_order(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            SmartCollections.create(
+                c, title="x",
+                rules=[{"column": "tag"}],
+                sort_order="nonsense",
+            )
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "smart_collection": {"id": 99, "title": "Winners"},
+        }
+        out = SmartCollections.create(
+            c,
+            title="Winners",
+            rules=[{
+                "column": "tag",
+                "relation": "equals",
+                "condition": "winner",
+            }],
+            disjunctive=True,
+            body_html="<p>Best sellers</p>",
+            published=False,
+            sort_order="price-desc",
+        )
+        assert out["id"] == 99
+        body = c.post.call_args[0][1]["smart_collection"]
+        assert body["title"] == "Winners"
+        assert body["disjunctive"] is True
+        assert body["published"] is False
+        assert body["sort_order"] == "price-desc"
+        assert body["rules"][0]["condition"] == "winner"
+        assert body["body_html"] == "<p>Best sellers</p>"
+
+    def test_create_missing_response_raises(self):
+        c = _fake_client()
+        c.post.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            SmartCollections.create(
+                c, title="x", rules=[{"column": "tag"}],
+            )
+
+    def test_update_empty_fields_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            SmartCollections.update(c, 1, fields={})
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "smart_collection": {"id": 1, "title": "New"},
+        }
+        out = SmartCollections.update(
+            c, 1, fields={"title": "New"},
+        )
+        assert out["title"] == "New"
+        body = c.put.call_args[0][1]["smart_collection"]
+        assert body["id"] == 1
+
+    def test_delete(self):
+        c = _fake_client()
+        SmartCollections.delete(c, 42)
+        assert c.delete.call_args[0][0] == (
+            "smart_collections/42.json"
+        )
+
+
+# ── CustomCollections ─────────────────────────────────────
+
+
+class TestCustomCollections:
+    def test_list_with_filters(self):
+        c = _fake_client()
+        c.get.return_value = {"custom_collections": []}
+        CustomCollections.list_collections(
+            c, title="Sale", published_status="published",
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["title"] == "Sale"
+        assert params["published_status"] == "published"
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            CustomCollections.get(c, 1)
+
+    def test_create_requires_title(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            CustomCollections.create(c, title="")
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "custom_collection": {"id": 7, "title": "Sale"},
+        }
+        out = CustomCollections.create(
+            c,
+            title="Sale",
+            body_html="<p>x</p>",
+            published=False,
+            sort_order="manual",
+            template_suffix="sale",
+        )
+        assert out["id"] == 7
+        body = c.post.call_args[0][1]["custom_collection"]
+        assert body["title"] == "Sale"
+        assert body["published"] is False
+        assert body["template_suffix"] == "sale"
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "custom_collection": {"id": 7},
+        }
+        CustomCollections.update(
+            c, 7, fields={"published": True},
+        )
+        body = c.put.call_args[0][1]["custom_collection"]
+        assert body["id"] == 7
+        assert body["published"] is True
+
+    def test_delete(self):
+        c = _fake_client()
+        CustomCollections.delete(c, 7)
+        assert c.delete.call_args[0][0] == (
+            "custom_collections/7.json"
+        )
+
+
+# ── Collects ──────────────────────────────────────────────
+
+
+class TestCollects:
+    def test_list_by_collection(self):
+        c = _fake_client()
+        c.get.return_value = {"collects": [
+            {"id": 1, "product_id": 11, "collection_id": 22},
+        ]}
+        out = Collects.list_collects(c, collection_id=22)
+        assert len(out) == 1
+        assert (
+            c.get.call_args[1]["params"]["collection_id"] == 22
+        )
+
+    def test_list_by_product(self):
+        c = _fake_client()
+        c.get.return_value = {"collects": []}
+        Collects.list_collects(c, product_id=55)
+        assert c.get.call_args[1]["params"]["product_id"] == 55
+
+    def test_list_both_filters(self):
+        c = _fake_client()
+        c.get.return_value = {"collects": []}
+        Collects.list_collects(
+            c, product_id=1, collection_id=2,
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["product_id"] == 1
+        assert params["collection_id"] == 2
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "collect": {"id": 9, "product_id": 1, "collection_id": 2},
+        }
+        out = Collects.create(
+            c, product_id=1, collection_id=2, position=3,
+        )
+        assert out["id"] == 9
+        body = c.post.call_args[0][1]["collect"]
+        assert body["product_id"] == 1
+        assert body["collection_id"] == 2
+        assert body["position"] == 3
+
+    def test_create_without_position(self):
+        c = _fake_client()
+        c.post.return_value = {"collect": {"id": 9}}
+        Collects.create(c, product_id=1, collection_id=2)
+        body = c.post.call_args[0][1]["collect"]
+        assert "position" not in body
+
+    def test_create_missing_response_raises(self):
+        c = _fake_client()
+        c.post.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            Collects.create(c, product_id=1, collection_id=2)
+
+    def test_delete(self):
+        c = _fake_client()
+        Collects.delete(c, 42)
+        assert c.delete.call_args[0][0] == "collects/42.json"
+
+    def test_remove_product_found(self):
+        c = _fake_client()
+        c.get.return_value = {"collects": [
+            {"id": 77, "product_id": 1, "collection_id": 2},
+            {"id": 78, "product_id": 1, "collection_id": 3},
+        ]}
+        ok = Collects.remove_product(
+            c, product_id=1, collection_id=3,
+        )
+        assert ok is True
+        # Should have deleted the second row.
+        assert c.delete.call_args[0][0] == "collects/78.json"
+
+    def test_remove_product_not_found_idempotent(self):
+        c = _fake_client()
+        c.get.return_value = {"collects": [
+            {"id": 77, "product_id": 1, "collection_id": 2},
+        ]}
+        ok = Collects.remove_product(
+            c, product_id=1, collection_id=999,
+        )
+        assert ok is False
+        c.delete.assert_not_called()
