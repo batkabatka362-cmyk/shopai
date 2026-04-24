@@ -20,10 +20,20 @@ from core.brand.brand_guard import (
     BrandIssue,
     BrandRules,
 )
+from core.brand.pre_ship import (
+    BrandGateRejected,
+    GateVerdict,
+    brand_gate,
+    reload_brand_rules,
+)
 
 __all__ = [
     "BrandCheck",
+    "BrandGateRejected",
     "BrandGuard",
     "BrandIssue",
     "BrandRules",
+    "GateVerdict",
+    "brand_gate",
+    "reload_brand_rules",
 ]

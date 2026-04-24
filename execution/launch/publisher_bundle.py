@@ -485,10 +485,16 @@ class PublisherBundle:
                 request.winner,
                 platform=request.platform,
             )
+            copy_dict = dict(copy)
+            gate = self._brand_gate_ad_copy(
+                copy_dict, request=request,
+            )
+            if gate is not None:
+                copy_dict["brand_gate"] = gate
             log = StepLog(
                 name="generate_copy",
                 status="success",
-                data=dict(copy),
+                data=copy_dict,
                 ts=time.time(),
             )
         except Exception as exc:  # noqa: BLE001
@@ -501,6 +507,47 @@ class PublisherBundle:
             )
         steps.append(log)
         return log
+
+    def _brand_gate_ad_copy(
+        self,
+        copy: dict[str, Any],
+        *,
+        request: LaunchRequest,
+    ) -> dict[str, Any] | None:
+        """Run BrandGuard over the generated ad copy in
+        ``warn`` mode — failures are logged as warnings but
+        do NOT block the launch (the ad adapter already
+        creates campaigns PAUSED, so owner / brain can vet
+        before anything spends). Returns a serialisable
+        verdict dict or None on soft failure."""
+        body = str(
+            copy.get("body") or copy.get("headline") or "",
+        ).strip()
+        if not body:
+            return None
+        try:
+            from core.brand import brand_gate
+        except Exception as exc:  # noqa: BLE001
+            # Brand module not importable in this deploy —
+            # stay silent, don't block.
+            return None
+        trace = (
+            f"launch:{getattr(request, 'platform', 'meta')}:"
+            f"{getattr(request.winner, 'product_id', '') or ''}"
+        )
+        try:
+            verdict = brand_gate(
+                text=body,
+                surface="ad_copy",
+                mode="warn",
+                trace_id=trace,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Gate itself errored — don't let a guard fault
+            # block a launch that the ads adapter will create
+            # paused anyway.
+            return None
+        return verdict.as_dict()
 
     def _build_seo(
         self,
