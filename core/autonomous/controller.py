@@ -265,6 +265,7 @@ class AutonomousController:
                 from core.adapters.analytics.bootstrap import register_all as register_analytics
                 from core.adapters.crm.bootstrap import register_all as register_crm
                 from core.adapters.sourcing.bootstrap import register_all as register_sourcing
+                from core.adapters.social.bootstrap import register_all as register_social
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
@@ -289,6 +290,7 @@ class AutonomousController:
                 analytics_status = register_analytics()
                 crm_status = register_crm()
                 sourcing_status = register_sourcing()
+                social_status = register_social()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
@@ -304,6 +306,7 @@ class AutonomousController:
                     **automation_status, **helpdesk_status,
                     **analytics_status, **crm_status,
                     **sourcing_status,
+                    **social_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(
@@ -1201,6 +1204,29 @@ class AutonomousController:
             }
         except Exception as exc:
             _record("marketing_automation", exc)
+
+        # Phase 5a1: SOCIAL SCHEDULER — ship queued organic
+        # posts whose publish_at has passed. Owner uses the
+        # scheduler's enqueue() to queue posts (directly or
+        # via content/publisher engines); this phase is the
+        # worker that turns that queue into actual IG / FB
+        # posts via the registered SOCIAL_PUBLISH_POST
+        # adapters. Per-post errors never abort the cycle —
+        # the scheduler returns a summary dict we record.
+        try:
+            from engines.social_scheduler import SocialScheduler
+            if self._adapter_router is not None:
+                sched = SocialScheduler.open()
+                summary = sched.process_due(
+                    router=self._adapter_router,
+                    max_posts=20,
+                )
+                sched.close()
+                cycle_result["phases"]["social_scheduler"] = (
+                    summary
+                )
+        except Exception as exc:
+            _record("social_scheduler", exc)
 
         # Phase 5a2: STRATEGY PLANNER — long-term plans
         if self._cycle_count % 5 == 1:  # Every 5 cycles
