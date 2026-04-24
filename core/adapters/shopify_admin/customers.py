@@ -348,3 +348,371 @@ def _split_tags(raw: Any) -> list[str]:
     return [
         t.strip() for t in str(raw).split(",") if t.strip()
     ]
+
+
+class CustomerMetafields:
+    """Per-customer metafields — private notes, LTV score,
+    churn-risk flag, preferred-channel, etc. Engines read
+    these to personalise outgoing emails / ads without
+    re-computing RFM on every cycle."""
+
+    @staticmethod
+    def list_metafields(
+        client: ShopifyAdminClient,
+        customer_id: int | str,
+        *,
+        namespace: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "limit": max(1, min(int(limit), 250)),
+        }
+        if namespace:
+            params["namespace"] = str(namespace)
+        result = client.get(
+            f"customers/{customer_id}/metafields.json",
+            params=params,
+        )
+        rows = result.get("metafields") or []
+        return [r for r in rows if isinstance(r, dict)]
+
+    @staticmethod
+    def create(
+        client: ShopifyAdminClient,
+        customer_id: int | str,
+        *,
+        namespace: str,
+        key: str,
+        value: str,
+        value_type: str = "single_line_text_field",
+    ) -> dict[str, Any]:
+        if not namespace or not key:
+            raise ValueError("namespace + key required")
+        body = {
+            "metafield": {
+                "namespace": namespace,
+                "key": key,
+                "value": value,
+                "type": value_type,
+            },
+        }
+        result = client.post(
+            f"customers/{customer_id}/metafields.json", body,
+        )
+        mf = result.get("metafield")
+        if not isinstance(mf, dict):
+            raise ShopifyAdminError(
+                "metafield not returned by create",
+                path=(
+                    f"customers/{customer_id}/"
+                    "metafields.json"
+                ),
+                body=str(result),
+            )
+        return mf
+
+    @staticmethod
+    def update(
+        client: ShopifyAdminClient,
+        customer_id: int | str,
+        metafield_id: int | str,
+        *,
+        value: str,
+        value_type: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "metafield": {
+                "id": int(metafield_id),
+                "value": value,
+            },
+        }
+        if value_type:
+            body["metafield"]["type"] = value_type
+        result = client.put(
+            f"customers/{customer_id}/metafields/"
+            f"{metafield_id}.json",
+            body,
+        )
+        mf = result.get("metafield")
+        if not isinstance(mf, dict):
+            raise ShopifyAdminError(
+                "metafield not returned by update",
+                path=(
+                    f"customers/{customer_id}/metafields/"
+                    f"{metafield_id}.json"
+                ),
+            )
+        return mf
+
+    @staticmethod
+    def delete(
+        client: ShopifyAdminClient,
+        customer_id: int | str,
+        metafield_id: int | str,
+    ) -> None:
+        client.delete(
+            f"customers/{customer_id}/metafields/"
+            f"{metafield_id}.json",
+        )
+
+
+class CustomerSavedSearches:
+    """Owner-saved customer queries ("VIP", "lapsed 30d",
+    "tagged-winner")."""
+
+    @staticmethod
+    def list_searches(
+        client: ShopifyAdminClient,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        result = client.get(
+            "customer_saved_searches.json",
+            params={"limit": max(1, min(int(limit), 250))},
+        )
+        rows = (
+            result.get("customer_saved_searches") or []
+        )
+        return [r for r in rows if isinstance(r, dict)]
+
+    @staticmethod
+    def get(
+        client: ShopifyAdminClient,
+        search_id: int | str,
+    ) -> dict[str, Any]:
+        result = client.get(
+            f"customer_saved_searches/{search_id}.json",
+        )
+        saved = result.get("customer_saved_search")
+        if not isinstance(saved, dict):
+            raise ShopifyAdminError(
+                f"customer_saved_search {search_id} "
+                "not returned",
+                path=(
+                    "customer_saved_searches/"
+                    f"{search_id}.json"
+                ),
+            )
+        return saved
+
+    @staticmethod
+    def create(
+        client: ShopifyAdminClient,
+        *,
+        name: str,
+        query: str,
+    ) -> dict[str, Any]:
+        if not name or not query:
+            raise ValueError("name + query required")
+        body = {
+            "customer_saved_search": {
+                "name": name,
+                "query": query,
+            },
+        }
+        result = client.post(
+            "customer_saved_searches.json", body,
+        )
+        saved = result.get("customer_saved_search")
+        if not isinstance(saved, dict):
+            raise ShopifyAdminError(
+                "customer_saved_search not returned "
+                "by create",
+                path="customer_saved_searches.json",
+                body=str(result),
+            )
+        return saved
+
+    @staticmethod
+    def update(
+        client: ShopifyAdminClient,
+        search_id: int | str,
+        *,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not fields:
+            raise ValueError("fields: non-empty dict required")
+        result = client.put(
+            f"customer_saved_searches/{search_id}.json",
+            {"customer_saved_search": {
+                "id": int(search_id), **fields,
+            }},
+        )
+        saved = result.get("customer_saved_search")
+        if not isinstance(saved, dict):
+            raise ShopifyAdminError(
+                "customer_saved_search not returned "
+                "by update",
+                path=(
+                    "customer_saved_searches/"
+                    f"{search_id}.json"
+                ),
+            )
+        return saved
+
+    @staticmethod
+    def delete(
+        client: ShopifyAdminClient,
+        search_id: int | str,
+    ) -> None:
+        client.delete(
+            f"customer_saved_searches/{search_id}.json",
+        )
+
+    @staticmethod
+    def list_matching_customers(
+        client: ShopifyAdminClient,
+        search_id: int | str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Customers matching the saved search — used to
+        preview the audience size before launching a
+        targeted campaign against it."""
+        result = client.get(
+            f"customer_saved_searches/{search_id}/"
+            "customers.json",
+            params={"limit": max(1, min(int(limit), 250))},
+        )
+        rows = result.get("customers") or []
+        return [r for r in rows if isinstance(r, dict)]
+
+
+# ── GraphQL customer segments ─────────────────────────────
+
+
+_SEGMENTS_LIST = """
+query listSegments($first: Int!) {
+  segments(first: $first) {
+    edges {
+      node { id name query creationDate lastEditDate }
+    }
+  }
+}
+"""
+
+
+_SEGMENT_CREATE = """
+mutation segmentCreate($name: String!, $query: String!) {
+  segmentCreate(name: $name, query: $query) {
+    segment { id name query }
+    userErrors { field message }
+  }
+}
+"""
+
+
+_SEGMENT_DELETE = """
+mutation segmentDelete($id: ID!) {
+  segmentDelete(id: $id) {
+    deletedSegmentId
+    userErrors { field message }
+  }
+}
+"""
+
+
+def _segment_gid(segment_id: int | str) -> str:
+    s = str(segment_id).strip()
+    if s.startswith("gid://"):
+        return s
+    return f"gid://shopify/Segment/{s}"
+
+
+def _segment_user_errors(
+    payload: dict[str, Any], mutation: str,
+) -> None:
+    errors = (payload.get(mutation) or {}).get(
+        "userErrors",
+    ) or []
+    if errors:
+        msgs = "; ".join(
+            f"{e.get('field')}: {e.get('message')}"
+            for e in errors if isinstance(e, dict)
+        )
+        raise ShopifyAdminError(
+            f"{mutation} userErrors: {msgs}",
+            path="graphql.json",
+            body=str(payload),
+        )
+
+
+class CustomerSegments:
+    """GraphQL customer segments — the 2024+ replacement
+    for saved searches on ads-targeting surfaces.
+
+    A segment is a query expression against the
+    ``customers`` graph; Shopify keeps its membership list
+    live. Used to sync audiences to Meta / TikTok / Google
+    Ads without manually rebuilding the segment per
+    platform.
+    """
+
+    @staticmethod
+    def list_segments(
+        client: ShopifyAdminClient,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        result = client.graphql(
+            _SEGMENTS_LIST,
+            variables={
+                "first": max(1, min(int(limit), 250)),
+            },
+        )
+        edges = (
+            (result.get("data") or {}).get("segments") or {}
+        ).get("edges") or []
+        return [
+            e.get("node")
+            for e in edges
+            if isinstance(e, dict) and isinstance(
+                e.get("node"), dict,
+            )
+        ]
+
+    @staticmethod
+    def create(
+        client: ShopifyAdminClient,
+        *,
+        name: str,
+        query: str,
+    ) -> dict[str, Any]:
+        if not name or not query:
+            raise ValueError("name + query required")
+        result = client.graphql(
+            _SEGMENT_CREATE,
+            variables={"name": name, "query": query},
+        )
+        payload = result.get("data") or {}
+        _segment_user_errors(payload, "segmentCreate")
+        seg = (
+            payload.get("segmentCreate") or {}
+        ).get("segment")
+        if not isinstance(seg, dict):
+            raise ShopifyAdminError(
+                "segmentCreate: segment missing",
+                path="graphql.json",
+            )
+        return seg
+
+    @staticmethod
+    def delete(
+        client: ShopifyAdminClient,
+        segment_id: int | str,
+    ) -> str:
+        result = client.graphql(
+            _SEGMENT_DELETE,
+            variables={"id": _segment_gid(segment_id)},
+        )
+        payload = result.get("data") or {}
+        _segment_user_errors(payload, "segmentDelete")
+        deleted = (
+            payload.get("segmentDelete") or {}
+        ).get("deletedSegmentId")
+        if not deleted:
+            raise ShopifyAdminError(
+                "segmentDelete: deletedSegmentId missing",
+                path="graphql.json",
+            )
+        return str(deleted)

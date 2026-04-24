@@ -592,3 +592,235 @@ class TestFulfillmentEvents:
         assert c.delete.call_args[0][0] == (
             "orders/99/fulfillments/7/events/3.json"
         )
+
+
+# ── Customer metafields + saved searches + segments (5d) ──
+
+
+from core.adapters.shopify_admin.customers import (
+    CustomerMetafields, CustomerSavedSearches,
+    CustomerSegments,
+)
+
+
+class TestCustomerMetafields:
+    def test_list_with_namespace(self):
+        c = _fake_client()
+        c.get.return_value = {"metafields": [
+            {"id": 1, "namespace": "loyalty"},
+        ]}
+        out = CustomerMetafields.list_metafields(
+            c, 42, namespace="loyalty",
+        )
+        assert len(out) == 1
+        assert (
+            c.get.call_args[0][0]
+            == "customers/42/metafields.json"
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["namespace"] == "loyalty"
+
+    def test_create_requires_ns_and_key(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            CustomerMetafields.create(
+                c, 42, namespace="", key="k", value="v",
+            )
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {"metafield": {"id": 9}}
+        out = CustomerMetafields.create(
+            c, 42,
+            namespace="loyalty",
+            key="tier",
+            value="vip",
+            value_type="single_line_text_field",
+        )
+        assert out["id"] == 9
+        body = c.post.call_args[0][1]["metafield"]
+        assert body["namespace"] == "loyalty"
+        assert body["key"] == "tier"
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {"metafield": {"id": 9}}
+        CustomerMetafields.update(
+            c, 42, 9, value="gold",
+        )
+        body = c.put.call_args[0][1]["metafield"]
+        assert body["value"] == "gold"
+
+    def test_delete(self):
+        c = _fake_client()
+        CustomerMetafields.delete(c, 42, 9)
+        assert c.delete.call_args[0][0] == (
+            "customers/42/metafields/9.json"
+        )
+
+
+class TestCustomerSavedSearches:
+    def test_list(self):
+        c = _fake_client()
+        c.get.return_value = {
+            "customer_saved_searches": [
+                {"id": 1, "name": "VIP"}, "oops",
+            ],
+        }
+        out = CustomerSavedSearches.list_searches(c)
+        assert len(out) == 1
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            CustomerSavedSearches.get(c, 7)
+
+    def test_create_requires_query(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            CustomerSavedSearches.create(
+                c, name="VIP", query="",
+            )
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "customer_saved_search": {
+                "id": 1, "name": "VIP",
+            },
+        }
+        CustomerSavedSearches.create(
+            c, name="VIP",
+            query="total_spent:>=500 orders_count:>=3",
+        )
+        body = c.post.call_args[0][1][
+            "customer_saved_search"
+        ]
+        assert body["name"] == "VIP"
+
+    def test_update_empty_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            CustomerSavedSearches.update(
+                c, 7, fields={},
+            )
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "customer_saved_search": {"id": 7},
+        }
+        CustomerSavedSearches.update(
+            c, 7, fields={"name": "renamed"},
+        )
+        body = c.put.call_args[0][1][
+            "customer_saved_search"
+        ]
+        assert body["id"] == 7
+
+    def test_delete(self):
+        c = _fake_client()
+        CustomerSavedSearches.delete(c, 7)
+        assert c.delete.call_args[0][0] == (
+            "customer_saved_searches/7.json"
+        )
+
+    def test_list_matching_customers(self):
+        c = _fake_client()
+        c.get.return_value = {"customers": [
+            {"id": 1}, "oops", {"id": 2},
+        ]}
+        out = CustomerSavedSearches.list_matching_customers(
+            c, 7,
+        )
+        assert len(out) == 2
+        assert (
+            c.get.call_args[0][0]
+            == "customer_saved_searches/7/customers.json"
+        )
+
+
+class TestCustomerSegments:
+    def test_list(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"segments": {"edges": [
+                {"node": {
+                    "id": "gid://shopify/Segment/1",
+                    "name": "High LTV",
+                }},
+                "malformed",
+            ]}},
+        }
+        out = CustomerSegments.list_segments(c)
+        assert len(out) == 1
+        assert out[0]["name"] == "High LTV"
+
+    def test_create_requires_query(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            CustomerSegments.create(
+                c, name="VIP", query="",
+            )
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"segmentCreate": {
+                "segment": {
+                    "id": "gid://shopify/Segment/9",
+                    "name": "VIP",
+                },
+                "userErrors": [],
+            }},
+        }
+        out = CustomerSegments.create(
+            c, name="VIP", query="amount_spent > 500",
+        )
+        assert out["id"] == "gid://shopify/Segment/9"
+
+    def test_create_user_error_raises(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"segmentCreate": {
+                "segment": None,
+                "userErrors": [{
+                    "field": "query",
+                    "message": "invalid syntax",
+                }],
+            }},
+        }
+        with pytest.raises(ShopifyAdminError):
+            CustomerSegments.create(
+                c, name="x", query="garbage",
+            )
+
+    def test_delete_returns_gid(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"segmentDelete": {
+                "deletedSegmentId":
+                    "gid://shopify/Segment/9",
+                "userErrors": [],
+            }},
+        }
+        out = CustomerSegments.delete(c, 9)
+        assert out == "gid://shopify/Segment/9"
+
+    def test_delete_accepts_full_gid(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"segmentDelete": {
+                "deletedSegmentId":
+                    "gid://shopify/Segment/7",
+                "userErrors": [],
+            }},
+        }
+        CustomerSegments.delete(
+            c, "gid://shopify/Segment/7",
+        )
+        assert (
+            c.graphql.call_args[1]["variables"]["id"]
+            == "gid://shopify/Segment/7"
+        )
