@@ -73,6 +73,7 @@ class AdapterCategory(str, Enum):
     HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
     CRM = "crm"                            # Customer relationship management (HubSpot)
     SOURCING = "sourcing"                  # Dropshipping suppliers (CJ, AutoDS, Spocket)
+    SOCIAL = "social"                      # Social page growth (Instagram, Facebook, TikTok organic)
     OTHER = "other"
 
 
@@ -230,6 +231,13 @@ class Capability(str, Enum):
     SOURCING_LIST_ORDERS = "sourcing_list_orders"
     SOURCING_GET_SHIPPING_METHODS = "sourcing_get_shipping_methods"
     SOURCING_GET_VARIANT_STOCK = "sourcing_get_variant_stock"
+
+    # ── Social / page growth ──────────────
+    SOCIAL_PUBLISH_POST = "social_publish_post"
+    SOCIAL_SCHEDULE_POST = "social_schedule_post"
+    SOCIAL_GET_INSIGHTS = "social_get_insights"
+    SOCIAL_LIST_POSTS = "social_list_posts"
+    SOCIAL_DELETE_POST = "social_delete_post"
 
 
 # ── Result envelope ────────────────────────────────────────────

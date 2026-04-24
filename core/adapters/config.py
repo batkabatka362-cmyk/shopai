@@ -147,6 +147,14 @@ ENV_ALIASES: dict[str, str] = {
     "tiktok_ads_access_token": "TIKTOK_ADS_ACCESS_TOKEN",
     "tiktok_ads_advertiser_id": "TIKTOK_ADS_ADVERTISER_ID",
 
+    # Meta Pages / Instagram organic posting (shares OAuth
+    # with Meta Ads but uses a separate page-scoped access
+    # token + ig-business-account id pair).
+    "meta_page_access_token":      "META_PAGE_ACCESS_TOKEN",
+    "meta_page_id":                "META_PAGE_ID",
+    "instagram_business_account_id":
+        "INSTAGRAM_BUSINESS_ACCOUNT_ID",
+
     # ── Ads intelligence / spy ──────────
     # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
     # product discovery across Meta, TikTok, Pinterest. Primary
