@@ -151,25 +151,18 @@ reachable from one canonical client
 
 **Total resources tracked:** 58
 **Coverage status:**
-  * ✅ Full: **11** (19%)
-  * 🟡 Partial: **20** (34%)
-  * ❌ Missing: **27** (47%)
+  * ✅ Full: **23** (40%)
+  * 🟡 Partial: **16** (28%)
+  * ❌ Missing: **19** (33%)
 
-**P0 (revenue-critical) resources still missing/partial:** 10
-  * refunds ❌
-  * transactions ❌
-  * fulfillment_orders ❌
-  * fulfillments ❌
-  * customers 🟡 (webhook only)
-  * customer_addresses ❌
-  * themes ❌
-  * theme_assets ❌
-  * shipping_zone_rates ❌
-  * products 🟡 (not unified)
+**P0 (revenue-critical) resources still missing/partial:** 3
+  * customers 🟡 (webhook + unified now available — switch on migration)
+  * collections unification 🟡 (store_configurator covers them)
+  * products 🟡 (unified available — legacy call sites still in execution/)
 
-**P1 resources missing:** ~12 incl. gift cards, customer
-segments, markets, marketing events, collections unification,
-access scopes unification.
+**P1 resources missing:** ~8 incl. gift cards, customer
+segments, markets, marketing events, blogs/articles
+unification, access scopes unification, locales, currencies.
 
 ---
 
@@ -181,22 +174,27 @@ access scopes unification.
   * ✅ Inventory
   * ✅ Draft orders
 
-### Wave 2 (NEXT commit)
+### Wave 2 (SHIPPED — commit `4bb9a71`)
   * ✅ Fulfillments + fulfillment_orders
   * ✅ Refunds + transactions
   * ✅ Customers (full CRUD + addresses + search)
 
-### Wave 3
-  * Orders (full CRUD + cancel / close / tag update)
-  * Products (unified — pull from execution/shopify/ into
-    shopify_admin)
-  * Themes + theme_assets (creative auto-deploy)
+### Wave 3a (SHIPPED — commit `6f7f189`)
+  * ✅ Orders (full CRUD + cancel / close / open / tags / risks)
+  * ✅ Products unified (Products + Variants + Images + Metafields)
+
+### Wave 3b (SHIPPED — this commit)
+  * ✅ Themes + ThemeAssets (creative auto-deploy)
+  * ✅ Shipping zones + rates (price-based + weight-based)
+  * ✅ Carrier services (custom live-rate providers)
 
 ### Wave 4
-  * Shipping zones + rates (wired via Markets GraphQL for
-    international)
   * Gift cards
+  * Customer segments (GraphQL)
+  * Markets + market web presences (GraphQL)
   * Marketing events
+  * Collections unification (pull from store_configurator)
+  * Blogs + articles unification
 
 ### Wave 5 (backlog)
   * Bulk operations (GraphQL) — big catalog imports
