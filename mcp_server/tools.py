@@ -761,6 +761,108 @@ def _ready_for_live_handler(
     ).as_dict()
 
 
+def _search_handler(args: dict[str, Any]) -> dict[str, Any]:
+    """Cross-source search via the SearchAgent — fans a
+    single query across web + supplier catalogs, dedupes,
+    ranks, returns ordered hits. Read-only."""
+    query = str(args.get("query") or "").strip()
+    if not query:
+        raise ToolError("'query' is required")
+    scope = str(args.get("scope") or "all").lower()
+    if scope not in ("all", "web", "products"):
+        raise ToolError(
+            "'scope' must be one of all / web / products",
+        )
+    try:
+        limit = int(args.get("limit", 10) or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 50))
+
+    from agents.search import SearchAgent
+    from core.adapters import get_router
+    for boot in (
+        "core.adapters.search.bootstrap",
+        "core.adapters.sourcing.bootstrap",
+    ):
+        try:
+            __import__(boot, fromlist=["register_all"]).register_all()
+        except Exception:  # noqa: BLE001
+            # Adapter family not configured is not a tool
+            # error — SearchAgent will just return fewer
+            # hits. Keep going.
+            pass
+    agent = SearchAgent(router=get_router())
+    try:
+        hits = agent.search(query, scope=(scope,), limit=limit)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    return {
+        "query": query,
+        "scope": scope,
+        "hits": [
+            {
+                "source": h.source,
+                "kind": h.kind,
+                "title": h.title,
+                "url": h.url,
+                "snippet": h.snippet,
+                "price_usd": h.price_usd,
+                "image_url": h.image_url,
+                "score": h.score,
+            }
+            for h in hits
+        ],
+        "total": len(hits),
+    }
+
+
+def _brand_check_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Run BrandGuard over a piece of proposed content.
+    Returns issues + pass/fail without touching Shopify —
+    useful for "would the brand guard reject this draft?"
+    style owner questions."""
+    text = args.get("text")
+    if not isinstance(text, str) or not text:
+        raise ToolError("'text' (non-empty string) required")
+    surface = str(args.get("surface") or "ad_copy").strip()
+    metafields = args.get("metafields") or []
+    if not isinstance(metafields, list):
+        raise ToolError(
+            "'metafields' must be a list (or omitted)",
+        )
+
+    from core.brand import BrandGuard
+    try:
+        guard = BrandGuard.from_metafields(metafields)
+        check = guard.check_content(text, surface=surface)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    return {
+        "surface": check.surface,
+        "text_length": check.text_length,
+        "passed": check.passed,
+        "errors": [
+            {
+                "code": i.code,
+                "reason": i.reason,
+                "context": i.context,
+            }
+            for i in check.errors
+        ],
+        "warnings": [
+            {
+                "code": i.code,
+                "reason": i.reason,
+                "context": i.context,
+            }
+            for i in check.warnings
+        ],
+    }
+
+
 def _live_health_handler(
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1747,6 +1849,79 @@ def build_default_registry() -> ToolRegistry:
             "required": ["failed_episode"],
         },
         handler=_analyze_failure_handler,
+    ))
+    reg.register(ToolSpec(
+        name="search",
+        description=(
+            "Cross-source search — one query fans out to web "
+            "+ supplier catalogs (CJ / AutoDS), deduped + "
+            "ranked by source weight. Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query (required)",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "web", "products"],
+                    "description": (
+                        "Restrict to web / products / both "
+                        "(default all)."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max results per source "
+                        "(1-50, default 10)."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_search_handler,
+    ))
+    reg.register(ToolSpec(
+        name="brand_check",
+        description=(
+            "Run the BrandGuard style-guide checker against "
+            "a piece of proposed content. Returns pass/fail "
+            "+ errors + warnings without writing to Shopify. "
+            "Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "surface": {
+                    "type": "string",
+                    "enum": [
+                        "ad_copy", "email_subject", "email_body",
+                        "product_desc", "blog_article",
+                        "social_post",
+                    ],
+                    "description": (
+                        "Content surface (rule set picks "
+                        "max_chars / exclamations / caps "
+                        "rules from this)."
+                    ),
+                },
+                "metafields": {
+                    "type": "array",
+                    "description": (
+                        "Optional Shopify brand metafield "
+                        "list. When omitted, neutral defaults "
+                        "are used."
+                    ),
+                    "items": {"type": "object"},
+                },
+            },
+            "required": ["text"],
+        },
+        handler=_brand_check_handler,
     ))
     reg.register(ToolSpec(
         name="ready_for_live",

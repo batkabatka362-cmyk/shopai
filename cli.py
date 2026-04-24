@@ -531,6 +531,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    search_p = sub.add_parser(
+        "search",
+        help=(
+            "Cross-source search — web + supplier catalogs. "
+            "One query, merged + deduped results ranked by "
+            "source weight. Owner-facing."
+        ),
+    )
+    search_p.add_argument("query", help="Search query (quoted)")
+    search_p.add_argument(
+        "--scope",
+        default="all",
+        choices=("all", "web", "products"),
+        help="Restrict to web / products / both (default all)",
+    )
+    search_p.add_argument(
+        "--limit", type=int, default=10,
+        help="Max results per source (default 10)",
+    )
+    search_p.add_argument(
+        "--json", action="store_true",
+    )
+
     ready_p = sub.add_parser(
         "ready-for-live",
         help=(
@@ -3608,6 +3631,74 @@ def _cmd_ingest_knowledge(
         print("Errors:")
         for e in result.errors:
             print(f"  - {e}")
+
+
+def _cmd_search(
+    *,
+    query: str,
+    scope: str,
+    limit: int,
+    as_json: bool,
+) -> None:
+    """Run the cross-source SearchAgent and print ranked hits."""
+    from agents.search import SearchAgent
+    from core.adapters import get_router
+    # Register the two adapter families SearchAgent uses.
+    # Per-family bootstrap keeps the CLI independent of an
+    # umbrella register_all (no such module exists).
+    for boot in (
+        "core.adapters.search.bootstrap",
+        "core.adapters.sourcing.bootstrap",
+    ):
+        try:
+            mod = __import__(boot, fromlist=["register_all"])
+            mod.register_all()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"warn: {boot} partial: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+    agent = SearchAgent(router=get_router())
+    try:
+        hits = agent.search(
+            query, scope=(scope,), limit=limit,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if as_json:
+        print(json.dumps(
+            [
+                {
+                    "source": h.source,
+                    "kind": h.kind,
+                    "title": h.title,
+                    "url": h.url,
+                    "snippet": h.snippet,
+                    "price_usd": h.price_usd,
+                    "score": h.score,
+                }
+                for h in hits
+            ],
+            indent=2,
+        ))
+        return
+    if not hits:
+        print("No results.")
+        return
+    for i, h in enumerate(hits, start=1):
+        tag = (
+            f"${h.price_usd:.2f}" if h.kind == "product" else h.kind
+        )
+        print(
+            f"{i:>2}. [{h.source} / {tag}] {h.title}"
+        )
+        if h.url:
+            print(f"    {h.url}")
+        if h.snippet:
+            trim = h.snippet[:120]
+            print(f"    {trim}")
 
 
 def _cmd_ready_for_live(
@@ -7011,6 +7102,15 @@ def main(argv: list[str] | None = None) -> None:
             url=str(args.url or ""),
             file=str(args.file or ""),
             subject=str(args.subject or ""),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "search":
+        _cmd_search(
+            query=str(args.query),
+            scope=str(args.scope),
+            limit=int(args.limit),
             as_json=bool(args.json),
         )
         return
