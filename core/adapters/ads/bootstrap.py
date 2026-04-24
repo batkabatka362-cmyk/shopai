@@ -1,8 +1,12 @@
 """Ads adapter bootstrap.
 
-Only Meta Ads has a concrete adapter today (``meta_ads.py``).
-Google Ads / TikTok Ads stubs live in ``ads_spy`` for research;
-this bootstrap registers the real placement adapters.
+Real placement adapters:
+  * MetaAdsAdapter — Facebook / Instagram / Audience Network
+  * TikTokAdsAdapter — TikTok for Business Marketing API v1.3
+
+Google Ads research stubs live in ``ads_spy``; a real Google
+Ads adapter is out of scope until we have the developer-token
++ OAuth refresh flow approved.
 """
 from __future__ import annotations
 
@@ -10,11 +14,12 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .meta_ads import MetaAdsAdapter
+from .tiktok_ads import TikTokAdsAdapter
 
 logger = get_logger("adapters.ads.bootstrap")
 
 
-_ADS_ADAPTER_CLASSES = (MetaAdsAdapter,)
+_ADS_ADAPTER_CLASSES = (MetaAdsAdapter, TikTokAdsAdapter)
 
 
 def register_all(registry: AdapterRegistry | None = None) -> dict[str, bool]:

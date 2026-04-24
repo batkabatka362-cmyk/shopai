@@ -142,6 +142,10 @@ ENV_ALIASES: dict[str, str] = {
     # Meta (Facebook) Ads: long-lived access token + ad account ID
     "meta_ads_access_token": "META_ADS_ACCESS_TOKEN",
     "meta_ads_account_id":   "META_ADS_ACCOUNT_ID",
+    # TikTok Ads (Business API v1.3): long-lived access token +
+    # advertiser id (analogous to Meta's ad-account id).
+    "tiktok_ads_access_token": "TIKTOK_ADS_ACCESS_TOKEN",
+    "tiktok_ads_advertiser_id": "TIKTOK_ADS_ADVERTISER_ID",
 
     # ── Ads intelligence / spy ──────────
     # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
