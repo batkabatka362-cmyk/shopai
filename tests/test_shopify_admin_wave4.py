@@ -13,6 +13,9 @@ from core.adapters.shopify_admin.collections import (
     Collects, CustomCollections, SmartCollections,
 )
 from core.adapters.shopify_admin.gift_cards import GiftCards
+from core.adapters.shopify_admin.markets import (
+    MarketCurrencies, Markets, MarketWebPresences,
+)
 
 
 def _fake_client():
@@ -559,3 +562,278 @@ class TestCollects:
         )
         assert ok is False
         c.delete.assert_not_called()
+
+
+# ── Markets ───────────────────────────────────────────────
+
+
+class TestMarkets:
+    def test_list_markets(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {"markets": {"edges": [
+            {"node": {"id": "gid://shopify/Market/1", "name": "US"}},
+            {"node": {"id": "gid://shopify/Market/2", "name": "EU"}},
+            "not-a-dict",
+        ]}}}
+        out = Markets.list_markets(c)
+        assert len(out) == 2
+        call = c.graphql.call_args
+        assert call[1]["variables"]["first"] == 50
+
+    def test_list_limit_clamped(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"markets": {"edges": []}},
+        }
+        Markets.list_markets(c, limit=9999)
+        assert c.graphql.call_args[1]["variables"]["first"] == 250
+
+    def test_get_happy(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {"market": {
+            "id": "gid://shopify/Market/1", "name": "US",
+        }}}
+        out = Markets.get(c, 1)
+        assert out["name"] == "US"
+        # Bare int promoted to GID.
+        assert (
+            c.graphql.call_args[1]["variables"]["id"]
+            == "gid://shopify/Market/1"
+        )
+
+    def test_get_accepts_full_gid(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {"market": {
+            "id": "gid://shopify/Market/7",
+        }}}
+        Markets.get(c, "gid://shopify/Market/7")
+        assert (
+            c.graphql.call_args[1]["variables"]["id"]
+            == "gid://shopify/Market/7"
+        )
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {}}
+        with pytest.raises(ShopifyAdminError):
+            Markets.get(c, 1)
+
+    def test_create_requires_name(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Markets.create(c, name="", country_codes=["US"])
+
+    def test_create_requires_countries(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Markets.create(c, name="EU", country_codes=[])
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {"marketCreate": {
+            "market": {
+                "id": "gid://shopify/Market/99",
+                "name": "EU",
+                "enabled": True,
+            },
+            "userErrors": [],
+        }}}
+        out = Markets.create(
+            c, name="EU", country_codes=["de", "FR", "it"],
+        )
+        assert out["id"] == "gid://shopify/Market/99"
+        variables = c.graphql.call_args[1]["variables"]
+        codes = [
+            r["countryCode"]
+            for r in variables["input"]["regions"]
+        ]
+        # Uppercased.
+        assert codes == ["DE", "FR", "IT"]
+        assert variables["input"]["name"] == "EU"
+        assert variables["input"]["enabled"] is True
+
+    def test_create_user_error_raises(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {"marketCreate": {
+            "market": None,
+            "userErrors": [{
+                "field": "regions",
+                "message": "already part of another market",
+            }],
+        }}}
+        with pytest.raises(ShopifyAdminError) as exc:
+            Markets.create(
+                c, name="EU", country_codes=["DE"],
+            )
+        assert "already part of another market" in str(exc.value)
+
+    def test_update_requires_any_field(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Markets.update(c, 1)
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {"marketUpdate": {
+            "market": {
+                "id": "gid://shopify/Market/1",
+                "name": "USA",
+                "enabled": False,
+            },
+            "userErrors": [],
+        }}}
+        out = Markets.update(
+            c, 1, name="USA", enabled=False,
+        )
+        assert out["enabled"] is False
+        variables = c.graphql.call_args[1]["variables"]
+        assert variables["input"]["name"] == "USA"
+        assert variables["input"]["enabled"] is False
+
+    def test_delete_returns_gid(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {"marketDelete": {
+            "deletedId": "gid://shopify/Market/1",
+            "userErrors": [],
+        }}}
+        out = Markets.delete(c, 1)
+        assert out == "gid://shopify/Market/1"
+
+    def test_delete_primary_blocked_by_user_error(self):
+        c = _fake_client()
+        c.graphql.return_value = {"data": {"marketDelete": {
+            "deletedId": None,
+            "userErrors": [{
+                "field": "id",
+                "message": "primary market cannot be deleted",
+            }],
+        }}}
+        with pytest.raises(ShopifyAdminError):
+            Markets.delete(c, 1)
+
+
+# ── MarketWebPresences ────────────────────────────────────
+
+
+class TestMarketWebPresences:
+    def test_requires_default_locale(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketWebPresences.create(
+                c,
+                market_id=1,
+                default_locale="",
+                subfolder_suffix="de",
+            )
+
+    def test_exactly_one_of_subfolder_or_domain(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketWebPresences.create(
+                c, market_id=1, default_locale="de",
+            )
+        with pytest.raises(ValueError):
+            MarketWebPresences.create(
+                c,
+                market_id=1,
+                default_locale="de",
+                subfolder_suffix="de",
+                domain_id=99,
+            )
+
+    def test_create_with_subfolder(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"marketWebPresenceCreate": {
+                "market": {
+                    "id": "gid://shopify/Market/1",
+                    "webPresence": {
+                        "id": "gid://shopify/MarketWebPresence/2",
+                        "subfolderSuffix": "de",
+                        "defaultLocale": "de",
+                    },
+                },
+                "userErrors": [],
+            }},
+        }
+        out = MarketWebPresences.create(
+            c,
+            market_id=1,
+            default_locale="de",
+            subfolder_suffix="de",
+        )
+        assert out["webPresence"]["subfolderSuffix"] == "de"
+        input_ = c.graphql.call_args[1]["variables"]["input"]
+        assert input_["subfolderSuffix"] == "de"
+        assert "domainId" not in input_
+
+    def test_create_with_domain_id_promoted(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"marketWebPresenceCreate": {
+                "market": {"id": "gid://shopify/Market/1"},
+                "userErrors": [],
+            }},
+        }
+        MarketWebPresences.create(
+            c,
+            market_id=1,
+            default_locale="de",
+            domain_id=12345,
+        )
+        input_ = c.graphql.call_args[1]["variables"]["input"]
+        assert input_["domainId"] == (
+            "gid://shopify/Domain/12345"
+        )
+
+
+# ── MarketCurrencies ──────────────────────────────────────
+
+
+class TestMarketCurrencies:
+    def test_requires_some_field(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketCurrencies.update(c, market_id=1)
+
+    def test_update_base_currency(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"marketCurrencySettingsUpdate": {
+                "market": {
+                    "id": "gid://shopify/Market/1",
+                    "currencySettings": {
+                        "baseCurrency": {"currencyCode": "EUR"},
+                        "localCurrencies": True,
+                    },
+                },
+                "userErrors": [],
+            }},
+        }
+        out = MarketCurrencies.update(
+            c,
+            market_id=1,
+            base_currency="eur",
+            local_currencies=True,
+        )
+        cs = out["currencySettings"]
+        assert cs["baseCurrency"]["currencyCode"] == "EUR"
+        input_ = c.graphql.call_args[1]["variables"]["input"]
+        assert input_["baseCurrency"] == "EUR"
+        assert input_["localCurrencies"] is True
+
+    def test_update_user_error_raises(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"marketCurrencySettingsUpdate": {
+                "market": None,
+                "userErrors": [{
+                    "field": "baseCurrency",
+                    "message": "unsupported currency",
+                }],
+            }},
+        }
+        with pytest.raises(ShopifyAdminError):
+            MarketCurrencies.update(
+                c, market_id=1, base_currency="XYZ",
+            )
