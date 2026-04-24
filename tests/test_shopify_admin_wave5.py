@@ -429,3 +429,166 @@ class TestDisputes:
         )
         # 12.50 + 3.00 + 10.00 = 25.50 (bad amount skipped).
         assert out == 25.50
+
+
+# ── FulfillmentServices (wave 5c) ────────────────────────
+
+
+from core.adapters.shopify_admin.fulfillments import (
+    FulfillmentEvents, FulfillmentServices,
+)
+
+
+class TestFulfillmentServices:
+    def test_list_scope_validated(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            FulfillmentServices.list_services(c, scope="bad")
+
+    def test_list_happy(self):
+        c = _fake_client()
+        c.get.return_value = {"fulfillment_services": [
+            {"id": 1, "name": "3PL A"}, "oops",
+        ]}
+        out = FulfillmentServices.list_services(c)
+        assert len(out) == 1
+        assert (
+            c.get.call_args[1]["params"]["scope"]
+            == "current_client"
+        )
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            FulfillmentServices.get(c, 1)
+
+    def test_create_rejects_http_callback(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            FulfillmentServices.create(
+                c, name="3PL",
+                callback_url="http://insecure.example",
+            )
+
+    def test_create_requires_name(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            FulfillmentServices.create(
+                c, name="",
+                callback_url="https://3pl.example",
+            )
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "fulfillment_service": {"id": 7, "name": "3PL"},
+        }
+        out = FulfillmentServices.create(
+            c, name="3PL",
+            callback_url="https://3pl.example/hook",
+            inventory_management=True,
+            tracking_support=False,
+        )
+        assert out["id"] == 7
+        body = c.post.call_args[0][1]["fulfillment_service"]
+        assert body["callback_url"] == (
+            "https://3pl.example/hook"
+        )
+        assert body["tracking_support"] is False
+        assert body["format"] == "json"
+
+    def test_update_empty_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            FulfillmentServices.update(c, 1, fields={})
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "fulfillment_service": {"id": 1, "name": "new"},
+        }
+        FulfillmentServices.update(
+            c, 1, fields={"name": "new"},
+        )
+        body = c.put.call_args[0][1]["fulfillment_service"]
+        assert body["id"] == 1
+        assert body["name"] == "new"
+
+    def test_delete(self):
+        c = _fake_client()
+        FulfillmentServices.delete(c, 1)
+        assert c.delete.call_args[0][0] == (
+            "fulfillment_services/1.json"
+        )
+
+
+# ── FulfillmentEvents ────────────────────────────────────
+
+
+class TestFulfillmentEvents:
+    def test_list_basic(self):
+        c = _fake_client()
+        c.get.return_value = {"fulfillment_events": [
+            {"id": 1, "status": "in_transit"}, "oops",
+        ]}
+        out = FulfillmentEvents.list_events(
+            c, order_id=99, fulfillment_id=7,
+        )
+        assert len(out) == 1
+        assert (
+            c.get.call_args[0][0]
+            == "orders/99/fulfillments/7/events.json"
+        )
+
+    def test_create_validates_status(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            FulfillmentEvents.create(
+                c, order_id=99, fulfillment_id=7,
+                status="teleported",
+            )
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "fulfillment_event": {"id": 55},
+        }
+        out = FulfillmentEvents.create(
+            c, order_id=99, fulfillment_id=7,
+            status="out_for_delivery",
+            message="On the truck",
+            city="Ulaanbaatar", country="MN",
+            happened_at="2026-04-24T12:00:00Z",
+        )
+        assert out["id"] == 55
+        body = c.post.call_args[0][1]["event"]
+        assert body["status"] == "out_for_delivery"
+        assert body["city"] == "Ulaanbaatar"
+        assert body["country"] == "MN"
+        assert body["happened_at"] == (
+            "2026-04-24T12:00:00Z"
+        )
+
+    def test_create_minimal_omits_optionals(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "fulfillment_event": {"id": 1},
+        }
+        FulfillmentEvents.create(
+            c, order_id=99, fulfillment_id=7,
+            status="confirmed",
+        )
+        body = c.post.call_args[0][1]["event"]
+        # Optional keys absent when not passed.
+        assert "message" not in body
+        assert "city" not in body
+
+    def test_delete(self):
+        c = _fake_client()
+        FulfillmentEvents.delete(
+            c, order_id=99, fulfillment_id=7, event_id=3,
+        )
+        assert c.delete.call_args[0][0] == (
+            "orders/99/fulfillments/7/events/3.json"
+        )
