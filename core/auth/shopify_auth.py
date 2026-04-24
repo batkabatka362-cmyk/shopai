@@ -215,9 +215,17 @@ class ShopifyAuth:
         """Generate the Shopify authorization URL for browser approval.
 
         User opens this URL → approves → gets redirected with ?code=XXX
+
+        Default scope set is the canonical required+recommended
+        list from ``core.auth.shopify_scopes`` — covers every
+        resource the shopify_admin waves 1-5 surface. Callers
+        supplying their own ``scopes`` override this, but the
+        canonical list stays the single source of truth for
+        what ShopAI needs to run.
         """
         if not scopes:
-            scopes = "read_products,write_products,read_orders,read_customers,read_inventory,write_inventory"
+            from core.auth.shopify_scopes import scope_string
+            scopes = scope_string()
         if not redirect_uri:
             redirect_uri = f"https://{self._shop_url}/admin/auth/callback"
 

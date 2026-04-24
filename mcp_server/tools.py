@@ -761,6 +761,108 @@ def _ready_for_live_handler(
     ).as_dict()
 
 
+def _shopify_scope_audit_handler(
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the diff between granted Shopify scopes + ShopAI's
+    canonical required set. Owner asks "what scopes am I
+    missing?" from Claude Desktop and gets a serialisable
+    report. Read-only."""
+    from core.auth.shopify_scopes import (
+        all_scopes, diff_granted, required_scopes,
+    )
+    include_plus = bool(args.get("include_plus", False))
+    granted = args.get("granted") or []
+    if not isinstance(granted, list):
+        raise ToolError(
+            "'granted' must be a list of scope handles",
+        )
+    # If caller didn't supply granted, try reading live
+    # via the Shopify admin client. Soft-fail: return an
+    # empty-granted diff if the client can't reach Shopify.
+    if not granted:
+        try:
+            from core.adapters.shopify_admin.client import (
+                ShopifyAdminClient,
+            )
+            client = ShopifyAdminClient.from_env()
+            result = client.graphql(
+                """
+                query currentScopes {
+                  currentAppInstallation {
+                    accessScopes { handle }
+                  }
+                }
+                """,
+            )
+            scopes_raw = (
+                (result.get("data") or {}).get(
+                    "currentAppInstallation",
+                ) or {}
+            ).get("accessScopes") or []
+            granted = [
+                str(s.get("handle") or "")
+                for s in scopes_raw
+                if isinstance(s, dict)
+            ]
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "error": (
+                    f"cannot fetch granted scopes: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                "hint": (
+                    "Pass 'granted' arg manually or run "
+                    "scripts/deguar_scope_audit.py to "
+                    "fetch live."
+                ),
+                "canonical_required_count": len(
+                    required_scopes(),
+                ),
+                "canonical_total_count": len(all_scopes()),
+            }
+
+    d = diff_granted(granted)
+
+    def _scope_dict(s):
+        return {
+            "handle": s.handle,
+            "tier": s.tier,
+            "why": s.why,
+            "waves": list(s.waves),
+        }
+
+    missing_req = [
+        _scope_dict(s)
+        for s in d["missing"] if s.tier == "required"
+    ]
+    missing_rec = [
+        _scope_dict(s)
+        for s in d["missing"] if s.tier == "recommended"
+    ]
+    missing_plus = [
+        _scope_dict(s)
+        for s in d["missing"] if s.tier == "plus_only"
+    ]
+    return {
+        "granted_count": len(d["granted"]),
+        "missing_required_count": len(missing_req),
+        "missing_recommended_count": len(missing_rec),
+        "missing_plus_count": len(missing_plus),
+        "extra_count": len(d["extra"]),
+        "granted": [_scope_dict(s) for s in d["granted"]],
+        "missing_required": missing_req,
+        "missing_recommended": missing_rec,
+        "missing_plus": (
+            missing_plus if include_plus else []
+        ),
+        "extra": [s.handle for s in d["extra"]],
+        "verdict": (
+            "OK" if not missing_req else "BLOCKED"
+        ),
+    }
+
+
 def _search_handler(args: dict[str, Any]) -> dict[str, Any]:
     """Cross-source search via the SearchAgent — fans a
     single query across web + supplier catalogs, dedupes,
@@ -1849,6 +1951,41 @@ def build_default_registry() -> ToolRegistry:
             "required": ["failed_episode"],
         },
         handler=_analyze_failure_handler,
+    ))
+    reg.register(ToolSpec(
+        name="shopify_scope_audit",
+        description=(
+            "Diff ShopAI's canonical Shopify scope list "
+            "against what the current admin token has. "
+            "Answers 'what scopes am I missing?' and pins "
+            "each missing scope to the wave / feature that "
+            "depends on it. If 'granted' is omitted, the "
+            "tool tries to fetch it live via the "
+            "currentAppInstallation GraphQL query. "
+            "Read-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "granted": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Override: list of scope handles "
+                        "granted to the token. When empty, "
+                        "the tool fetches live."
+                    ),
+                },
+                "include_plus": {
+                    "type": "boolean",
+                    "description": (
+                        "Include Plus-only scopes in the "
+                        "missing list (default false)."
+                    ),
+                },
+            },
+        },
+        handler=_shopify_scope_audit_handler,
     ))
     reg.register(ToolSpec(
         name="search",
