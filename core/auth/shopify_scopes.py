@@ -108,6 +108,20 @@ _READS: tuple[Scope, ...] = (
         ("4e", "5e"),
     ),
     Scope(
+        "read_online_store_pages", "required",
+        "narrower pages-only read complementing "
+        "read_content; Shopify requires both for page CRUD "
+        "on 2024+ API versions",
+        ("4e",),
+    ),
+    Scope(
+        "read_files", "required",
+        "stagedUploadsCreate target read + product image "
+        "lookup; wave 3a image upload + wave 3b theme asset "
+        "upsert both require this",
+        ("3a", "3b"),
+    ),
+    Scope(
         "read_themes", "required",
         "theme + theme assets read",
         ("3b",),
@@ -151,8 +165,30 @@ _READS: tuple[Scope, ...] = (
     ),
     Scope(
         "read_locales", "recommended",
-        "shop locales + presentment currencies (wave 5a)",
+        "shop locales + presentment currencies (wave 5a). "
+        "Shopify 2024+ merges this into read_translations; "
+        "grant whichever the store UI exposes.",
         ("5a",),
+    ),
+    Scope(
+        "read_translations", "recommended",
+        "2024+ replacement name for read_locales; required "
+        "for shopLocales + Translation API reads (wave 5a)",
+        ("5a",),
+    ),
+    Scope(
+        "read_metaobjects", "recommended",
+        "brand-kit / testimonial / custom-object reads — "
+        "Shopify's 2024+ flexible custom-data type the "
+        "content engines use for structured brand blocks",
+        ("4e", "5d"),
+    ),
+    Scope(
+        "read_pixels", "recommended",
+        "web pixels extension (2024+). Replaces some "
+        "script_tags use for conversion tracking. Read side "
+        "lets the brain know which pixels are active.",
+        ("store_configurator",),
     ),
     Scope(
         "read_publications", "recommended",
@@ -244,6 +280,20 @@ _WRITES: tuple[Scope, ...] = (
         ("4e", "5e"),
     ),
     Scope(
+        "write_online_store_pages", "required",
+        "narrower pages-only write complementing "
+        "write_content; 2024+ Shopify wants both for page "
+        "CRUD",
+        ("4e",),
+    ),
+    Scope(
+        "write_files", "required",
+        "stagedUploadsCreate target write + image upload "
+        "for products / articles / theme assets (wave 3a, "
+        "3b, 4e)",
+        ("3a", "3b", "4e"),
+    ),
+    Scope(
         "write_themes", "required",
         "theme customisation + settings_data + "
         "asset upsert",
@@ -301,8 +351,31 @@ _WRITES: tuple[Scope, ...] = (
     ),
     Scope(
         "write_locales", "recommended",
-        "enable/disable/publish shop locales (wave 5a)",
+        "enable/disable/publish shop locales (wave 5a). "
+        "Shopify 2024+ merges into write_translations.",
         ("5a",),
+    ),
+    Scope(
+        "write_translations", "recommended",
+        "2024+ replacement name for write_locales; "
+        "shopLocaleEnable/Disable/Update mutations land "
+        "on this scope on current API versions (wave 5a)",
+        ("5a",),
+    ),
+    Scope(
+        "write_metaobjects", "recommended",
+        "brand-kit / testimonial / custom-object writes — "
+        "content generators use this to seed structured "
+        "sections referenced from theme assets (wave 4e)",
+        ("4e", "5d"),
+    ),
+    Scope(
+        "write_pixels", "recommended",
+        "install Shopify web pixels (2024+ tracking "
+        "replacement for raw script_tags where feasible). "
+        "Used by store_configurator if SHOPAI_META_PIXEL_ID "
+        "is set.",
+        ("store_configurator",),
     ),
 )
 
