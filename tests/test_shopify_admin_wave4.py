@@ -12,6 +12,9 @@ from core.adapters.shopify_admin.client import (
 from core.adapters.shopify_admin.collections import (
     Collects, CustomCollections, SmartCollections,
 )
+from core.adapters.shopify_admin.content import (
+    Articles, Blogs, Pages,
+)
 from core.adapters.shopify_admin.gift_cards import GiftCards
 from core.adapters.shopify_admin.marketing_events import (
     MarketingEvents,
@@ -1077,3 +1080,353 @@ class TestMarketingEvents:
                 occurred_on="2026-04-24",
                 ad_spend="nope",
             )
+
+
+# ── Blogs ─────────────────────────────────────────────────
+
+
+class TestBlogs:
+    def test_list_basic(self):
+        c = _fake_client()
+        c.get.return_value = {"blogs": [
+            {"id": 1, "handle": "news"},
+            "malformed",
+        ]}
+        out = Blogs.list_blogs(c)
+        assert len(out) == 1
+
+    def test_list_by_handle(self):
+        c = _fake_client()
+        c.get.return_value = {"blogs": []}
+        Blogs.list_blogs(c, handle="news")
+        assert c.get.call_args[1]["params"]["handle"] == "news"
+
+    def test_list_limit_clamped(self):
+        c = _fake_client()
+        c.get.return_value = {"blogs": []}
+        Blogs.list_blogs(c, limit=9999)
+        assert c.get.call_args[1]["params"]["limit"] == 250
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            Blogs.get(c, 1)
+
+    def test_find_by_handle_found(self):
+        c = _fake_client()
+        c.get.return_value = {"blogs": [
+            {"id": 1, "handle": "news"},
+        ]}
+        out = Blogs.find_by_handle(c, "news")
+        assert out["id"] == 1
+
+    def test_find_by_handle_mismatch_is_none(self):
+        c = _fake_client()
+        c.get.return_value = {"blogs": [
+            {"id": 1, "handle": "other"},
+        ]}
+        assert Blogs.find_by_handle(c, "news") is None
+
+    def test_find_by_handle_empty_input_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Blogs.find_by_handle(c, "")
+
+    def test_create_requires_title(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Blogs.create(c, title="")
+
+    def test_create_rejects_bad_commentable(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Blogs.create(c, title="News", commentable="maybe")
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "blog": {"id": 1, "title": "News"},
+        }
+        out = Blogs.create(
+            c,
+            title="News",
+            handle="news",
+            commentable="moderate",
+            tags="deguar,update",
+            template_suffix="custom",
+        )
+        assert out["id"] == 1
+        body = c.post.call_args[0][1]["blog"]
+        assert body["handle"] == "news"
+        assert body["commentable"] == "moderate"
+        assert body["tags"] == "deguar,update"
+        assert body["template_suffix"] == "custom"
+
+    def test_update_empty_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Blogs.update(c, 1, fields={})
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {"blog": {"id": 1, "title": "X"}}
+        Blogs.update(c, 1, fields={"title": "X"})
+        assert c.put.call_args[0][0] == "blogs/1.json"
+        body = c.put.call_args[0][1]["blog"]
+        assert body["id"] == 1
+        assert body["title"] == "X"
+
+    def test_delete(self):
+        c = _fake_client()
+        Blogs.delete(c, 1)
+        assert c.delete.call_args[0][0] == "blogs/1.json"
+
+
+# ── Articles ──────────────────────────────────────────────
+
+
+class TestArticles:
+    def test_list_for_blog(self):
+        c = _fake_client()
+        c.get.return_value = {"articles": [
+            {"id": 1, "title": "Hello"},
+            "oops",
+        ]}
+        out = Articles.list_articles(c, blog_id=5)
+        assert len(out) == 1
+        assert (
+            c.get.call_args[0][0] == "blogs/5/articles.json"
+        )
+
+    def test_list_cross_blog(self):
+        c = _fake_client()
+        c.get.return_value = {"articles": []}
+        Articles.list_articles(c)
+        assert c.get.call_args[0][0] == "articles.json"
+
+    def test_list_filters_passthrough(self):
+        c = _fake_client()
+        c.get.return_value = {"articles": []}
+        Articles.list_articles(
+            c, blog_id=5,
+            published_status="published",
+            author="Bata",
+            tag="launch",
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["published_status"] == "published"
+        assert params["author"] == "Bata"
+        assert params["tag"] == "launch"
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            Articles.get(c, blog_id=5, article_id=1)
+
+    def test_create_validates_required(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Articles.create(
+                c, blog_id=5, title="", body_html="x",
+                author="x",
+            )
+        with pytest.raises(ValueError):
+            Articles.create(
+                c, blog_id=5, title="t", body_html="",
+                author="x",
+            )
+        with pytest.raises(ValueError):
+            Articles.create(
+                c, blog_id=5, title="t", body_html="x",
+                author="",
+            )
+
+    def test_create_happy_with_list_tags(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "article": {"id": 99, "title": "Hello"},
+        }
+        out = Articles.create(
+            c,
+            blog_id=5,
+            title="Hello",
+            body_html="<p>world</p>",
+            author="Bata",
+            tags=["launch", "wellness", ""],
+            handle="hello",
+            summary_html="<p>x</p>",
+            published=False,
+            image_src="https://cdn.x/img.jpg",
+            image_alt="hero",
+            template_suffix="post",
+            metafields=[
+                {"namespace": "seo", "key": "title", "value": "x"},
+                "malformed",
+            ],
+        )
+        assert out["id"] == 99
+        body = c.post.call_args[0][1]["article"]
+        # tags list joined, blanks dropped.
+        assert body["tags"] == "launch, wellness"
+        assert body["handle"] == "hello"
+        assert body["summary_html"] == "<p>x</p>"
+        assert body["published"] is False
+        assert body["image"] == {
+            "src": "https://cdn.x/img.jpg", "alt": "hero",
+        }
+        # Metafields array scrubbed.
+        assert len(body["metafields"]) == 1
+
+    def test_create_string_tags_passthrough(self):
+        c = _fake_client()
+        c.post.return_value = {"article": {"id": 1}}
+        Articles.create(
+            c, blog_id=5, title="t", body_html="x",
+            author="a", tags="one,two",
+        )
+        body = c.post.call_args[0][1]["article"]
+        assert body["tags"] == "one,two"
+
+    def test_update_empty_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Articles.update(
+                c, blog_id=5, article_id=1, fields={},
+            )
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "article": {"id": 1, "title": "New"},
+        }
+        Articles.update(
+            c, blog_id=5, article_id=1,
+            fields={"title": "New"},
+        )
+        assert c.put.call_args[0][0] == (
+            "blogs/5/articles/1.json"
+        )
+        body = c.put.call_args[0][1]["article"]
+        assert body["id"] == 1
+
+    def test_delete(self):
+        c = _fake_client()
+        Articles.delete(c, blog_id=5, article_id=1)
+        assert c.delete.call_args[0][0] == (
+            "blogs/5/articles/1.json"
+        )
+
+    def test_publish_toggles(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "article": {"id": 1, "published": True},
+        }
+        out = Articles.publish(c, blog_id=5, article_id=1)
+        assert out["published"] is True
+        body = c.put.call_args[0][1]["article"]
+        assert body["published"] is True
+
+    def test_unpublish_toggles(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "article": {"id": 1, "published": False},
+        }
+        Articles.unpublish(c, blog_id=5, article_id=1)
+        body = c.put.call_args[0][1]["article"]
+        assert body["published"] is False
+
+
+# ── Pages ─────────────────────────────────────────────────
+
+
+class TestPages:
+    def test_list(self):
+        c = _fake_client()
+        c.get.return_value = {"pages": [
+            {"id": 1, "handle": "about"},
+            "malformed",
+        ]}
+        out = Pages.list_pages(c)
+        assert len(out) == 1
+
+    def test_list_filters(self):
+        c = _fake_client()
+        c.get.return_value = {"pages": []}
+        Pages.list_pages(
+            c, handle="about", published_status="published",
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["handle"] == "about"
+        assert params["published_status"] == "published"
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            Pages.get(c, 1)
+
+    def test_find_by_handle_found(self):
+        c = _fake_client()
+        c.get.return_value = {"pages": [
+            {"id": 1, "handle": "about"},
+        ]}
+        assert Pages.find_by_handle(c, "about")["id"] == 1
+
+    def test_find_by_handle_none(self):
+        c = _fake_client()
+        c.get.return_value = {"pages": []}
+        assert Pages.find_by_handle(c, "about") is None
+
+    def test_find_by_handle_requires_handle(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Pages.find_by_handle(c, "")
+
+    def test_create_validates(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Pages.create(c, title="", body_html="x")
+        with pytest.raises(ValueError):
+            Pages.create(c, title="x", body_html="")
+
+    def test_create_happy(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "page": {"id": 1, "title": "About"},
+        }
+        out = Pages.create(
+            c,
+            title="About",
+            body_html="<p>About us</p>",
+            handle="about",
+            author="Bata",
+            template_suffix="landing",
+            metafields=[
+                {"namespace": "seo", "key": "desc", "value": "x"},
+                "malformed",
+            ],
+        )
+        assert out["id"] == 1
+        body = c.post.call_args[0][1]["page"]
+        assert body["handle"] == "about"
+        assert body["author"] == "Bata"
+        assert body["template_suffix"] == "landing"
+        assert len(body["metafields"]) == 1
+
+    def test_update_empty_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Pages.update(c, 1, fields={})
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {"page": {"id": 1}}
+        Pages.update(c, 1, fields={"title": "New"})
+        assert c.put.call_args[0][0] == "pages/1.json"
+
+    def test_delete(self):
+        c = _fake_client()
+        Pages.delete(c, 1)
+        assert c.delete.call_args[0][0] == "pages/1.json"
