@@ -226,6 +226,10 @@ class Capability(str, Enum):
     SOURCING_GET_PRODUCT = "sourcing_get_product"
     SOURCING_CREATE_ORDER = "sourcing_create_order"
     SOURCING_GET_ORDER_STATUS = "sourcing_get_order_status"
+    SOURCING_CANCEL_ORDER = "sourcing_cancel_order"
+    SOURCING_LIST_ORDERS = "sourcing_list_orders"
+    SOURCING_GET_SHIPPING_METHODS = "sourcing_get_shipping_methods"
+    SOURCING_GET_VARIANT_STOCK = "sourcing_get_variant_stock"
 
 
 # ── Result envelope ────────────────────────────────────────────

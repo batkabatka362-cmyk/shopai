@@ -71,6 +71,10 @@ class CJDropshippingAdapter(SourcingBaseAdapter):
         Capability.SOURCING_GET_PRODUCT,
         Capability.SOURCING_CREATE_ORDER,
         Capability.SOURCING_GET_ORDER_STATUS,
+        Capability.SOURCING_CANCEL_ORDER,
+        Capability.SOURCING_LIST_ORDERS,
+        Capability.SOURCING_GET_SHIPPING_METHODS,
+        Capability.SOURCING_GET_VARIANT_STOCK,
     }
 
     # Primary supplier — highest priority among sourcing adapters.
@@ -270,6 +274,214 @@ class CJDropshippingAdapter(SourcingBaseAdapter):
         record = _extract_cj_order_status(data, oid)
         return self._build_order_response(
             capability, record, raw=data.get("_raw"),
+        )
+
+    # ── Wave 5 — cancel + list + shipping + stock ───────────────
+
+    def _do_cancel_order(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Cancel a CJ supplier order. Must be called before
+        CJ ships it — post-ship cancels are refused by CJ
+        itself (returns a 4xx that bubbles up as AdapterError).
+        §4b.D: cancelling an already-cancelled order returns
+        CJ's idempotent ACK."""
+        self._validate_cancel_order(params)
+        oid = str(params["order_id"])
+        data = self._cj_request(
+            "POST", "/shopping/order/cancelOrder",
+            body={"orderId": oid},
+        )
+        record = {
+            "order_id": oid,
+            "status": "cancelled",
+            "raw_payload": data,
+        }
+        return self._build_order_response(
+            capability, record, raw=data.get("_raw"),
+        )
+
+    def _do_list_orders(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Paginated list of orders. Useful for a daily
+        reconciliation sweep — comparing CJ's order state to
+        our local Shopify fulfillment records."""
+        page = max(1, int(params.get("page", 1) or 1))
+        page_size = max(1, min(int(params.get("page_size", 50) or 50), 200))
+        status = params.get("status")
+        request_params: dict[str, Any] = {
+            "pageNum": page,
+            "pageSize": page_size,
+        }
+        if status:
+            request_params["status"] = str(status)
+        data = self._cj_request(
+            "GET", "/shopping/order/list", params=request_params,
+        )
+        rows = data.get("list") or data.get("orders") or []
+        out: list[dict[str, Any]] = []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                out.append(
+                    self._normalise_order({
+                        "order_id": str(
+                            row.get("orderId")
+                            or row.get("orderNum")
+                            or "",
+                        ),
+                        "status": _map_status(
+                            str(row.get("orderStatus") or "")
+                        ),
+                        "tracking_number": str(
+                            row.get("trackingNumber") or "",
+                        ),
+                        "cost_usd": row.get("orderAmount"),
+                        "raw_payload": row,
+                    }),
+                )
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=capability.value,
+            data={
+                "source": self.name,
+                "orders": out,
+                "total": len(out),
+                "page": page,
+                "page_size": page_size,
+            },
+            raw=data.get("_raw"),
+        )
+
+    def _do_get_shipping_methods(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Quote available shipping options for a CJ variant
+        to a destination country. Used by the product_launch
+        orchestrator before import to reject products whose
+        fastest route > 14 days (dropshipping kill threshold).
+        """
+        self._validate_get_shipping_methods(params)
+        vid = str(params["variant_id"])
+        country = str(params["country"]).upper()
+        quantity = max(1, int(params.get("quantity", 1) or 1))
+        data = self._cj_request(
+            "POST", "/logistic/freightCalculate",
+            body={
+                "vid": vid,
+                "countryCode": country,
+                "quantity": quantity,
+            },
+        )
+        methods_raw = (
+            data.get("list") or data.get("methods") or []
+        )
+        methods: list[dict[str, Any]] = []
+        if isinstance(methods_raw, list):
+            for m in methods_raw:
+                if not isinstance(m, dict):
+                    continue
+                try:
+                    cost = float(
+                        m.get("logisticPrice")
+                        or m.get("price")
+                        or 0,
+                    )
+                except (TypeError, ValueError):
+                    cost = 0.0
+                try:
+                    days_min = int(
+                        m.get("logisticAging")
+                        or m.get("daysMin")
+                        or 0,
+                    )
+                except (TypeError, ValueError):
+                    days_min = 0
+                try:
+                    days_max = int(
+                        m.get("logisticAgingMax")
+                        or m.get("daysMax")
+                        or days_min,
+                    )
+                except (TypeError, ValueError):
+                    days_max = days_min
+                methods.append({
+                    "method_name": str(
+                        m.get("logisticName")
+                        or m.get("name")
+                        or "",
+                    ),
+                    "cost_usd": cost,
+                    "currency": "USD",
+                    "days_min": days_min,
+                    "days_max": days_max,
+                    "tracked": bool(m.get("tracked", True)),
+                })
+        methods.sort(key=lambda x: (
+            x["days_max"] or 999, x["cost_usd"] or 999,
+        ))
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=capability.value,
+            data={
+                "source":   self.name,
+                "variant_id": vid,
+                "country":  country,
+                "methods":  methods,
+                "fastest":  methods[0] if methods else None,
+                "cheapest": (
+                    min(methods, key=lambda x: x["cost_usd"])
+                    if methods else None
+                ),
+            },
+            raw=data.get("_raw"),
+        )
+
+    def _do_get_variant_stock(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Live stock check for a CJ variant. Used before
+        importing a winner to Shopify — avoids listing SKUs
+        that supplier just ran out of."""
+        self._validate_get_variant_stock(params)
+        vid = str(params["variant_id"])
+        data = self._cj_request(
+            "GET", "/product/stock/queryByVid",
+            params={"vid": vid},
+        )
+        rows = (
+            data.get("list") or data.get("stockList") or []
+        )
+        stock = 0
+        warehouses: list[dict[str, Any]] = []
+        if isinstance(rows, list):
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    qty = int(r.get("stock") or r.get("num") or 0)
+                except (TypeError, ValueError):
+                    qty = 0
+                stock += max(0, qty)
+                warehouses.append({
+                    "warehouse": str(
+                        r.get("areaEn") or r.get("area") or "",
+                    ),
+                    "stock": max(0, qty),
+                })
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=capability.value,
+            data={
+                "source": self.name,
+                "variant_id": vid,
+                "stock": stock,
+                "in_stock": stock > 0,
+                "warehouses": warehouses,
+            },
+            raw=data.get("_raw"),
         )
 
 

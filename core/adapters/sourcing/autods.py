@@ -79,6 +79,12 @@ class AutoDSAdapter(SourcingBaseAdapter):
         Capability.SOURCING_GET_PRODUCT,
         Capability.SOURCING_CREATE_ORDER,
         Capability.SOURCING_GET_ORDER_STATUS,
+        Capability.SOURCING_CANCEL_ORDER,
+        Capability.SOURCING_LIST_ORDERS,
+        Capability.SOURCING_GET_VARIANT_STOCK,
+        # AutoDS doesn't expose a freight-rate endpoint —
+        # only aggregate shipping_days ranges on products.
+        # Leave SOURCING_GET_SHIPPING_METHODS off.
     }
 
     # AutoDS is the fallback supplier — CJ (priority=90) wins
@@ -232,6 +238,131 @@ class AutoDSAdapter(SourcingBaseAdapter):
         record = _extract_autods_order_status(data, oid)
         return self._build_order_response(
             capability, record, raw=data,
+        )
+
+    # ── Wave 5 extensions ──────────────────────────────────
+
+    def _do_cancel_order(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Cancel an AutoDS order. POST to /orders/{id}/cancel
+        returns HTTP 200 + empty body on success; the base
+        HTTP layer maps 4xx cancellations (already shipped,
+        not found) to AdapterError."""
+        self._validate_cancel_order(params)
+        oid = str(params["order_id"])
+        data = self._autods_request(
+            "POST", f"/orders/{oid}/cancel", body={},
+        )
+        record = {
+            "order_id": oid,
+            "status": "cancelled",
+            "raw_payload": data,
+        }
+        return self._build_order_response(
+            capability, record, raw=data,
+        )
+
+    def _do_list_orders(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Paginated list of AutoDS orders. Used for the
+        daily reconciliation sweep."""
+        page = max(1, int(params.get("page", 1) or 1))
+        page_size = max(1, min(
+            int(params.get("page_size", 50) or 50), 200,
+        ))
+        status = params.get("status")
+        request_params: dict[str, Any] = {
+            "page": page,
+            "limit": page_size,
+        }
+        if status:
+            request_params["status"] = str(status)
+        data = self._autods_request(
+            "GET", "/orders", params=request_params,
+        )
+        rows = (
+            data.get("results")
+            or data.get("orders")
+            or data.get("list")
+            or []
+        )
+        out: list[dict[str, Any]] = []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                out.append(_extract_autods_order_status(
+                    row, str(row.get("id") or row.get("orderId") or ""),
+                ))
+        normalised = [
+            self._normalise_order(r, default_source=self.name)
+            for r in out
+        ]
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=capability.value,
+            data={
+                "source": self.name,
+                "orders": normalised,
+                "total": len(normalised),
+                "page": page,
+                "page_size": page_size,
+            },
+            raw=data,
+        )
+
+    def _do_get_variant_stock(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Stock lookup via AutoDS's product detail endpoint
+        (AutoDS has no dedicated stock endpoint — the product
+        detail response carries per-variant ``stock`` counts)."""
+        self._validate_get_variant_stock(params)
+        vid = str(params["variant_id"])
+        # variant_id on AutoDS is ``<product_id>:<variant_id>``.
+        # Callers that know only one half pass the full combined
+        # id; we split on ":" when present, otherwise use the
+        # single id as the product id (AutoDS returns all
+        # variants in that case).
+        if ":" in vid:
+            pid, vid_only = vid.split(":", 1)
+        else:
+            pid, vid_only = vid, ""
+        data = self._autods_request(
+            "GET", f"/products/{pid}",
+        )
+        record = _extract_autods_product(data)
+        variants = record.get("variants") or []
+        target_stock = 0
+        if vid_only:
+            for v in variants:
+                if str(v.get("variant_id") or "") == vid_only:
+                    try:
+                        target_stock = int(v.get("stock") or 0)
+                    except (TypeError, ValueError):
+                        target_stock = 0
+                    break
+        else:
+            for v in variants:
+                try:
+                    target_stock += max(
+                        0, int(v.get("stock") or 0),
+                    )
+                except (TypeError, ValueError):
+                    continue
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=capability.value,
+            data={
+                "source": self.name,
+                "variant_id": vid,
+                "stock": target_stock,
+                "in_stock": target_stock > 0,
+                "warehouses": [],
+            },
+            raw=data,
         )
 
 
