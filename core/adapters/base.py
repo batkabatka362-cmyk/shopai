@@ -138,6 +138,18 @@ class Capability(str, Enum):
     PAYMENT_REFUND = "payment_refund"
     PAYMENT_CAPTURE = "payment_capture"
     PAYMENT_LIST_DISPUTES = "payment_list_disputes"
+    # Orders v2 (PayPal Checkout, Stripe Payment Intents):
+    # buyer-facing checkout flow. Create order → approve
+    # (vendor-side) → capture order.
+    PAYMENT_CREATE_ORDER = "payment_create_order"
+    PAYMENT_GET_ORDER = "payment_get_order"
+    PAYMENT_CAPTURE_ORDER = "payment_capture_order"
+    # Payouts: send money OUT of the merchant's account
+    # (supplier payments, affiliate commissions).
+    PAYMENT_PAYOUT = "payment_payout"
+    # Read-only observability.
+    PAYMENT_LIST_TRANSACTIONS = "payment_list_transactions"
+    PAYMENT_GET_BALANCE = "payment_get_balance"
 
     # ── Browser automation ────────────────
     BROWSER_SCREENSHOT = "browser_screenshot"

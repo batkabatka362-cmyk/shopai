@@ -150,6 +150,12 @@ class PaymentBaseAdapter(BaseAdapter):
         Capability.PAYMENT_REFUND,
         Capability.PAYMENT_CAPTURE,
         Capability.PAYMENT_LIST_DISPUTES,
+        Capability.PAYMENT_CREATE_ORDER,
+        Capability.PAYMENT_GET_ORDER,
+        Capability.PAYMENT_CAPTURE_ORDER,
+        Capability.PAYMENT_PAYOUT,
+        Capability.PAYMENT_LIST_TRANSACTIONS,
+        Capability.PAYMENT_GET_BALANCE,
     }
 
     base_url: str = ""
@@ -180,8 +186,69 @@ class PaymentBaseAdapter(BaseAdapter):
             return self._do_capture(params)
         if capability == Capability.PAYMENT_LIST_DISPUTES:
             return self._do_list_disputes(params)
+        if capability == Capability.PAYMENT_CREATE_ORDER:
+            return self._do_create_order(params)
+        if capability == Capability.PAYMENT_GET_ORDER:
+            return self._do_get_order(params)
+        if capability == Capability.PAYMENT_CAPTURE_ORDER:
+            return self._do_capture_order(params)
+        if capability == Capability.PAYMENT_PAYOUT:
+            return self._do_payout(params)
+        if capability == Capability.PAYMENT_LIST_TRANSACTIONS:
+            return self._do_list_transactions(params)
+        if capability == Capability.PAYMENT_GET_BALANCE:
+            return self._do_get_balance(params)
         raise AdapterValidationError(
             self.name, f"unsupported capability: {capability.value}",
+        )
+
+    # ── Orders v2 / Payouts / Balance / Txn list ─────────
+    # Default implementations raise NotImplementedError so
+    # each concrete adapter opt-in per capability. Sub-classes
+    # that don't support a given surface are still valid —
+    # they just omit the capability from their ``capabilities``
+    # set + never land in the dispatcher for it.
+
+    def _do_create_order(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{self.name}: create_order not implemented",
+        )
+
+    def _do_get_order(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{self.name}: get_order not implemented",
+        )
+
+    def _do_capture_order(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{self.name}: capture_order not implemented",
+        )
+
+    def _do_payout(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{self.name}: payout not implemented",
+        )
+
+    def _do_list_transactions(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{self.name}: list_transactions not implemented",
+        )
+
+    def _do_get_balance(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{self.name}: get_balance not implemented",
         )
 
     # ── Refund ─────────────────────────────────────────────────

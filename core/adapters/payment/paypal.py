@@ -53,6 +53,7 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from ..base import AdapterResult, Capability
 from ..config import get_config
 from ..errors import (
     AdapterAuthError,
@@ -61,6 +62,7 @@ from ..errors import (
     AdapterRateLimited,
     AdapterTimeout,
     AdapterUnavailable,
+    AdapterValidationError,
 )
 from ._base import PaymentBaseAdapter, _REQUESTS_AVAILABLE, _requests
 
@@ -379,4 +381,451 @@ class PayPalAdapter(PaymentBaseAdapter):
         return {
             "disputes": normalised,
             "count": len(normalised),
+        }
+
+    # ── Orders v2 (PayPal Checkout flow) ───────────────────────
+
+    def _do_create_order(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Create a PayPal order. Params:
+
+          * ``amount`` — numeric, required. Total charge.
+          * ``currency`` — e.g. ``"USD"``. Default ``"USD"``.
+          * ``reference_id`` — optional merchant-side id
+            (Shopify order id). Echoes back on capture so
+            we can correlate.
+          * ``description`` — human-visible checkout label.
+          * ``return_url`` / ``cancel_url`` — required if we
+            want buyer redirected back to the storefront.
+          * ``brand_name`` — shown on PayPal's UI.
+        """
+        if params.get("amount") is None:
+            raise AdapterValidationError(
+                self.name, "'amount' is required",
+            )
+        try:
+            amount = float(params["amount"])
+        except (TypeError, ValueError) as exc:
+            raise AdapterValidationError(
+                self.name,
+                f"'amount' must be numeric (got {params['amount']!r})",
+            ) from exc
+        if amount <= 0:
+            raise AdapterValidationError(
+                self.name, "'amount' must be > 0",
+            )
+
+        currency = str(
+            params.get("currency") or "USD",
+        ).upper()
+        body: dict[str, Any] = {
+            "intent": "CAPTURE",
+            "purchase_units": [
+                {
+                    "amount": {
+                        "currency_code": currency,
+                        "value": f"{amount:.2f}",
+                    },
+                },
+            ],
+        }
+        unit = body["purchase_units"][0]
+        if params.get("reference_id"):
+            unit["reference_id"] = str(params["reference_id"])
+        if params.get("description"):
+            unit["description"] = str(params["description"])
+        if any(
+            params.get(k)
+            for k in (
+                "return_url", "cancel_url", "brand_name",
+            )
+        ):
+            body["application_context"] = {}
+            ac = body["application_context"]
+            if params.get("return_url"):
+                ac["return_url"] = str(params["return_url"])
+            if params.get("cancel_url"):
+                ac["cancel_url"] = str(params["cancel_url"])
+            if params.get("brand_name"):
+                ac["brand_name"] = str(params["brand_name"])
+
+        url = f"{self.base_url}/v2/checkout/orders"
+        raw = self._http_post(
+            url, body, headers=self._auth_headers(),
+        )
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=Capability.PAYMENT_CREATE_ORDER.value,
+            data=self._parse_order(raw),
+            raw=raw,
+        )
+
+    def _do_get_order(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        oid = str(params.get("order_id") or "").strip()
+        if not oid:
+            raise AdapterValidationError(
+                self.name, "'order_id' is required",
+            )
+        url = f"{self.base_url}/v2/checkout/orders/{oid}"
+        raw = self._http_get(url, self._auth_headers())
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=Capability.PAYMENT_GET_ORDER.value,
+            data=self._parse_order(raw),
+            raw=raw,
+        )
+
+    def _do_capture_order(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Capture an approved order. PayPal's capture
+        endpoint is idempotent — same request twice returns
+        the original capture id (§4b.D).
+        """
+        oid = str(params.get("order_id") or "").strip()
+        if not oid:
+            raise AdapterValidationError(
+                self.name, "'order_id' is required",
+            )
+        url = (
+            f"{self.base_url}/v2/checkout/orders/{oid}/"
+            "capture"
+        )
+        # Empty body is valid for CAPTURE intent orders
+        raw = self._http_post(
+            url, None, headers=self._auth_headers(),
+        )
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=Capability.PAYMENT_CAPTURE_ORDER.value,
+            data=self._parse_order(raw),
+            raw=raw,
+        )
+
+    # ── Payouts (send money out) ───────────────────────────────
+
+    def _do_payout(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Send money from the merchant's PayPal balance to
+        one or more recipients. Owner-driven — expected to
+        be gated by risk_gate at call sites (payout is a
+        HIGH action).
+
+        Params:
+          * ``items`` — list of
+            ``{recipient_email, amount, currency?, note?,
+              sender_item_id?}``. Required.
+          * ``email_subject`` — subject line on PayPal's
+            email notification. Optional.
+          * ``batch_id`` — our-side sender_batch_id for
+            idempotency. Required.
+        """
+        items = params.get("items") or []
+        if not isinstance(items, list) or not items:
+            raise AdapterValidationError(
+                self.name, "'items' non-empty list required",
+            )
+        batch_id = str(params.get("batch_id") or "").strip()
+        if not batch_id:
+            raise AdapterValidationError(
+                self.name, "'batch_id' is required",
+            )
+        items_out: list[dict[str, Any]] = []
+        for i, it in enumerate(items):
+            if not isinstance(it, dict):
+                raise AdapterValidationError(
+                    self.name,
+                    f"items[{i}] must be a dict",
+                )
+            email = str(it.get("recipient_email") or "").strip()
+            if not email:
+                raise AdapterValidationError(
+                    self.name,
+                    f"items[{i}] 'recipient_email' required",
+                )
+            try:
+                amt = float(it.get("amount") or 0)
+            except (TypeError, ValueError) as exc:
+                raise AdapterValidationError(
+                    self.name,
+                    f"items[{i}] 'amount' must be numeric",
+                ) from exc
+            if amt <= 0:
+                raise AdapterValidationError(
+                    self.name,
+                    f"items[{i}] 'amount' must be > 0",
+                )
+            row: dict[str, Any] = {
+                "recipient_type": "EMAIL",
+                "receiver": email,
+                "amount": {
+                    "value": f"{amt:.2f}",
+                    "currency": str(
+                        it.get("currency") or "USD",
+                    ).upper(),
+                },
+            }
+            if it.get("note"):
+                row["note"] = str(it["note"])
+            if it.get("sender_item_id"):
+                row["sender_item_id"] = str(
+                    it["sender_item_id"],
+                )
+            items_out.append(row)
+
+        body: dict[str, Any] = {
+            "sender_batch_header": {
+                "sender_batch_id": batch_id,
+                "email_subject": str(
+                    params.get("email_subject")
+                    or "You have a payment from Deguar",
+                ),
+            },
+            "items": items_out,
+        }
+        url = f"{self.base_url}/v1/payments/payouts"
+        raw = self._http_post(
+            url, body, headers=self._auth_headers(),
+        )
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=Capability.PAYMENT_PAYOUT.value,
+            data=self._parse_payout(raw),
+            raw=raw,
+        )
+
+    # ── Read-only (transactions + balance) ────────────────────
+
+    def _do_list_transactions(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        """List recent transactions via the Reporting API.
+        Params:
+
+          * ``start_date`` / ``end_date`` — ISO-8601 strings.
+            Defaults: last 7 days.
+          * ``page_size`` — 1-500. Default 50.
+        """
+        start = str(params.get("start_date") or "").strip()
+        end = str(params.get("end_date") or "").strip()
+        if not start or not end:
+            import datetime as _dt
+            now = _dt.datetime.now(_dt.timezone.utc)
+            end = end or now.strftime(
+                "%Y-%m-%dT%H:%M:%S-0000",
+            )
+            start = start or (
+                now - _dt.timedelta(days=7)
+            ).strftime("%Y-%m-%dT%H:%M:%S-0000")
+        try:
+            page_size = max(
+                1, min(int(params.get("page_size", 50)), 500),
+            )
+        except (TypeError, ValueError):
+            page_size = 50
+        import urllib.parse as _qs
+        url = (
+            f"{self.base_url}/v1/reporting/transactions?"
+            + _qs.urlencode({
+                "start_date": start,
+                "end_date": end,
+                "page_size": page_size,
+                "fields": "transaction_info,payer_info",
+            })
+        )
+        raw = self._http_get(url, self._auth_headers())
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=(
+                Capability.PAYMENT_LIST_TRANSACTIONS.value
+            ),
+            data=self._parse_transactions(raw),
+            raw=raw,
+        )
+
+    def _do_get_balance(
+        self, params: dict[str, Any],
+    ) -> AdapterResult:
+        """Return the merchant's PayPal balance per currency.
+        Read-only. Uses the Reporting API's balances endpoint."""
+        url = f"{self.base_url}/v1/reporting/balances"
+        currency = str(
+            params.get("currency") or "",
+        ).strip().upper()
+        if currency:
+            import urllib.parse as _qs
+            url += "?" + _qs.urlencode(
+                {"currency_code": currency},
+            )
+        raw = self._http_get(url, self._auth_headers())
+        return AdapterResult.success(
+            adapter=self.name,
+            capability=Capability.PAYMENT_GET_BALANCE.value,
+            data=self._parse_balance(raw),
+            raw=raw,
+        )
+
+    # ── Response parsers (stateless, testable) ────────────────
+
+    def _parse_order(
+        self, raw: Any,
+    ) -> dict[str, Any]:
+        """Normalise /v2/checkout/orders response. Covers
+        create / get / capture all in one shape — PayPal
+        returns similar envelopes for each stage."""
+        if not isinstance(raw, dict):
+            raise AdapterError(
+                self.name,
+                f"order response not a dict: "
+                f"{type(raw).__name__}",
+            )
+        approve_url = ""
+        for link in (raw.get("links") or []):
+            if not isinstance(link, dict):
+                continue
+            rel = str(link.get("rel") or "")
+            if rel in ("approve", "payer-action"):
+                approve_url = str(link.get("href") or "")
+                break
+
+        capture_id = ""
+        captured_amount = ""
+        captured_currency = ""
+        units = raw.get("purchase_units") or []
+        if units and isinstance(units[0], dict):
+            payments = (
+                units[0].get("payments") or {}
+            )
+            if isinstance(payments, dict):
+                caps = payments.get("captures") or []
+                if caps and isinstance(caps[0], dict):
+                    cap0 = caps[0]
+                    capture_id = str(cap0.get("id") or "")
+                    amt = cap0.get("amount") or {}
+                    captured_amount = str(
+                        amt.get("value") or "",
+                    )
+                    captured_currency = str(
+                        amt.get("currency_code") or "",
+                    )
+
+        return {
+            "order_id": str(raw.get("id") or ""),
+            "status": str(raw.get("status") or ""),
+            "approve_url": approve_url,
+            "capture_id": capture_id,
+            "captured_amount": captured_amount,
+            "captured_currency": captured_currency,
+        }
+
+    def _parse_payout(
+        self, raw: Any,
+    ) -> dict[str, Any]:
+        """Normalise /v1/payments/payouts response."""
+        if not isinstance(raw, dict):
+            raise AdapterError(
+                self.name,
+                f"payout response not a dict: "
+                f"{type(raw).__name__}",
+            )
+        header = raw.get("batch_header") or {}
+        return {
+            "payout_batch_id": str(
+                header.get("payout_batch_id") or "",
+            ),
+            "batch_status": str(
+                header.get("batch_status") or "",
+            ),
+            "sender_batch_id": str(
+                (
+                    header.get("sender_batch_header") or {}
+                ).get("sender_batch_id") or "",
+            ),
+            "items_count": len(raw.get("items") or []),
+        }
+
+    def _parse_transactions(
+        self, raw: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise AdapterError(
+                self.name,
+                "transactions response not a dict",
+            )
+        details = raw.get("transaction_details") or []
+        out: list[dict[str, Any]] = []
+        for row in details:
+            if not isinstance(row, dict):
+                continue
+            info = row.get("transaction_info") or {}
+            payer = (row.get("payer_info") or {})
+            amt = info.get("transaction_amount") or {}
+            out.append({
+                "id": str(
+                    info.get("transaction_id") or "",
+                ),
+                "status": str(
+                    info.get("transaction_status") or "",
+                ),
+                "event_code": str(
+                    info.get("transaction_event_code") or "",
+                ),
+                "amount": str(amt.get("value") or ""),
+                "currency": str(
+                    amt.get("currency_code") or "",
+                ),
+                "initiation_date": str(
+                    info.get("transaction_initiation_date")
+                    or "",
+                ),
+                "payer_email": str(
+                    payer.get("email_address") or "",
+                ),
+                "payer_name": str(
+                    (
+                        payer.get("payer_name") or {}
+                    ).get("alternate_full_name") or "",
+                ),
+            })
+        return {
+            "transactions": out,
+            "count": len(out),
+            "start_date": str(raw.get("account_number") or ""),
+        }
+
+    def _parse_balance(
+        self, raw: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise AdapterError(
+                self.name,
+                "balance response not a dict",
+            )
+        balances = raw.get("balances") or []
+        out: list[dict[str, Any]] = []
+        for b in balances:
+            if not isinstance(b, dict):
+                continue
+            total = b.get("total_balance") or {}
+            available = b.get("available_balance") or {}
+            out.append({
+                "currency": str(
+                    b.get("currency") or "",
+                ),
+                "total_value": str(
+                    total.get("value") or "",
+                ),
+                "available_value": str(
+                    available.get("value") or "",
+                ),
+                "primary": bool(b.get("primary")),
+            })
+        return {
+            "balances": out,
+            "count": len(out),
+            "as_of_time": str(raw.get("as_of_time") or ""),
         }
