@@ -163,7 +163,13 @@ class _InstallHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/callback":
+        # Accept both "/" (App URL) and "/callback" (OAuth
+        # redirect). When Shopify sends the operator to /
+        # without a code (e.g. admin panel tile click), we
+        # kick the OAuth flow by redirecting to /admin/oauth/
+        # authorize. When Shopify sends /callback with a
+        # code, we exchange it for a token.
+        if parsed.path not in ("/", "/callback"):
             self._reply(
                 404, "ShopAI install: unknown path "
                 f"{parsed.path}",
