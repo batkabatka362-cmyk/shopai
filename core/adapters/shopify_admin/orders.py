@@ -292,6 +292,49 @@ class OrderRisks:
         return [r for r in rows if isinstance(r, dict)]
 
     @staticmethod
+    def get(
+        client: ShopifyAdminClient,
+        order_id: int | str,
+        risk_id: int | str,
+    ) -> dict[str, Any]:
+        result = client.get(
+            f"orders/{order_id}/risks/{risk_id}.json",
+        )
+        risk = result.get("risk")
+        if not isinstance(risk, dict):
+            raise ShopifyAdminError(
+                f"risk {risk_id} not returned",
+                path=(
+                    f"orders/{order_id}/risks/{risk_id}.json"
+                ),
+            )
+        return risk
+
+    @staticmethod
+    def update(
+        client: ShopifyAdminClient,
+        order_id: int | str,
+        risk_id: int | str,
+        *,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not fields:
+            raise ValueError("fields: non-empty dict required")
+        result = client.put(
+            f"orders/{order_id}/risks/{risk_id}.json",
+            {"risk": {"id": int(risk_id), **fields}},
+        )
+        risk = result.get("risk")
+        if not isinstance(risk, dict):
+            raise ShopifyAdminError(
+                "risk not returned by update",
+                path=(
+                    f"orders/{order_id}/risks/{risk_id}.json"
+                ),
+            )
+        return risk
+
+    @staticmethod
     def create(
         client: ShopifyAdminClient,
         order_id: int | str,

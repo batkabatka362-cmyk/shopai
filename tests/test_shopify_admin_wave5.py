@@ -287,3 +287,145 @@ class TestCurrencies:
         }
         with pytest.raises(ShopifyAdminError):
             Currencies.disable(c, ["USD"])
+
+
+# ── OrderRisks (wave 5b additions) ───────────────────────
+
+
+from core.adapters.shopify_admin.orders import OrderRisks
+
+
+class TestOrderRisksGetUpdate:
+    def test_get_happy(self):
+        c = _fake_client()
+        c.get.return_value = {
+            "risk": {
+                "id": 7, "order_id": 99,
+                "recommendation": "accept",
+            },
+        }
+        out = OrderRisks.get(c, 99, 7)
+        assert out["recommendation"] == "accept"
+        assert (
+            c.get.call_args[0][0]
+            == "orders/99/risks/7.json"
+        )
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            OrderRisks.get(c, 99, 7)
+
+    def test_update_empty_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            OrderRisks.update(c, 99, 7, fields={})
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "risk": {
+                "id": 7, "recommendation": "cancel",
+            },
+        }
+        out = OrderRisks.update(
+            c, 99, 7,
+            fields={"recommendation": "cancel"},
+        )
+        assert out["recommendation"] == "cancel"
+        body = c.put.call_args[0][1]["risk"]
+        assert body["id"] == 7
+
+
+# ── Disputes ─────────────────────────────────────────────
+
+
+from core.adapters.shopify_admin.disputes import Disputes
+
+
+class TestDisputes:
+    def test_list_basic(self):
+        c = _fake_client()
+        c.get.return_value = {"disputes": [
+            {"id": 1, "status": "needs_response"},
+            "malformed",
+        ]}
+        out = Disputes.list_disputes(c)
+        assert len(out) == 1
+        assert (
+            c.get.call_args[0][0]
+            == "shopify_payments/disputes.json"
+        )
+
+    def test_list_validates_status_enum(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Disputes.list_disputes(c, status="fake")
+
+    def test_list_with_filters(self):
+        c = _fake_client()
+        c.get.return_value = {"disputes": []}
+        Disputes.list_disputes(
+            c,
+            status="under_review",
+            initiated_at_min="2026-04-01T00:00:00Z",
+            initiated_at_max="2026-04-30T00:00:00Z",
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["status"] == "under_review"
+        assert params["initiated_at_min"] == (
+            "2026-04-01T00:00:00Z"
+        )
+        assert params["initiated_at_max"] == (
+            "2026-04-30T00:00:00Z"
+        )
+
+    def test_limit_clamped(self):
+        c = _fake_client()
+        c.get.return_value = {"disputes": []}
+        Disputes.list_disputes(c, limit=9999)
+        assert c.get.call_args[1]["params"]["limit"] == 250
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            Disputes.get(c, 9)
+
+    def test_needs_response_shortcut(self):
+        c = _fake_client()
+        c.get.return_value = {"disputes": [
+            {"id": 1, "status": "needs_response"},
+        ]}
+        Disputes.needs_response(c)
+        params = c.get.call_args[1]["params"]
+        assert params["status"] == "needs_response"
+
+    def test_loss_total_sums_lost_and_refunded(self):
+        """Hits both ``lost`` and ``charge_refunded`` buckets
+        and sums their ``amount`` fields."""
+        c = _fake_client()
+        # Two list calls; return lists keyed by status param.
+        returns = {
+            "lost": {"disputes": [
+                {"id": 1, "amount": "12.50"},
+                {"id": 2, "amount": "3.00"},
+                "malformed",
+            ]},
+            "charge_refunded": {"disputes": [
+                {"id": 3, "amount": "10.00"},
+                {"id": 4, "amount": "not-numeric"},
+            ]},
+        }
+
+        def side_effect(path, *, params=None):
+            status = (params or {}).get("status")
+            return returns[status]
+
+        c.get.side_effect = side_effect
+        out = Disputes.loss_total_usd(
+            c, initiated_at_min="2026-04-01",
+        )
+        # 12.50 + 3.00 + 10.00 = 25.50 (bad amount skipped).
+        assert out == 25.50
