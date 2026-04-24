@@ -1062,3 +1062,258 @@ class TestArticleComments:
         c.post.return_value = {}
         with pytest.raises(ShopifyAdminError):
             ArticleComments.approve(c, 1)
+
+
+# ── Reports / Payouts / Balance / Tax / Users (5f) ───────
+
+
+from core.adapters.shopify_admin.reports import (
+    Balance, Payouts, Reports, TaxRates, Users,
+)
+
+
+class TestReports:
+    def test_list(self):
+        c = _fake_client()
+        c.get.return_value = {"reports": [
+            {"id": 1, "name": "Sales"}, "oops",
+        ]}
+        out = Reports.list_reports(c, category="sales")
+        assert len(out) == 1
+        params = c.get.call_args[1]["params"]
+        assert params["category"] == "sales"
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            Reports.get(c, 1)
+
+
+class TestPayouts:
+    def test_list_validates_status(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            Payouts.list_payouts(c, status="paid_yesterday")
+
+    def test_list_happy(self):
+        c = _fake_client()
+        c.get.return_value = {"payouts": [
+            {"id": 1, "status": "paid"}, "oops",
+        ]}
+        Payouts.list_payouts(
+            c, status="paid", date_min="2026-04-01",
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["status"] == "paid"
+        assert params["date_min"] == "2026-04-01"
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            Payouts.get(c, 1)
+
+    def test_list_transactions_by_payout(self):
+        c = _fake_client()
+        c.get.return_value = {"transactions": [
+            {"id": 1, "type": "charge"},
+        ]}
+        Payouts.list_transactions(c, payout_id=99)
+        assert (
+            c.get.call_args[0][0]
+            == "shopify_payments/balance/transactions.json"
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["payout_id"] == 99
+
+
+class TestBalance:
+    def test_get_single_currency_normalised_to_list(self):
+        c = _fake_client()
+        # Single-currency stores return a dict, not a list.
+        c.get.return_value = {
+            "balance": {"amount": "100.0", "currency": "USD"},
+        }
+        out = Balance.get(c)
+        assert len(out) == 1
+        assert out[0]["currency"] == "USD"
+
+    def test_get_multi_currency(self):
+        c = _fake_client()
+        c.get.return_value = {"balance": [
+            {"amount": "100.0", "currency": "USD"},
+            {"amount": "50.0", "currency": "EUR"},
+            "malformed",
+        ]}
+        out = Balance.get(c)
+        assert len(out) == 2
+
+
+class TestTaxRates:
+    def test_list_countries(self):
+        c = _fake_client()
+        c.get.return_value = {"countries": [
+            {"id": 1, "name": "United States"}, "oops",
+        ]}
+        out = TaxRates.list_countries(c)
+        assert len(out) == 1
+
+    def test_list_provinces(self):
+        c = _fake_client()
+        c.get.return_value = {"provinces": [
+            {"id": 1, "code": "CA"},
+        ]}
+        TaxRates.list_provinces(c, 1)
+        assert (
+            c.get.call_args[0][0] == "countries/1/provinces.json"
+        )
+
+    def test_get_country_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            TaxRates.get_country(c, 1)
+
+
+class TestUsers:
+    def test_list(self):
+        c = _fake_client()
+        c.get.return_value = {"users": [
+            {"id": 1}, "oops",
+        ]}
+        out = Users.list_users(c)
+        assert len(out) == 1
+
+    def test_get(self):
+        c = _fake_client()
+        c.get.return_value = {"user": {"id": 1}}
+        out = Users.get(c, 1)
+        assert out["id"] == 1
+
+    def test_current(self):
+        c = _fake_client()
+        c.get.return_value = {"user": {
+            "id": 7, "email": "owner@deguar.com",
+        }}
+        out = Users.current(c)
+        assert out["id"] == 7
+        assert c.get.call_args[0][0] == "users/current.json"
+
+
+# ── BulkOperations (5f) ──────────────────────────────────
+
+
+from core.adapters.shopify_admin.bulk_operations import (
+    BulkOperations,
+)
+
+
+class TestBulkOperations:
+    def test_run_query_requires_query(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            BulkOperations.run_query(c, "")
+
+    def test_run_query_happy(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"bulkOperationRunQuery": {
+                "bulkOperation": {
+                    "id": "gid://shopify/BulkOperation/1",
+                    "status": "CREATED",
+                },
+                "userErrors": [],
+            }},
+        }
+        out = BulkOperations.run_query(
+            c, "{ products(first: 200) { edges { node { id }}}}",
+        )
+        assert out["id"] == (
+            "gid://shopify/BulkOperation/1"
+        )
+        assert out["status"] == "CREATED"
+
+    def test_run_query_user_error_raises(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"bulkOperationRunQuery": {
+                "bulkOperation": None,
+                "userErrors": [{
+                    "field": "query",
+                    "message": "unsupported field",
+                }],
+            }},
+        }
+        with pytest.raises(ShopifyAdminError):
+            BulkOperations.run_query(c, "{ x }")
+
+    def test_run_mutation_requires_path(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            BulkOperations.run_mutation(
+                c, mutation="mutation x {}",
+                staged_upload_path="",
+            )
+
+    def test_run_mutation_happy(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"bulkOperationRunMutation": {
+                "bulkOperation": {
+                    "id": "gid://shopify/BulkOperation/2",
+                    "status": "CREATED",
+                },
+                "userErrors": [],
+            }},
+        }
+        out = BulkOperations.run_mutation(
+            c,
+            mutation="mutation productUpdate {...}",
+            staged_upload_path="/tmp/x.jsonl",
+        )
+        assert out["id"] == (
+            "gid://shopify/BulkOperation/2"
+        )
+
+    def test_current_returns_empty_when_none(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"currentBulkOperation": None},
+        }
+        out = BulkOperations.current(c)
+        assert out == {}
+
+    def test_current_normalises(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"currentBulkOperation": {
+                "id": "gid://shopify/BulkOperation/1",
+                "status": "COMPLETED",
+                "url": "https://jsonl.example",
+                "objectCount": 99,
+                "query": "{ products(first: 1) { ...}}",
+            }},
+        }
+        out = BulkOperations.current(c)
+        assert out["status"] == "COMPLETED"
+        assert out["url"] == "https://jsonl.example"
+        assert out["object_count"] == 99
+
+    def test_cancel_accepts_bare_id(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"bulkOperationCancel": {
+                "bulkOperation": {
+                    "id": "gid://shopify/BulkOperation/1",
+                    "status": "CANCELED",
+                },
+                "userErrors": [],
+            }},
+        }
+        out = BulkOperations.cancel(c, 1)
+        assert out["status"] == "CANCELED"
+        assert (
+            c.graphql.call_args[1]["variables"]["id"]
+            == "gid://shopify/BulkOperation/1"
+        )
