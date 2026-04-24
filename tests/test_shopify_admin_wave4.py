@@ -13,6 +13,9 @@ from core.adapters.shopify_admin.collections import (
     Collects, CustomCollections, SmartCollections,
 )
 from core.adapters.shopify_admin.gift_cards import GiftCards
+from core.adapters.shopify_admin.marketing_events import (
+    MarketingEvents,
+)
 from core.adapters.shopify_admin.markets import (
     MarketCurrencies, Markets, MarketWebPresences,
 )
@@ -836,4 +839,241 @@ class TestMarketCurrencies:
         with pytest.raises(ShopifyAdminError):
             MarketCurrencies.update(
                 c, market_id=1, base_currency="XYZ",
+            )
+
+
+# ── MarketingEvents ───────────────────────────────────────
+
+
+class TestMarketingEvents:
+    def test_list(self):
+        c = _fake_client()
+        c.get.return_value = {"marketing_events": [
+            {"id": 1, "event_type": "ad"},
+            "oops",
+            {"id": 2, "event_type": "newsletter"},
+        ]}
+        out = MarketingEvents.list_events(c)
+        assert len(out) == 2
+        assert (
+            c.get.call_args[1]["params"]["limit"] == 50
+        )
+
+    def test_list_limit_clamped(self):
+        c = _fake_client()
+        c.get.return_value = {"marketing_events": []}
+        MarketingEvents.list_events(c, limit=9999)
+        assert c.get.call_args[1]["params"]["limit"] == 250
+
+    def test_get_happy(self):
+        c = _fake_client()
+        c.get.return_value = {
+            "marketing_event": {"id": 7, "event_type": "ad"},
+        }
+        out = MarketingEvents.get(c, 7)
+        assert out["event_type"] == "ad"
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            MarketingEvents.get(c, 7)
+
+    def test_count(self):
+        c = _fake_client()
+        c.get.return_value = {"count": 11}
+        assert MarketingEvents.count(c) == 11
+
+    def test_count_non_numeric(self):
+        c = _fake_client()
+        c.get.return_value = {"count": "oops"}
+        assert MarketingEvents.count(c) == 0
+
+    def test_create_rejects_bad_event_type(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketingEvents.create(
+                c,
+                event_type="spam",
+                marketing_channel="social",
+                referring_domain="facebook.com",
+                started_at="2026-04-24T00:00:00Z",
+            )
+
+    def test_create_rejects_bad_marketing_channel(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketingEvents.create(
+                c,
+                event_type="ad",
+                marketing_channel="cosmic-waves",
+                referring_domain="tiktok.com",
+                started_at="2026-04-24T00:00:00Z",
+            )
+
+    def test_create_requires_referring_domain(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketingEvents.create(
+                c,
+                event_type="ad",
+                marketing_channel="social",
+                referring_domain="",
+                started_at="2026-04-24T00:00:00Z",
+            )
+
+    def test_create_happy_minimal(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "marketing_event": {"id": 55, "event_type": "ad"},
+        }
+        out = MarketingEvents.create(
+            c,
+            event_type="AD",
+            marketing_channel="Social",
+            referring_domain="facebook.com",
+            started_at="2026-04-24T00:00:00Z",
+        )
+        assert out["id"] == 55
+        body = c.post.call_args[0][1]["marketing_event"]
+        # Enums lowercased.
+        assert body["event_type"] == "ad"
+        assert body["marketing_channel"] == "social"
+        assert body["referring_domain"] == "facebook.com"
+        assert body["started_at"] == "2026-04-24T00:00:00Z"
+        # Optional fields absent.
+        assert "budget" not in body
+        assert "marketed_resources" not in body
+
+    def test_create_datetime_iso_serialised(self):
+        import datetime as dt
+        c = _fake_client()
+        c.post.return_value = {"marketing_event": {"id": 1}}
+        MarketingEvents.create(
+            c,
+            event_type="ad",
+            marketing_channel="social",
+            referring_domain="tiktok.com",
+            started_at=dt.datetime(2026, 4, 24, 10, 0, 0),
+        )
+        body = c.post.call_args[0][1]["marketing_event"]
+        assert body["started_at"].startswith("2026-04-24T10:00:00")
+        # Naive datetime -> UTC stamped on serialisation.
+        assert "+00:00" in body["started_at"]
+
+    def test_create_full_payload(self):
+        c = _fake_client()
+        c.post.return_value = {"marketing_event": {"id": 1}}
+        MarketingEvents.create(
+            c,
+            event_type="ad",
+            marketing_channel="social",
+            referring_domain="facebook.com",
+            started_at="2026-04-24T00:00:00Z",
+            ended_at="2026-04-27T00:00:00Z",
+            description="Spring sale",
+            budget=20.0,
+            currency="usd",
+            manage_url="https://ads.facebook.com/...",
+            preview_url="https://facebook.com/preview",
+            utm_campaign="spring-2026",
+            utm_source="facebook",
+            utm_medium="paid-social",
+            marketed_resources=[
+                {"type": "product", "id": 12345},
+                "malformed",
+                {"type": "", "id": 1},
+            ],
+        )
+        body = c.post.call_args[0][1]["marketing_event"]
+        assert body["budget"] == "20.00"
+        assert body["currency"] == "USD"
+        assert body["utm_campaign"] == "spring-2026"
+        assert body["marketed_resources"] == [
+            {"type": "product", "id": 12345},
+        ]
+
+    def test_create_budget_non_numeric_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketingEvents.create(
+                c,
+                event_type="ad",
+                marketing_channel="social",
+                referring_domain="facebook.com",
+                started_at="2026-04-24T00:00:00Z",
+                budget="not-a-number",
+            )
+
+    def test_update_requires_fields(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketingEvents.update(c, 1, fields={})
+
+    def test_update_validates_enums(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketingEvents.update(
+                c, 1, fields={"event_type": "garbage"},
+            )
+        with pytest.raises(ValueError):
+            MarketingEvents.update(
+                c, 1, fields={"marketing_channel": "cosmic"},
+            )
+
+    def test_update_happy(self):
+        c = _fake_client()
+        c.put.return_value = {
+            "marketing_event": {"id": 1, "description": "new"},
+        }
+        out = MarketingEvents.update(
+            c, 1, fields={"description": "new"},
+        )
+        assert out["description"] == "new"
+        body = c.put.call_args[0][1]["marketing_event"]
+        assert body["id"] == 1
+        assert body["description"] == "new"
+
+    def test_delete(self):
+        c = _fake_client()
+        MarketingEvents.delete(c, 1)
+        assert (
+            c.delete.call_args[0][0]
+            == "marketing_events/1.json"
+        )
+
+    def test_report_engagement_happy(self):
+        c = _fake_client()
+        c.post.return_value = {"engagements": [{"ok": True}]}
+        out = MarketingEvents.report_engagement(
+            c, 42,
+            occurred_on="2026-04-24",
+            impressions_count=10000,
+            clicks_count=150,
+            ad_spend=25.5,
+            currency_code="usd",
+            is_cumulative=True,
+        )
+        assert out == {"engagements": [{"ok": True}]}
+        assert (
+            c.post.call_args[0][0]
+            == "marketing_events/42/engagements.json"
+        )
+        payload = c.post.call_args[0][1]["engagements"][0]
+        assert payload["occurred_on"] == "2026-04-24"
+        assert payload["impressions_count"] == 10000
+        assert payload["clicks_count"] == 150
+        assert payload["ad_spend"] == "25.50"
+        assert payload["currency_code"] == "USD"
+        assert payload["is_cumulative"] is True
+        # Un-set metrics omitted.
+        assert "views_count" not in payload
+
+    def test_report_engagement_bad_spend_raises(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            MarketingEvents.report_engagement(
+                c, 42,
+                occurred_on="2026-04-24",
+                ad_spend="nope",
             )
