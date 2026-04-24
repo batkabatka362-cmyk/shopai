@@ -824,3 +824,241 @@ class TestCustomerSegments:
             c.graphql.call_args[1]["variables"]["id"]
             == "gid://shopify/Segment/7"
         )
+
+
+# ── Automatic discounts (5e) ──────────────────────────────
+
+
+from core.adapters.shopify_admin.discounts import (
+    AutomaticDiscounts,
+)
+
+
+class TestAutomaticDiscounts:
+    def test_list(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"automaticDiscountNodes": {"edges": [
+                {"node": {
+                    "id":
+                        "gid://shopify/DiscountAutomaticNode/1",
+                    "automaticDiscount": {
+                        "title": "Spring 10%",
+                        "status": "ACTIVE",
+                        "startsAt": "2026-04-01T00:00:00Z",
+                        "endsAt": "2026-04-30T00:00:00Z",
+                    },
+                }},
+                "malformed",
+            ]}},
+        }
+        out = AutomaticDiscounts.list_discounts(c)
+        assert len(out) == 1
+        assert out[0]["title"] == "Spring 10%"
+        assert out[0]["status"] == "ACTIVE"
+
+    def test_create_basic_requires_title(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            AutomaticDiscounts.create_basic_percentage(
+                c, title="", value_pct=10,
+                starts_at="2026-04-01T00:00:00Z",
+            )
+
+    def test_create_basic_invalid_pct(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            AutomaticDiscounts.create_basic_percentage(
+                c, title="x", value_pct=0,
+                starts_at="2026-04-01T00:00:00Z",
+            )
+        with pytest.raises(ValueError):
+            AutomaticDiscounts.create_basic_percentage(
+                c, title="x", value_pct=150,
+                starts_at="2026-04-01T00:00:00Z",
+            )
+
+    def test_create_basic_happy(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"discountAutomaticBasicCreate": {
+                "automaticDiscountNode": {
+                    "id":
+                        "gid://shopify/DiscountAutomaticNode/7",
+                },
+                "userErrors": [],
+            }},
+        }
+        out = AutomaticDiscounts.create_basic_percentage(
+            c,
+            title="Spring 10%",
+            value_pct=10,
+            starts_at="2026-04-01T00:00:00Z",
+            ends_at="2026-04-30T00:00:00Z",
+        )
+        assert out == (
+            "gid://shopify/DiscountAutomaticNode/7"
+        )
+        variables = c.graphql.call_args[1]["variables"]
+        inp = variables["input"]
+        # 10% becomes 0.10 decimal on the wire.
+        assert inp["customerGets"]["value"][
+            "percentage"
+        ] == 0.10
+        assert inp["endsAt"] == "2026-04-30T00:00:00Z"
+
+    def test_create_basic_user_error_raises(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"discountAutomaticBasicCreate": {
+                "automaticDiscountNode": None,
+                "userErrors": [{
+                    "field": "title",
+                    "message": "already exists",
+                }],
+            }},
+        }
+        with pytest.raises(ShopifyAdminError):
+            AutomaticDiscounts.create_basic_percentage(
+                c, title="Dupe", value_pct=10,
+                starts_at="2026-04-01T00:00:00Z",
+            )
+
+    def test_create_bxgy_validates_quantities(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            AutomaticDiscounts.create_bxgy(
+                c, title="BOGO",
+                customer_buys_qty=0,
+                customer_gets_qty=1,
+                starts_at="2026-04-01T00:00:00Z",
+            )
+
+    def test_create_bxgy_happy(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"discountAutomaticBxgyCreate": {
+                "automaticDiscountNode": {
+                    "id":
+                        "gid://shopify/DiscountAutomaticNode/9",
+                },
+                "userErrors": [],
+            }},
+        }
+        out = AutomaticDiscounts.create_bxgy(
+            c, title="BOGO",
+            customer_buys_qty=2,
+            customer_gets_qty=1,
+            starts_at="2026-04-01T00:00:00Z",
+            uses_per_order_limit=1,
+        )
+        assert out == (
+            "gid://shopify/DiscountAutomaticNode/9"
+        )
+        inp = c.graphql.call_args[1]["variables"]["input"]
+        assert inp["customerBuys"]["value"]["quantity"] == "2"
+        assert inp["usesPerOrderLimit"] == "1"
+
+    def test_delete_returns_gid(self):
+        c = _fake_client()
+        c.graphql.return_value = {
+            "data": {"discountAutomaticDelete": {
+                "deletedAutomaticDiscountId":
+                    "gid://shopify/DiscountAutomaticNode/7",
+                "userErrors": [],
+            }},
+        }
+        out = AutomaticDiscounts.delete(c, 7)
+        assert out == (
+            "gid://shopify/DiscountAutomaticNode/7"
+        )
+
+
+# ── ArticleComments (5e) ─────────────────────────────────
+
+
+from core.adapters.shopify_admin.content import (
+    ArticleComments,
+)
+
+
+class TestArticleComments:
+    def test_list_basic(self):
+        c = _fake_client()
+        c.get.return_value = {"comments": [
+            {"id": 1, "status": "unapproved"},
+            "malformed",
+        ]}
+        out = ArticleComments.list_comments(c)
+        assert len(out) == 1
+        assert c.get.call_args[0][0] == "comments.json"
+
+    def test_list_validates_status(self):
+        c = _fake_client()
+        with pytest.raises(ValueError):
+            ArticleComments.list_comments(
+                c, status="pending",
+            )
+
+    def test_list_with_article_filter(self):
+        c = _fake_client()
+        c.get.return_value = {"comments": []}
+        ArticleComments.list_comments(
+            c, article_id=42, status="unapproved",
+        )
+        params = c.get.call_args[1]["params"]
+        assert params["article_id"] == 42
+        assert params["status"] == "unapproved"
+
+    def test_get_missing_raises(self):
+        c = _fake_client()
+        c.get.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            ArticleComments.get(c, 1)
+
+    def test_approve(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "comment": {"id": 1, "status": "published"},
+        }
+        ArticleComments.approve(c, 1)
+        assert c.post.call_args[0][0] == (
+            "comments/1/approve.json"
+        )
+        assert c.post.call_args[0][1] == {}
+
+    def test_mark_spam(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "comment": {"id": 1, "status": "spam"},
+        }
+        ArticleComments.mark_spam(c, 1)
+        assert c.post.call_args[0][0] == (
+            "comments/1/spam.json"
+        )
+
+    def test_restore(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "comment": {"id": 1, "status": "unapproved"},
+        }
+        ArticleComments.restore(c, 1)
+        assert c.post.call_args[0][0] == (
+            "comments/1/restore.json"
+        )
+
+    def test_remove(self):
+        c = _fake_client()
+        c.post.return_value = {
+            "comment": {"id": 1, "status": "removed"},
+        }
+        ArticleComments.remove(c, 1)
+        assert c.post.call_args[0][0] == (
+            "comments/1/remove.json"
+        )
+
+    def test_missing_comment_response_raises(self):
+        c = _fake_client()
+        c.post.return_value = {}
+        with pytest.raises(ShopifyAdminError):
+            ArticleComments.approve(c, 1)

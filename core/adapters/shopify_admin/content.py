@@ -463,3 +463,124 @@ class Pages:
         client: ShopifyAdminClient, page_id: int | str,
     ) -> None:
         client.delete(f"pages/{page_id}.json")
+
+
+class ArticleComments:
+    """Shopify blog article comments (moderation surface).
+
+    Comments move through a state machine:
+      unapproved → (approved | spam | removed)
+
+    ``approved`` shows on the storefront; ``spam`` is
+    quarantined; ``removed`` is soft-deleted but kept for
+    audit. This class exposes the moderation verbs every
+    content platform needs — read / approve / spam / restore
+    / remove.
+    """
+
+    _STATUS = {"approved", "unapproved", "spam", "removed"}
+
+    @staticmethod
+    def list_comments(
+        client: ShopifyAdminClient,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+        article_id: int | str | None = None,
+    ) -> list[dict[str, Any]]:
+        if status is not None and status not in (
+            ArticleComments._STATUS
+        ):
+            raise ValueError(
+                f"status must be one of "
+                f"{sorted(ArticleComments._STATUS)}",
+            )
+        params: dict[str, Any] = {
+            "limit": max(1, min(int(limit), 250)),
+        }
+        if status:
+            params["status"] = status
+        if article_id is not None:
+            params["article_id"] = int(article_id)
+        result = client.get(
+            "comments.json", params=params,
+        )
+        rows = result.get("comments") or []
+        return [r for r in rows if isinstance(r, dict)]
+
+    @staticmethod
+    def get(
+        client: ShopifyAdminClient,
+        comment_id: int | str,
+    ) -> dict[str, Any]:
+        result = client.get(
+            f"comments/{comment_id}.json",
+        )
+        comment = result.get("comment")
+        if not isinstance(comment, dict):
+            raise ShopifyAdminError(
+                f"comment {comment_id} not returned",
+                path=f"comments/{comment_id}.json",
+            )
+        return comment
+
+    @staticmethod
+    def approve(
+        client: ShopifyAdminClient,
+        comment_id: int | str,
+    ) -> dict[str, Any]:
+        return ArticleComments._transition(
+            client, comment_id, "approve",
+        )
+
+    @staticmethod
+    def mark_spam(
+        client: ShopifyAdminClient,
+        comment_id: int | str,
+    ) -> dict[str, Any]:
+        return ArticleComments._transition(
+            client, comment_id, "spam",
+        )
+
+    @staticmethod
+    def restore(
+        client: ShopifyAdminClient,
+        comment_id: int | str,
+    ) -> dict[str, Any]:
+        """Move a spam/removed comment back to unapproved
+        for fresh moderation."""
+        return ArticleComments._transition(
+            client, comment_id, "restore",
+        )
+
+    @staticmethod
+    def remove(
+        client: ShopifyAdminClient,
+        comment_id: int | str,
+    ) -> dict[str, Any]:
+        return ArticleComments._transition(
+            client, comment_id, "remove",
+        )
+
+    @staticmethod
+    def _transition(
+        client: ShopifyAdminClient,
+        comment_id: int | str,
+        verb: str,
+    ) -> dict[str, Any]:
+        if verb not in (
+            "approve", "spam", "restore", "remove",
+        ):
+            raise ValueError(
+                f"unsupported transition: {verb}",
+            )
+        result = client.post(
+            f"comments/{comment_id}/{verb}.json", {},
+        )
+        comment = result.get("comment")
+        if not isinstance(comment, dict):
+            raise ShopifyAdminError(
+                f"comment not returned by {verb}",
+                path=f"comments/{comment_id}/{verb}.json",
+            )
+        return comment

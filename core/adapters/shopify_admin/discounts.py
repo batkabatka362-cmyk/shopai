@@ -298,3 +298,305 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ",
     )
+
+
+# ── Automatic discounts (GraphQL) ─────────────────────────
+
+
+_AUTO_DISCOUNT_BASIC_CREATE = """
+mutation autoDiscount($input: DiscountAutomaticBasicInput!) {
+  discountAutomaticBasicCreate(automaticBasicDiscount: $input) {
+    automaticDiscountNode { id }
+    userErrors { field message }
+  }
+}
+"""
+
+
+_AUTO_DISCOUNT_BXGY_CREATE = """
+mutation bxgyDiscount($input: DiscountAutomaticBxgyInput!) {
+  discountAutomaticBxgyCreate(automaticBxgyDiscount: $input) {
+    automaticDiscountNode { id }
+    userErrors { field message }
+  }
+}
+"""
+
+
+_AUTO_DISCOUNT_DELETE = """
+mutation deleteAutoDiscount($id: ID!) {
+  discountAutomaticDelete(id: $id) {
+    deletedAutomaticDiscountId
+    userErrors { field message }
+  }
+}
+"""
+
+
+_AUTO_DISCOUNT_LIST = """
+query listAutoDiscounts($first: Int!) {
+  automaticDiscountNodes(first: $first) {
+    edges {
+      node {
+        id
+        automaticDiscount {
+          ... on DiscountAutomaticBasic {
+            title
+            status
+            startsAt
+            endsAt
+          }
+          ... on DiscountAutomaticBxgy {
+            title
+            status
+            startsAt
+            endsAt
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _auto_discount_gid(discount_id: int | str) -> str:
+    s = str(discount_id).strip()
+    if s.startswith("gid://"):
+        return s
+    return f"gid://shopify/DiscountAutomaticNode/{s}"
+
+
+def _auto_user_errors(
+    payload: dict[str, Any], mutation: str,
+) -> None:
+    errors = (payload.get(mutation) or {}).get(
+        "userErrors",
+    ) or []
+    if errors:
+        msgs = "; ".join(
+            f"{e.get('field')}: {e.get('message')}"
+            for e in errors if isinstance(e, dict)
+        )
+        raise ShopifyAdminError(
+            f"{mutation} userErrors: {msgs}",
+            path="graphql.json",
+            body=str(payload),
+        )
+
+
+class AutomaticDiscounts:
+    """GraphQL automatic discounts — applied at checkout
+    without a code.
+
+    Two flavours:
+      * basic — percentage or fixed-amount off the order
+        subtotal. Used for "10% off everything"
+        store-wide sales.
+      * bxgy — buy-X-get-Y. Used for BOGO, "buy 2 get 1
+        free", tiered bundle deals.
+
+    Code-driven discounts still live under ``Discounts``
+    above; automatics are fundamentally different because
+    they apply without buyer action, so the timing
+    controls (startsAt / endsAt) matter more than the
+    per-customer usage limit.
+    """
+
+    @staticmethod
+    def list_discounts(
+        client: ShopifyAdminClient,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        result = client.graphql(
+            _AUTO_DISCOUNT_LIST,
+            variables={
+                "first": max(1, min(int(limit), 250)),
+            },
+        )
+        edges = (
+            (result.get("data") or {}).get(
+                "automaticDiscountNodes",
+            ) or {}
+        ).get("edges") or []
+        out: list[dict[str, Any]] = []
+        for e in edges:
+            if not isinstance(e, dict):
+                continue
+            node = e.get("node")
+            if not isinstance(node, dict):
+                continue
+            ad = node.get("automaticDiscount") or {}
+            out.append({
+                "id": str(node.get("id") or ""),
+                "title": str(ad.get("title") or ""),
+                "status": str(ad.get("status") or ""),
+                "starts_at": str(ad.get("startsAt") or ""),
+                "ends_at": str(ad.get("endsAt") or ""),
+            })
+        return out
+
+    @staticmethod
+    def create_basic_percentage(
+        client: ShopifyAdminClient,
+        *,
+        title: str,
+        value_pct: float,
+        starts_at: str,
+        ends_at: str | None = None,
+        combines_with_product: bool = False,
+        combines_with_order: bool = False,
+        combines_with_shipping: bool = False,
+    ) -> str:
+        """Order-wide percentage discount applied
+        automatically. Returns the GID of the new
+        DiscountAutomaticNode.
+
+        Shopify quirk: percentage values on GraphQL are
+        expressed as decimals (10% = 0.10), NOT 10.0. The
+        helper converts.
+        """
+        if not title or not starts_at:
+            raise ValueError(
+                "title + starts_at required",
+            )
+        if value_pct <= 0 or value_pct > 100:
+            raise ValueError(
+                "value_pct must be in (0, 100]",
+            )
+        input_ = {
+            "title": title,
+            "startsAt": starts_at,
+            "customerGets": {
+                "value": {
+                    "percentage": float(value_pct) / 100.0,
+                },
+                "items": {"all": True},
+            },
+            "minimumRequirement": {
+                "subtotal": {
+                    "greaterThanOrEqualToSubtotal": "0.0",
+                },
+            },
+            "combinesWith": {
+                "productDiscounts": bool(
+                    combines_with_product,
+                ),
+                "orderDiscounts": bool(combines_with_order),
+                "shippingDiscounts": bool(
+                    combines_with_shipping,
+                ),
+            },
+        }
+        if ends_at:
+            input_["endsAt"] = ends_at
+        result = client.graphql(
+            _AUTO_DISCOUNT_BASIC_CREATE,
+            variables={"input": input_},
+        )
+        payload = result.get("data") or {}
+        _auto_user_errors(
+            payload, "discountAutomaticBasicCreate",
+        )
+        node = (
+            payload.get("discountAutomaticBasicCreate")
+            or {}
+        ).get("automaticDiscountNode") or {}
+        node_id = str(node.get("id") or "")
+        if not node_id:
+            raise ShopifyAdminError(
+                "discountAutomaticBasicCreate returned "
+                "no id",
+                path="graphql.json",
+            )
+        return node_id
+
+    @staticmethod
+    def create_bxgy(
+        client: ShopifyAdminClient,
+        *,
+        title: str,
+        customer_buys_qty: int,
+        customer_gets_qty: int,
+        starts_at: str,
+        ends_at: str | None = None,
+        uses_per_order_limit: int | None = None,
+    ) -> str:
+        """Buy-X-get-Y automatic discount. Applies to all
+        items by default. Returns the new node's GID."""
+        if not title or not starts_at:
+            raise ValueError("title + starts_at required")
+        if customer_buys_qty < 1 or customer_gets_qty < 1:
+            raise ValueError(
+                "customer_buys_qty + customer_gets_qty "
+                "must be ≥ 1",
+            )
+        input_: dict[str, Any] = {
+            "title": title,
+            "startsAt": starts_at,
+            "customerBuys": {
+                "value": {"quantity": str(customer_buys_qty)},
+                "items": {"all": True},
+            },
+            "customerGets": {
+                "value": {
+                    "discountOnQuantity": {
+                        "quantity": str(customer_gets_qty),
+                        "effect": {"percentage": 1.0},
+                    },
+                },
+                "items": {"all": True},
+            },
+        }
+        if ends_at:
+            input_["endsAt"] = ends_at
+        if uses_per_order_limit is not None:
+            input_["usesPerOrderLimit"] = str(
+                uses_per_order_limit,
+            )
+        result = client.graphql(
+            _AUTO_DISCOUNT_BXGY_CREATE,
+            variables={"input": input_},
+        )
+        payload = result.get("data") or {}
+        _auto_user_errors(
+            payload, "discountAutomaticBxgyCreate",
+        )
+        node = (
+            payload.get("discountAutomaticBxgyCreate")
+            or {}
+        ).get("automaticDiscountNode") or {}
+        node_id = str(node.get("id") or "")
+        if not node_id:
+            raise ShopifyAdminError(
+                "discountAutomaticBxgyCreate returned "
+                "no id",
+                path="graphql.json",
+            )
+        return node_id
+
+    @staticmethod
+    def delete(
+        client: ShopifyAdminClient,
+        discount_id: int | str,
+    ) -> str:
+        result = client.graphql(
+            _AUTO_DISCOUNT_DELETE,
+            variables={
+                "id": _auto_discount_gid(discount_id),
+            },
+        )
+        payload = result.get("data") or {}
+        _auto_user_errors(
+            payload, "discountAutomaticDelete",
+        )
+        deleted = (
+            payload.get("discountAutomaticDelete") or {}
+        ).get("deletedAutomaticDiscountId")
+        if not deleted:
+            raise ShopifyAdminError(
+                "discountAutomaticDelete returned no id",
+                path="graphql.json",
+            )
+        return str(deleted)
