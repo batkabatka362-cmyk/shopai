@@ -295,3 +295,79 @@ class TestPathDispatch:
             "SHOPAI_SHOPIFY_KEY=shpat_xxx"
             in h.__class__.env_path.read_text()
         )
+
+
+# ── _load_dotenv (Windows / PowerShell UX) ──────────────
+
+
+class TestLoadDotenv:
+    def test_populates_missing_vars(
+        self, tmp_path, monkeypatch,
+    ):
+        env = tmp_path / ".env"
+        env.write_text(
+            "SHOPAI_SHOPIFY_CLIENT_ID=abc123\n"
+            "SHOPAI_SHOPIFY_CLIENT_SECRET=secret_xyz\n",
+        )
+        # Make sure neither is in env initially.
+        monkeypatch.delenv(
+            "SHOPAI_SHOPIFY_CLIENT_ID", raising=False,
+        )
+        monkeypatch.delenv(
+            "SHOPAI_SHOPIFY_CLIENT_SECRET", raising=False,
+        )
+        mod._load_dotenv(env)
+        import os
+        assert os.environ["SHOPAI_SHOPIFY_CLIENT_ID"] == "abc123"
+        assert (
+            os.environ["SHOPAI_SHOPIFY_CLIENT_SECRET"]
+            == "secret_xyz"
+        )
+
+    def test_does_not_override_existing_env(
+        self, tmp_path, monkeypatch,
+    ):
+        env = tmp_path / ".env"
+        env.write_text(
+            "SHOPAI_SHOPIFY_CLIENT_ID=from_file\n",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_CLIENT_ID", "from_shell",
+        )
+        mod._load_dotenv(env)
+        import os
+        # Shell export wins.
+        assert (
+            os.environ["SHOPAI_SHOPIFY_CLIENT_ID"]
+            == "from_shell"
+        )
+
+    def test_skips_missing_file(self, tmp_path):
+        # Should not raise.
+        mod._load_dotenv(tmp_path / "nonexistent.env")
+
+    def test_strips_quotes_and_comments(
+        self, tmp_path, monkeypatch,
+    ):
+        env = tmp_path / ".env"
+        env.write_text(
+            "# comment line ignored\n"
+            "\n"
+            'SHOPAI_SHOPIFY_URL="ts0efe-ih.myshopify.com"\n'
+            "SHOPAI_SHOPIFY_CLIENT_ID='abc'\n",
+        )
+        monkeypatch.delenv(
+            "SHOPAI_SHOPIFY_URL", raising=False,
+        )
+        monkeypatch.delenv(
+            "SHOPAI_SHOPIFY_CLIENT_ID", raising=False,
+        )
+        mod._load_dotenv(env)
+        import os
+        assert (
+            os.environ["SHOPAI_SHOPIFY_URL"]
+            == "ts0efe-ih.myshopify.com"
+        )
+        assert (
+            os.environ["SHOPAI_SHOPIFY_CLIENT_ID"] == "abc"
+        )

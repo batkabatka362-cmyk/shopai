@@ -302,6 +302,33 @@ def _exchange_code(
 # ── Entry point ──────────────────────────────────────────
 
 
+def _load_dotenv(env_path: pathlib.Path) -> None:
+    """Auto-populate missing SHOPAI_SHOPIFY_* env vars from a
+    .env file so PowerShell / cmd operators don't need to
+    manually export before running the script.
+
+    Existing process environment wins — we only fill blanks.
+    """
+    if not env_path.exists():
+        return
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=9000)
@@ -312,7 +339,8 @@ def main(argv: list[str] | None = None) -> int:
             "shop handle (e.g. ts0efe-ih.myshopify.com). "
             "If set, script prints the install URL and "
             "waits for the callback. Otherwise it only "
-            "starts the listener."
+            "starts the listener. When omitted, also auto-"
+            "read from SHOPAI_SHOPIFY_URL in .env / env."
         ),
     )
     ap.add_argument(
@@ -328,6 +356,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+
+    env_path = pathlib.Path(args.env)
+    # Auto-load .env so `python script.py` works out of the
+    # box on PowerShell / cmd without a separate export step.
+    _load_dotenv(env_path)
 
     client_id = os.environ.get(
         "SHOPAI_SHOPIFY_CLIENT_ID", "",
@@ -352,7 +385,18 @@ def main(argv: list[str] | None = None) -> int:
 
     redirect_uri = f"http://localhost:{args.port}/callback"
     scopes = scope_string()
-    env_path = pathlib.Path(args.env)
+
+    # Auto-derive shop from env when --shop is omitted.
+    shop = args.shop.strip().lower()
+    if not shop:
+        shop = (
+            os.environ.get("SHOPAI_SHOPIFY_URL", "")
+            .strip()
+            .lower()
+            .replace("https://", "")
+            .replace("http://", "")
+            .rstrip("/")
+        )
 
     _InstallHandler.client_id = client_id
     _InstallHandler.client_secret = client_secret
@@ -381,13 +425,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     print()
 
-    if args.shop:
+    if shop:
         install_url = (
-            f"https://{args.shop}/admin/oauth/authorize?"
+            f"https://{shop}/admin/oauth/authorize?"
             + urllib.parse.urlencode({
                 "client_id": client_id,
                 "scope": scopes,
                 "redirect_uri": redirect_uri,
+                "grant_options[]": "per-user",
             })
         )
         print("1. Open this install URL in your browser:")
