@@ -147,6 +147,16 @@ ENV_ALIASES: dict[str, str] = {
     "tiktok_ads_access_token": "TIKTOK_ADS_ACCESS_TOKEN",
     "tiktok_ads_advertiser_id": "TIKTOK_ADS_ADVERTISER_ID",
 
+    # Google Ads (v18 REST). Requires developer-token-approved
+    # app + OAuth2 refresh token per customer.
+    "google_ads_developer_token":
+        "GOOGLE_ADS_DEVELOPER_TOKEN",
+    "google_ads_client_id":        "GOOGLE_ADS_CLIENT_ID",
+    "google_ads_client_secret":    "GOOGLE_ADS_CLIENT_SECRET",
+    # (refresh token + customer id aliases already declared
+    # above — see google_ads_refresh_token /
+    # google_ads_customer_id.)
+
     # Meta Pages / Instagram organic posting (shares OAuth
     # with Meta Ads but uses a separate page-scoped access
     # token + ig-business-account id pair).

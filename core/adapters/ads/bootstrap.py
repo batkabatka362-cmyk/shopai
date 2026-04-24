@@ -13,13 +13,18 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .google_ads import GoogleAdsAdapter
 from .meta_ads import MetaAdsAdapter
 from .tiktok_ads import TikTokAdsAdapter
 
 logger = get_logger("adapters.ads.bootstrap")
 
 
-_ADS_ADAPTER_CLASSES = (MetaAdsAdapter, TikTokAdsAdapter)
+_ADS_ADAPTER_CLASSES = (
+    MetaAdsAdapter,
+    TikTokAdsAdapter,
+    GoogleAdsAdapter,
+)
 
 
 def register_all(registry: AdapterRegistry | None = None) -> dict[str, bool]:
