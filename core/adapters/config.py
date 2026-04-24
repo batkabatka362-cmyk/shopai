@@ -147,6 +147,20 @@ ENV_ALIASES: dict[str, str] = {
     "tiktok_ads_access_token": "TIKTOK_ADS_ACCESS_TOKEN",
     "tiktok_ads_advertiser_id": "TIKTOK_ADS_ADVERTISER_ID",
 
+    # Amazon SP-API (Selling Partner API, 2026+). Requires
+    # an LWA (Login with Amazon) refresh token from the
+    # seller-central "Develop Apps" portal. AWS sig v4 is
+    # no longer required for most endpoints — Bearer
+    # access_token is sufficient.
+    "amazon_sp_client_id":      "AMAZON_SP_CLIENT_ID",
+    "amazon_sp_client_secret":  "AMAZON_SP_CLIENT_SECRET",
+    "amazon_sp_refresh_token":  "AMAZON_SP_REFRESH_TOKEN",
+    # Amazon region endpoint (na / eu / fe). Default na.
+    "amazon_sp_region":         "AMAZON_SP_REGION",
+    # Marketplace ids, comma-separated. ATVPDKIKX0DER is US.
+    "amazon_sp_marketplace_ids":
+        "AMAZON_SP_MARKETPLACE_IDS",
+
     # Google Ads (v18 REST). Requires developer-token-approved
     # app + OAuth2 refresh token per customer.
     "google_ads_developer_token":

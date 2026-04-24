@@ -73,6 +73,7 @@ class AdapterCategory(str, Enum):
     HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
     CRM = "crm"                            # Customer relationship management (HubSpot)
     SOURCING = "sourcing"                  # Dropshipping suppliers (CJ, AutoDS, Spocket)
+    MARKETPLACE = "marketplace"            # Other marketplaces (Amazon SP-API, eBay, Etsy)
     SOCIAL = "social"                      # Social page growth (Instagram, Facebook, TikTok organic)
     OTHER = "other"
 
@@ -231,6 +232,11 @@ class Capability(str, Enum):
     SOURCING_LIST_ORDERS = "sourcing_list_orders"
     SOURCING_GET_SHIPPING_METHODS = "sourcing_get_shipping_methods"
     SOURCING_GET_VARIANT_STOCK = "sourcing_get_variant_stock"
+
+    # ── Amazon SP-API (multi-platform sell) ─
+    AMAZON_LIST_ORDERS = "amazon_list_orders"
+    AMAZON_GET_ORDER = "amazon_get_order"
+    AMAZON_SEARCH_CATALOG = "amazon_search_catalog"
 
     # ── Social / page growth ──────────────
     SOCIAL_PUBLISH_POST = "social_publish_post"
