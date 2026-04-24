@@ -1228,6 +1228,26 @@ class AutonomousController:
         except Exception as exc:
             _record("social_scheduler", exc)
 
+        # Phase 5a3: TIKTOK SHOP POLLER — pull fresh TikTok
+        # Shop orders and emit EngineOutcome events to the
+        # shared bus. Shopify has a native webhook
+        # (core/webhooks/order_handler.py); TikTok Shop free
+        # tier doesn't, so the poller keeps a local "seen"
+        # cache for §4b.D idempotency across restarts. Soft-
+        # fail: a bad poll never kills the cycle.
+        try:
+            from engines.tiktok_shop_poller import (
+                TikTokShopPoller,
+            )
+            poller = TikTokShopPoller.open()
+            summary = poller.poll_once()
+            poller.close()
+            cycle_result["phases"]["tiktok_shop_poll"] = (
+                summary.as_dict()
+            )
+        except Exception as exc:
+            _record("tiktok_shop_poll", exc)
+
         # Phase 5a2: STRATEGY PLANNER — long-term plans
         if self._cycle_count % 5 == 1:  # Every 5 cycles
             try:
