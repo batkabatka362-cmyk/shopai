@@ -195,10 +195,15 @@ class TikTokShopAdapter:
         path: str,
         *,
         extra_params: dict[str, Any] | None = None,
+        method: str = "GET",
+        json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Signed GET to TikTok Shop. Returns parsed JSON on
-        success, None on any failure (with ``_last_error``
-        set for diagnostics)."""
+        """Signed request to TikTok Shop. ``method="POST"``
+        with ``json_body`` covers the write path — body is
+        serialised + included in the HMAC so the signature
+        round-trips. Returns parsed JSON on success, None on
+        any failure (with ``_last_error`` set for
+        diagnostics)."""
         params: dict[str, Any] = {
             "app_key": self._app_key,
             "timestamp": str(int(self._now_fn())),
@@ -209,19 +214,36 @@ class TikTokShopAdapter:
             params.update({
                 k: str(v) for k, v in extra_params.items()
             })
+        body_str = ""
+        if method.upper() == "POST" and json_body is not None:
+            import json as _json
+            body_str = _json.dumps(
+                json_body, sort_keys=True, separators=(",", ":"),
+            )
         params["sign"] = _sign_request(
             app_secret=self._app_secret,
             path=path,
             params=params,
+            body=body_str,
         )
         url = (
             f"{self._base}{path}?"
             + urlencode(params)
         )
         try:
-            resp = self._client().get(
-                url, timeout=self._timeout,
-            )
+            if method.upper() == "POST":
+                resp = self._client().post(
+                    url,
+                    data=body_str,
+                    headers={
+                        "Content-Type": "application/json",
+                    },
+                    timeout=self._timeout,
+                )
+            else:
+                resp = self._client().get(
+                    url, timeout=self._timeout,
+                )
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 self._last_error = f"network: {exc}"
@@ -359,6 +381,197 @@ class TikTokShopAdapter:
                 logger.debug(
                     "skip malformed product: %s", exc,
                 )
+        return out
+
+    # ── Write path (paranoid mode) ─────────────────────
+
+    def create_product_draft(
+        self,
+        *,
+        title: str,
+        description: str,
+        category_id: str,
+        brand_id: str = "",
+        price_usd: float,
+        inventory: int,
+        image_urls: list[str] | None = None,
+        sku: str = "",
+        weight_grams: int = 0,
+    ) -> str:
+        """Create a DRAFT product on TikTok Shop.
+
+        Hard guardrail (§4b.G): the product is always
+        created with status=DRAFT / is_published=false. The
+        brain / owner must explicitly publish via a separate
+        flow — this adapter does NOT expose a "publish"
+        method, so no call through this class can ever
+        auto-ship a listing that earns money.
+
+        Returns the TikTok Shop product id, or an empty
+        string on any failure (check ``stats().last_error``).
+        """
+        if not self.is_available():
+            with self._lock:
+                self._last_error = (
+                    "not configured — set "
+                    f"{_ENV_APP_KEY}, {_ENV_APP_SECRET}, "
+                    f"{_ENV_ACCESS_TOKEN}, {_ENV_SHOP_ID}"
+                )
+            return ""
+        if not title or not description or not category_id:
+            with self._lock:
+                self._last_error = (
+                    "title + description + category_id "
+                    "required"
+                )
+            return ""
+        try:
+            price_f = float(price_usd)
+        except (TypeError, ValueError):
+            with self._lock:
+                self._last_error = "price_usd must be numeric"
+            return ""
+        if price_f <= 0:
+            with self._lock:
+                self._last_error = "price_usd must be > 0"
+            return ""
+        try:
+            qty = int(inventory)
+        except (TypeError, ValueError):
+            with self._lock:
+                self._last_error = "inventory must be int"
+            return ""
+        if qty < 0:
+            with self._lock:
+                self._last_error = "inventory must be >= 0"
+            return ""
+        images = [
+            {"uri": str(u)}
+            for u in (image_urls or ())
+            if u
+        ]
+        body: dict[str, Any] = {
+            "title": title,
+            "description": description,
+            "category_id": category_id,
+            "is_published": False,  # paranoid-mode guardrail
+            "main_images": images,
+            "skus": [{
+                "price": {
+                    "amount": f"{price_f:.2f}",
+                    "currency": "USD",
+                },
+                "inventory": [{"quantity": qty}],
+                "seller_sku": str(sku) if sku else "",
+            }],
+        }
+        if brand_id:
+            body["brand_id"] = str(brand_id)
+        if weight_grams > 0:
+            body["package_weight"] = {
+                "value": f"{weight_grams / 1000.0:.3f}",
+                "unit": "KILOGRAM",
+            }
+        resp = self._request(
+            "/product/202309/products",
+            method="POST",
+            json_body=body,
+        )
+        if resp is None:
+            return ""
+        data = resp.get("data") or {}
+        return str(data.get("product_id") or "")
+
+    # ── Order listener (read-only) ─────────────────────
+
+    def fetch_orders(
+        self,
+        *,
+        order_status: str = "UNPAID",
+        page_size: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List orders matching a status filter. Normalised
+        to ``{order_id, status, buyer_email, create_time_unix,
+        total_amount, currency, line_items}`` dicts.
+
+        Read-only — used by the OrderListener pipeline to
+        feed TikTok orders into the same engine_outcome_bus
+        that receives Shopify orders.
+        """
+        if not self.is_available():
+            with self._lock:
+                self._last_error = "not configured"
+            return []
+        capped = max(1, min(int(page_size), 100))
+        body = self._request(
+            "/order/202309/orders/search",
+            extra_params={"page_size": capped},
+            method="POST",
+            json_body={
+                "order_status": str(order_status).upper(),
+            },
+        )
+        if body is None:
+            return []
+        data = body.get("data") or {}
+        raw_orders = data.get("orders") or []
+        if not isinstance(raw_orders, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for row in raw_orders:
+            if not isinstance(row, dict):
+                continue
+            try:
+                total = float(
+                    (row.get("payment") or {}).get(
+                        "total_amount", 0,
+                    ) or 0,
+                )
+            except (TypeError, ValueError):
+                total = 0.0
+            try:
+                create_ts = int(
+                    row.get("create_time", 0) or 0,
+                )
+            except (TypeError, ValueError):
+                create_ts = 0
+            items_raw = row.get("line_items") or []
+            line_items: list[dict[str, Any]] = []
+            if isinstance(items_raw, list):
+                for it in items_raw:
+                    if not isinstance(it, dict):
+                        continue
+                    try:
+                        qty = int(it.get("quantity", 0) or 0)
+                    except (TypeError, ValueError):
+                        qty = 0
+                    line_items.append({
+                        "sku_id": str(it.get("sku_id", "")),
+                        "product_id": str(
+                            it.get("product_id", ""),
+                        ),
+                        "quantity": qty,
+                        "original_price": str(
+                            it.get("original_price", "0"),
+                        ),
+                    })
+            out.append({
+                "order_id": str(row.get("id", "")),
+                "status": str(
+                    row.get("order_status", ""),
+                ),
+                "buyer_email": str(
+                    row.get("buyer_email", "") or "",
+                ),
+                "create_time_unix": create_ts,
+                "total_amount": round(total, 2),
+                "currency": str(
+                    (row.get("payment") or {}).get(
+                        "currency", "USD",
+                    ),
+                ),
+                "line_items": line_items,
+            })
         return out
 
     def stats(self) -> dict[str, Any]:
