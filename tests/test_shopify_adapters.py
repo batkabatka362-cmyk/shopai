@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftynine_adapters(self):
+    def test_register_all_adds_sixty_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 59
+        assert len(status) == 60
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -846,6 +846,7 @@ class TestShopifyBootstrap:
             "shopify_draft_order_invoice",
             "shopify_customer_merge",
             "shopify_fulfillment_events",
+            "shopify_customer_consent",
         }
 
     def test_register_all_idempotent(self):
@@ -853,7 +854,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 59
+        assert len(get_registry()) == 60
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1063,6 +1064,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_CUSTOMER_MERGE_JOB).name == "shopify_customer_merge"
         assert router.route(Capability.SHOPIFY_LIST_FULFILLMENT_EVENTS).name == "shopify_fulfillment_events"
         assert router.route(Capability.SHOPIFY_CREATE_FULFILLMENT_EVENT).name == "shopify_fulfillment_events"
+        assert router.route(Capability.SHOPIFY_UPDATE_SMS_CONSENT).name == "shopify_customer_consent"
+        assert router.route(Capability.SHOPIFY_UPDATE_EMAIL_CONSENT).name == "shopify_customer_consent"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -16097,4 +16100,217 @@ class TestShopifyFulfillmentEventsAdapter:
         )
         assert ShopifyFulfillmentEventsAdapter._normalise_event({}) == {}
         assert ShopifyFulfillmentEventsAdapter._normalise_event(None) == {}
+
+
+# ── ShopifyCustomerConsentAdapter ─────────────────────────
+
+
+class TestShopifyCustomerConsentAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter()
+        assert a.name == "shopify_customer_consent"
+        for cap in (
+            Capability.SHOPIFY_UPDATE_SMS_CONSENT,
+            Capability.SHOPIFY_UPDATE_EMAIL_CONSENT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_input_requires_customer_id(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({"marketing_state": "SUBSCRIBED"}, sms=True)
+
+    def test_input_requires_marketing_state(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input(
+                {"customer_id": "gid://shopify/Customer/c1"}, sms=True,
+            )
+
+    def test_input_invalid_marketing_state_rejected(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "customer_id": "gid://shopify/Customer/c1",
+                "marketing_state": "MAYBE",
+            }, sms=True)
+
+    def test_input_invalid_opt_in_rejected(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "customer_id": "gid://shopify/Customer/c1",
+                "marketing_state": "SUBSCRIBED",
+                "marketing_opt_in_level": "DOUBLE_OPT_IN",
+            }, sms=True)
+
+    def test_input_invalid_consent_source_rejected(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "customer_id": "gid://shopify/Customer/c1",
+                "marketing_state": "SUBSCRIBED",
+                "consent_collected_from": "SLACK",
+            }, sms=True)
+
+    def test_input_sms_full_shape(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        out = a._build_input({
+            "customer_id": "gid://shopify/Customer/c1",
+            "marketing_state": "subscribed",
+            "marketing_opt_in_level": "confirmed_opt_in",
+            "consent_collected_from": "shopify",
+            "consent_updated_at": "2026-04-26T10:00:00Z",
+        }, sms=True)
+        assert out["customerId"] == "gid://shopify/Customer/c1"
+        consent = out["smsMarketingConsent"]
+        assert consent["marketingState"] == "SUBSCRIBED"
+        assert consent["marketingOptInLevel"] == "CONFIRMED_OPT_IN"
+        assert consent["consentCollectedFrom"] == "SHOPIFY"
+        assert consent["consentUpdatedAt"] == "2026-04-26T10:00:00Z"
+
+    def test_input_email_strips_consent_collected_from(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        out = a._build_input({
+            "customer_id": "gid://shopify/Customer/c1",
+            "marketing_state": "SUBSCRIBED",
+            "marketing_opt_in_level": "SINGLE_OPT_IN",
+            # collected_from is SMS-only — adapter must NOT include it
+            # in the email shape (Shopify rejects with selectionMismatch).
+            "consent_collected_from": "SHOPIFY",
+        }, sms=False)
+        consent = out["emailMarketingConsent"]
+        assert "consentCollectedFrom" not in consent
+        assert consent["marketingState"] == "SUBSCRIBED"
+
+    # ── SMS update — happy path ──────────────────
+
+    def test_update_sms_happy_path(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"customerSmsMarketingConsentUpdate": {
+                "customer": {
+                    "id": v["input"]["customerId"],
+                    "phone": "+15551234567",
+                    "smsMarketingConsent": {
+                        "marketingState": (
+                            v["input"]["smsMarketingConsent"]["marketingState"]
+                        ),
+                        "marketingOptInLevel": "CONFIRMED_OPT_IN",
+                        "consentCollectedFrom": "SHOPIFY",
+                        "consentUpdatedAt": "2026-04-26T10:00:00Z",
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_SMS_CONSENT, {
+                "customer_id": "gid://shopify/Customer/c1",
+                "marketing_state": "SUBSCRIBED",
+                "marketing_opt_in_level": "CONFIRMED_OPT_IN",
+                "consent_collected_from": "SHOPIFY",
+            })
+        assert result.ok
+        assert captured["input"]["customerId"] == "gid://shopify/Customer/c1"
+        assert result.data["marketing_state"] == "SUBSCRIBED"
+        assert result.data["consent_collected_from"] == "SHOPIFY"
+        assert result.data["phone"] == "+15551234567"
+
+    def test_update_sms_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customerSmsMarketingConsentUpdate": {
+                "customer": None,
+                "userErrors": [{"field": ["customerId"],
+                                "message": "Customer has no phone",
+                                "code": "INVALID"}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_UPDATE_SMS_CONSENT, {
+                "customer_id": "gid://shopify/Customer/no-phone",
+                "marketing_state": "SUBSCRIBED",
+            })
+        assert not result.ok
+
+    # ── Email update — happy path ────────────────
+
+    def test_update_email_happy_path(self):
+        from core.adapters.shopify.customer_consent import (
+            ShopifyCustomerConsentAdapter,
+        )
+        a = ShopifyCustomerConsentAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"customerEmailMarketingConsentUpdate": {
+                "customer": {
+                    "id": v["input"]["customerId"],
+                    "email": "x@y.com",
+                    "emailMarketingConsent": {
+                        "marketingState": "UNSUBSCRIBED",
+                        "marketingOptInLevel": "SINGLE_OPT_IN",
+                        "consentUpdatedAt": "2026-04-26T11:00:00Z",
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_EMAIL_CONSENT, {
+                "customer_id": "gid://shopify/Customer/c1",
+                "marketing_state": "UNSUBSCRIBED",
+                "marketing_opt_in_level": "SINGLE_OPT_IN",
+            })
+        assert result.ok
+        assert result.data["marketing_state"] == "UNSUBSCRIBED"
+        assert result.data["email"] == "x@y.com"
+        # Email payload shouldn't carry consent_collected_from in
+        # response since it's SMS-only.
+        assert "consent_collected_from" not in result.data
 

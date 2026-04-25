@@ -282,6 +282,8 @@ class Capability(str, Enum):
     SHOPIFY_GET_CUSTOMER_MERGE_JOB = "shopify_get_customer_merge_job"
     SHOPIFY_LIST_FULFILLMENT_EVENTS = "shopify_list_fulfillment_events"
     SHOPIFY_CREATE_FULFILLMENT_EVENT = "shopify_create_fulfillment_event"
+    SHOPIFY_UPDATE_SMS_CONSENT = "shopify_update_sms_consent"
+    SHOPIFY_UPDATE_EMAIL_CONSENT = "shopify_update_email_consent"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

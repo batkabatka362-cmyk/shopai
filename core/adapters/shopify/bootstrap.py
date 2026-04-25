@@ -33,6 +33,7 @@ from .cart_transforms import ShopifyCartTransformsAdapter
 from .channels import ShopifyChannelsAdapter
 from .collections import ShopifyCollectionsAdapter
 from .companies import ShopifyCompaniesAdapter
+from .customer_consent import ShopifyCustomerConsentAdapter
 from .customer_merge import ShopifyCustomerMergeAdapter
 from .customer_payment_methods import ShopifyCustomerPaymentMethodsAdapter
 from .customers import ShopifyCustomersAdapter
@@ -147,6 +148,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDraftOrderInvoiceSendAdapter,
     ShopifyCustomerMergeAdapter,
     ShopifyFulfillmentEventsAdapter,
+    ShopifyCustomerConsentAdapter,
 )
 
 
