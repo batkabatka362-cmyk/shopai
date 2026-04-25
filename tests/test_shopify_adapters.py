@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventythree_adapters(self):
+    def test_register_all_adds_seventyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 73
+        assert len(status) == 74
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -860,6 +860,7 @@ class TestShopifyBootstrap:
             "shopify_discount_code_free_shipping",
             "shopify_discount_automatic_bxgy",
             "shopify_company_locations",
+            "shopify_market_crud",
         }
 
     def test_register_all_idempotent(self):
@@ -867,7 +868,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 73
+        assert len(get_registry()) == 74
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1112,6 +1113,11 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_COMPANY_LOCATION).name == "shopify_company_locations"
         assert router.route(Capability.SHOPIFY_UPDATE_COMPANY_LOCATION).name == "shopify_company_locations"
         assert router.route(Capability.SHOPIFY_DELETE_COMPANY_LOCATION).name == "shopify_company_locations"
+        assert router.route(Capability.SHOPIFY_CREATE_MARKET).name == "shopify_market_crud"
+        assert router.route(Capability.SHOPIFY_UPDATE_MARKET).name == "shopify_market_crud"
+        assert router.route(Capability.SHOPIFY_DELETE_MARKET).name == "shopify_market_crud"
+        assert router.route(Capability.SHOPIFY_ADD_MARKET_REGIONS).name == "shopify_market_crud"
+        assert router.route(Capability.SHOPIFY_DELETE_MARKET_REGION).name == "shopify_market_crud"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -19593,4 +19599,409 @@ class TestShopifyCompanyLocationsAdapter:
         assert result.ok
         assert result.data["deleted_id"] == \
             "gid://shopify/CompanyLocation/1"
+
+
+# ── ShopifyMarketCRUDAdapter ──────────────────────────────
+
+
+class TestShopifyMarketCRUDAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter()
+        assert a.name == "shopify_market_crud"
+        for cap in (
+            Capability.SHOPIFY_CREATE_MARKET,
+            Capability.SHOPIFY_UPDATE_MARKET,
+            Capability.SHOPIFY_DELETE_MARKET,
+            Capability.SHOPIFY_ADD_MARKET_REGIONS,
+            Capability.SHOPIFY_DELETE_MARKET_REGION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Region builder ──────────────────────────
+
+    def test_regions_input_accepts_strings(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        out = a._build_country_regions(["us", "ca"])
+        assert out == [
+            {"countryCode": "US"}, {"countryCode": "CA"},
+        ]
+
+    def test_regions_input_accepts_dicts(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        out = a._build_country_regions([
+            {"country_code": "mx"},
+            {"countryCode": "BR"},
+            {"code": "ar"},
+        ])
+        assert out == [
+            {"countryCode": "MX"},
+            {"countryCode": "BR"},
+            {"countryCode": "AR"},
+        ]
+
+    def test_regions_input_rejects_empty(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_country_regions([])
+
+    def test_regions_input_rejects_bad_code(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_country_regions(["USA"])
+
+    def test_regions_input_rejects_non_string_dict(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_country_regions([{"country_code": 123}])
+
+    # ── Status coercion ─────────────────────────
+
+    def test_status_coercion_from_enabled_true(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        assert a._coerce_status({"enabled": True}) == "ACTIVE"
+        assert a._coerce_status({"enabled": False}) == "DRAFT"
+        assert a._coerce_status({"status": "draft"}) == "DRAFT"
+
+    def test_status_coercion_rejects_garbage(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._coerce_status({"status": "PAUSED"})
+
+    # ── Create ──────────────────────────────────
+
+    def test_create_requires_name(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({"handle": "x"})
+
+    def test_create_input_full_shape(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        out = a._build_create_input({
+            "name": "Latin America",
+            "handle": "latam",
+            "status": "DRAFT",
+            "regions": ["MX", "BR", "AR"],
+        })
+        assert out["name"] == "Latin America"
+        assert out["handle"] == "latam"
+        assert out["status"] == "DRAFT"
+        assert out["conditions"]["regionsCondition"]["regions"] == [
+            {"countryCode": "MX"},
+            {"countryCode": "BR"},
+            {"countryCode": "AR"},
+        ]
+        # oneOf: applicationLevel must NOT appear alongside regions.
+        assert "applicationLevel" not in \
+            out["conditions"]["regionsCondition"]
+
+    def test_create_input_enabled_alias(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        out = a._build_create_input({
+            "name": "LatAm",
+            "enabled": True,
+            "regions": ["MX"],
+        })
+        assert out["status"] == "ACTIVE"
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "marketCreate": {
+                    "market": {
+                        "id": "gid://shopify/Market/100",
+                        "name": "LatAm",
+                        "handle": "latam",
+                        "status": "DRAFT",
+                        "type": "REGION",
+                        "conditions": {
+                            "regionsCondition": {
+                                "applicationLevel": "SPECIFIED",
+                                "regions": {
+                                    "edges": [{"node": {
+                                        "id": "gid://shopify/"
+                                              "MarketRegionCountry/9",
+                                        "name": "Mexico",
+                                        "code": "MX",
+                                    }}],
+                                },
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_MARKET, {
+                "name": "LatAm",
+                "handle": "latam",
+                "regions": ["MX"],
+            })
+        assert result.ok
+        assert captured["input"]["name"] == "LatAm"
+        assert result.data["market"]["regions"][0]["country_code"] == "MX"
+        assert result.data["market"]["status"] == "DRAFT"
+        assert result.data["market"]["application_level"] == "SPECIFIED"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "marketCreate": {
+                "market": None,
+                "userErrors": [{
+                    "field": ["input", "handle"],
+                    "message": "Handle has already been taken",
+                    "code": "TAKEN",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_MARKET, {
+                "name": "X", "handle": "y", "regions": ["US"],
+            })
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_MARKET, {"name": "Renamed"},
+        )
+        assert not result.ok
+
+    def test_update_requires_at_least_one_field(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_MARKET, {
+            "id": "gid://shopify/Market/1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "marketUpdate": {
+                    "market": {
+                        "id": "gid://shopify/Market/1",
+                        "name": "Renamed",
+                        "status": "DRAFT",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_MARKET, {
+                "id": "gid://shopify/Market/1",
+                "name": "Renamed",
+                "enabled": False,
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/Market/1"
+        assert captured["input"]["name"] == "Renamed"
+        assert captured["input"]["status"] == "DRAFT"
+
+    # ── Delete market ───────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_MARKET, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "marketDelete": {
+                "deletedId": "gid://shopify/Market/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DELETE_MARKET, {
+                "id": "gid://shopify/Market/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/Market/1"
+
+    # ── Add regions ─────────────────────────────
+
+    def test_add_regions_requires_market_id(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_ADD_MARKET_REGIONS, {
+            "regions": ["US"],
+        })
+        assert not result.ok
+
+    def test_add_regions_happy_path(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "marketUpdate": {
+                    "market": {
+                        "id": "gid://shopify/Market/1",
+                        "conditions": {
+                            "regionsCondition": {
+                                "applicationLevel": "SPECIFIED",
+                                "regions": {
+                                    "edges": [
+                                        {"node": {
+                                            "id": "gid://shopify/"
+                                                  "MarketRegionCountry/9",
+                                            "name": "Mexico",
+                                            "code": "MX",
+                                        }},
+                                        {"node": {
+                                            "id": "gid://shopify/"
+                                                  "MarketRegionCountry/10",
+                                            "name": "Brazil",
+                                            "code": "BR",
+                                        }},
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_ADD_MARKET_REGIONS, {
+                "market_id": "gid://shopify/Market/1",
+                "regions": ["MX", "BR"],
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/Market/1"
+        assert captured["input"]["conditions"]["conditionsToAdd"][
+            "regionsCondition"]["regions"] == [
+            {"countryCode": "MX"}, {"countryCode": "BR"},
+        ]
+        assert result.data["count"] == 2
+
+    # ── Remove regions ──────────────────────────
+
+    def test_delete_region_requires_id(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_MARKET_REGION, {})
+        assert not result.ok
+
+    def test_delete_region_happy_path(self):
+        from core.adapters.shopify.market_crud import (
+            ShopifyMarketCRUDAdapter,
+        )
+        a = ShopifyMarketCRUDAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "marketUpdate": {
+                    "market": {
+                        "id": "gid://shopify/Market/1",
+                        "conditions": {
+                            "regionsCondition": {
+                                "applicationLevel": "SPECIFIED",
+                                "regions": {"edges": []},
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_DELETE_MARKET_REGION, {
+                "market_id": "gid://shopify/Market/1",
+                "region_ids": ["gid://shopify/MarketRegionCountry/9"],
+            })
+        assert result.ok
+        assert captured["input"]["conditions"]["conditionsToDelete"][
+            "regionsCondition"]["regionIds"] == [
+            "gid://shopify/MarketRegionCountry/9",
+        ]
+        assert result.data["removed_ids"] == [
+            "gid://shopify/MarketRegionCountry/9",
+        ]
+        assert result.data["regions_remaining"] == []
 

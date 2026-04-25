@@ -69,6 +69,7 @@ from .inventory_shipments import ShopifyInventoryShipmentsAdapter
 from .locations import ShopifyLocationsAdapter
 from .market_web_presences import ShopifyMarketWebPresencesAdapter
 from .marketing_events import ShopifyMarketingEventsAdapter
+from .market_crud import ShopifyMarketCRUDAdapter
 from .markets import ShopifyMarketsAdapter
 from .metafield import ShopifyMetafieldAdapter
 from .metafield_definitions import ShopifyMetafieldDefinitionsAdapter
@@ -177,6 +178,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDiscountCodeFreeShippingAdapter,
     ShopifyDiscountAutomaticBxgyAdapter,
     ShopifyCompanyLocationsAdapter,
+    ShopifyMarketCRUDAdapter,
 )
 
 

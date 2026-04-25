@@ -325,6 +325,42 @@ tolerate both forms when the cost is low:
   bankAccount.id/.bankName. Engines that need fee-bucket detail
   use the bulk-query path or the third-party Shopify Payments
   REST API.
+- **Markets API rework (2026 schema).** Whole surface area moved:
+  - `MarketCreateInput.enabled` → removed; replaced with
+    `status: MarketStatus` enum (`DRAFT` / `ACTIVE`).
+  - `MarketCreateInput.regions` → removed; replaced with
+    `conditions: MarketConditionsInput` containing
+    `regionsCondition.regions[].countryCode`.
+  - `Market.enabled` / `Market.primary` / `Market.regions` → all
+    removed from the response type; use `status`, `type`, and
+    `conditions.regionsCondition.regions` respectively.
+  - `marketRegionsCreate` and `marketRegionDelete` mutations →
+    DELETED. Region add/remove now happens through `marketUpdate`
+    with `input.conditions.conditionsToAdd.regionsCondition.regions`
+    or `input.conditions.conditionsToDelete.regionsCondition.regionIds`.
+  - `MarketConditionsRegionsInput` is a `@oneOf` union — exactly
+    ONE of `{regionIds, regions, applicationLevel}` may be present.
+    Sending `regions` AND `applicationLevel` together fails with
+    `'MarketConditionsRegionsInput' requires exactly one argument,
+    but 2 were provided`. `applicationLevel` is for the all-countries
+    policy; specific-country lists drop it.
+
+### Pattern D-prime: oneOf input objects
+
+Newer Shopify input types are tagged with the GraphQL `@oneOf`
+directive — only one of their fields may be set per call.
+Introspection still lists them as nullable, so the constraint is
+invisible until the API rejects the call with `INVALID_VARIABLE`
+plus `'X' requires exactly one argument, but N were provided`.
+
+Confirmed on:
+
+- `MarketConditionsRegionsInput` — pick exactly one of
+  `regionIds` / `regions` / `applicationLevel`.
+
+When introspection shows multiple optional fields on an *Input
+type, default to sending only one and only add a second one
+after the API confirms it.
 
 ### Pattern E: schema-gated fields
 
