@@ -30,6 +30,7 @@ from .bulk import ShopifyBulkOperationsAdapter
 from .bulk_mutations import ShopifyBulkMutationsAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
 from .channels import ShopifyChannelsAdapter
+from .collections import ShopifyCollectionsAdapter
 from .companies import ShopifyCompaniesAdapter
 from .customer_payment_methods import ShopifyCustomerPaymentMethodsAdapter
 from .customers import ShopifyCustomersAdapter
@@ -119,6 +120,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCustomerPaymentMethodsAdapter,
     ShopifyAppsAdapter,
     ShopifyAbandonedCheckoutsAdapter,
+    ShopifyCollectionsAdapter,
 )
 
 

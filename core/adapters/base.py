@@ -236,6 +236,11 @@ class Capability(str, Enum):
     SHOPIFY_LIST_APP_INSTALLATIONS = "shopify_list_app_installations"
     SHOPIFY_LIST_ABANDONED_CHECKOUTS = "shopify_list_abandoned_checkouts"
     SHOPIFY_GET_ABANDONED_CHECKOUT = "shopify_get_abandoned_checkout"
+    SHOPIFY_LIST_COLLECTIONS = "shopify_list_collections"
+    SHOPIFY_GET_COLLECTION = "shopify_get_collection"
+    SHOPIFY_CREATE_COLLECTION = "shopify_create_collection"
+    SHOPIFY_UPDATE_COLLECTION = "shopify_update_collection"
+    SHOPIFY_DELETE_COLLECTION = "shopify_delete_collection"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

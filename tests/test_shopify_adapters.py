@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortyfive_adapters(self):
+    def test_register_all_adds_fortysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 45
+        assert len(status) == 46
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -832,6 +832,7 @@ class TestShopifyBootstrap:
             "shopify_customer_payment_methods",
             "shopify_apps",
             "shopify_abandoned_checkouts",
+            "shopify_collections",
         }
 
     def test_register_all_idempotent(self):
@@ -839,7 +840,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 45
+        assert len(get_registry()) == 46
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1003,6 +1004,11 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_APP_INSTALLATIONS).name == "shopify_apps"
         assert router.route(Capability.SHOPIFY_LIST_ABANDONED_CHECKOUTS).name == "shopify_abandoned_checkouts"
         assert router.route(Capability.SHOPIFY_GET_ABANDONED_CHECKOUT).name == "shopify_abandoned_checkouts"
+        assert router.route(Capability.SHOPIFY_LIST_COLLECTIONS).name == "shopify_collections"
+        assert router.route(Capability.SHOPIFY_GET_COLLECTION).name == "shopify_collections"
+        assert router.route(Capability.SHOPIFY_CREATE_COLLECTION).name == "shopify_collections"
+        assert router.route(Capability.SHOPIFY_UPDATE_COLLECTION).name == "shopify_collections"
+        assert router.route(Capability.SHOPIFY_DELETE_COLLECTION).name == "shopify_collections"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -12351,3 +12357,304 @@ class TestShopifyAbandonedCheckoutsAdapter:
         )
         assert ShopifyAbandonedCheckoutsAdapter._normalise_checkout({}) == {}
         assert ShopifyAbandonedCheckoutsAdapter._normalise_line_item(None) == {}
+
+
+# ── ShopifyCollectionsAdapter ─────────────────────────────
+
+
+class TestShopifyCollectionsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter()
+        assert a.name == "shopify_collections"
+        for cap in (
+            Capability.SHOPIFY_LIST_COLLECTIONS,
+            Capability.SHOPIFY_GET_COLLECTION,
+            Capability.SHOPIFY_CREATE_COLLECTION,
+            Capability.SHOPIFY_UPDATE_COLLECTION,
+            Capability.SHOPIFY_DELETE_COLLECTION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_collection_input({}, for_update=False)
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_collection_input({"title": "x"}, for_update=True)
+
+    def test_input_description_html_alias(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        out = a._build_collection_input(
+            {"title": "x", "description_html": "<p>hi</p>"}, for_update=False,
+        )
+        assert out["descriptionHtml"] == "<p>hi</p>"
+
+    def test_input_invalid_sort_order_rejected(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_collection_input(
+                {"title": "x", "sort_order": "RANDOM"}, for_update=False,
+            )
+
+    def test_input_sort_order_uppercased(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        out = a._build_collection_input(
+            {"title": "x", "sort_order": "best_selling"}, for_update=False,
+        )
+        assert out["sortOrder"] == "BEST_SELLING"
+
+    def test_input_products_validated(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_collection_input(
+                {"title": "x", "products": [123]}, for_update=False,
+            )
+
+    def test_input_products_pass_through(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        out = a._build_collection_input(
+            {"title": "x", "products": [
+                "gid://shopify/Product/1",
+                "gid://shopify/Product/2",
+            ]}, for_update=False,
+        )
+        assert out["products"] == [
+            "gid://shopify/Product/1", "gid://shopify/Product/2",
+        ]
+
+    # ── Rule set ─────────────────────────────────
+
+    def test_rule_set_requires_rules(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_rule_set({"applied_disjunctively": False})
+
+    def test_rule_set_rejects_invalid_column(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_rule_set({"rules": [
+                {"column": "BAD_COLUMN", "relation": "EQUALS",
+                 "condition": "x"},
+            ]})
+
+    def test_rule_set_rejects_invalid_relation(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_rule_set({"rules": [
+                {"column": "TAG", "relation": "FUZZY", "condition": "x"},
+            ]})
+
+    def test_rule_set_happy_path_smart_collection(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        out = a._build_rule_set({
+            "applied_disjunctively": False,
+            "rules": [
+                {"column": "TAG", "relation": "EQUALS", "condition": "sale"},
+                {"column": "VARIANT_PRICE", "relation": "GREATER_THAN",
+                 "condition": 10},
+            ],
+        })
+        assert out["appliedDisjunctively"] is False
+        assert len(out["rules"]) == 2
+        assert out["rules"][0]["column"] == "TAG"
+        assert out["rules"][1]["condition"] == "10"
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "collections": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/Collection/1",
+                    "title": "Summer Sale",
+                    "handle": "summer-sale",
+                    "sortOrder": "MANUAL",
+                    "productsCount": {"count": 12},
+                    "ruleSet": None,
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_COLLECTIONS, {})
+        assert result.ok
+        c = result.data["collections"][0]
+        assert c["title"] == "Summer Sale"
+        assert c["products_count"] == 12
+        assert c["is_smart"] is False
+
+    def test_list_smart_collection_flagged(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "collections": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/Collection/2",
+                    "title": "Sale Items",
+                    "ruleSet": {
+                        "appliedDisjunctively": False,
+                        "rules": [{
+                            "column": "TAG",
+                            "relation": "EQUALS",
+                            "condition": "sale",
+                        }],
+                    },
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_COLLECTIONS, {})
+        c = result.data["collections"][0]
+        assert c["is_smart"] is True
+        assert len(c["rule_set"]["rules"]) == 1
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_COLLECTIONS, {"sort_key": "BAD"},
+        )
+        assert not result.ok
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_COLLECTION, {})
+        assert not result.ok
+
+    def test_get_happy_path_with_products(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "collection": {
+                "id": "gid://shopify/Collection/1",
+                "title": "Summer Sale",
+                "products": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "edges": [{"node": {
+                        "id": "gid://shopify/Product/1",
+                        "title": "Lantern",
+                        "handle": "lantern",
+                        "status": "ACTIVE",
+                    }}],
+                },
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_COLLECTION, {
+                "id": "gid://shopify/Collection/1",
+            })
+        assert result.ok
+        c = result.data["collection"]
+        assert len(c["products"]) == 1
+        assert c["products"][0]["title"] == "Lantern"
+
+    # ── Create / Update / Delete ─────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"collectionCreate": {
+                "collection": {
+                    "id": "gid://shopify/Collection/new",
+                    "title": v["input"]["title"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_COLLECTION, {
+                "title": "Summer Sale",
+                "products": ["gid://shopify/Product/1"],
+            })
+        assert result.ok
+        assert captured["input"]["title"] == "Summer Sale"
+        assert captured["input"]["products"] == ["gid://shopify/Product/1"]
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"collectionCreate": {
+            "collection": None,
+            "userErrors": [{"field": ["handle"], "message": "is taken",
+                            "code": "TAKEN"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_COLLECTION, {
+                "title": "Dup", "handle": "dup",
+            })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"collectionUpdate": {
+                "collection": {"id": v["input"]["id"]},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_COLLECTION, {
+                "id": "gid://shopify/Collection/1",
+                "title": "Renamed",
+            })
+        assert result.ok
+        assert captured["input"]["id"] == "gid://shopify/Collection/1"
+        assert captured["input"]["title"] == "Renamed"
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_COLLECTION, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        a = ShopifyCollectionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"collectionDelete": {
+            "deletedCollectionId": "gid://shopify/Collection/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_COLLECTION, {
+                "id": "gid://shopify/Collection/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/Collection/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.collections import ShopifyCollectionsAdapter
+        assert ShopifyCollectionsAdapter._normalise_collection({}) == {}
+        assert ShopifyCollectionsAdapter._normalise_rule_set(None) == {}

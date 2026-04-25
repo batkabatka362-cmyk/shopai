@@ -278,6 +278,9 @@ tolerate both forms when the cost is low:
   do it client-side after fetch. Also: `ShopifyPaymentsDisputeSortKeys`
   enum is not defined at all, so a query that declares it as an
   unused variable still fails at validation.
+- `Collection.productsCount` returns a `Count` wrapper
+  (`{ count: N }`) in 2024-01+, not a scalar. Same shape as
+  `Company.ordersCount`. Tolerate both forms in normalisation.
 
 ### Pattern E: schema-gated fields
 
