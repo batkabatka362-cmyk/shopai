@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fourteen_adapters(self):
+    def test_register_all_adds_fifteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 14
+        assert len(status) == 15
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -802,6 +802,7 @@ class TestShopifyBootstrap:
             "shopify_returns", "shopify_metaobjects",
             "shopify_publications", "shopify_order_edits",
             "shopify_themes", "shopify_analytics",
+            "shopify_translations",
         }
 
     def test_register_all_idempotent(self):
@@ -809,7 +810,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 14
+        assert len(get_registry()) == 15
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -869,6 +870,451 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_THEME_FILES).name == "shopify_themes"
         assert router.route(Capability.SHOPIFY_UPSERT_THEME_FILES).name == "shopify_themes"
         assert router.route(Capability.SHOPIFY_RUN_ANALYTICS_QUERY).name == "shopify_analytics"
+        assert router.route(Capability.SHOPIFY_GET_TRANSLATABLE_RESOURCE).name == "shopify_translations"
+        assert router.route(Capability.SHOPIFY_REGISTER_TRANSLATIONS).name == "shopify_translations"
+        assert router.route(Capability.SHOPIFY_REMOVE_TRANSLATIONS).name == "shopify_translations"
+
+
+# ── ShopifyTranslationsAdapter ────────────────────────────
+
+
+class TestShopifyTranslationsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter()
+        assert a.name == "shopify_translations"
+        for cap in (
+            Capability.SHOPIFY_GET_TRANSLATABLE_RESOURCE,
+            Capability.SHOPIFY_REGISTER_TRANSLATIONS,
+            Capability.SHOPIFY_REMOVE_TRANSLATIONS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Get translatable resource ───────────────────────
+
+    def test_get_translatable_requires_resource_id(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_TRANSLATABLE_RESOURCE, {})
+        assert not result.ok
+
+    def test_get_translatable_happy_path(self):
+        """Schema requires ``locale`` argument on TranslatableResource.
+        translations (caught live)."""
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"translatableResource": {
+                "resourceId": "gid://shopify/Product/1",
+                "translatableContent": [
+                    {"key": "title", "value": "Cool Mug",
+                     "digest": "abc123", "locale": "en"},
+                    {"key": "body_html", "value": "<p>The mug.</p>",
+                     "digest": "def456", "locale": "en"},
+                ],
+                "translations": [
+                    {"key": "title", "value": "Tasse Cool",
+                     "locale": "fr", "outdated": False, "market": None},
+                ],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_GET_TRANSLATABLE_RESOURCE, {
+                "resource_id": "gid://shopify/Product/1",
+                "locale": "fr",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["locale"] == "fr"
+        # Locale was passed as a required GraphQL variable.
+        assert captured["locale"] == "fr"
+        # Translatable content surfaces digest — engines need it to
+        # register a non-stale translation.
+        assert len(result.data["translatable_content"]) == 2
+        assert result.data["translatable_content"][0] == {
+            "key": "title", "value": "Cool Mug",
+            "digest": "abc123", "source_locale": "en",
+        }
+        assert result.data["translations"][0]["locale"] == "fr"
+
+    def test_get_translatable_requires_locale(self):
+        """Without a locale the GraphQL request would be rejected with
+        'missing required arguments: locale'. Fail fast at the
+        adapter to avoid the round-trip."""
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_TRANSLATABLE_RESOURCE, {
+                "resource_id": "gid://shopify/Product/1",
+            })
+        assert not result.ok
+
+    def test_get_translatable_invalid_locale_type(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_TRANSLATABLE_RESOURCE, {
+                "resource_id": "gid://x", "locale": 12345,
+            })
+        assert not result.ok
+
+    def test_get_translatable_not_found(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "translatableResource": None,
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_TRANSLATABLE_RESOURCE, {
+                "resource_id": "gid://shopify/Product/missing",
+                "locale": "fr",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Register — dict form ────────────────────────────
+
+    def test_register_dict_form_requires_locale(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x",
+                "translations": {
+                    "title": {"value": "T", "digest": "abc"},
+                },
+            })
+        assert not result.ok
+
+    def test_register_dict_form_happy_path(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"translationsRegister": {
+                "translations": [
+                    {"key": "title", "value": "Tasse",
+                     "locale": "fr", "outdated": False},
+                    {"key": "body_html", "value": "<p>La tasse.</p>",
+                     "locale": "fr", "outdated": False},
+                ],
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://shopify/Product/1",
+                "locale": "fr",
+                "translations": {
+                    "title": {"value": "Tasse", "digest": "abc"},
+                    "body_html": {"value": "<p>La tasse.</p>",
+                                  "digest": "def"},
+                },
+            })
+        assert result.ok
+        assert result.data["registered_count"] == 2
+        # Wire format: each entry has key/value/locale + digest field
+        # named the GraphQL way.
+        sent = captured["translations"]
+        assert len(sent) == 2
+        keys = {t["key"] for t in sent}
+        assert keys == {"title", "body_html"}
+        for t in sent:
+            assert t["locale"] == "fr"
+            assert "translatableContentDigest" in t
+
+    def test_register_dict_form_missing_digest_rejected(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x",
+                "locale": "fr",
+                "translations": {
+                    "title": {"value": "Tasse"},  # no digest
+                },
+            })
+        assert not result.ok
+
+    def test_register_dict_form_non_string_value_rejected(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x", "locale": "fr",
+                "translations": {"title": {"value": 12, "digest": "x"}},
+            })
+        assert not result.ok
+
+    def test_register_dict_form_bare_string_entry_rejected(self):
+        """Friendly form requires {value, digest}; a bare string would
+        leave the digest implicit — which Shopify silently treats as
+        outdated. Fail loudly instead."""
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x", "locale": "fr",
+                "translations": {"title": "Tasse"},
+            })
+        assert not result.ok
+
+    def test_register_empty_translations_rejected(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x", "locale": "fr",
+                "translations": {},
+            })
+        assert not result.ok
+
+    def test_register_caps_at_100_per_call(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            big = {f"k{i}": {"value": "v", "digest": "d"} for i in range(101)}
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x", "locale": "fr",
+                "translations": big,
+            })
+        assert not result.ok
+
+    # ── Register — list form ────────────────────────────
+
+    def test_register_list_form_happy_path(self):
+        """List form is for callers that need per-translation locale
+        (e.g. pushing fr + es in one call)."""
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"translationsRegister": {
+                "translations": [
+                    {"key": "title", "value": "Tasse", "locale": "fr"},
+                    {"key": "title", "value": "Taza", "locale": "es"},
+                ],
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://shopify/Product/1",
+                "translations": [
+                    {"key": "title", "value": "Tasse",
+                     "locale": "fr", "digest": "abc"},
+                    {"key": "title", "value": "Taza",
+                     "locale": "es", "digest": "def"},
+                ],
+            })
+        assert result.ok
+        assert result.data["registered_count"] == 2
+        # Per-entry locales preserved in the GraphQL payload.
+        locales = {t["locale"] for t in captured["translations"]}
+        assert locales == {"fr", "es"}
+
+    def test_register_list_form_missing_locale_rejected(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x",
+                "translations": [
+                    {"key": "title", "value": "T", "digest": "x"},
+                ],
+            })
+        assert not result.ok
+
+    def test_register_list_form_missing_digest_rejected(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x",
+                "translations": [
+                    {"key": "title", "value": "T", "locale": "fr"},
+                ],
+            })
+        assert not result.ok
+
+    def test_register_list_form_locale_falls_back_to_top_level(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"translationsRegister": {
+                "translations": [], "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x",
+                "locale": "fr",   # top-level fallback
+                "translations": [
+                    {"key": "title", "value": "T", "digest": "x"},
+                ],
+            })
+        assert captured["translations"][0]["locale"] == "fr"
+
+    def test_register_unsupported_translations_shape_rejected(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x",
+                "translations": "string",
+            })
+        assert not result.ok
+
+    def test_register_user_errors_propagate(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "translationsRegister": {
+                "translations": [],
+                "userErrors": [{
+                    "field": ["translations", "0", "locale"],
+                    "message": "Locale not enabled",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_REGISTER_TRANSLATIONS, {
+                "resource_id": "gid://x", "locale": "klingon",
+                "translations": {"title": {"value": "Tasse", "digest": "x"}},
+            })
+        assert not result.ok
+
+    # ── Remove translations ─────────────────────────────
+
+    def test_remove_requires_resource_id(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "keys": ["title"], "locales": ["fr"],
+            })
+        assert not result.ok
+
+    def test_remove_requires_keys(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "resource_id": "gid://x", "locales": ["fr"],
+            })
+        assert not result.ok
+        with patch.object(a, "_gql"):
+            r2 = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "resource_id": "gid://x", "keys": [], "locales": ["fr"],
+            })
+        assert not r2.ok
+
+    def test_remove_requires_locales(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "resource_id": "gid://x", "keys": ["title"],
+            })
+        assert not result.ok
+
+    def test_remove_singular_keys_locales_auto_wrap(self):
+        """Engines often want to remove ONE key in ONE locale; the
+        singular form should auto-wrap to a list-of-one."""
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"translationsRemove": {
+                "translations": [
+                    {"key": "title", "locale": "fr"},
+                ],
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "resource_id": "gid://shopify/Product/1",
+                "keys": "title",      # single key
+                "locale": "fr",       # single locale
+            })
+        assert result.ok
+        assert captured["translationKeys"] == ["title"]
+        assert captured["locales"] == ["fr"]
+
+    def test_remove_happy_path_multi(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "translationsRemove": {
+                "translations": [
+                    {"key": "title", "locale": "fr"},
+                    {"key": "title", "locale": "es"},
+                ],
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "resource_id": "gid://shopify/Product/1",
+                "keys": ["title"],
+                "locales": ["fr", "es"],
+            })
+        assert result.ok
+        assert result.data["removed_count"] == 2
+
+    def test_remove_user_errors_propagate(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "translationsRemove": {
+                "translations": [],
+                "userErrors": [{
+                    "field": ["resourceId"],
+                    "message": "Resource not found",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "resource_id": "gid://shopify/Product/missing",
+                "keys": ["title"], "locales": ["fr"],
+            })
+        assert not result.ok
+
+    def test_remove_non_string_key_rejected(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "resource_id": "gid://x", "keys": [123], "locales": ["fr"],
+            })
+        assert not result.ok
+
+    def test_remove_non_string_locale_rejected(self):
+        from core.adapters.shopify.translations import ShopifyTranslationsAdapter
+        a = ShopifyTranslationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TRANSLATIONS, {
+                "resource_id": "gid://x", "keys": ["title"], "locales": [123],
+            })
+        assert not result.ok
 
 
 # ── ShopifyAnalyticsAdapter ────────────────────────────────

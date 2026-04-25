@@ -136,6 +136,9 @@ class Capability(str, Enum):
     SHOPIFY_LIST_THEME_FILES = "shopify_list_theme_files"
     SHOPIFY_UPSERT_THEME_FILES = "shopify_upsert_theme_files"
     SHOPIFY_RUN_ANALYTICS_QUERY = "shopify_run_analytics_query"
+    SHOPIFY_GET_TRANSLATABLE_RESOURCE = "shopify_get_translatable_resource"
+    SHOPIFY_REGISTER_TRANSLATIONS = "shopify_register_translations"
+    SHOPIFY_REMOVE_TRANSLATIONS = "shopify_remove_translations"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

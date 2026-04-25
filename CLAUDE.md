@@ -203,6 +203,115 @@ For each new adapter:
 - **Don't claim "done" without live verification.** Smoke test or it
   doesn't ship.
 
+## Schema discoveries — patterns I've already paid for
+
+Phase 1-3 surfaced a set of recurring schema oddities that the docs
+underspecified. Anyone adding the next adapter should expect to hit
+at least one of these — it's faster to encode the patterns here than
+re-derive them live.
+
+### Pattern A: identifier outside the input dict
+
+Shopify's *external* mutations consistently put the resource id at
+the GraphQL field level, NOT inside the *Input dict. Caught live on:
+
+- ``marketingActivityUpdateExternal`` (id is `marketingActivityId` arg)
+- ``marketingEngagementCreate`` (id is `marketingActivityId` arg,
+  input is `marketingEngagement`)
+- ``orderEditCommit`` and friends (id is top-level `id` arg)
+- ``themeFilesUpsert`` (id is top-level `themeId` arg)
+- ``publishablePublish`` (id is top-level `id` arg)
+
+If a mutation rejects with "Field is not defined on …Input", check
+whether the id should live as a top-level argument instead.
+
+### Pattern B: `Query.X` does not exist for some entities
+
+Some resources only paginate through their parent. Caught live on:
+
+- ``Query.returns`` does NOT exist; use ``orders → returns``.
+- Returns are reachable per-order via ``order(id:).returns``.
+- ``ReturnSortKeys`` enum likewise undefined at the top level.
+
+When a list capability doesn't have a top-level connection, traverse
+through the parent and flatten on the adapter side.
+
+### Pattern C: required-but-undocumented fields
+
+Mutations regularly require fields the docs gloss over. The pattern:
+a happy-path call rejects with `"Field X expected to not be null"`,
+then a subsequent call rejects on the next missing field, and so on.
+
+Confirmed on `marketingActivityCreateExternal`:
+- ``tactic`` required (default to AD for paid campaigns)
+- ``budget`` required (auto-default from ad_spend)
+- ``remoteUrl`` required (third-party dashboard link)
+- ``utm.source/medium/campaign`` required for sales attribution
+
+Also `MarketingEngagementInput.utcOffset` required (default `+00:00`).
+
+When a mutation throws "expected to not be null", add the field as
+required in the friendly call shape; fail-fast at the validator
+beats burning a GraphQL hop on every missing field.
+
+### Pattern D: response field names that drift
+
+Schema versioning sometimes flips return-shape fields. Adapter must
+tolerate both forms when the cost is low:
+
+- `shopifyqlQuery.tableData.rows` (current) vs `rowData` (legacy)
+- `Return.declineReason` doesn't exist on the Return type at all —
+  echo the value the caller sent rather than reading from the
+  response.
+
+### Pattern E: schema-gated fields
+
+Some fields live behind approval gates beyond OAuth scopes. The
+field is *hidden from the schema entirely* until the gate clears,
+producing a "Field doesn't exist on type" error even when the scope
+is present.
+
+- `Query.shopifyqlQuery` requires Level 2 protected-customer-data
+  declaration on top of `read_reports`.
+
+When the schema gate is the merchant's paperwork (not code), document
+it loudly in the adapter docstring and ship the wire format that
+will work after the gate clears.
+
+### Pattern F: UserError type variants
+
+Two related types in the schema, one with `code` and one without:
+
+- `UserError` (used by `orderEdit*`) → no `code` field.
+- `UserErrors` (used by everything else) → has `code`.
+
+If a mutation rejects with "Field 'code' doesn't exist on type
+'UserError'", drop the `code` selection from that mutation only.
+
+### Pattern G: money input shape coercion is per-adapter
+
+Multiple adapters (marketing, order_edits, draft_orders) accept
+money inputs. Each has its own `_money_input` helper inlined rather
+than imported from a shared utils module. The recurring tension —
+share-it-or-inline-it — resolved toward inline because:
+
+- The error messages reference the adapter ("shopify_marketing_events:
+  ad_spend amount must be numeric") which is more useful at the
+  call site than a generic "money: ...".
+- A shared utils module would need its own test surface; per-adapter
+  inlines stay covered by each adapter's tests.
+
+If a fourth adapter adds money handling, reconsider — but two or
+three is the wrong threshold.
+
+### Pattern H: hint-level diagnostics in tests are convention
+
+`fake_gql(q, v)` test stubs leave `q` (and sometimes `v`) unused on
+purpose so signatures match the patched call site. The IDE flags
+these as "unused-parameter" hints — they are not errors, do not
+silence them with `_`-prefix renames, the existing 60+ test stubs
+all use the unprefixed form.
+
 ## Current branch state
 
 Branch: `claude/shopify-api-integration-oQzce` → PR #22.
@@ -212,15 +321,25 @@ Phase 1 (Tier 1) — **complete, all live-verified**:
 - `a106efb` ShopifyFilesAdapter
 - `f2511f8` ShopifyDraftOrdersAdapter
 
-Phase 2 (Tier 2) — **next**:
-- ShopifyMarketingEventsAdapter — ads launch tracking, campaign metrics
-- ShopifyReturnsAdapter — refund analytics, churn engine input
-- ShopifyMetaobjectsAdapter — custom storefront content (extends
-  metafield with definitions + objects)
+Phase 2 (Tier 2) — **complete, all live-verified**:
+- `466b128` ShopifyMarketingEventsAdapter (+ this CLAUDE.md)
+- `ae8e090` ShopifyReturnsAdapter
+- `52d7a2e` ShopifyMetaobjectsAdapter
 
-Phase 3 (Tier 3) — **deferred until engines demand**:
-- Themes, Translations, Publications, Order Edits, Payment
-  Customizations, Delivery Customizations, Analytics Reports.
+Phase 3 (Tier 3) — **complete**:
+- `1bf1a51` ShopifyPublicationsAdapter (live-verified)
+- `8be093f` ShopifyOrderEditsAdapter (schema-verified)
+- `e0b264c` ShopifyThemesAdapter (live-verified)
+- `c05d890` ShopifyAnalyticsAdapter (schema-correct, gated by
+  protected-data approval)
+
+Phase 4 (long tail) — **next**:
+- ShopifyTranslationsAdapter
+- ShopifyCustomerSegmentsAdapter (the existing
+  `SHOPIFY_QUERY_SEGMENT` capability has no adapter yet)
+- ShopifyRefundsAdapter (deliberately deferred from Returns)
+- ShopifyPaymentCustomizationsAdapter
+- ShopifyDeliveryCustomizationsAdapter
 
 ## Reading order for a fresh session
 

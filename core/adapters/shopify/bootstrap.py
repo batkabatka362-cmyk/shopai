@@ -36,6 +36,7 @@ from .publications import ShopifyPublicationsAdapter
 from .returns import ShopifyReturnsAdapter
 from .risk import ShopifyRiskAdapter
 from .themes import ShopifyThemesAdapter
+from .translations import ShopifyTranslationsAdapter
 
 logger = get_logger("adapters.shopify.bootstrap")
 
@@ -55,6 +56,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyOrderEditsAdapter,
     ShopifyThemesAdapter,
     ShopifyAnalyticsAdapter,
+    ShopifyTranslationsAdapter,
 )
 
 
