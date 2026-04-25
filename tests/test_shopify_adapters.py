@@ -790,16 +790,16 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_nine_adapters(self):
+    def test_register_all_adds_ten_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 9
+        assert len(status) == 10
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
             "shopify_discount", "shopify_files",
             "shopify_draft_orders", "shopify_marketing_events",
-            "shopify_returns",
+            "shopify_returns", "shopify_metaobjects",
         }
 
     def test_register_all_idempotent(self):
@@ -807,7 +807,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 9
+        assert len(get_registry()) == 10
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -855,6 +855,370 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_RETURN).name == "shopify_returns"
         assert router.route(Capability.SHOPIFY_APPROVE_RETURN).name == "shopify_returns"
         assert router.route(Capability.SHOPIFY_DECLINE_RETURN).name == "shopify_returns"
+        assert router.route(Capability.SHOPIFY_CREATE_METAOBJECT).name == "shopify_metaobjects"
+        assert router.route(Capability.SHOPIFY_UPDATE_METAOBJECT).name == "shopify_metaobjects"
+        assert router.route(Capability.SHOPIFY_GET_METAOBJECT).name == "shopify_metaobjects"
+        assert router.route(Capability.SHOPIFY_LIST_METAOBJECTS).name == "shopify_metaobjects"
+
+
+# ── ShopifyMetaobjectsAdapter ──────────────────────────────
+
+
+class TestShopifyMetaobjectsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter()
+        assert a.name == "shopify_metaobjects"
+        for cap in (
+            Capability.SHOPIFY_CREATE_METAOBJECT,
+            Capability.SHOPIFY_UPDATE_METAOBJECT,
+            Capability.SHOPIFY_GET_METAOBJECT,
+            Capability.SHOPIFY_LIST_METAOBJECTS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _normalise_fields (dict and list shapes) ─────────────
+
+    def test_normalise_fields_dict_form_coerces_primitives(self):
+        from core.adapters.shopify.metaobjects import _normalise_fields
+        out = _normalise_fields({
+            "question": "When does it ship?",
+            "priority": 5,
+            "active": True,
+            "missing": None,
+        }, where="t")
+        # Convert to a dict for easier assertions; field order preserved
+        # in source but we don't depend on it for primitives.
+        flat = {f["key"]: f["value"] for f in out}
+        assert flat["question"] == "When does it ship?"
+        assert flat["priority"] == "5"
+        assert flat["active"] == "true"
+        assert flat["missing"] == ""
+
+    def test_normalise_fields_dict_serialises_complex_values(self):
+        from core.adapters.shopify.metaobjects import _normalise_fields
+        out = _normalise_fields({
+            "tags": ["sale", "summer"],
+            "config": {"a": 1, "b": 2},
+        }, where="t")
+        flat = {f["key"]: f["value"] for f in out}
+        assert "sale" in flat["tags"]
+        assert flat["config"].startswith("{") and flat["config"].endswith("}")
+
+    def test_normalise_fields_list_form_passes_through(self):
+        from core.adapters.shopify.metaobjects import _normalise_fields
+        out = _normalise_fields([
+            {"key": "title", "value": "Hello"},
+            {"key": "count", "value": 42},
+        ], where="t")
+        assert out == [
+            {"key": "title", "value": "Hello"},
+            {"key": "count", "value": "42"},
+        ]
+
+    def test_normalise_fields_list_rejects_missing_key(self):
+        from core.adapters.shopify.metaobjects import _normalise_fields
+        with pytest.raises(AdapterValidationError):
+            _normalise_fields([{"value": "no key here"}], where="t")
+
+    def test_normalise_fields_list_rejects_non_dict(self):
+        from core.adapters.shopify.metaobjects import _normalise_fields
+        with pytest.raises(AdapterValidationError):
+            _normalise_fields(["not a dict"], where="t")
+
+    def test_normalise_fields_dict_rejects_empty_key(self):
+        from core.adapters.shopify.metaobjects import _normalise_fields
+        with pytest.raises(AdapterValidationError):
+            _normalise_fields({"": "value"}, where="t")
+
+    def test_normalise_fields_unsupported_shape_rejected(self):
+        from core.adapters.shopify.metaobjects import _normalise_fields
+        with pytest.raises(AdapterValidationError):
+            _normalise_fields("just a string", where="t")  # type: ignore[arg-type]
+
+    # ── _build_create_input ───────────────────────────────
+
+    def test_build_create_input_requires_type(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMetaobjectsAdapter._build_create_input({
+                "fields": {"x": "y"},
+            })
+
+    def test_build_create_input_requires_fields(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMetaobjectsAdapter._build_create_input({"type": "faq"})
+        with pytest.raises(AdapterValidationError):
+            ShopifyMetaobjectsAdapter._build_create_input({
+                "type": "faq", "fields": {},
+            })
+
+    def test_build_create_input_handle_passes_through(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        out = ShopifyMetaobjectsAdapter._build_create_input({
+            "type": "faq",
+            "handle": "shipping-faq",
+            "fields": {"q": "When?", "a": "Now."},
+        })
+        assert out["type"] == "faq"
+        assert out["handle"] == "shipping-faq"
+        keys = {f["key"] for f in out["fields"]}
+        assert keys == {"q", "a"}
+
+    # ── Create — happy path ──────────────────────────────
+
+    def test_create_metaobject_happy_path(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metaobjectCreate": {
+                "metaobject": {
+                    "id": "gid://shopify/Metaobject/1",
+                    "handle": "shipping-faq",
+                    "type": "faq",
+                    "displayName": "Shipping FAQ",
+                    "updatedAt": "2026-04-25T12:00:00Z",
+                    "fields": [
+                        {"key": "question", "value": "When?", "type": "single_line_text_field"},
+                        {"key": "answer", "value": "Now.", "type": "rich_text_field"},
+                    ],
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_METAOBJECT, {
+                "type": "faq",
+                "handle": "shipping-faq",
+                "fields": {"question": "When?", "answer": "Now."},
+            })
+        assert result.ok
+        m = result.data["metaobject"]
+        assert m["id"] == "gid://shopify/Metaobject/1"
+        assert m["handle"] == "shipping-faq"
+        assert m["type"] == "faq"
+        # Fields are flattened to a dict for ergonomic access.
+        assert m["fields"]["question"] == "When?"
+        assert m["fields"]["answer"] == "Now."
+        assert m["field_meta"]["question"]["type"] == "single_line_text_field"
+
+    def test_create_metaobject_user_errors_propagate(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metaobjectCreate": {
+                "metaobject": None,
+                "userErrors": [{
+                    "field": ["metaobject", "type"],
+                    "message": "Type does not exist",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_METAOBJECT, {
+                "type": "nonexistent",
+                "fields": {"x": "y"},
+            })
+        assert not result.ok
+
+    # ── Update ───────────────────────────────────────────
+
+    def test_update_metaobject_requires_id(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_UPDATE_METAOBJECT, {
+                "fields": {"x": "y"},
+            })
+        assert not result.ok
+
+    def test_update_metaobject_needs_at_least_one_change(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_UPDATE_METAOBJECT, {
+                "id": "gid://shopify/Metaobject/1",
+            })
+        assert not result.ok
+
+    def test_update_metaobject_partial_fields_change(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["id"] = v["id"]
+            captured["meta"] = v["metaobject"]
+            return {"metaobjectUpdate": {
+                "metaobject": {
+                    "id": v["id"], "handle": "h", "type": "faq",
+                    "fields": [{"key": "q", "value": "Updated"}],
+                }, "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_UPDATE_METAOBJECT, {
+                "id": "gid://shopify/Metaobject/1",
+                "fields": {"q": "Updated"},
+            })
+        assert captured["id"] == "gid://shopify/Metaobject/1"
+        assert captured["meta"]["fields"][0] == {"key": "q", "value": "Updated"}
+        assert "handle" not in captured["meta"]  # nothing else changed
+
+    # ── Get ──────────────────────────────────────────────
+
+    def test_get_metaobject_by_id(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metaobject": {
+                "id": v["id"], "handle": "h", "type": "faq", "fields": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_GET_METAOBJECT, {
+                "id": "gid://shopify/Metaobject/1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert captured["id"] == "gid://shopify/Metaobject/1"
+
+    def test_get_metaobject_by_handle(self):
+        """Engines that only know the human handle ('today-bundle')
+        can still fetch without round-tripping through list."""
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metaobjectByHandle": {
+                "id": "gid://shopify/Metaobject/1",
+                "handle": v["handle"]["handle"],
+                "type": v["handle"]["type"],
+                "fields": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_GET_METAOBJECT, {
+                "type": "faq",
+                "handle": "shipping-faq",
+            })
+        assert result.ok
+        assert captured["handle"] == {"handle": "shipping-faq", "type": "faq"}
+        assert result.data["metaobject"]["handle"] == "shipping-faq"
+
+    def test_get_metaobject_not_found_returns_found_false(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"metaobject": None}):
+            result = a.execute(Capability.SHOPIFY_GET_METAOBJECT, {
+                "id": "gid://shopify/Metaobject/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    def test_get_metaobject_needs_id_or_handle_pair(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_METAOBJECT, {
+                "handle": "shipping-faq",  # type missing
+            })
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────────────
+
+    def test_list_metaobjects_requires_type(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_LIST_METAOBJECTS, {})
+        assert not result.ok
+
+    def test_list_metaobjects_happy_path(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metaobjects": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Metaobject/1",
+                        "handle": "shipping-faq",
+                        "type": "faq",
+                        "displayName": "Shipping",
+                        "fields": [{"key": "q", "value": "When?", "type": "text"}],
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_METAOBJECTS, {
+                "type": "faq",
+            })
+        assert result.ok
+        assert result.data["count"] == 1
+        m = result.data["metaobjects"][0]
+        assert m["handle"] == "shipping-faq"
+        assert m["fields"]["q"] == "When?"
+
+    def test_list_metaobjects_clamps_limit(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"metaobjects": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_METAOBJECTS, {
+                "type": "faq", "limit": 9999,
+            })
+        assert captured["first"] == 250
+
+    def test_list_metaobjects_passes_cursor(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        a = ShopifyMetaobjectsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["after"] = v["after"]
+            return {"metaobjects": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_METAOBJECTS, {
+                "type": "faq", "cursor": "cur123",
+            })
+        assert captured["after"] == "cur123"
+
+    # ── _normalise_metaobject ────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        assert ShopifyMetaobjectsAdapter._normalise_metaobject(None) == {}  # type: ignore[arg-type]
+        assert ShopifyMetaobjectsAdapter._normalise_metaobject("foo") == {}  # type: ignore[arg-type]
+
+    def test_normalise_skips_non_dict_field_entries(self):
+        from core.adapters.shopify.metaobjects import ShopifyMetaobjectsAdapter
+        out = ShopifyMetaobjectsAdapter._normalise_metaobject({
+            "id": "gid://x", "handle": "h", "type": "faq",
+            "fields": [
+                {"key": "ok", "value": "v"},
+                "not a dict",   # tolerated
+                {"value": "no key"},  # also tolerated (no key)
+            ],
+        })
+        assert out["fields"] == {"ok": "v"}
 
 
 # ── ShopifyReturnsAdapter ──────────────────────────────────

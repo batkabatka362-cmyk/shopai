@@ -124,6 +124,10 @@ class Capability(str, Enum):
     SHOPIFY_GET_RETURN = "shopify_get_return"
     SHOPIFY_APPROVE_RETURN = "shopify_approve_return"
     SHOPIFY_DECLINE_RETURN = "shopify_decline_return"
+    SHOPIFY_CREATE_METAOBJECT = "shopify_create_metaobject"
+    SHOPIFY_UPDATE_METAOBJECT = "shopify_update_metaobject"
+    SHOPIFY_GET_METAOBJECT = "shopify_get_metaobject"
+    SHOPIFY_LIST_METAOBJECTS = "shopify_list_metaobjects"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
