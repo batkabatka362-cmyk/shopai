@@ -300,6 +300,9 @@ class Capability(str, Enum):
     SHOPIFY_GET_PAYOUT = "shopify_get_payout"
     SHOPIFY_GET_PAYMENTS_BALANCE = "shopify_get_payments_balance"
     SHOPIFY_SEND_ORDER_INVOICE = "shopify_send_order_invoice"
+    SHOPIFY_LIST_COMPANY_CONTACT_ROLES = "shopify_list_company_contact_roles"
+    SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE = "shopify_assign_company_contact_role"
+    SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE = "shopify_revoke_company_contact_role"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

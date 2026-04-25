@@ -236,6 +236,12 @@ Some resources only paginate through their parent. Caught live on:
 When a list capability doesn't have a top-level connection, traverse
 through the parent and flatten on the adapter side.
 
+Additional Pattern B cases:
+
+- ``Query.companyContactRoles`` does NOT exist; roles hang off
+  ``company(id:).contactRoles``. The adapter takes a company_id
+  param and traverses through the company node.
+
 ### Pattern C: required-but-undocumented fields
 
 Mutations regularly require fields the docs gloss over. The pattern:

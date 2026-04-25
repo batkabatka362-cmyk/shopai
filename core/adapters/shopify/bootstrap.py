@@ -34,6 +34,7 @@ from .catalogs import ShopifyCatalogsAdapter
 from .channels import ShopifyChannelsAdapter
 from .collections import ShopifyCollectionsAdapter
 from .companies import ShopifyCompaniesAdapter
+from .company_contact_roles import ShopifyCompanyContactRolesAdapter
 from .customer_consent import ShopifyCustomerConsentAdapter
 from .customer_merge import ShopifyCustomerMergeAdapter
 from .customer_payment_methods import ShopifyCustomerPaymentMethodsAdapter
@@ -163,6 +164,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyFulfillmentHoldAdapter,
     ShopifyPaymentsPayoutsAdapter,
     ShopifyOrderInvoiceSendAdapter,
+    ShopifyCompanyContactRolesAdapter,
 )
 
 

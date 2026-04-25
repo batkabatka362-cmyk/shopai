@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtyseven_adapters(self):
+    def test_register_all_adds_sixtyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 67
+        assert len(status) == 68
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -854,6 +854,7 @@ class TestShopifyBootstrap:
             "shopify_fulfillment_hold",
             "shopify_payments_payouts",
             "shopify_order_invoice",
+            "shopify_company_contact_roles",
         }
 
     def test_register_all_idempotent(self):
@@ -861,7 +862,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 67
+        assert len(get_registry()) == 68
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1089,6 +1090,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_PAYOUT).name == "shopify_payments_payouts"
         assert router.route(Capability.SHOPIFY_GET_PAYMENTS_BALANCE).name == "shopify_payments_payouts"
         assert router.route(Capability.SHOPIFY_SEND_ORDER_INVOICE).name == "shopify_order_invoice"
+        assert router.route(Capability.SHOPIFY_LIST_COMPANY_CONTACT_ROLES).name == "shopify_company_contact_roles"
+        assert router.route(Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE).name == "shopify_company_contact_roles"
+        assert router.route(Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE).name == "shopify_company_contact_roles"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -17824,4 +17828,314 @@ class TestShopifyOrderInvoiceSendAdapter:
                 },
             )
         assert not result.ok
+
+
+# ── ShopifyCompanyContactRolesAdapter ─────────────────────
+
+
+class TestShopifyCompanyContactRolesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter()
+        assert a.name == "shopify_company_contact_roles"
+        for cap in (
+            Capability.SHOPIFY_LIST_COMPANY_CONTACT_ROLES,
+            Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE,
+            Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_requires_company_id(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_COMPANY_CONTACT_ROLES, {},
+        )
+        assert not result.ok
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "company": {
+                "id": "gid://shopify/Company/c1",
+                "name": "Acme Corp",
+                "contactRoles": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "edges": [
+                        {"node": {
+                            "id": "gid://shopify/CompanyContactRole/1",
+                            "name": "Ordering",
+                            "note": "Can place orders",
+                        }},
+                        {"node": {
+                            "id": "gid://shopify/CompanyContactRole/2",
+                            "name": "Location_admin",
+                            "note": "",
+                        }},
+                    ],
+                },
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_COMPANY_CONTACT_ROLES,
+                {"company_id": "gid://shopify/Company/c1"},
+            )
+        assert result.ok
+        assert result.data["count"] == 2
+        assert result.data["company_found"] is True
+        names = {r["name"] for r in result.data["roles"]}
+        assert names == {"Ordering", "Location_admin"}
+
+    def test_list_handles_missing_company(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"company": None}):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_COMPANY_CONTACT_ROLES,
+                {"company_id": "gid://shopify/Company/missing"},
+            )
+        assert result.ok
+        assert result.data["company_found"] is False
+        assert result.data["count"] == 0
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"company": None}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_COMPANY_CONTACT_ROLES,
+                {
+                    "company_id": "gid://shopify/Company/c1",
+                    "limit": 9999,
+                },
+            )
+        assert captured["first"] == 250
+
+    # ── Assign ───────────────────────────────────
+
+    def test_assign_requires_location_id(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE,
+            {"assignments": [{"contact_id": "c1", "role_id": "r1"}]},
+        )
+        assert not result.ok
+
+    def test_assign_requires_assignments(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE,
+            {"company_location_id": "gid://shopify/CompanyLocation/1"},
+        )
+        assert not result.ok
+
+    def test_assign_each_entry_needs_contact_and_role(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE,
+            {
+                "company_location_id": "gid://shopify/CompanyLocation/1",
+                "assignments": [{"contact_id": "c1"}],
+            },
+        )
+        assert not result.ok
+
+    def test_assign_happy_path(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"companyLocationAssignRoles": {
+                "roleAssignments": [{
+                    "id": "gid://shopify/CompanyContactRoleAssignment/ra1",
+                    "role": {
+                        "id": "gid://shopify/CompanyContactRole/1",
+                        "name": "Ordering",
+                    },
+                    "companyContact": {
+                        "id": "gid://shopify/CompanyContact/c1",
+                    },
+                    "companyLocation": {
+                        "id": v["companyLocationId"],
+                    },
+                }],
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE,
+                {
+                    "company_location_id":
+                        "gid://shopify/CompanyLocation/loc1",
+                    "assignments": [
+                        {
+                            "contact_id":
+                                "gid://shopify/CompanyContact/c1",
+                            "role_id":
+                                "gid://shopify/CompanyContactRole/1",
+                        },
+                    ],
+                },
+            )
+        assert result.ok
+        # Pattern A: locationId at field level + rolesToAssign list.
+        assert captured["companyLocationId"] == \
+            "gid://shopify/CompanyLocation/loc1"
+        assert captured["rolesToAssign"][0]["companyContactId"] == \
+            "gid://shopify/CompanyContact/c1"
+        assert result.data["count"] == 1
+        assert result.data["assignments"][0]["role_name"] == "Ordering"
+
+    def test_assign_user_errors_fail_fast(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "companyLocationAssignRoles": {
+                "roleAssignments": [],
+                "userErrors": [{"field": ["companyLocationId"],
+                                "message": "Location not found",
+                                "code": "INVALID"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE,
+                {
+                    "company_location_id":
+                        "gid://shopify/CompanyLocation/missing",
+                    "assignments": [
+                        {"contact_id": "c1", "role_id": "r1"},
+                    ],
+                },
+            )
+        assert not result.ok
+
+    # ── Revoke ───────────────────────────────────
+
+    def test_revoke_requires_location(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE,
+            {"role_assignment_ids":
+             ["gid://shopify/CompanyContactRoleAssignment/ra1"]},
+        )
+        assert not result.ok
+
+    def test_revoke_requires_role_ids(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE,
+            {"company_location_id": "gid://shopify/CompanyLocation/1"},
+        )
+        assert not result.ok
+
+    def test_revoke_accepts_string_id(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"companyLocationRevokeRoles": {
+                "revokedRoleAssignmentIds": v["rolesToRevoke"],
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE,
+                {
+                    "company_location_id":
+                        "gid://shopify/CompanyLocation/loc1",
+                    "role_assignment_ids":
+                        "gid://shopify/CompanyContactRoleAssignment/ra1",
+                },
+            )
+        assert result.ok
+        assert captured["rolesToRevoke"] == [
+            "gid://shopify/CompanyContactRoleAssignment/ra1",
+        ]
+        assert result.data["count"] == 1
+
+    def test_revoke_happy_path(self):
+        from core.adapters.shopify.company_contact_roles import (
+            ShopifyCompanyContactRolesAdapter,
+        )
+        a = ShopifyCompanyContactRolesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "companyLocationRevokeRoles": {
+                "revokedRoleAssignmentIds": [
+                    "gid://shopify/CompanyContactRoleAssignment/ra1",
+                    "gid://shopify/CompanyContactRoleAssignment/ra2",
+                ],
+                "userErrors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE,
+                {
+                    "company_location_id":
+                        "gid://shopify/CompanyLocation/loc1",
+                    "role_assignment_ids": [
+                        "gid://shopify/CompanyContactRoleAssignment/ra1",
+                        "gid://shopify/CompanyContactRoleAssignment/ra2",
+                    ],
+                },
+            )
+        assert result.ok
+        assert result.data["count"] == 2
+        assert "gid://shopify/CompanyContactRoleAssignment/ra1" in (
+            result.data["revoked_assignment_ids"]
+        )
 
