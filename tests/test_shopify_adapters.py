@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtyseven_adapters(self):
+    def test_register_all_adds_thirtyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 37
+        assert len(status) == 38
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -824,6 +824,7 @@ class TestShopifyBootstrap:
             "shopify_shop",
             "shopify_pages",
             "shopify_articles",
+            "shopify_bulk_mutations",
         }
 
     def test_register_all_idempotent(self):
@@ -831,7 +832,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 37
+        assert len(get_registry()) == 38
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -978,6 +979,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_ARTICLE).name == "shopify_articles"
         assert router.route(Capability.SHOPIFY_UPDATE_ARTICLE).name == "shopify_articles"
         assert router.route(Capability.SHOPIFY_DELETE_ARTICLE).name == "shopify_articles"
+        assert router.route(Capability.SHOPIFY_STAGE_UPLOAD).name == "shopify_bulk_mutations"
+        assert router.route(Capability.SHOPIFY_RUN_BULK_MUTATION).name == "shopify_bulk_mutations"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -10543,3 +10546,239 @@ class TestShopifyArticlesAdapter:
         from core.adapters.shopify.articles import ShopifyArticlesAdapter
         assert ShopifyArticlesAdapter._normalise_blog({}) == {}
         assert ShopifyArticlesAdapter._normalise_article({}) == {}
+
+
+# ── ShopifyBulkMutationsAdapter ───────────────────────────
+
+
+class TestShopifyBulkMutationsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter()
+        assert a.name == "shopify_bulk_mutations"
+        for cap in (
+            Capability.SHOPIFY_STAGE_UPLOAD,
+            Capability.SHOPIFY_RUN_BULK_MUTATION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Stage upload input ───────────────────────
+
+    def test_stage_invalid_resource_rejected(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyBulkMutationsAdapter._build_staged_input({
+                "resource": "BAD",
+                "filename": "x.jsonl",
+                "mime_type": "text/jsonl",
+            })
+
+    def test_stage_requires_filename(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyBulkMutationsAdapter._build_staged_input({
+                "resource": "BULK_MUTATION_VARIABLES",
+                "mime_type": "text/jsonl",
+            })
+
+    def test_stage_size_coerced_to_string(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        out = ShopifyBulkMutationsAdapter._build_staged_input({
+            "resource": "BULK_MUTATION_VARIABLES",
+            "filename": "x.jsonl",
+            "mime_type": "text/jsonl",
+            "size": 12345,
+        })
+        assert out["fileSize"] == "12345"
+
+    def test_stage_invalid_http_method_rejected(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyBulkMutationsAdapter._build_staged_input({
+                "resource": "BULK_MUTATION_VARIABLES",
+                "filename": "x.jsonl",
+                "mime_type": "text/jsonl",
+                "http_method": "DELETE",
+            })
+
+    def test_stage_http_method_normalised_uppercase(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        out = ShopifyBulkMutationsAdapter._build_staged_input({
+            "resource": "BULK_MUTATION_VARIABLES",
+            "filename": "x.jsonl",
+            "mime_type": "text/jsonl",
+            "http_method": "post",
+        })
+        assert out["httpMethod"] == "POST"
+
+    # ── Stage upload — happy path ────────────────
+
+    def test_stage_happy_path(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"stagedUploadsCreate": {
+                "stagedTargets": [{
+                    "url": "https://upload.shopify.com/abc",
+                    "resourceUrl": "tmp/abc/x.jsonl",
+                    "parameters": [
+                        {"name": "key", "value": "tmp/abc/x.jsonl"},
+                        {"name": "policy", "value": "..."},
+                    ],
+                }],
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_STAGE_UPLOAD, {
+                "resource": "BULK_MUTATION_VARIABLES",
+                "filename": "products.jsonl",
+                "mime_type": "text/jsonl",
+                "size": "1024",
+                "http_method": "POST",
+            })
+        assert result.ok
+        # Shopify wraps a single input in a list per the
+        # [StagedUploadInput!]! signature.
+        assert isinstance(captured["input"], list)
+        assert captured["input"][0]["resource"] == "BULK_MUTATION_VARIABLES"
+        assert captured["input"][0]["fileSize"] == "1024"
+        assert result.data["url"] == "https://upload.shopify.com/abc"
+        assert result.data["resource_url"] == "tmp/abc/x.jsonl"
+        assert {p["name"] for p in result.data["parameters"]} == {"key", "policy"}
+
+    def test_stage_no_targets_fails(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"stagedUploadsCreate": {
+            "stagedTargets": [],
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_STAGE_UPLOAD, {
+                "resource": "BULK_MUTATION_VARIABLES",
+                "filename": "x.jsonl",
+                "mime_type": "text/jsonl",
+            })
+        assert not result.ok
+
+    def test_stage_user_errors_fail_fast(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"stagedUploadsCreate": {
+            "stagedTargets": [],
+            "userErrors": [{"field": ["resource"], "message": "invalid"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_STAGE_UPLOAD, {
+                "resource": "BULK_MUTATION_VARIABLES",
+                "filename": "x.jsonl",
+                "mime_type": "text/jsonl",
+            })
+        assert not result.ok
+
+    # ── Run mutation ─────────────────────────────
+
+    def test_run_mutation_requires_mutation(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_RUN_BULK_MUTATION, {
+            "staged_upload_path": "tmp/abc/x.jsonl",
+        })
+        assert not result.ok
+
+    def test_run_mutation_requires_staged_path(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_RUN_BULK_MUTATION, {
+            "mutation": "mutation x { ... }",
+        })
+        assert not result.ok
+
+    def test_run_mutation_happy_path(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"bulkOperationRunMutation": {
+                "bulkOperation": {
+                    "id": "gid://shopify/BulkOperation/b1",
+                    "status": "CREATED",
+                    "type": "MUTATION",
+                    "query": v["mutation"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_RUN_BULK_MUTATION, {
+                "mutation": "mutation call($input: ProductInput!) { ... }",
+                "staged_upload_path": "tmp/abc/x.jsonl",
+            })
+        assert result.ok
+        assert captured["stagedUploadPath"] == "tmp/abc/x.jsonl"
+        assert result.data["bulk_operation"]["status"] == "CREATED"
+        assert result.data["bulk_operation"]["type"] == "MUTATION"
+
+    def test_run_mutation_user_errors_fail_fast(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        a = ShopifyBulkMutationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "bulkOperationRunMutation": {
+                "bulkOperation": None,
+                "userErrors": [{
+                    "field": ["mutation"],
+                    "message": "must be a single mutation",
+                    "code": "INVALID",
+                }],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_RUN_BULK_MUTATION, {
+                "mutation": "{ broken }",
+                "staged_upload_path": "tmp/abc/x.jsonl",
+            })
+        assert not result.ok
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.bulk_mutations import (
+            ShopifyBulkMutationsAdapter,
+        )
+        assert ShopifyBulkMutationsAdapter._normalise_op({}) == {}

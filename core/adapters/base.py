@@ -219,6 +219,8 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_ARTICLE = "shopify_create_article"
     SHOPIFY_UPDATE_ARTICLE = "shopify_update_article"
     SHOPIFY_DELETE_ARTICLE = "shopify_delete_article"
+    SHOPIFY_RUN_BULK_MUTATION = "shopify_run_bulk_mutation"
+    SHOPIFY_STAGE_UPLOAD = "shopify_stage_upload"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

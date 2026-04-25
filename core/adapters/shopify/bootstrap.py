@@ -25,6 +25,7 @@ from ..registry import AdapterRegistry, get_registry
 from .analytics import ShopifyAnalyticsAdapter
 from .articles import ShopifyArticlesAdapter
 from .bulk import ShopifyBulkOperationsAdapter
+from .bulk_mutations import ShopifyBulkMutationsAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
 from .channels import ShopifyChannelsAdapter
 from .companies import ShopifyCompaniesAdapter
@@ -103,6 +104,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyShopAdapter,
     ShopifyPagesAdapter,
     ShopifyArticlesAdapter,
+    ShopifyBulkMutationsAdapter,
 )
 
 
