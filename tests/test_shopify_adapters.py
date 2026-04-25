@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortytwo_adapters(self):
+    def test_register_all_adds_fortythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 42
+        assert len(status) == 43
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -829,6 +829,7 @@ class TestShopifyBootstrap:
             "shopify_delivery_profiles",
             "shopify_draft_order_calculate",
             "shopify_selling_plan_groups",
+            "shopify_customer_payment_methods",
         }
 
     def test_register_all_idempotent(self):
@@ -836,7 +837,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 42
+        assert len(get_registry()) == 43
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -993,6 +994,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CALCULATE_DRAFT_ORDER).name == "shopify_draft_order_calculate"
         assert router.route(Capability.SHOPIFY_LIST_SELLING_PLAN_GROUPS).name == "shopify_selling_plan_groups"
         assert router.route(Capability.SHOPIFY_GET_SELLING_PLAN_GROUP).name == "shopify_selling_plan_groups"
+        assert router.route(Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS).name == "shopify_customer_payment_methods"
+        assert router.route(Capability.SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD).name == "shopify_customer_payment_methods"
+        assert router.route(Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD).name == "shopify_customer_payment_methods"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -11665,3 +11669,320 @@ class TestShopifySellingPlanGroupsAdapter:
         assert ShopifySellingPlanGroupsAdapter._normalise_group_compact({}) == {}
         assert ShopifySellingPlanGroupsAdapter._normalise_group_full({}) == {}
         assert ShopifySellingPlanGroupsAdapter._normalise_plan(None) == {}
+
+
+# ── ShopifyCustomerPaymentMethodsAdapter ──────────────────
+
+
+class TestShopifyCustomerPaymentMethodsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter()
+        assert a.name == "shopify_customer_payment_methods"
+        for cap in (
+            Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS,
+            Capability.SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD,
+            Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_requires_customer_id(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS, {},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_happy_path_credit_card(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customer": {
+                "id": "gid://shopify/Customer/c1",
+                "paymentMethods": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "edges": [{"node": {
+                        "id": "gid://shopify/CustomerPaymentMethod/m1",
+                        "revokedAt": None,
+                        "revokedReason": None,
+                        "instrument": {
+                            "__typename": "CustomerCreditCard",
+                            "brand": "VISA",
+                            "expiresSoon": False,
+                            "expiryMonth": 12,
+                            "expiryYear": 2030,
+                            "firstDigits": "4111",
+                            "lastDigits": "1111",
+                            "maskedNumber": "•••• 1111",
+                            "name": "Test Holder",
+                            "source": "shopify_payments",
+                            "virtualLastDigits": "",
+                        },
+                    }}],
+                },
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS,
+                {"customer_id": "gid://shopify/Customer/c1"},
+            )
+        assert result.ok
+        m = result.data["payment_methods"][0]
+        assert m["instrument_kind"] == "CustomerCreditCard"
+        assert m["brand"] == "VISA"
+        assert m["last_digits"] == "1111"
+        assert m["expiry_month"] == 12
+        assert m["is_active"] is True
+
+    def test_list_happy_path_paypal(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customer": {
+                "id": "gid://shopify/Customer/c1",
+                "paymentMethods": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "edges": [{"node": {
+                        "id": "gid://shopify/CustomerPaymentMethod/m2",
+                        "revokedAt": None,
+                        "instrument": {
+                            "__typename": "CustomerPaypalBillingAgreement",
+                            "paypalAccountEmail": "x@y.com",
+                            "inactive": False,
+                        },
+                    }}],
+                },
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS,
+                {"customer_id": "gid://shopify/Customer/c1"},
+            )
+        m = result.data["payment_methods"][0]
+        assert m["instrument_kind"] == "CustomerPaypalBillingAgreement"
+        assert m["paypal_account_email"] == "x@y.com"
+        assert m["inactive"] is False
+
+    def test_list_revoked_marked_inactive(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customer": {
+                "id": "gid://shopify/Customer/c1",
+                "paymentMethods": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "edges": [{"node": {
+                        "id": "gid://shopify/CustomerPaymentMethod/m3",
+                        "revokedAt": "2026-04-01T00:00:00Z",
+                        "revokedReason": "MERCHANT_REQUESTED",
+                        "instrument": {
+                            "__typename": "CustomerCreditCard",
+                            "brand": "VISA",
+                        },
+                    }}],
+                },
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS,
+                {"customer_id": "gid://shopify/Customer/c1"},
+            )
+        m = result.data["payment_methods"][0]
+        assert m["is_active"] is False
+        assert m["revoked_reason"] == "MERCHANT_REQUESTED"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"customer": None}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS,
+                {"customer_id": "gid://shopify/Customer/c1", "limit": 9999},
+            )
+        assert captured["first"] == 250
+
+    def test_list_handles_missing_customer(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={"customer": None}):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS,
+                {"customer_id": "gid://shopify/Customer/missing"},
+            )
+        assert result.ok
+        assert result.data["customer_found"] is False
+        assert result.data["count"] == 0
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD, {},
+        )
+        assert not result.ok
+
+    def test_get_happy_path_shop_pay(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerPaymentMethod": {
+                "id": "gid://shopify/CustomerPaymentMethod/m1",
+                "revokedAt": None,
+                "instrument": {
+                    "__typename": "CustomerShopPayAgreement",
+                    "expiresSoon": True,
+                    "expiryMonth": 5,
+                    "expiryYear": 2026,
+                    "inactive": False,
+                    "lastDigits": "4242",
+                    "maskedNumber": "•••• 4242",
+                },
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD,
+                {"id": "gid://shopify/CustomerPaymentMethod/m1"},
+            )
+        assert result.ok
+        m = result.data["payment_method"]
+        assert m["instrument_kind"] == "CustomerShopPayAgreement"
+        assert m["expires_soon"] is True
+        assert m["last_digits"] == "4242"
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerPaymentMethod": None,
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD,
+                {"id": "gid://shopify/CustomerPaymentMethod/999"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Revoke ───────────────────────────────────
+
+    def test_revoke_requires_id(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD, {},
+        )
+        assert not result.ok
+
+    def test_revoke_happy_path(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerPaymentMethodRevoke": {
+                "revokedCustomerPaymentMethodId": (
+                    "gid://shopify/CustomerPaymentMethod/m1"
+                ),
+                "userErrors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD,
+                {"id": "gid://shopify/CustomerPaymentMethod/m1"},
+            )
+        assert result.ok
+        assert result.data["revoked_id"] == \
+            "gid://shopify/CustomerPaymentMethod/m1"
+
+    def test_revoke_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerPaymentMethodRevoke": {
+                "revokedCustomerPaymentMethodId": "",
+                "userErrors": [{"field": ["customerPaymentMethodId"],
+                                "message": "Already revoked"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD,
+                {"id": "gid://shopify/CustomerPaymentMethod/already"},
+            )
+        assert not result.ok
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.customer_payment_methods import (
+            ShopifyCustomerPaymentMethodsAdapter,
+        )
+        assert ShopifyCustomerPaymentMethodsAdapter._normalise_method({}) == {}
+        assert ShopifyCustomerPaymentMethodsAdapter._normalise_method(None) == {}

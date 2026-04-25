@@ -29,6 +29,7 @@ from .bulk_mutations import ShopifyBulkMutationsAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
 from .channels import ShopifyChannelsAdapter
 from .companies import ShopifyCompaniesAdapter
+from .customer_payment_methods import ShopifyCustomerPaymentMethodsAdapter
 from .customers import ShopifyCustomersAdapter
 from .delivery_profiles import ShopifyDeliveryProfilesAdapter
 from .customizations import (
@@ -113,6 +114,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDeliveryProfilesAdapter,
     ShopifyDraftOrderCalculateAdapter,
     ShopifySellingPlanGroupsAdapter,
+    ShopifyCustomerPaymentMethodsAdapter,
 )
 
 

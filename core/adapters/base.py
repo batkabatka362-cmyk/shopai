@@ -229,6 +229,9 @@ class Capability(str, Enum):
     SHOPIFY_CALCULATE_DRAFT_ORDER = "shopify_calculate_draft_order"
     SHOPIFY_LIST_SELLING_PLAN_GROUPS = "shopify_list_selling_plan_groups"
     SHOPIFY_GET_SELLING_PLAN_GROUP = "shopify_get_selling_plan_group"
+    SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS = "shopify_list_customer_payment_methods"
+    SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD = "shopify_get_customer_payment_method"
+    SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD = "shopify_revoke_customer_payment_method"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
