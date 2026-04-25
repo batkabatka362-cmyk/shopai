@@ -54,6 +54,7 @@ from .fulfillment_events import ShopifyFulfillmentEventsAdapter
 from .fulfillment_services import ShopifyFulfillmentServicesAdapter
 from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
+from .inventory_activation import ShopifyInventoryActivationAdapter
 from .inventory_shipments import ShopifyInventoryShipmentsAdapter
 from .locations import ShopifyLocationsAdapter
 from .market_web_presences import ShopifyMarketWebPresencesAdapter
@@ -149,6 +150,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCustomerMergeAdapter,
     ShopifyFulfillmentEventsAdapter,
     ShopifyCustomerConsentAdapter,
+    ShopifyInventoryActivationAdapter,
 )
 
 

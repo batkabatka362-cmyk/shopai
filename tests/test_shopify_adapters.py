@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixty_adapters(self):
+    def test_register_all_adds_sixtyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 60
+        assert len(status) == 61
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -847,6 +847,7 @@ class TestShopifyBootstrap:
             "shopify_customer_merge",
             "shopify_fulfillment_events",
             "shopify_customer_consent",
+            "shopify_inventory_activation",
         }
 
     def test_register_all_idempotent(self):
@@ -854,7 +855,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 60
+        assert len(get_registry()) == 61
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1066,6 +1067,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_FULFILLMENT_EVENT).name == "shopify_fulfillment_events"
         assert router.route(Capability.SHOPIFY_UPDATE_SMS_CONSENT).name == "shopify_customer_consent"
         assert router.route(Capability.SHOPIFY_UPDATE_EMAIL_CONSENT).name == "shopify_customer_consent"
+        assert router.route(Capability.SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION).name == "shopify_inventory_activation"
+        assert router.route(Capability.SHOPIFY_DEACTIVATE_INVENTORY_AT_LOCATION).name == "shopify_inventory_activation"
+        assert router.route(Capability.SHOPIFY_ADJUST_INVENTORY_QUANTITIES).name == "shopify_inventory_activation"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -16313,4 +16317,313 @@ class TestShopifyCustomerConsentAdapter:
         # Email payload shouldn't carry consent_collected_from in
         # response since it's SMS-only.
         assert "consent_collected_from" not in result.data
+
+
+# ── ShopifyInventoryActivationAdapter ─────────────────────
+
+
+class TestShopifyInventoryActivationAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter()
+        assert a.name == "shopify_inventory_activation"
+        for cap in (
+            Capability.SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION,
+            Capability.SHOPIFY_DEACTIVATE_INVENTORY_AT_LOCATION,
+            Capability.SHOPIFY_ADJUST_INVENTORY_QUANTITIES,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Activate ─────────────────────────────────
+
+    def test_activate_requires_item_id(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION,
+            {"location_id": "gid://shopify/Location/1"},
+        )
+        assert not result.ok
+
+    def test_activate_requires_location_id(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION,
+            {"inventory_item_id": "gid://shopify/InventoryItem/1"},
+        )
+        assert not result.ok
+
+    def test_activate_happy_path_with_initial_quantity(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"inventoryActivate": {
+                "inventoryLevel": {
+                    "id": "gid://shopify/InventoryLevel/lvl1",
+                    "location": {
+                        "id": v["locationId"],
+                        "name": "Shop location",
+                    },
+                    "item": {
+                        "id": v["inventoryItemId"],
+                        "sku": "LANT-1",
+                        "tracked": True,
+                    },
+                    "quantities": [
+                        {"name": "available", "quantity": v["available"]},
+                        {"name": "on_hand", "quantity": v["available"]},
+                    ],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION,
+                {
+                    "inventory_item_id": "gid://shopify/InventoryItem/i1",
+                    "location_id": "gid://shopify/Location/loc1",
+                    "available": 25,
+                },
+            )
+        assert result.ok
+        assert captured["inventoryItemId"] == \
+            "gid://shopify/InventoryItem/i1"
+        assert captured["available"] == 25
+        level = result.data["inventory_level"]
+        assert level["sku"] == "LANT-1"
+        assert level["available"] == 25
+
+    def test_activate_available_must_be_int(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION,
+            {
+                "inventory_item_id": "gid://shopify/InventoryItem/1",
+                "location_id": "gid://shopify/Location/1",
+                "available": "many",
+            },
+        )
+        assert not result.ok
+
+    def test_activate_user_errors_fail_fast(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"inventoryActivate": {
+            "inventoryLevel": None,
+            "userErrors": [{"field": ["locationId"],
+                            "message": "Location not found",
+                            "code": "INVALID"}],
+        }}):
+            result = a.execute(
+                Capability.SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION,
+                {
+                    "inventory_item_id": "gid://shopify/InventoryItem/1",
+                    "location_id": "gid://shopify/Location/missing",
+                },
+            )
+        assert not result.ok
+
+    # ── Deactivate ───────────────────────────────
+
+    def test_deactivate_requires_level_id(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_DEACTIVATE_INVENTORY_AT_LOCATION, {},
+        )
+        assert not result.ok
+
+    def test_deactivate_happy_path(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"inventoryDeactivate": {"userErrors": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DEACTIVATE_INVENTORY_AT_LOCATION,
+                {"inventory_level_id": "gid://shopify/InventoryLevel/lvl1"},
+            )
+        assert result.ok
+        assert result.data["deactivated"] is True
+        assert captured["inventoryLevelId"] == \
+            "gid://shopify/InventoryLevel/lvl1"
+
+    # ── Adjust ───────────────────────────────────
+
+    def test_adjust_requires_reason(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_adjust_input({"changes": []})
+
+    def test_adjust_invalid_reason_rejected(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_adjust_input({
+                "reason": "vibes",
+                "changes": [{"inventory_item_id": "i1", "location_id": "l1",
+                             "delta": 5}],
+            })
+
+    def test_adjust_invalid_quantity_name_rejected(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_adjust_input({
+                "reason": "received",
+                "name": "stock",
+                "changes": [{"inventory_item_id": "i1", "location_id": "l1",
+                             "delta": 5}],
+            })
+
+    def test_adjust_requires_non_empty_changes(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_adjust_input({"reason": "received", "changes": []})
+
+    def test_adjust_change_requires_delta(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_adjust_input({
+                "reason": "received",
+                "changes": [{"inventory_item_id": "i1", "location_id": "l1"}],
+            })
+
+    def test_adjust_zero_delta_rejected(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_adjust_input({
+                "reason": "received",
+                "changes": [{"inventory_item_id": "i1", "location_id": "l1",
+                             "delta": 0}],
+            })
+
+    def test_adjust_full_shape(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        out = a._build_adjust_input({
+            "reason": "received",
+            "name": "available",
+            "changes": [
+                {"inventory_item_id": "gid://shopify/InventoryItem/1",
+                 "location_id": "gid://shopify/Location/1",
+                 "delta": 5,
+                 "ledger_document_uri": "shopai://po/12345"},
+                {"inventory_item_id": "gid://shopify/InventoryItem/2",
+                 "location_id": "gid://shopify/Location/1",
+                 "delta": -3},
+            ],
+        })
+        assert out["reason"] == "received"
+        assert out["name"] == "available"
+        assert len(out["changes"]) == 2
+        assert out["changes"][0]["delta"] == 5
+        assert out["changes"][0]["ledgerDocumentUri"] == \
+            "shopai://po/12345"
+        assert out["changes"][1]["delta"] == -3
+
+    def test_adjust_happy_path(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        a = ShopifyInventoryActivationAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventoryAdjustQuantities": {
+                "inventoryAdjustmentGroup": {
+                    "id": "gid://shopify/InventoryAdjustmentGroup/g1",
+                    "reason": "received",
+                    "changes": [{
+                        "delta": 5,
+                        "name": "available",
+                        "quantityAfterChange": 30,
+                        "item": {
+                            "id": "gid://shopify/InventoryItem/1",
+                            "sku": "LANT-1",
+                        },
+                        "location": {
+                            "id": "gid://shopify/Location/1",
+                            "name": "Shop location",
+                        },
+                    }],
+                },
+                "userErrors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ADJUST_INVENTORY_QUANTITIES,
+                {
+                    "reason": "received",
+                    "changes": [{
+                        "inventory_item_id": "gid://shopify/InventoryItem/1",
+                        "location_id": "gid://shopify/Location/1",
+                        "delta": 5,
+                    }],
+                },
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        change = result.data["changes"][0]
+        assert change["delta"] == 5
+        assert change["quantity_after_change"] == 30
+        assert change["sku"] == "LANT-1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.inventory_activation import (
+            ShopifyInventoryActivationAdapter,
+        )
+        assert ShopifyInventoryActivationAdapter._normalise_level({}) == {}
+        assert ShopifyInventoryActivationAdapter._normalise_change(None) == {}
 

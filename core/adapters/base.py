@@ -284,6 +284,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_FULFILLMENT_EVENT = "shopify_create_fulfillment_event"
     SHOPIFY_UPDATE_SMS_CONSENT = "shopify_update_sms_consent"
     SHOPIFY_UPDATE_EMAIL_CONSENT = "shopify_update_email_consent"
+    SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION = "shopify_activate_inventory_at_location"
+    SHOPIFY_DEACTIVATE_INVENTORY_AT_LOCATION = "shopify_deactivate_inventory_at_location"
+    SHOPIFY_ADJUST_INVENTORY_QUANTITIES = "shopify_adjust_inventory_quantities"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
