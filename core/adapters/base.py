@@ -280,6 +280,8 @@ class Capability(str, Enum):
     SHOPIFY_PREVIEW_CUSTOMER_MERGE = "shopify_preview_customer_merge"
     SHOPIFY_MERGE_CUSTOMERS = "shopify_merge_customers"
     SHOPIFY_GET_CUSTOMER_MERGE_JOB = "shopify_get_customer_merge_job"
+    SHOPIFY_LIST_FULFILLMENT_EVENTS = "shopify_list_fulfillment_events"
+    SHOPIFY_CREATE_FULFILLMENT_EVENT = "shopify_create_fulfillment_event"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

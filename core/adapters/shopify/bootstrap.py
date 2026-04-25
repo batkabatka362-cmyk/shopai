@@ -49,6 +49,7 @@ from .draft_order_invoice import ShopifyDraftOrderInvoiceSendAdapter
 from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
+from .fulfillment_events import ShopifyFulfillmentEventsAdapter
 from .fulfillment_services import ShopifyFulfillmentServicesAdapter
 from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
@@ -145,6 +146,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMarketWebPresencesAdapter,
     ShopifyDraftOrderInvoiceSendAdapter,
     ShopifyCustomerMergeAdapter,
+    ShopifyFulfillmentEventsAdapter,
 )
 
 

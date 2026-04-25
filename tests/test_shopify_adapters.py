@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftyeight_adapters(self):
+    def test_register_all_adds_fiftynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 58
+        assert len(status) == 59
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -845,6 +845,7 @@ class TestShopifyBootstrap:
             "shopify_market_web_presences",
             "shopify_draft_order_invoice",
             "shopify_customer_merge",
+            "shopify_fulfillment_events",
         }
 
     def test_register_all_idempotent(self):
@@ -852,7 +853,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 58
+        assert len(get_registry()) == 59
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1060,6 +1061,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_PREVIEW_CUSTOMER_MERGE).name == "shopify_customer_merge"
         assert router.route(Capability.SHOPIFY_MERGE_CUSTOMERS).name == "shopify_customer_merge"
         assert router.route(Capability.SHOPIFY_GET_CUSTOMER_MERGE_JOB).name == "shopify_customer_merge"
+        assert router.route(Capability.SHOPIFY_LIST_FULFILLMENT_EVENTS).name == "shopify_fulfillment_events"
+        assert router.route(Capability.SHOPIFY_CREATE_FULFILLMENT_EVENT).name == "shopify_fulfillment_events"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -15849,4 +15852,249 @@ class TestShopifyCustomerMergeAdapter:
             ShopifyCustomerMergeAdapter,
         )
         assert ShopifyCustomerMergeAdapter._normalise_customer({}) == {}
+
+
+# ── ShopifyFulfillmentEventsAdapter ───────────────────────
+
+
+class TestShopifyFulfillmentEventsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter()
+        assert a.name == "shopify_fulfillment_events"
+        for cap in (
+            Capability.SHOPIFY_LIST_FULFILLMENT_EVENTS,
+            Capability.SHOPIFY_CREATE_FULFILLMENT_EVENT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_requires_fulfillment_id(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_LIST_FULFILLMENT_EVENTS, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "fulfillment": {
+                "id": "gid://shopify/Fulfillment/1",
+                "name": "#F1",
+                "status": "SUCCESS",
+                "events": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "edges": [
+                        {"node": {
+                            "id": "gid://shopify/FulfillmentEvent/e1",
+                            "status": "PICKED_UP",
+                            "happenedAt": "2026-04-25T08:00:00Z",
+                            "city": "Austin",
+                            "country": "US",
+                        }},
+                        {"node": {
+                            "id": "gid://shopify/FulfillmentEvent/e2",
+                            "status": "DELIVERED",
+                            "happenedAt": "2026-04-26T15:30:00Z",
+                            "city": "Seattle",
+                            "country": "US",
+                            "latitude": 47.6062,
+                            "longitude": -122.3321,
+                        }},
+                    ],
+                },
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_FULFILLMENT_EVENTS,
+                {"fulfillment_id": "gid://shopify/Fulfillment/1"},
+            )
+        assert result.ok
+        assert result.data["count"] == 2
+        statuses = [e["status"] for e in result.data["events"]]
+        assert statuses == ["PICKED_UP", "DELIVERED"]
+        delivered = result.data["events"][1]
+        assert delivered["is_terminal"] is True
+        assert delivered["latitude"] == 47.6062
+        assert delivered["city"] == "Seattle"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"fulfillment": None}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_FULFILLMENT_EVENTS,
+                {"fulfillment_id": "gid://shopify/Fulfillment/1",
+                 "limit": 9999},
+            )
+        assert captured["first"] == 250
+
+    def test_list_handles_missing_fulfillment(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"fulfillment": None}):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_FULFILLMENT_EVENTS,
+                {"fulfillment_id": "gid://shopify/Fulfillment/missing"},
+            )
+        assert result.ok
+        assert result.data["fulfillment_found"] is False
+        assert result.data["count"] == 0
+
+    # ── Create input builder ─────────────────────
+
+    def test_create_requires_fulfillment_id(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_event_input({"status": "IN_TRANSIT"})
+
+    def test_create_requires_status(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_event_input({
+                "fulfillment_id": "gid://shopify/Fulfillment/1",
+            })
+
+    def test_create_invalid_status_rejected(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_event_input({
+                "fulfillment_id": "gid://shopify/Fulfillment/1",
+                "status": "TELEPORTING",
+            })
+
+    def test_create_full_shape(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        out = a._build_event_input({
+            "fulfillment_id": "gid://shopify/Fulfillment/1",
+            "status": "in_transit",
+            "address1": "550 Mainland",
+            "city": "Memphis",
+            "country": "US",
+            "latitude": 35.1,
+            "longitude": -90.05,
+            "happened_at": "2026-04-26T12:00:00Z",
+            "estimated_delivery_at": "2026-04-28T17:00:00Z",
+            "message": "At sort facility",
+        })
+        assert out["fulfillmentId"] == "gid://shopify/Fulfillment/1"
+        assert out["status"] == "IN_TRANSIT"
+        assert out["city"] == "Memphis"
+        assert out["latitude"] == 35.1
+        assert out["happenedAt"] == "2026-04-26T12:00:00Z"
+        assert out["estimatedDeliveryAt"] == "2026-04-28T17:00:00Z"
+
+    def test_create_lat_lng_must_be_numeric(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_event_input({
+                "fulfillment_id": "gid://shopify/Fulfillment/1",
+                "status": "IN_TRANSIT",
+                "latitude": "north",
+            })
+
+    # ── Create — happy path ──────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"fulfillmentEventCreate": {
+                "fulfillmentEvent": {
+                    "id": "gid://shopify/FulfillmentEvent/new",
+                    "status": v["fulfillmentEvent"]["status"],
+                    "city": v["fulfillmentEvent"].get("city", ""),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT_EVENT,
+                {
+                    "fulfillment_id": "gid://shopify/Fulfillment/1",
+                    "status": "DELIVERED",
+                    "city": "Seattle",
+                },
+            )
+        assert result.ok
+        # Pattern A: variable name matches input type.
+        assert captured["fulfillmentEvent"]["status"] == "DELIVERED"
+        assert result.data["event"]["is_terminal"] is True
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        a = ShopifyFulfillmentEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "fulfillmentEventCreate": {
+                "fulfillmentEvent": None,
+                "userErrors": [{"field": ["fulfillmentId"],
+                                "message": "not found"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT_EVENT,
+                {
+                    "fulfillment_id": "gid://shopify/Fulfillment/missing",
+                    "status": "IN_TRANSIT",
+                },
+            )
+        assert not result.ok
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.fulfillment_events import (
+            ShopifyFulfillmentEventsAdapter,
+        )
+        assert ShopifyFulfillmentEventsAdapter._normalise_event({}) == {}
+        assert ShopifyFulfillmentEventsAdapter._normalise_event(None) == {}
 
