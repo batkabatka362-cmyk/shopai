@@ -23,6 +23,7 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .discounts import ShopifyDiscountAdapter
+from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
 from .inventory import ShopifyInventoryAdapter
@@ -39,6 +40,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMetafieldAdapter,
     ShopifyDiscountAdapter,
     ShopifyFilesAdapter,
+    ShopifyDraftOrdersAdapter,
 )
 
 

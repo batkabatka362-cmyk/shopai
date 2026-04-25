@@ -113,6 +113,9 @@ class Capability(str, Enum):
     SHOPIFY_SET_METAFIELD = "shopify_set_metafield"
     SHOPIFY_UPLOAD_FILE = "shopify_upload_file"
     SHOPIFY_LIST_FILES = "shopify_list_files"
+    SHOPIFY_CREATE_DRAFT_ORDER = "shopify_create_draft_order"
+    SHOPIFY_COMPLETE_DRAFT_ORDER = "shopify_complete_draft_order"
+    SHOPIFY_LIST_DRAFT_ORDERS = "shopify_list_draft_orders"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

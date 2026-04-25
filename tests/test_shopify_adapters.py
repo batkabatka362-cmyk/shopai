@@ -790,14 +790,15 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_six_adapters(self):
+    def test_register_all_adds_seven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 6
+        assert len(status) == 7
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
             "shopify_discount", "shopify_files",
+            "shopify_draft_orders",
         }
 
     def test_register_all_idempotent(self):
@@ -805,7 +806,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 6
+        assert len(get_registry()) == 7
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -842,6 +843,383 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_DISCOUNTS).name == "shopify_discount"
         assert router.route(Capability.SHOPIFY_UPLOAD_FILE).name == "shopify_files"
         assert router.route(Capability.SHOPIFY_LIST_FILES).name == "shopify_files"
+        assert router.route(Capability.SHOPIFY_CREATE_DRAFT_ORDER).name == "shopify_draft_orders"
+        assert router.route(Capability.SHOPIFY_COMPLETE_DRAFT_ORDER).name == "shopify_draft_orders"
+        assert router.route(Capability.SHOPIFY_LIST_DRAFT_ORDERS).name == "shopify_draft_orders"
+
+
+# ── ShopifyDraftOrdersAdapter ──────────────────────────────
+
+
+class TestShopifyDraftOrdersAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter()
+        assert a.name == "shopify_draft_orders"
+        assert Capability.SHOPIFY_CREATE_DRAFT_ORDER in a.capabilities
+        assert Capability.SHOPIFY_COMPLETE_DRAFT_ORDER in a.capabilities
+        assert Capability.SHOPIFY_LIST_DRAFT_ORDERS in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_draft_input validation ────────────────────────
+
+    def test_build_input_requires_line_items(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrdersAdapter._build_draft_input({})
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrdersAdapter._build_draft_input({"line_items": []})
+
+    def test_build_input_variant_line_item(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        out = ShopifyDraftOrdersAdapter._build_draft_input({
+            "line_items": [
+                {"variant_id": "gid://shopify/ProductVariant/123",
+                 "quantity": 2},
+            ],
+        })
+        assert out["lineItems"][0]["variantId"] == "gid://shopify/ProductVariant/123"
+        assert out["lineItems"][0]["quantity"] == 2
+
+    def test_build_input_custom_line_item_with_price(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        out = ShopifyDraftOrdersAdapter._build_draft_input({
+            "line_items": [
+                {"title": "Custom service",
+                 "quantity": 1,
+                 "original_unit_price": 50},
+            ],
+        })
+        assert out["lineItems"][0]["title"] == "Custom service"
+        assert out["lineItems"][0]["originalUnitPrice"] == "50.00"
+
+    def test_build_input_custom_item_without_price_rejected(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyDraftOrdersAdapter._build_draft_input({
+                "line_items": [{"title": "Custom", "quantity": 1}],
+            })
+        assert "original_unit_price" in str(exc.value)
+
+    def test_build_input_line_item_without_variant_or_title_rejected(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrdersAdapter._build_draft_input({
+                "line_items": [{"quantity": 1}],
+            })
+
+    def test_build_input_quantity_must_be_positive_int(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        for bad in (0, -1, "many"):
+            with pytest.raises(AdapterValidationError):
+                ShopifyDraftOrdersAdapter._build_draft_input({
+                    "line_items": [
+                        {"variant_id": "gid://x", "quantity": bad},
+                    ],
+                })
+
+    def test_build_input_non_dict_line_item_rejected(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrdersAdapter._build_draft_input({
+                "line_items": ["not a dict"],
+            })
+
+    def test_build_input_email_validated(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        out = ShopifyDraftOrdersAdapter._build_draft_input({
+            "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+            "email": "buyer@example.com",
+        })
+        assert out["email"] == "buyer@example.com"
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrdersAdapter._build_draft_input({
+                "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+                "email": "not-an-email",
+            })
+
+    def test_build_input_customer_id_passes_as_purchasing_entity(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        out = ShopifyDraftOrdersAdapter._build_draft_input({
+            "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+            "customer_id": "gid://shopify/Customer/42",
+        })
+        assert out["purchasingEntity"]["customerId"] == "gid://shopify/Customer/42"
+
+    def test_build_input_tags_list_form(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        out = ShopifyDraftOrdersAdapter._build_draft_input({
+            "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+            "tags": ["recovery", "shopai", ""],
+        })
+        # Empty strings dropped silently to spare callers a filter step.
+        assert out["tags"] == ["recovery", "shopai"]
+
+    def test_build_input_tags_string_form(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        out = ShopifyDraftOrdersAdapter._build_draft_input({
+            "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+            "tags": "recovery, shopai , vip",
+        })
+        assert out["tags"] == ["recovery", "shopai", "vip"]
+
+    def test_build_input_tags_invalid_type_rejected(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrdersAdapter._build_draft_input({
+                "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+                "tags": 12345,
+            })
+
+    def test_build_input_applied_discount_percentage(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        out = ShopifyDraftOrdersAdapter._build_draft_input({
+            "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+            "applied_discount": {"value_type": "PERCENTAGE", "value": 10,
+                                 "title": "Recovery"},
+        })
+        assert out["appliedDiscount"]["valueType"] == "PERCENTAGE"
+        assert out["appliedDiscount"]["value"] == 10.0
+        assert out["appliedDiscount"]["title"] == "Recovery"
+
+    def test_build_input_applied_discount_validates_value_type(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrdersAdapter._build_draft_input({
+                "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+                "applied_discount": {"value_type": "FREE_LUNCH", "value": 5},
+            })
+
+    def test_build_input_applied_discount_percentage_capped_at_100(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrdersAdapter._build_draft_input({
+                "line_items": [{"variant_id": "gid://x", "quantity": 1}],
+                "applied_discount": {"value_type": "PERCENTAGE",
+                                     "value": 150},
+            })
+
+    def test_build_input_line_item_applied_discount(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        out = ShopifyDraftOrdersAdapter._build_draft_input({
+            "line_items": [
+                {"variant_id": "gid://x", "quantity": 1,
+                 "applied_discount": {"value_type": "FIXED_AMOUNT",
+                                      "value": 5}},
+            ],
+        })
+        assert out["lineItems"][0]["appliedDiscount"]["valueType"] == "FIXED_AMOUNT"
+
+    # ── Create — happy path ──────────────────────────────────
+
+    def test_create_draft_happy_path(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "draftOrderCreate": {
+                "draftOrder": {
+                    "id": "gid://shopify/DraftOrder/77",
+                    "name": "#D77",
+                    "status": "OPEN",
+                    "invoiceUrl": "https://shop.myshopify.com/checkouts/c/abc",
+                    "totalPriceSet": {
+                        "presentmentMoney": {"amount": "55.00",
+                                             "currencyCode": "USD"},
+                    },
+                    "subtotalPriceSet": {
+                        "presentmentMoney": {"amount": "50.00",
+                                             "currencyCode": "USD"},
+                    },
+                    "currencyCode": "USD",
+                    "createdAt": "2026-04-25T12:00:00Z",
+                    "updatedAt": "2026-04-25T12:00:00Z",
+                    "lineItems": {"edges": [
+                        {"node": {
+                            "title": "Cool Mug",
+                            "quantity": 2,
+                            "originalUnitPriceSet": {
+                                "presentmentMoney": {"amount": "25.00",
+                                                     "currencyCode": "USD"},
+                            },
+                        }},
+                    ]},
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_DRAFT_ORDER, {
+                "line_items": [
+                    {"variant_id": "gid://shopify/ProductVariant/999",
+                     "quantity": 2},
+                ],
+                "email": "buyer@example.com",
+            })
+        assert result.ok
+        d = result.data["draft_order"]
+        assert d["id"] == "gid://shopify/DraftOrder/77"
+        assert d["status"] == "OPEN"
+        assert d["invoice_url"].startswith("https://")
+        assert d["total"] == 55.0
+        assert d["subtotal"] == 50.0
+        assert d["currency"] == "USD"
+        assert len(d["line_items"]) == 1
+        assert d["line_items"][0]["unit_price"] == 25.0
+        assert d["line_items"][0]["quantity"] == 2
+
+    def test_create_draft_user_errors_propagate(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "draftOrderCreate": {
+                "draftOrder": None,
+                "userErrors": [{
+                    "field": ["lineItems", "0", "variantId"],
+                    "message": "Variant does not exist",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_DRAFT_ORDER, {
+                "line_items": [
+                    {"variant_id": "gid://shopify/ProductVariant/0",
+                     "quantity": 1},
+                ],
+            })
+        assert not result.ok
+
+    # ── Complete ─────────────────────────────────────────────
+
+    def test_complete_draft_happy_path(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "draftOrderComplete": {
+                "draftOrder": {
+                    "id": "gid://shopify/DraftOrder/77",
+                    "status": "COMPLETED",
+                    "order": {
+                        "id": "gid://shopify/Order/1234",
+                        "name": "#1001",
+                    },
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_COMPLETE_DRAFT_ORDER, {
+                "id": "gid://shopify/DraftOrder/77",
+            })
+        assert result.ok
+        assert result.data["status"] == "COMPLETED"
+        assert result.data["order_id"] == "gid://shopify/Order/1234"
+        assert result.data["order_name"] == "#1001"
+
+    def test_complete_draft_requires_id(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_COMPLETE_DRAFT_ORDER, {})
+        assert not result.ok
+
+    def test_complete_draft_passes_payment_pending_flag(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["paymentPending"] = v["paymentPending"]
+            captured["id"] = v["id"]
+            return {"draftOrderComplete": {
+                "draftOrder": {"id": v["id"], "status": "OPEN", "order": None},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_COMPLETE_DRAFT_ORDER, {
+                "id": "gid://shopify/DraftOrder/77",
+                "payment_pending": True,
+            })
+        assert captured["paymentPending"] is True
+        assert captured["id"] == "gid://shopify/DraftOrder/77"
+
+    # ── List ──────────────────────────────────────────────────
+
+    def test_list_drafts_happy_path(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "draftOrders": {
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur"},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/DraftOrder/1",
+                        "name": "#D1",
+                        "status": "OPEN",
+                        "invoiceUrl": "https://shop/invoice/1",
+                        "totalPriceSet": {
+                            "presentmentMoney": {"amount": "30.00",
+                                                 "currencyCode": "USD"},
+                        },
+                        "subtotalPriceSet": {
+                            "presentmentMoney": {"amount": "30.00",
+                                                 "currencyCode": "USD"},
+                        },
+                        "createdAt": "2026-04-25T12:00:00Z",
+                        "updatedAt": "2026-04-25T12:00:00Z",
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_DRAFT_ORDERS,
+                               {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["has_next_page"] is True
+        assert result.data["draft_orders"][0]["status"] == "OPEN"
+        assert result.data["draft_orders"][0]["total"] == 30.0
+
+    def test_list_drafts_clamps_limit(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"draftOrders": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_DRAFT_ORDERS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_drafts_passes_query_filter(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v["query"]
+            return {"draftOrders": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_DRAFT_ORDERS,
+                      {"query": "status:open"})
+        assert captured["query"] == "status:open"
+
+    def test_list_drafts_handles_empty_page(self):
+        from core.adapters.shopify.draft_orders import ShopifyDraftOrdersAdapter
+        a = ShopifyDraftOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "draftOrders": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_DRAFT_ORDERS, {})
+        assert result.ok
+        assert result.data["count"] == 0
+        assert result.data["end_cursor"] == ""
 
 
 # ── ShopifyFilesAdapter ─────────────────────────────────────
