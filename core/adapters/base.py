@@ -167,6 +167,10 @@ class Capability(str, Enum):
     SHOPIFY_LIST_COMPANIES = "shopify_list_companies"
     SHOPIFY_GET_COMPANY = "shopify_get_company"
     SHOPIFY_CREATE_COMPANY = "shopify_create_company"
+    SHOPIFY_LIST_LOCATIONS = "shopify_list_locations"
+    SHOPIFY_GET_LOCATION = "shopify_get_location"
+    SHOPIFY_CREATE_LOCATION = "shopify_create_location"
+    SHOPIFY_UPDATE_LOCATION = "shopify_update_location"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

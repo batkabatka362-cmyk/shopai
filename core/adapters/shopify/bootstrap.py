@@ -34,6 +34,7 @@ from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
 from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
+from .locations import ShopifyLocationsAdapter
 from .marketing_events import ShopifyMarketingEventsAdapter
 from .markets import ShopifyMarketsAdapter
 from .metafield import ShopifyMetafieldAdapter
@@ -77,6 +78,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMarketsAdapter,
     ShopifyWebPixelsAdapter,
     ShopifyCompaniesAdapter,
+    ShopifyLocationsAdapter,
 )
 
 

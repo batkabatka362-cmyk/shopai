@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentyfour_adapters(self):
+    def test_register_all_adds_twentyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 24
+        assert len(status) == 25
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -811,6 +811,7 @@ class TestShopifyBootstrap:
             "shopify_markets",
             "shopify_web_pixels",
             "shopify_companies",
+            "shopify_locations",
         }
 
     def test_register_all_idempotent(self):
@@ -818,7 +819,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 24
+        assert len(get_registry()) == 25
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -911,6 +912,338 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_COMPANIES).name == "shopify_companies"
         assert router.route(Capability.SHOPIFY_GET_COMPANY).name == "shopify_companies"
         assert router.route(Capability.SHOPIFY_CREATE_COMPANY).name == "shopify_companies"
+        assert router.route(Capability.SHOPIFY_LIST_LOCATIONS).name == "shopify_locations"
+        assert router.route(Capability.SHOPIFY_GET_LOCATION).name == "shopify_locations"
+        assert router.route(Capability.SHOPIFY_CREATE_LOCATION).name == "shopify_locations"
+        assert router.route(Capability.SHOPIFY_UPDATE_LOCATION).name == "shopify_locations"
+
+
+# ── ShopifyLocationsAdapter ────────────────────────────
+
+
+class TestShopifyLocationsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter()
+        assert a.name == "shopify_locations"
+        for cap in (
+            Capability.SHOPIFY_LIST_LOCATIONS,
+            Capability.SHOPIFY_GET_LOCATION,
+            Capability.SHOPIFY_CREATE_LOCATION,
+            Capability.SHOPIFY_UPDATE_LOCATION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_address_input ──────────────────────────
+
+    def test_build_address_requires_country(self):
+        from core.adapters.shopify.locations import _build_address_input
+        with pytest.raises(AdapterValidationError):
+            _build_address_input({"city": "X"}, where="address")
+
+    def test_build_address_country_or_country_code_satisfies(self):
+        from core.adapters.shopify.locations import _build_address_input
+        out = _build_address_input(
+            {"country": "US", "city": "Brooklyn"}, where="t",
+        )
+        assert out["country"] == "US"
+        assert out["city"] == "Brooklyn"
+
+    def test_build_address_camelcase_translation(self):
+        from core.adapters.shopify.locations import _build_address_input
+        out = _build_address_input({
+            "address1": "123 Main", "city": "Brooklyn",
+            "province_code": "NY", "country_code": "US",
+            "zip": "11201", "phone": "+1-555-0100",
+        }, where="t")
+        # snake → camel for AddressInput.
+        assert out["provinceCode"] == "NY"
+        assert out["countryCode"] == "US"
+        assert "phone" in out
+
+    def test_build_address_non_string_field_rejected(self):
+        from core.adapters.shopify.locations import _build_address_input
+        with pytest.raises(AdapterValidationError):
+            _build_address_input({"country": "US", "city": 123}, where="t")
+
+    # ── List ─────────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "locations": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Location/1",
+                        "name": "HQ",
+                        "isActive": True,
+                        "shipsInventory": True,
+                        "fulfillsOnlineOrders": True,
+                        "hasActiveInventory": True,
+                        "address": {
+                            "address1": "123 Main",
+                            "city": "Brooklyn",
+                            "province": "New York",
+                            "country": "United States",
+                            "countryCode": "US",
+                            "zip": "11201",
+                            "phone": "+1-555-0100",
+                            "formatted": ["123 Main", "Brooklyn NY 11201"],
+                        },
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_LOCATIONS, {"limit": 10})
+        assert result.ok
+        loc = result.data["locations"][0]
+        assert loc["name"] == "HQ"
+        assert loc["country_code"] == "US"
+        assert loc["fulfills_online_orders"] is True
+
+    def test_list_default_excludes_inactive(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["includeInactive"] = v["includeInactive"]
+            return {"locations": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_LOCATIONS, {})
+        assert captured["includeInactive"] is False
+
+    def test_list_include_inactive_opt_in(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["includeInactive"] = v["includeInactive"]
+            return {"locations": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_LOCATIONS, {
+                "include_inactive": True,
+            })
+        assert captured["includeInactive"] is True
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"locations": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_LOCATIONS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    # ── Get ────────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_LOCATION, {})
+        assert not result.ok
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "location": {
+                "id": "gid://shopify/Location/9",
+                "name": "Brooklyn DC",
+                "isActive": True,
+                "shipsInventory": True,
+                "fulfillsOnlineOrders": True,
+                "hasActiveInventory": True,
+                "address": {"address1": "X", "country": "US",
+                            "countryCode": "US"},
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_LOCATION, {
+                "id": "gid://shopify/Location/9",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["location"]["name"] == "Brooklyn DC"
+
+    def test_get_not_found(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"location": None}):
+            result = a.execute(Capability.SHOPIFY_GET_LOCATION, {
+                "id": "gid://shopify/Location/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Create — validation ──────────────────────
+
+    def test_create_requires_name(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_LOCATION, {
+                "address": {"country": "US"},
+            })
+        assert not result.ok
+
+    def test_create_requires_address_dict(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_LOCATION, {
+                "name": "X",
+            })
+        assert not result.ok
+        with patch.object(a, "_gql"):
+            r2 = a.execute(Capability.SHOPIFY_CREATE_LOCATION, {
+                "name": "X", "address": "not a dict",
+            })
+        assert not r2.ok
+
+    def test_create_address_country_required(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_LOCATION, {
+                "name": "X", "address": {"city": "Y"},
+            })
+        assert not result.ok
+
+    # ── Create — happy path ─────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["input"] = v["input"]
+            return {"locationAdd": {
+                "location": {
+                    "id": "gid://shopify/Location/new",
+                    "name": v["input"]["name"],
+                    "isActive": True,
+                    "shipsInventory": True,
+                    "fulfillsOnlineOrders": True,
+                    "hasActiveInventory": False,
+                    "address": {
+                        "address1": "123 Main", "city": "Brooklyn",
+                        "country": "United States", "countryCode": "US",
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_LOCATION, {
+                "name": "Brooklyn DC",
+                "address": {
+                    "address1": "123 Main",
+                    "city": "Brooklyn",
+                    "country": "US", "country_code": "US",
+                    "zip": "11201",
+                },
+                "fulfills_online_orders": True,
+            })
+        assert result.ok
+        assert result.data["location"]["name"] == "Brooklyn DC"
+        # Wire payload uses camelCase translation.
+        assert captured["input"]["address"]["countryCode"] == "US"
+        assert captured["input"]["fulfillsOnlineOrders"] is True
+
+    def test_create_user_errors_propagate(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "locationAdd": {
+                "location": None,
+                "userErrors": [{
+                    "field": ["input", "address", "country"],
+                    "message": "Country is invalid",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_LOCATION, {
+                "name": "X",
+                "address": {"country": "Atlantis"},
+            })
+        assert not result.ok
+
+    # ── Update ────────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_UPDATE_LOCATION, {
+                "name": "New name",
+            })
+        assert not result.ok
+
+    def test_update_needs_at_least_one_field(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_UPDATE_LOCATION, {
+                "id": "gid://shopify/Location/1",
+            })
+        assert not result.ok
+
+    def test_update_partial_fields_only(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        a = ShopifyLocationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["input"] = v["input"]
+            return {"locationEdit": {
+                "location": {
+                    "id": v["id"], "name": v["input"]["name"],
+                    "isActive": True, "shipsInventory": True,
+                    "fulfillsOnlineOrders": True, "hasActiveInventory": True,
+                    "address": {"countryCode": "US"},
+                }, "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_UPDATE_LOCATION, {
+                "id": "gid://shopify/Location/1",
+                "name": "Brooklyn DC v2",
+            })
+        # Only the name changed; address must NOT be in the input.
+        assert captured["input"] == {"name": "Brooklyn DC v2"}
+
+    # ── Normalisation ────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        assert ShopifyLocationsAdapter._normalise_location(None) == {}  # type: ignore[arg-type]
+
+    def test_normalise_handles_missing_address(self):
+        from core.adapters.shopify.locations import ShopifyLocationsAdapter
+        out = ShopifyLocationsAdapter._normalise_location({
+            "id": "gid://l/1", "name": "L", "isActive": True,
+            # No address at all
+        })
+        assert out["country_code"] == ""
+        assert out["city"] == ""
 
 
 # ── ShopifyCompaniesAdapter ──────────────────────────────
