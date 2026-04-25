@@ -198,6 +198,10 @@ class Capability(str, Enum):
     SHOPIFY_TAG_CUSTOMER = "shopify_tag_customer"
     SHOPIFY_UNTAG_CUSTOMER = "shopify_untag_customer"
     SHOPIFY_DELETE_CUSTOMER = "shopify_delete_customer"
+    SHOPIFY_LIST_WEBHOOKS = "shopify_list_webhooks"
+    SHOPIFY_CREATE_WEBHOOK = "shopify_create_webhook"
+    SHOPIFY_UPDATE_WEBHOOK = "shopify_update_webhook"
+    SHOPIFY_DELETE_WEBHOOK = "shopify_delete_webhook"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

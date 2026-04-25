@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtytwo_adapters(self):
+    def test_register_all_adds_thirtythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 32
+        assert len(status) == 33
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -819,6 +819,7 @@ class TestShopifyBootstrap:
             "shopify_products",
             "shopify_orders",
             "shopify_customers",
+            "shopify_webhooks",
         }
 
     def test_register_all_idempotent(self):
@@ -826,7 +827,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 32
+        assert len(get_registry()) == 33
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -952,6 +953,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_TAG_CUSTOMER).name == "shopify_customers"
         assert router.route(Capability.SHOPIFY_UNTAG_CUSTOMER).name == "shopify_customers"
         assert router.route(Capability.SHOPIFY_DELETE_CUSTOMER).name == "shopify_customers"
+        assert router.route(Capability.SHOPIFY_LIST_WEBHOOKS).name == "shopify_webhooks"
+        assert router.route(Capability.SHOPIFY_CREATE_WEBHOOK).name == "shopify_webhooks"
+        assert router.route(Capability.SHOPIFY_UPDATE_WEBHOOK).name == "shopify_webhooks"
+        assert router.route(Capability.SHOPIFY_DELETE_WEBHOOK).name == "shopify_webhooks"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -9510,3 +9515,227 @@ class TestShopifyCustomersAdapter:
     def test_normalise_handles_empty(self):
         from core.adapters.shopify.customers import ShopifyCustomersAdapter
         assert ShopifyCustomersAdapter._normalise_customer({}) == {}
+
+
+# ── ShopifyWebhooksAdapter ────────────────────────────────
+
+
+class TestShopifyWebhooksAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter()
+        assert a.name == "shopify_webhooks"
+        for cap in (
+            Capability.SHOPIFY_LIST_WEBHOOKS,
+            Capability.SHOPIFY_CREATE_WEBHOOK,
+            Capability.SHOPIFY_UPDATE_WEBHOOK,
+            Capability.SHOPIFY_DELETE_WEBHOOK,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Topic normalisation ──────────────────────
+
+    def test_topic_slash_form_normalised(self):
+        from core.adapters.shopify.webhooks import _normalise_topic
+        assert _normalise_topic("orders/paid") == "ORDERS_PAID"
+
+    def test_topic_underscore_form_pass_through(self):
+        from core.adapters.shopify.webhooks import _normalise_topic
+        assert _normalise_topic("ORDERS_PAID") == "ORDERS_PAID"
+
+    def test_topic_required(self):
+        from core.adapters.shopify.webhooks import _normalise_topic
+        with pytest.raises(AdapterValidationError):
+            _normalise_topic("")
+        with pytest.raises(AdapterValidationError):
+            _normalise_topic(None)
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_callback_url(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_subscription_input({}, callback_required=True)
+
+    def test_callback_url_must_be_http(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_subscription_input({
+                "callback_url": "ftp://example.com/hook",
+            })
+
+    def test_format_validated(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_subscription_input({
+                "callback_url": "https://x.com",
+                "format": "yaml",
+            })
+
+    def test_input_normalises_format_to_uppercase(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        out = a._build_subscription_input({
+            "callback_url": "https://x.com/hook",
+            "format": "json",
+            "include_fields": ["id", "tags"],
+        })
+        assert out["callbackUrl"] == "https://x.com/hook"
+        assert out["format"] == "JSON"
+        assert out["includeFields"] == ["id", "tags"]
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "webhookSubscriptions": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/WebhookSubscription/w1",
+                    "topic": "ORDERS_PAID",
+                    "format": "JSON",
+                    "endpoint": {
+                        "__typename": "WebhookHttpEndpoint",
+                        "callbackUrl": "https://ingest.shopai.dev/orders",
+                    },
+                    "includeFields": ["id", "name"],
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_WEBHOOKS, {})
+        assert result.ok
+        w = result.data["webhooks"][0]
+        assert w["topic"] == "ORDERS_PAID"
+        assert w["callback_url"] == "https://ingest.shopai.dev/orders"
+        assert w["endpoint_kind"] == "WebhookHttpEndpoint"
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"webhookSubscriptionCreate": {
+                "webhookSubscription": {
+                    "id": "gid://shopify/WebhookSubscription/new",
+                    "topic": v["topic"],
+                    "format": v["webhookSubscription"].get("format", "JSON"),
+                    "endpoint": {
+                        "__typename": "WebhookHttpEndpoint",
+                        "callbackUrl": v["webhookSubscription"]["callbackUrl"],
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_WEBHOOK, {
+                "topic": "orders/paid",
+                "callback_url": "https://ingest.shopai.dev/hook",
+                "format": "JSON",
+            })
+        assert result.ok
+        # Pattern A — topic at top-level field, not inside the input.
+        assert captured["topic"] == "ORDERS_PAID"
+        assert captured["webhookSubscription"]["callbackUrl"] == "https://ingest.shopai.dev/hook"
+        assert result.data["webhook"]["topic"] == "ORDERS_PAID"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"webhookSubscriptionCreate": {
+            "webhookSubscription": None,
+            "userErrors": [{"field": ["address"], "message": "duplicate"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_WEBHOOK, {
+                "topic": "ORDERS_PAID",
+                "callback_url": "https://x.com",
+            })
+        assert not result.ok
+
+    # ── Update ───────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_WEBHOOK, {
+            "callback_url": "https://x.com",
+        })
+        assert not result.ok
+
+    def test_update_no_fields_rejected(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_WEBHOOK, {
+            "id": "gid://shopify/WebhookSubscription/w1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"webhookSubscriptionUpdate": {
+                "webhookSubscription": {
+                    "id": v["id"],
+                    "topic": "ORDERS_PAID",
+                    "format": "JSON",
+                    "endpoint": {
+                        "__typename": "WebhookHttpEndpoint",
+                        "callbackUrl": v["webhookSubscription"]["callbackUrl"],
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_WEBHOOK, {
+                "id": "gid://shopify/WebhookSubscription/w1",
+                "callback_url": "https://x.com/v2",
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/WebhookSubscription/w1"
+        assert captured["webhookSubscription"]["callbackUrl"] == "https://x.com/v2"
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_WEBHOOK, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        a = ShopifyWebhooksAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"webhookSubscriptionDelete": {
+            "deletedWebhookSubscriptionId": "gid://shopify/WebhookSubscription/w1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_WEBHOOK, {
+                "id": "gid://shopify/WebhookSubscription/w1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/WebhookSubscription/w1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
+        assert ShopifyWebhooksAdapter._normalise_webhook({}) == {}

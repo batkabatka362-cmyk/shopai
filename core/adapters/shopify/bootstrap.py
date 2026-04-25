@@ -56,6 +56,7 @@ from .themes import ShopifyThemesAdapter
 from .translations import ShopifyTranslationsAdapter
 from .validations import ShopifyValidationsAdapter
 from .web_pixels import ShopifyWebPixelsAdapter
+from .webhooks import ShopifyWebhooksAdapter
 
 logger = get_logger("adapters.shopify.bootstrap")
 
@@ -93,6 +94,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyProductsAdapter,
     ShopifyOrdersAdapter,
     ShopifyCustomersAdapter,
+    ShopifyWebhooksAdapter,
 )
 
 
