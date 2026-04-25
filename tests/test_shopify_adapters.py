@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtysix_adapters(self):
+    def test_register_all_adds_sixtyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 66
+        assert len(status) == 67
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -853,6 +853,7 @@ class TestShopifyBootstrap:
             "shopify_catalogs",
             "shopify_fulfillment_hold",
             "shopify_payments_payouts",
+            "shopify_order_invoice",
         }
 
     def test_register_all_idempotent(self):
@@ -860,7 +861,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 66
+        assert len(get_registry()) == 67
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1087,6 +1088,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_PAYOUTS).name == "shopify_payments_payouts"
         assert router.route(Capability.SHOPIFY_GET_PAYOUT).name == "shopify_payments_payouts"
         assert router.route(Capability.SHOPIFY_GET_PAYMENTS_BALANCE).name == "shopify_payments_payouts"
+        assert router.route(Capability.SHOPIFY_SEND_ORDER_INVOICE).name == "shopify_order_invoice"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -17681,4 +17683,145 @@ class TestShopifyPaymentsPayoutsAdapter:
         )
         assert ShopifyPaymentsPayoutsAdapter._normalise_payout({}) == {}
         assert ShopifyPaymentsPayoutsAdapter._normalise_payout(None) == {}
+
+
+# ── ShopifyOrderInvoiceSendAdapter ────────────────────────
+
+
+class TestShopifyOrderInvoiceSendAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.order_invoice import (
+            ShopifyOrderInvoiceSendAdapter,
+        )
+        a = ShopifyOrderInvoiceSendAdapter()
+        assert a.name == "shopify_order_invoice"
+        assert Capability.SHOPIFY_SEND_ORDER_INVOICE in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.order_invoice import (
+            ShopifyOrderInvoiceSendAdapter,
+        )
+        a = ShopifyOrderInvoiceSendAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Send ─────────────────────────────────────
+
+    def test_send_requires_order_id(self):
+        from core.adapters.shopify.order_invoice import (
+            ShopifyOrderInvoiceSendAdapter,
+        )
+        a = ShopifyOrderInvoiceSendAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_SEND_ORDER_INVOICE, {
+            "to": "x@y.com",
+        })
+        assert not result.ok
+
+    def test_email_input_bcc_string_split(self):
+        from core.adapters.shopify.order_invoice import (
+            ShopifyOrderInvoiceSendAdapter,
+        )
+        a = ShopifyOrderInvoiceSendAdapter(shop_url="s", access_token="t")
+        out = a._build_email_input({
+            "to": "buyer@example.com",
+            "from": "sales@example.com",
+            "bcc": "x@y.com, z@y.com",
+            "subject": "Receipt",
+            "custom_message": "Replacement copy.",
+        })
+        assert out["to"] == "buyer@example.com"
+        assert out["from"] == "sales@example.com"
+        assert out["bcc"] == ["x@y.com", "z@y.com"]
+        assert out["customMessage"] == "Replacement copy."
+
+    def test_email_to_must_be_string(self):
+        from core.adapters.shopify.order_invoice import (
+            ShopifyOrderInvoiceSendAdapter,
+        )
+        a = ShopifyOrderInvoiceSendAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_email_input({"to": 123})
+
+    def test_send_happy_path(self):
+        from core.adapters.shopify.order_invoice import (
+            ShopifyOrderInvoiceSendAdapter,
+        )
+        a = ShopifyOrderInvoiceSendAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"orderInvoiceSend": {
+                "order": {
+                    "id": v["id"],
+                    "name": "#1001",
+                    "email": v.get("email", {}).get(
+                        "to", "buyer@y.com",
+                    ),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_ORDER_INVOICE,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "to": "buyer@example.com",
+                    "subject": "Your receipt",
+                },
+            )
+        assert result.ok
+        # Pattern A: id at field level.
+        assert captured["id"] == "gid://shopify/Order/1"
+        assert captured["email"]["to"] == "buyer@example.com"
+        assert result.data["order_name"] == "#1001"
+        assert result.data["email"] == "buyer@example.com"
+
+    def test_send_works_without_email_input(self):
+        from core.adapters.shopify.order_invoice import (
+            ShopifyOrderInvoiceSendAdapter,
+        )
+        a = ShopifyOrderInvoiceSendAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"orderInvoiceSend": {
+                "order": {
+                    "id": v["id"],
+                    "name": "#1001",
+                    "email": "buyer@y.com",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_SEND_ORDER_INVOICE,
+                {"order_id": "gid://shopify/Order/1"},
+            )
+        assert "email" not in captured
+
+    def test_send_user_errors_fail_fast(self):
+        from core.adapters.shopify.order_invoice import (
+            ShopifyOrderInvoiceSendAdapter,
+        )
+        a = ShopifyOrderInvoiceSendAdapter(shop_url="s", access_token="t")
+        # Pattern F: orderInvoiceSend.userErrors is bare UserError
+        # (no code field). Test fixture omits 'code'.
+        with patch.object(a, "_gql", return_value={"orderInvoiceSend": {
+            "order": None,
+            "userErrors": [{"field": ["email", "to"],
+                            "message": "Invalid email"}],
+        }}):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_ORDER_INVOICE,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "to": "not-an-email",
+                },
+            )
+        assert not result.ok
 

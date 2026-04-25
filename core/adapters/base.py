@@ -299,6 +299,7 @@ class Capability(str, Enum):
     SHOPIFY_LIST_PAYOUTS = "shopify_list_payouts"
     SHOPIFY_GET_PAYOUT = "shopify_get_payout"
     SHOPIFY_GET_PAYMENTS_BALANCE = "shopify_get_payments_balance"
+    SHOPIFY_SEND_ORDER_INVOICE = "shopify_send_order_invoice"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
