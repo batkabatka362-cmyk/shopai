@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftyfour_adapters(self):
+    def test_register_all_adds_fiftyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 54
+        assert len(status) == 55
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -841,6 +841,7 @@ class TestShopifyBootstrap:
             "shopify_metaobject_definitions",
             "shopify_script_tags",
             "shopify_order_transactions",
+            "shopify_payment_terms",
         }
 
     def test_register_all_idempotent(self):
@@ -848,7 +849,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 54
+        assert len(get_registry()) == 55
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1045,6 +1046,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_SCRIPT_TAG).name == "shopify_script_tags"
         assert router.route(Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS).name == "shopify_order_transactions"
         assert router.route(Capability.SHOPIFY_GET_TRANSACTION).name == "shopify_order_transactions"
+        assert router.route(Capability.SHOPIFY_LIST_PAYMENT_TERMS_TEMPLATES).name == "shopify_payment_terms"
+        assert router.route(Capability.SHOPIFY_CREATE_PAYMENT_TERMS).name == "shopify_payment_terms"
+        assert router.route(Capability.SHOPIFY_UPDATE_PAYMENT_TERMS).name == "shopify_payment_terms"
+        assert router.route(Capability.SHOPIFY_DELETE_PAYMENT_TERMS).name == "shopify_payment_terms"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -14861,3 +14866,272 @@ class TestShopifyOrderTransactionsAdapter:
             {},
         ) == {}
         assert ShopifyOrderTransactionsAdapter._normalise_fee(None) == {}
+
+
+# ── ShopifyPaymentTermsAdapter ────────────────────────────
+
+
+class TestShopifyPaymentTermsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter()
+        assert a.name == "shopify_payment_terms"
+        for cap in (
+            Capability.SHOPIFY_LIST_PAYMENT_TERMS_TEMPLATES,
+            Capability.SHOPIFY_CREATE_PAYMENT_TERMS,
+            Capability.SHOPIFY_UPDATE_PAYMENT_TERMS,
+            Capability.SHOPIFY_DELETE_PAYMENT_TERMS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List templates ───────────────────────────
+
+    def test_list_templates_happy_path(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "paymentTermsTemplates": [
+                {
+                    "id": "gid://shopify/PaymentTermsTemplate/1",
+                    "name": "Net 30",
+                    "translatedName": "Net 30",
+                    "description": "Pay in 30 days",
+                    "paymentTermsType": "NET",
+                    "dueInDays": 30,
+                },
+                {
+                    "id": "gid://shopify/PaymentTermsTemplate/2",
+                    "name": "Due on receipt",
+                    "translatedName": "Due on receipt",
+                    "paymentTermsType": "RECEIPT",
+                    "dueInDays": 0,
+                },
+            ]
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_PAYMENT_TERMS_TEMPLATES, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 2
+        names = {t["name"] for t in result.data["templates"]}
+        assert names == {"Net 30", "Due on receipt"}
+
+    def test_list_templates_handles_empty(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "paymentTermsTemplates": [],
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_PAYMENT_TERMS_TEMPLATES, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_reference_id(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREATE_PAYMENT_TERMS, {
+            "payment_terms_template_id": "gid://shopify/PaymentTermsTemplate/1",
+        })
+        assert not result.ok
+
+    def test_create_attributes_require_template_id(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_attributes({})
+
+    def test_schedules_must_be_list(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_schedules("not-a-list")
+
+    def test_schedules_entry_needs_due_or_issued(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_schedules([{}])
+
+    def test_schedules_happy_path(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        out = a._build_schedules([
+            {"due_at": "2026-05-30T00:00:00Z"},
+            {"issued_at": "2026-04-26T00:00:00Z",
+             "due_at": "2026-06-26T00:00:00Z"},
+        ])
+        assert out[0]["dueAt"] == "2026-05-30T00:00:00Z"
+        assert out[1]["issuedAt"] == "2026-04-26T00:00:00Z"
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"paymentTermsCreate": {
+                "paymentTerms": {
+                    "id": "gid://shopify/PaymentTerms/new",
+                    "paymentTermsName": "Net 30",
+                    "paymentTermsType": "NET",
+                    "dueInDays": 30,
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_PAYMENT_TERMS, {
+                "reference_id": "gid://shopify/Order/1",
+                "payment_terms_template_id": (
+                    "gid://shopify/PaymentTermsTemplate/1"
+                ),
+                "schedules": [{"due_at": "2026-05-30T00:00:00Z"}],
+            })
+        assert result.ok
+        assert captured["referenceId"] == "gid://shopify/Order/1"
+        attrs = captured["paymentTermsAttributes"]
+        assert attrs["paymentTermsTemplateId"] == \
+            "gid://shopify/PaymentTermsTemplate/1"
+        assert attrs["paymentSchedules"][0]["dueAt"] == \
+            "2026-05-30T00:00:00Z"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"paymentTermsCreate": {
+            "paymentTerms": None,
+            "userErrors": [{"field": ["paymentTermsTemplateId"],
+                            "message": "not found", "code": "INVALID"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_PAYMENT_TERMS, {
+                "reference_id": "gid://shopify/Order/1",
+                "payment_terms_template_id": (
+                    "gid://shopify/PaymentTermsTemplate/missing"
+                ),
+            })
+        assert not result.ok
+
+    # ── Update ───────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_PAYMENT_TERMS, {
+            "payment_terms_template_id": (
+                "gid://shopify/PaymentTermsTemplate/1"
+            ),
+        })
+        assert not result.ok
+
+    def test_update_no_fields_rejected(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_PAYMENT_TERMS, {
+            "id": "gid://shopify/PaymentTerms/1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"paymentTermsUpdate": {
+                "paymentTerms": {
+                    "id": v["input"]["paymentTermsId"],
+                    "paymentTermsName": "Updated",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_PAYMENT_TERMS, {
+                "id": "gid://shopify/PaymentTerms/1",
+                "payment_terms_template_id": (
+                    "gid://shopify/PaymentTermsTemplate/2"
+                ),
+            })
+        assert result.ok
+        inp = captured["input"]
+        assert inp["paymentTermsId"] == "gid://shopify/PaymentTerms/1"
+        assert inp["paymentTermsTemplateId"] == \
+            "gid://shopify/PaymentTermsTemplate/2"
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_PAYMENT_TERMS, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        a = ShopifyPaymentTermsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"paymentTermsDelete": {
+            "deletedId": "gid://shopify/PaymentTerms/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_PAYMENT_TERMS, {
+                "id": "gid://shopify/PaymentTerms/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/PaymentTerms/1"
+
+    # ── Normaliser ───────────────────────────────
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.payment_terms import (
+            ShopifyPaymentTermsAdapter,
+        )
+        assert ShopifyPaymentTermsAdapter._normalise_template({}) == {}
+        assert ShopifyPaymentTermsAdapter._normalise_payment_terms({}) == {}
+        assert ShopifyPaymentTermsAdapter._normalise_schedule(None) == {}

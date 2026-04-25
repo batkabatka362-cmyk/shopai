@@ -269,6 +269,10 @@ class Capability(str, Enum):
     SHOPIFY_DELETE_SCRIPT_TAG = "shopify_delete_script_tag"
     SHOPIFY_LIST_ORDER_TRANSACTIONS = "shopify_list_order_transactions"
     SHOPIFY_GET_TRANSACTION = "shopify_get_transaction"
+    SHOPIFY_LIST_PAYMENT_TERMS_TEMPLATES = "shopify_list_payment_terms_templates"
+    SHOPIFY_CREATE_PAYMENT_TERMS = "shopify_create_payment_terms"
+    SHOPIFY_UPDATE_PAYMENT_TERMS = "shopify_update_payment_terms"
+    SHOPIFY_DELETE_PAYMENT_TERMS = "shopify_delete_payment_terms"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

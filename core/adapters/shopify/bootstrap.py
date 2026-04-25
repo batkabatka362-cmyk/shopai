@@ -62,6 +62,7 @@ from .order_edits import ShopifyOrderEditsAdapter
 from .order_transactions import ShopifyOrderTransactionsAdapter
 from .orders import ShopifyOrdersAdapter
 from .pages import ShopifyPagesAdapter
+from .payment_terms import ShopifyPaymentTermsAdapter
 from .price_lists import ShopifyPriceListAdapter
 from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
@@ -137,6 +138,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMetaobjectDefinitionsAdapter,
     ShopifyScriptTagsAdapter,
     ShopifyOrderTransactionsAdapter,
+    ShopifyPaymentTermsAdapter,
 )
 
 
