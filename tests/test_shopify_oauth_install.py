@@ -7,12 +7,21 @@ from __future__ import annotations
 import hmac
 import hashlib
 import pathlib
+import time
 import urllib.parse
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from scripts import shopify_oauth_install as mod
+
+
+def _now_ts() -> str:
+    """Fresh UNIX timestamp string. Tests must use this rather
+    than a hard-coded value because the script rejects
+    timestamps outside a 1h freshness window — local + CI
+    runs are weeks apart on the wall clock."""
+    return str(int(time.time()))
 
 
 # ── verify_hmac ──────────────────────────────────────────
@@ -32,7 +41,7 @@ class TestVerifyHmac:
         secret = "s3cr3t"
         params = {
             "shop": "x.myshopify.com",
-            "timestamp": "1777029332",
+            "timestamp": _now_ts(),
         }
         sig = self._sign(params, secret)
         query = urllib.parse.urlencode(
@@ -193,7 +202,7 @@ class TestPathDispatch:
         shop = "ts0efe-ih.myshopify.com"
         params = {
             "shop": shop,
-            "timestamp": "1777029332",
+            "timestamp": _now_ts(),
             "host": "YWRtaW4uc2hvcGlmeS5jb20",
         }
         sig = _sign_query(
@@ -228,7 +237,7 @@ class TestPathDispatch:
         h = self._make_handler()
         params = {
             "shop": "ts0efe-ih.myshopify.com",
-            "timestamp": "1777029332",
+            "timestamp": _now_ts(),
         }
         sig = _sign_query(
             params, h.__class__.client_secret,
@@ -269,7 +278,7 @@ class TestPathDispatch:
         shop = "ts0efe-ih.myshopify.com"
         params = {
             "shop": shop,
-            "timestamp": "1777029332",
+            "timestamp": _now_ts(),
             "code": "0a1b2c",
         }
         sig = _sign_query(
