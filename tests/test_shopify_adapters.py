@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventyone_adapters(self):
+    def test_register_all_adds_seventytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 71
+        assert len(status) == 72
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -858,6 +858,7 @@ class TestShopifyBootstrap:
             "shopify_metaobjects_upsert",
             "shopify_app_subscriptions",
             "shopify_discount_code_free_shipping",
+            "shopify_discount_automatic_bxgy",
         }
 
     def test_register_all_idempotent(self):
@@ -865,7 +866,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 71
+        assert len(get_registry()) == 72
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1103,6 +1104,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CANCEL_APP_SUBSCRIPTION).name == "shopify_app_subscriptions"
         assert router.route(Capability.SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING).name == "shopify_discount_code_free_shipping"
         assert router.route(Capability.SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING).name == "shopify_discount_code_free_shipping"
+        assert router.route(Capability.SHOPIFY_CREATE_AUTOMATIC_BXGY).name == "shopify_discount_automatic_bxgy"
+        assert router.route(Capability.SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING).name == "shopify_discount_automatic_bxgy"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -18904,4 +18907,261 @@ class TestShopifyDiscountCodeFreeShippingAdapter:
         assert result.ok
         assert result.data["deleted_id"] == \
             "gid://shopify/DiscountCodeNode/1"
+
+
+# ── ShopifyDiscountAutomaticBxgyAdapter ───────────────────
+
+
+class TestShopifyDiscountAutomaticBxgyAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter()
+        assert a.name == "shopify_discount_automatic_bxgy"
+        for cap in (
+            Capability.SHOPIFY_CREATE_AUTOMATIC_BXGY,
+            Capability.SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── BXGY input ───────────────────────────────
+
+    def test_bxgy_requires_title(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_bxgy_input({
+                "starts_at": "2026-04-26T00:00:00Z",
+                "customer_buys": {
+                    "value": {"quantity": 2},
+                    "items": {"collections":
+                              ["gid://shopify/Collection/1"]},
+                },
+                "customer_gets": {
+                    "value": {"percentage": 50},
+                    "items": {"collections":
+                              ["gid://shopify/Collection/1"]},
+                },
+            })
+
+    def test_bxgy_items_reject_all(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        # Pattern C-honoured: BXGY items can't be {all: True}.
+        with pytest.raises(AdapterValidationError):
+            a._build_items({"all": True}, label="customer_buys.items")
+
+    def test_bxgy_full_shape(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_bxgy_input({
+            "title": "Auto Bundle",
+            "starts_at": "2026-04-26T00:00:00Z",
+            "ends_at": "2026-12-31T23:59:59Z",
+            "uses_per_order_limit": 1,
+            "customer_buys": {
+                "value": {"quantity": 2},
+                "items": {"collections":
+                          ["gid://shopify/Collection/1"]},
+            },
+            "customer_gets": {
+                "value": {"percentage": 50},
+                "items": {"collections":
+                          ["gid://shopify/Collection/1"]},
+                "quantity": 1,
+            },
+        })
+        assert out["title"] == "Auto Bundle"
+        assert out["usesPerOrderLimit"] == 1
+        assert out["customerBuys"]["value"]["quantity"] == "2"
+        gets = out["customerGets"]["value"]["discountOnQuantity"]
+        # ShopAI 0-100 → Shopify 0-1 conversion.
+        assert gets["effect"]["percentage"] == 0.5
+
+    # ── BXGY create — happy path ─────────────────
+
+    def test_bxgy_create_happy_path(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"discountAutomaticBxgyCreate": {
+                "automaticDiscountNode": {
+                    "id": "gid://shopify/DiscountAutomaticNode/new",
+                    "automaticDiscount": {
+                        "title": v["automaticBxgyDiscount"]["title"],
+                        "summary": "Buy 2 get 1 50% off",
+                        "status": "ACTIVE",
+                        "startsAt":
+                            v["automaticBxgyDiscount"]["startsAt"],
+                        "endsAt": "",
+                        "usesPerOrderLimit": (
+                            v["automaticBxgyDiscount"].get(
+                                "usesPerOrderLimit"
+                            )
+                        ),
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_AUTOMATIC_BXGY,
+                {
+                    "title": "Auto Bundle",
+                    "starts_at": "2026-04-26T00:00:00Z",
+                    "uses_per_order_limit": 1,
+                    "customer_buys": {
+                        "value": {"quantity": 2},
+                        "items": {"collections":
+                                  ["gid://shopify/Collection/1"]},
+                    },
+                    "customer_gets": {
+                        "value": {"percentage": 50},
+                        "items": {"collections":
+                                  ["gid://shopify/Collection/1"]},
+                        "quantity": 1,
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["automaticBxgyDiscount"]["title"] == "Auto Bundle"
+        assert result.data["status"] == "ACTIVE"
+        assert result.data["uses_per_order_limit"] == 1
+
+    def test_bxgy_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "discountAutomaticBxgyCreate": {
+                "automaticDiscountNode": None,
+                "userErrors": [{"field": ["title"],
+                                "message": "is taken",
+                                "code": "TAKEN"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_AUTOMATIC_BXGY,
+                {
+                    "title": "Dup",
+                    "starts_at": "2026-04-26T00:00:00Z",
+                    "customer_buys": {
+                        "value": {"quantity": 1},
+                        "items": {"collections":
+                                  ["gid://shopify/Collection/1"]},
+                    },
+                    "customer_gets": {
+                        "value": {"percentage": 10},
+                        "items": {"collections":
+                                  ["gid://shopify/Collection/1"]},
+                    },
+                },
+            )
+        assert not result.ok
+
+    # ── Free shipping create ─────────────────────
+
+    def test_free_shipping_requires_title(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_free_shipping_input({
+                "starts_at": "2026-04-26T00:00:00Z",
+            })
+
+    def test_free_shipping_default_destination_all(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_free_shipping_input({
+            "title": "Free Ship $75+",
+            "starts_at": "2026-04-26T00:00:00Z",
+            "minimum_subtotal": 75,
+        })
+        assert out["destination"] == {"all": True}
+        assert (out["minimumRequirement"]["subtotal"]
+                ["greaterThanOrEqualToSubtotal"] == 75.0)
+
+    def test_free_shipping_create_happy_path(self):
+        from core.adapters.shopify.discount_automatic_bxgy import (
+            ShopifyDiscountAutomaticBxgyAdapter,
+        )
+        a = ShopifyDiscountAutomaticBxgyAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"discountAutomaticFreeShippingCreate": {
+                "automaticDiscountNode": {
+                    "id": "gid://shopify/DiscountAutomaticNode/fs1",
+                    "automaticDiscount": {
+                        "title": v["freeShippingAutomaticDiscount"]["title"],
+                        "summary": "Free shipping over $75",
+                        "status": "SCHEDULED",
+                        "startsAt":
+                            v["freeShippingAutomaticDiscount"]["startsAt"],
+                        "endsAt": "",
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING,
+                {
+                    "title": "Free Ship $75+",
+                    "starts_at": "2026-04-26T00:00:00Z",
+                    "minimum_subtotal": 75,
+                    "destination": {"countries": ["US", "CA"]},
+                },
+            )
+        assert result.ok
+        assert captured["freeShippingAutomaticDiscount"]["title"] == \
+            "Free Ship $75+"
+        assert result.data["status"] == "SCHEDULED"
 

@@ -310,6 +310,8 @@ class Capability(str, Enum):
     SHOPIFY_CANCEL_APP_SUBSCRIPTION = "shopify_cancel_app_subscription"
     SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING = "shopify_create_discount_free_shipping"
     SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING = "shopify_delete_discount_free_shipping"
+    SHOPIFY_CREATE_AUTOMATIC_BXGY = "shopify_create_automatic_bxgy"
+    SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING = "shopify_create_automatic_free_shipping"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
