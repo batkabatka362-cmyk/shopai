@@ -790,13 +790,14 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_four_adapters(self):
+    def test_register_all_adds_five_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 4
+        assert len(status) == 5
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
+            "shopify_discount",
         }
 
     def test_register_all_idempotent(self):
@@ -804,7 +805,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 4
+        assert len(get_registry()) == 5
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -837,3 +838,341 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_INVENTORY).name == "shopify_inventory"
         assert router.route(Capability.SHOPIFY_CREATE_FULFILLMENT).name == "shopify_fulfillment"
         assert router.route(Capability.SHOPIFY_SET_METAFIELD).name == "shopify_metafield"
+        assert router.route(Capability.SHOPIFY_CREATE_DISCOUNT).name == "shopify_discount"
+        assert router.route(Capability.SHOPIFY_LIST_DISCOUNTS).name == "shopify_discount"
+
+
+# ── ShopifyDiscountAdapter ──────────────────────────────────
+
+
+class TestShopifyDiscountAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter()
+        assert a.name == "shopify_discount"
+        assert Capability.SHOPIFY_CREATE_DISCOUNT in a.capabilities
+        assert Capability.SHOPIFY_LIST_DISCOUNTS in a.capabilities
+
+    def test_unsupported_capability_rejected(self):
+        """``execute()`` catches AdapterValidationError and returns a
+        failure result (the router relies on that); the underlying
+        ``_execute`` is what raises. Assert the failure envelope so
+        the test mirrors the real call site shape."""
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        # The router asks the adapter what capabilities it supports
+        # before calling execute() in production; here we exercise
+        # the defensive path inside _execute itself.
+        assert not result.ok
+
+    # ── _build_basic_input validation ────────────────────────
+
+    def test_build_input_requires_title(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyDiscountAdapter._build_basic_input({"code": "X", "percentage": 10})
+        assert "title" in str(exc.value)
+
+    def test_build_input_requires_code(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyDiscountAdapter._build_basic_input({"title": "T", "percentage": 10})
+        assert "code" in str(exc.value)
+
+    def test_build_input_requires_percentage_or_amount(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyDiscountAdapter._build_basic_input({"title": "T", "code": "X"})
+        assert "percentage" in str(exc.value) or "amount" in str(exc.value)
+
+    def test_build_input_rejects_both_percentage_and_amount(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyDiscountAdapter._build_basic_input({
+                "title": "T", "code": "X", "percentage": 10, "amount": 5,
+            })
+        assert "mutually exclusive" in str(exc.value)
+
+    def test_build_input_percentage_converted_to_fraction(self):
+        """Shopify's DiscountPercentageValueInput.percentage is a 0-1
+        fraction, not a 0-100 number. 25% input must become 0.25 in
+        the GraphQL payload."""
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        out = ShopifyDiscountAdapter._build_basic_input({
+            "title": "Summer", "code": "S25", "percentage": 25,
+        })
+        assert out["customerGets"]["value"]["percentage"] == 0.25
+
+    def test_build_input_percentage_range_validated(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        for bad in (0, -5, 100.1, 200):
+            with pytest.raises(AdapterValidationError):
+                ShopifyDiscountAdapter._build_basic_input({
+                    "title": "T", "code": "X", "percentage": bad,
+                })
+
+    def test_build_input_amount_uses_fixed_amount_branch(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        out = ShopifyDiscountAdapter._build_basic_input({
+            "title": "FixedTen", "code": "TEN", "amount": 10,
+        })
+        value = out["customerGets"]["value"]
+        assert "discountAmount" in value
+        # Shopify expects amount as a string with 2 decimals.
+        assert value["discountAmount"]["amount"] == "10.00"
+        assert value["discountAmount"]["appliesOnEachItem"] is False
+
+    def test_build_input_amount_must_be_positive(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDiscountAdapter._build_basic_input({
+                "title": "T", "code": "X", "amount": 0,
+            })
+        with pytest.raises(AdapterValidationError):
+            ShopifyDiscountAdapter._build_basic_input({
+                "title": "T", "code": "X", "amount": -5,
+            })
+
+    def test_build_input_amount_non_numeric_rejected(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDiscountAdapter._build_basic_input({
+                "title": "T", "code": "X", "amount": "free",
+            })
+
+    def test_build_input_dates_pass_through(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        out = ShopifyDiscountAdapter._build_basic_input({
+            "title": "T", "code": "X", "percentage": 10,
+            "starts_at": "2026-06-01T00:00:00Z",
+            "ends_at": "2026-08-31T23:59:59Z",
+        })
+        assert out["startsAt"] == "2026-06-01T00:00:00Z"
+        assert out["endsAt"] == "2026-08-31T23:59:59Z"
+
+    def test_build_input_dates_must_be_strings(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyDiscountAdapter._build_basic_input({
+                "title": "T", "code": "X", "percentage": 10,
+                "starts_at": 1234567890,
+            })
+
+    def test_build_input_usage_limit_validated(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        out = ShopifyDiscountAdapter._build_basic_input({
+            "title": "T", "code": "X", "percentage": 10, "usage_limit": 100,
+        })
+        assert out["usageLimit"] == 100
+
+        with pytest.raises(AdapterValidationError):
+            ShopifyDiscountAdapter._build_basic_input({
+                "title": "T", "code": "X", "percentage": 10, "usage_limit": 0,
+            })
+        with pytest.raises(AdapterValidationError):
+            ShopifyDiscountAdapter._build_basic_input({
+                "title": "T", "code": "X", "percentage": 10, "usage_limit": "many",
+            })
+
+    def test_build_input_applies_once_per_customer_default_true(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        out = ShopifyDiscountAdapter._build_basic_input({
+            "title": "T", "code": "X", "percentage": 10,
+        })
+        assert out["appliesOncePerCustomer"] is True
+
+    def test_build_input_applies_once_per_customer_can_be_false(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        out = ShopifyDiscountAdapter._build_basic_input({
+            "title": "T", "code": "X", "percentage": 10,
+            "applies_once_per_customer": False,
+        })
+        assert out["appliesOncePerCustomer"] is False
+
+    # ── Create — happy path ──────────────────────────────────
+
+    def test_create_discount_happy_path(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountCodeBasicCreate": {
+                "codeDiscountNode": {
+                    "id": "gid://shopify/DiscountCodeNode/1",
+                    "codeDiscount": {
+                        "title": "Summer 25%",
+                        "summary": "25% off all items",
+                        "status": "ACTIVE",
+                        "startsAt": "2026-06-01T00:00:00Z",
+                        "endsAt": "2026-08-31T23:59:59Z",
+                        "usageLimit": 500,
+                        "appliesOncePerCustomer": True,
+                        "codes": {"nodes": [{"code": "SUMMER25"}]},
+                    },
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT,
+                {
+                    "title": "Summer 25%",
+                    "code": "SUMMER25",
+                    "percentage": 25,
+                    "starts_at": "2026-06-01T00:00:00Z",
+                    "ends_at": "2026-08-31T23:59:59Z",
+                    "usage_limit": 500,
+                },
+            )
+        assert result.ok
+        assert result.data["id"] == "gid://shopify/DiscountCodeNode/1"
+        assert result.data["code"] == "SUMMER25"
+        assert result.data["title"] == "Summer 25%"
+        assert result.data["status"] == "ACTIVE"
+        assert result.data["usage_limit"] == 500
+
+    def test_create_discount_user_errors_fail_fast(self):
+        """Shopify returns a userErrors array when the input was
+        accepted by the schema but rejected by business rules
+        (e.g. duplicate code). The adapter must promote that to
+        AdapterValidationError so the router doesn't fall back."""
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountCodeBasicCreate": {
+                "codeDiscountNode": None,
+                "userErrors": [{
+                    "field": ["basicCodeDiscount", "code"],
+                    "message": "Code is already in use",
+                    "code": "TAKEN",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT,
+                {"title": "T", "code": "X", "percentage": 10},
+            )
+        assert not result.ok
+        assert "TAKEN" in str(result.error or "") or "in use" in str(result.error or "")
+
+    # ── List ──────────────────────────────────────────────────
+
+    def test_list_discounts_happy_path(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "codeDiscountNodes": {
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur123"},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/DiscountCodeNode/1",
+                        "codeDiscount": {
+                            "title": "Summer 25%",
+                            "summary": "25% off",
+                            "status": "ACTIVE",
+                            "startsAt": "2026-06-01T00:00:00Z",
+                            "endsAt": "2026-08-31T23:59:59Z",
+                            "usageLimit": 500,
+                            "asyncUsageCount": 42,
+                            "appliesOncePerCustomer": True,
+                            "codes": {"nodes": [{"code": "SUMMER25"}]},
+                        },
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_DISCOUNTS,
+                {"limit": 10},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["has_next_page"] is True
+        assert result.data["end_cursor"] == "cur123"
+        d = result.data["discounts"][0]
+        assert d["code"] == "SUMMER25"
+        assert d["usage_count"] == 42
+
+    def test_list_discounts_clamps_limit_to_max(self):
+        """codeDiscountNodes accepts at most 250 per call. A caller
+        asking for 9999 must be silently clamped — the request must
+        succeed with what Shopify allows."""
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"codeDiscountNodes": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_DISCOUNTS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_discounts_default_limit_when_omitted(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"codeDiscountNodes": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_DISCOUNTS, {})
+        assert captured["first"] == 50
+
+    def test_list_discounts_invalid_limit_falls_back_to_default(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"codeDiscountNodes": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_DISCOUNTS, {"limit": "many"})
+        assert captured["first"] == 50
+
+    def test_list_discounts_passes_cursor_through(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["after"] = v["after"]
+            return {"codeDiscountNodes": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_DISCOUNTS,
+                {"cursor": "cur123"},
+            )
+        assert captured["after"] == "cur123"
+
+    def test_list_discounts_rejects_non_string_cursor(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_DISCOUNTS,
+                {"cursor": 12345},
+            )
+        assert not result.ok
+
+    def test_list_discounts_handles_empty_page(self):
+        from core.adapters.shopify.discounts import ShopifyDiscountAdapter
+        a = ShopifyDiscountAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "codeDiscountNodes": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_DISCOUNTS, {})
+        assert result.ok
+        assert result.data["count"] == 0
+        assert result.data["has_next_page"] is False
+        assert result.data["end_cursor"] == ""
