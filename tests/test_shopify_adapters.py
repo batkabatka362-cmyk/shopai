@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentysix_adapters(self):
+    def test_register_all_adds_twentyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 26
+        assert len(status) == 27
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -813,6 +813,7 @@ class TestShopifyBootstrap:
             "shopify_companies",
             "shopify_locations",
             "shopify_inventory_shipments",
+            "shopify_channels",
         }
 
     def test_register_all_idempotent(self):
@@ -820,7 +821,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 26
+        assert len(get_registry()) == 27
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -920,6 +921,112 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_INVENTORY_SHIPMENTS).name == "shopify_inventory_shipments"
         assert router.route(Capability.SHOPIFY_GET_INVENTORY_SHIPMENT).name == "shopify_inventory_shipments"
         assert router.route(Capability.SHOPIFY_CREATE_INVENTORY_SHIPMENT).name == "shopify_inventory_shipments"
+        assert router.route(Capability.SHOPIFY_LIST_CHANNELS).name == "shopify_channels"
+
+
+# ── ShopifyChannelsAdapter ──────────────────────────────
+
+
+class TestShopifyChannelsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.channels import ShopifyChannelsAdapter
+        a = ShopifyChannelsAdapter()
+        assert a.name == "shopify_channels"
+        assert Capability.SHOPIFY_LIST_CHANNELS in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.channels import ShopifyChannelsAdapter
+        a = ShopifyChannelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.channels import ShopifyChannelsAdapter
+        a = ShopifyChannelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "channels": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Channel/1",
+                        "name": "Online Store",
+                        "handle": "online_store",
+                        "supportsFuturePublishing": True,
+                    }},
+                    {"node": {
+                        "id": "gid://shopify/Channel/2",
+                        "name": "Shop",
+                        "handle": "shop",
+                        "supportsFuturePublishing": False,
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_CHANNELS, {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 2
+        names = {c["name"] for c in result.data["channels"]}
+        assert names == {"Online Store", "Shop"}
+        assert result.data["channels"][0]["supports_future_publishing"] is True
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.channels import ShopifyChannelsAdapter
+        a = ShopifyChannelsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"channels": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_CHANNELS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_default_limit(self):
+        from core.adapters.shopify.channels import ShopifyChannelsAdapter
+        a = ShopifyChannelsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"channels": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_CHANNELS, {})
+        assert captured["first"] == 50
+
+    def test_list_passes_cursor(self):
+        from core.adapters.shopify.channels import ShopifyChannelsAdapter
+        a = ShopifyChannelsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["after"] = v["after"]
+            return {"channels": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_CHANNELS, {"cursor": "cur123"})
+        assert captured["after"] == "cur123"
+
+    def test_list_rejects_non_string_cursor(self):
+        from core.adapters.shopify.channels import ShopifyChannelsAdapter
+        a = ShopifyChannelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_LIST_CHANNELS, {
+                "cursor": 12345,
+            })
+        assert not result.ok
+
+    def test_list_handles_empty(self):
+        from core.adapters.shopify.channels import ShopifyChannelsAdapter
+        a = ShopifyChannelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "channels": {"pageInfo": {}, "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_CHANNELS, {})
+        assert result.ok
+        assert result.data["count"] == 0
 
 
 # ── ShopifyInventoryShipmentsAdapter ────────────────────
