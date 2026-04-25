@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtyone_adapters(self):
+    def test_register_all_adds_sixtytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 61
+        assert len(status) == 62
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -848,6 +848,7 @@ class TestShopifyBootstrap:
             "shopify_fulfillment_events",
             "shopify_customer_consent",
             "shopify_inventory_activation",
+            "shopify_discount_code_bxgy",
         }
 
     def test_register_all_idempotent(self):
@@ -855,7 +856,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 61
+        assert len(get_registry()) == 62
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1070,6 +1071,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION).name == "shopify_inventory_activation"
         assert router.route(Capability.SHOPIFY_DEACTIVATE_INVENTORY_AT_LOCATION).name == "shopify_inventory_activation"
         assert router.route(Capability.SHOPIFY_ADJUST_INVENTORY_QUANTITIES).name == "shopify_inventory_activation"
+        assert router.route(Capability.SHOPIFY_CREATE_DISCOUNT_BXGY).name == "shopify_discount_code_bxgy"
+        assert router.route(Capability.SHOPIFY_DELETE_DISCOUNT_BXGY).name == "shopify_discount_code_bxgy"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -16626,4 +16629,292 @@ class TestShopifyInventoryActivationAdapter:
         )
         assert ShopifyInventoryActivationAdapter._normalise_level({}) == {}
         assert ShopifyInventoryActivationAdapter._normalise_change(None) == {}
+
+
+# ── ShopifyDiscountCodeBxgyAdapter ────────────────────────
+
+
+class TestShopifyDiscountCodeBxgyAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter()
+        assert a.name == "shopify_discount_code_bxgy"
+        for cap in (
+            Capability.SHOPIFY_CREATE_DISCOUNT_BXGY,
+            Capability.SHOPIFY_DELETE_DISCOUNT_BXGY,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input ────────────────────────────────────
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "code": "BUNDLE3",
+                "starts_at": "2026-04-26T00:00:00Z",
+                "customer_buys": {"value": {"quantity": 2},
+                                  "items": {"all": True}},
+                "customer_gets": {"value": {"percentage": 50},
+                                  "items": {"all": True}},
+            })
+
+    def test_create_requires_code(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "title": "Bundle",
+                "starts_at": "2026-04-26T00:00:00Z",
+                "customer_buys": {"value": {"quantity": 2},
+                                  "items": {"all": True}},
+                "customer_gets": {"value": {"percentage": 50},
+                                  "items": {"all": True}},
+            })
+
+    def test_create_requires_customer_buys(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "title": "Bundle", "code": "BUNDLE3",
+                "starts_at": "2026-04-26T00:00:00Z",
+                "customer_gets": {"value": {"percentage": 50},
+                                  "items": {"all": True}},
+            })
+
+    def test_buys_quantity_must_be_positive(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_customer_buys({
+                "value": {"quantity": 0},
+                "items": {"all": True},
+            })
+
+    def test_gets_percentage_range_enforced(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_customer_gets({
+                "value": {"percentage": 150},
+                "items": {"all": True},
+            })
+
+    def test_gets_requires_value_kind(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_customer_gets({
+                "value": {},
+                "items": {"all": True},
+            })
+
+    def test_items_must_specify_all_or_products_or_collections(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_items({}, label="customer_buys.items")
+
+    def test_items_collections_form(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        out = a._build_items(
+            {"collections": ["gid://shopify/Collection/1"]},
+            label="customer_buys.items",
+        )
+        assert out == {"collections": {"add": ["gid://shopify/Collection/1"]}}
+
+    def test_items_products_form(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        out = a._build_items(
+            {"products": ["gid://shopify/Product/1",
+                          "gid://shopify/Product/2"]},
+            label="customer_gets.items",
+        )
+        assert out == {"products": {
+            "productsToAdd": ["gid://shopify/Product/1",
+                              "gid://shopify/Product/2"],
+        }}
+
+    def test_input_full_shape(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        out = a._build_input({
+            "title": "Bundle",
+            "code": "BUNDLE3",
+            "starts_at": "2026-04-26T00:00:00Z",
+            "ends_at": "2026-12-31T23:59:59Z",
+            "uses_per_order_limit": 1,
+            "usage_limit": 1000,
+            "customer_buys": {
+                "value": {"quantity": 2},
+                "items": {"all": True},
+            },
+            "customer_gets": {
+                "value": {"percentage": 50},
+                "items": {"all": True},
+                "quantity": 1,
+            },
+        })
+        assert out["title"] == "Bundle"
+        assert out["code"] == "BUNDLE3"
+        assert out["usesPerOrderLimit"] == 1
+        assert out["usageLimit"] == 1000
+        assert out["customerBuys"]["value"]["quantity"] == "2"
+        # ShopAI 0-100 → Shopify 0-1 conversion.
+        gets = out["customerGets"]["value"]["discountOnQuantity"]
+        assert gets["effect"]["percentage"] == 0.5
+        assert gets["quantity"] == "1"
+
+    # ── Create — happy path ──────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"discountCodeBxgyCreate": {
+                "codeDiscountNode": {
+                    "id": "gid://shopify/DiscountCodeNode/new",
+                    "codeDiscount": {
+                        "title": v["bxgyCodeDiscount"]["title"],
+                        "summary": "Buy 2 get 1 50% off",
+                        "status": "ACTIVE",
+                        "startsAt": (
+                            v["bxgyCodeDiscount"]["startsAt"]
+                        ),
+                        "endsAt": v["bxgyCodeDiscount"].get("endsAt", ""),
+                        "usesPerOrderLimit": (
+                            v["bxgyCodeDiscount"].get(
+                                "usesPerOrderLimit"
+                            )
+                        ),
+                        "codes": {
+                            "edges": [{
+                                "node": {"code": v["bxgyCodeDiscount"]["code"]},
+                            }],
+                        },
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT_BXGY,
+                {
+                    "title": "Bundle Pack",
+                    "code": "BUNDLE3",
+                    "starts_at": "2026-04-26T00:00:00Z",
+                    "uses_per_order_limit": 1,
+                    "customer_buys": {
+                        "value": {"quantity": 2},
+                        "items": {"all": True},
+                    },
+                    "customer_gets": {
+                        "value": {"percentage": 50},
+                        "items": {"all": True},
+                        "quantity": 1,
+                    },
+                },
+            )
+        assert result.ok
+        # Pattern A: variable name matches input type.
+        assert captured["bxgyCodeDiscount"]["title"] == "Bundle Pack"
+        assert result.data["title"] == "Bundle Pack"
+        assert result.data["status"] == "ACTIVE"
+        assert "BUNDLE3" in result.data["codes"]
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountCodeBxgyCreate": {
+                "codeDiscountNode": None,
+                "userErrors": [{"field": ["bxgyCodeDiscount", "code"],
+                                "message": "Code is taken",
+                                "code": "TAKEN"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT_BXGY,
+                {
+                    "title": "Dup", "code": "DUP",
+                    "starts_at": "2026-04-26T00:00:00Z",
+                    "customer_buys": {"value": {"quantity": 2},
+                                      "items": {"all": True}},
+                    "customer_gets": {"value": {"percentage": 50},
+                                      "items": {"all": True}},
+                },
+            )
+        assert not result.ok
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_DISCOUNT_BXGY, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.discount_code_bxgy import (
+            ShopifyDiscountCodeBxgyAdapter,
+        )
+        a = ShopifyDiscountCodeBxgyAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"discountCodeDelete": {
+            "deletedCodeDiscountId": (
+                "gid://shopify/DiscountCodeNode/1"
+            ),
+            "userErrors": [],
+        }}):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_DISCOUNT_BXGY,
+                {"id": "gid://shopify/DiscountCodeNode/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/DiscountCodeNode/1"
 

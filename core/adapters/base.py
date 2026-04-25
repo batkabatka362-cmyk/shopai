@@ -287,6 +287,8 @@ class Capability(str, Enum):
     SHOPIFY_ACTIVATE_INVENTORY_AT_LOCATION = "shopify_activate_inventory_at_location"
     SHOPIFY_DEACTIVATE_INVENTORY_AT_LOCATION = "shopify_deactivate_inventory_at_location"
     SHOPIFY_ADJUST_INVENTORY_QUANTITIES = "shopify_adjust_inventory_quantities"
+    SHOPIFY_CREATE_DISCOUNT_BXGY = "shopify_create_discount_bxgy"
+    SHOPIFY_DELETE_DISCOUNT_BXGY = "shopify_delete_discount_bxgy"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

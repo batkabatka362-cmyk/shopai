@@ -43,6 +43,7 @@ from .customizations import (
     ShopifyPaymentCustomizationsAdapter,
 )
 from .discount_automatic import ShopifyDiscountAutomaticAdapter
+from .discount_code_bxgy import ShopifyDiscountCodeBxgyAdapter
 from .discounts import ShopifyDiscountAdapter
 from .disputes import ShopifyDisputesAdapter
 from .draft_order_calculate import ShopifyDraftOrderCalculateAdapter
@@ -151,6 +152,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyFulfillmentEventsAdapter,
     ShopifyCustomerConsentAdapter,
     ShopifyInventoryActivationAdapter,
+    ShopifyDiscountCodeBxgyAdapter,
 )
 
 

@@ -303,6 +303,14 @@ tolerate both forms when the cost is low:
   works. Cheapest correct selection is `{ __typename }` on each so
   engines get a presence/absence signal; detailed inspection comes
   from the merge mutation's userErrors path.
+- `discountCodeBxgyCreate` rejects `{ all: true }` for both
+  `customerBuys.items` and `customerGets.items` — they MUST be
+  scoped to specific products or collections (Shopify's BXGY engine
+  needs scoped sides for the rule to evaluate). Also `customerSelection`
+  is silently REQUIRED — omitting it returns "Customer selection
+  can't be blank". Adapter defaults customerSelection to `{ all: true }`
+  so engines that don't pass it still get the standard public-facing
+  discount.
 
 ### Pattern E: schema-gated fields
 
