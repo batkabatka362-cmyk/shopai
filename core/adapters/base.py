@@ -193,6 +193,11 @@ class Capability(str, Enum):
     SHOPIFY_TAG_ORDER = "shopify_tag_order"
     SHOPIFY_UNTAG_ORDER = "shopify_untag_order"
     SHOPIFY_CLOSE_ORDER = "shopify_close_order"
+    SHOPIFY_GET_CUSTOMER = "shopify_get_customer"
+    SHOPIFY_CREATE_CUSTOMER = "shopify_create_customer"
+    SHOPIFY_TAG_CUSTOMER = "shopify_tag_customer"
+    SHOPIFY_UNTAG_CUSTOMER = "shopify_untag_customer"
+    SHOPIFY_DELETE_CUSTOMER = "shopify_delete_customer"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

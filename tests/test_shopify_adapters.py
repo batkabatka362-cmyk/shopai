@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtyone_adapters(self):
+    def test_register_all_adds_thirtytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 31
+        assert len(status) == 32
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -818,6 +818,7 @@ class TestShopifyBootstrap:
             "shopify_validations",
             "shopify_products",
             "shopify_orders",
+            "shopify_customers",
         }
 
     def test_register_all_idempotent(self):
@@ -825,7 +826,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 31
+        assert len(get_registry()) == 32
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -944,6 +945,13 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_TAG_ORDER).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_UNTAG_ORDER).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_CLOSE_ORDER).name == "shopify_orders"
+        assert router.route(Capability.SHOPIFY_FETCH_CUSTOMERS).name == "shopify_customers"
+        assert router.route(Capability.SHOPIFY_GET_CUSTOMER).name == "shopify_customers"
+        assert router.route(Capability.SHOPIFY_CREATE_CUSTOMER).name == "shopify_customers"
+        assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER).name == "shopify_customers"
+        assert router.route(Capability.SHOPIFY_TAG_CUSTOMER).name == "shopify_customers"
+        assert router.route(Capability.SHOPIFY_UNTAG_CUSTOMER).name == "shopify_customers"
+        assert router.route(Capability.SHOPIFY_DELETE_CUSTOMER).name == "shopify_customers"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -9186,3 +9194,319 @@ class TestShopifyOrdersAdapter:
         from core.adapters.shopify.orders import ShopifyOrdersAdapter
         assert ShopifyOrdersAdapter._normalise_order({}) == {}
         assert ShopifyOrdersAdapter._normalise_line_item(None) == {}
+
+
+# ── ShopifyCustomersAdapter ───────────────────────────────
+
+
+class TestShopifyCustomersAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter()
+        assert a.name == "shopify_customers"
+        for cap in (
+            Capability.SHOPIFY_FETCH_CUSTOMERS,
+            Capability.SHOPIFY_GET_CUSTOMER,
+            Capability.SHOPIFY_CREATE_CUSTOMER,
+            Capability.SHOPIFY_UPDATE_CUSTOMER,
+            Capability.SHOPIFY_TAG_CUSTOMER,
+            Capability.SHOPIFY_UNTAG_CUSTOMER,
+            Capability.SHOPIFY_DELETE_CUSTOMER,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_email_or_phone(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_customer_input({"first_name": "X"}, for_update=False)
+
+    def test_create_with_email_ok(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        out = a._build_customer_input(
+            {"email": "x@y.com", "first_name": "X"}, for_update=False,
+        )
+        assert out["email"] == "x@y.com"
+        assert out["firstName"] == "X"
+
+    def test_create_with_phone_only_ok(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        out = a._build_customer_input(
+            {"phone": "+15551234567"}, for_update=False,
+        )
+        assert out["phone"] == "+15551234567"
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_customer_input({"email": "x@y.com"}, for_update=True)
+
+    def test_input_tags_string_split(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        out = a._build_customer_input(
+            {"email": "x@y.com", "tags": "vip, ai-flagged ,review"},
+            for_update=False,
+        )
+        assert out["tags"] == ["vip", "ai-flagged", "review"]
+
+    def test_input_marketing_consent_subscribed(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        out = a._build_customer_input(
+            {"email": "x@y.com", "accepts_email_marketing": True},
+            for_update=False,
+        )
+        assert out["emailMarketingConsent"]["marketingState"] == "SUBSCRIBED"
+
+    def test_input_marketing_consent_unsubscribed(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        out = a._build_customer_input(
+            {"email": "x@y.com", "accepts_email_marketing": False},
+            for_update=False,
+        )
+        assert out["emailMarketingConsent"]["marketingState"] == "UNSUBSCRIBED"
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customers": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Customer/c1",
+                        "firstName": "X",
+                        "lastName": "Y",
+                        "email": "x@y.com",
+                        "tags": ["vip"],
+                        "numberOfOrders": 3,
+                        "amountSpent": {"amount": "150.00", "currencyCode": "USD"},
+                        "verifiedEmail": True,
+                    }}
+                ],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_FETCH_CUSTOMERS, {})
+        assert result.ok
+        c = result.data["customers"][0]
+        assert c["email"] == "x@y.com"
+        assert c["orders_count"] == 3
+        assert c["total_spent"] == "150.00"
+        assert c["currency_code"] == "USD"
+        assert c["verified_email"] is True
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_FETCH_CUSTOMERS, {"sort_key": "BAD"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_passes_query_filter(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"customers": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_FETCH_CUSTOMERS, {
+                "query": "tag:vip",
+                "sort_key": "TOTAL_SPENT",
+                "reverse": True,
+            })
+        assert captured["query"] == "tag:vip"
+        assert captured["sortKey"] == "TOTAL_SPENT"
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_CUSTOMER, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_get_happy_path_with_addresses(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customer": {
+                "id": "gid://shopify/Customer/c1",
+                "email": "x@y.com",
+                "tags": [],
+                "addresses": [
+                    {"id": "gid://shopify/MailingAddress/a1",
+                     "address1": "1 Main", "city": "MN",
+                     "country": "US", "zip": "12345"},
+                    {"id": "gid://shopify/MailingAddress/a2",
+                     "address1": "2 Side", "city": "MN",
+                     "country": "US", "zip": "12345"},
+                ],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_CUSTOMER, {
+                "id": "gid://shopify/Customer/c1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert len(result.data["customer"]["addresses"]) == 2
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"customer": None}):
+            result = a.execute(Capability.SHOPIFY_GET_CUSTOMER, {
+                "id": "gid://shopify/Customer/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Create / Update ──────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"customerCreate": {
+                "customer": {
+                    "id": "gid://shopify/Customer/new",
+                    "email": v["input"]["email"],
+                    "tags": [],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_CUSTOMER, {
+                "email": "new@example.com",
+                "first_name": "New",
+                "tags": ["welcome"],
+            })
+        assert result.ok
+        assert captured["input"]["email"] == "new@example.com"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"customerCreate": {
+            "customer": None,
+            "userErrors": [
+                {"field": ["email"], "message": "is taken", "code": "TAKEN"},
+            ],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_CUSTOMER, {
+                "email": "x@y.com",
+            })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"customerUpdate": {
+                "customer": {"id": v["input"]["id"], "tags": v["input"].get("tags", [])},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_CUSTOMER, {
+                "id": "gid://shopify/Customer/c1",
+                "tags": "vip,ai-flagged",
+            })
+        assert result.ok
+        assert captured["input"]["tags"] == ["vip", "ai-flagged"]
+
+    # ── Tag / Untag ──────────────────────────────
+
+    def test_tag_requires_tags(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_TAG_CUSTOMER, {
+            "id": "gid://shopify/Customer/c1",
+        })
+        assert not result.ok
+
+    def test_tag_happy_path(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"tagsAdd": {
+            "node": {"id": "gid://shopify/Customer/c1",
+                     "tags": ["vip"]},
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_TAG_CUSTOMER, {
+                "id": "gid://shopify/Customer/c1",
+                "tags": ["vip"],
+            })
+        assert result.ok
+        assert result.data["tags"] == ["vip"]
+
+    def test_untag_happy_path(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"tagsRemove": {
+            "node": {"id": "gid://shopify/Customer/c1", "tags": []},
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_UNTAG_CUSTOMER, {
+                "id": "gid://shopify/Customer/c1",
+                "tags": "vip",
+            })
+        assert result.ok
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_CUSTOMER, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        a = ShopifyCustomersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"customerDelete": {
+            "deletedCustomerId": "gid://shopify/Customer/c1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_CUSTOMER, {
+                "id": "gid://shopify/Customer/c1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/Customer/c1"
+
+    # ── Normaliser ───────────────────────────────
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.customers import ShopifyCustomersAdapter
+        assert ShopifyCustomersAdapter._normalise_customer({}) == {}

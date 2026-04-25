@@ -26,6 +26,7 @@ from .analytics import ShopifyAnalyticsAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
 from .channels import ShopifyChannelsAdapter
 from .companies import ShopifyCompaniesAdapter
+from .customers import ShopifyCustomersAdapter
 from .customizations import (
     ShopifyDeliveryCustomizationsAdapter,
     ShopifyPaymentCustomizationsAdapter,
@@ -91,6 +92,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyValidationsAdapter,
     ShopifyProductsAdapter,
     ShopifyOrdersAdapter,
+    ShopifyCustomersAdapter,
 )
 
 
