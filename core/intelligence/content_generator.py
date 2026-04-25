@@ -46,8 +46,24 @@ class ContentGenerator:
     def __init__(self, *, llm: Any = None) -> None:
         self._llm = llm
 
-    def product_description(self, product: dict[str, Any], tone: str = "professional") -> dict[str, Any]:
-        """Generate a complete product description with headline, body, bullets, SEO."""
+    def product_description(
+        self,
+        product: dict[str, Any],
+        tone: str = "professional",
+        *,
+        use_geo_sandwich: bool = False,
+    ) -> dict[str, Any]:
+        """Generate a complete product description with headline, body, bullets, SEO.
+
+        Setting ``use_geo_sandwich=True`` enables Wave E-2 GEO
+        quote-sandwich augmentation: when ``product["citations"]``
+        is a non-empty list of ``{claim, quote, source_name, …}``
+        dicts, each entry is wrapped via
+        :func:`execution.seo.quote_sandwich.wrap_claim` and the
+        resulting HTML is appended to ``body_html`` and returned
+        on a new ``geo_sandwiches`` key. Missing / malformed
+        citations are skipped — no fake content is generated.
+        """
         name = product.get("name", product.get("title", "Product"))
         price = float(product.get("price", 0))
         category = product.get("category", product.get("type", "")).lower()
@@ -64,7 +80,52 @@ class ContentGenerator:
         bullets = self._generate_bullets(features, benefits)
         seo_desc = self._generate_meta_description(name, benefits, price)
 
-        return {
+        # GEO quote-sandwich augmentation (opt-in).
+        # Lazy import to avoid paying the cost for every
+        # description generation when the flag is off.
+        geo_sandwiches: list[dict[str, Any]] = []
+        body_html = ""
+        if use_geo_sandwich:
+            # Citation resolution: caller-explicit wins, else
+            # fall back to the niche-keyed citation store so
+            # owners curate once per niche and every SKU
+            # benefits. No fabrication.
+            raw_citations = product.get("citations") or []
+            if not (
+                isinstance(raw_citations, list)
+                and raw_citations
+            ):
+                try:
+                    from execution.seo.citation_store import (
+                        resolve_citations_for,
+                    )
+                    raw_citations = resolve_citations_for(
+                        product,
+                    )
+                except Exception:  # noqa: BLE001
+                    raw_citations = []
+            if (
+                isinstance(raw_citations, list)
+                and raw_citations
+            ):
+                try:
+                    from execution.seo.quote_sandwich import (
+                        wrap_many,
+                    )
+                    sandwiches = wrap_many(raw_citations)
+                except Exception:  # noqa: BLE001
+                    sandwiches = []
+                if sandwiches:
+                    geo_sandwiches = [
+                        s.as_dict() for s in sandwiches
+                    ]
+                    body_html = "\n".join(
+                        s.get("html", "")
+                        for s in geo_sandwiches
+                        if s.get("html")
+                    )
+
+        out: dict[str, Any] = {
             "headline": headline,
             "subheadline": self._generate_subheadline(name, benefits),
             "body": body,
@@ -78,6 +139,10 @@ class ContentGenerator:
             "word_count": len(body.split()),
             "tone": tone,
         }
+        if geo_sandwiches:
+            out["geo_sandwiches"] = geo_sandwiches
+            out["body_html"] = body_html
+        return out
 
     def ad_copy(self, product: dict[str, Any], platform: str = "facebook") -> dict[str, Any]:
         """Generate ad copy for specific platform."""

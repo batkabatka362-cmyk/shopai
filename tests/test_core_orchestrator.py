@@ -526,6 +526,62 @@ class TestCycleIntegration:
         result = c.run_cycle()
         assert "events_fired" in result["phases"]["events"]
 
+    def test_brain_scan_records_fetch_failure(self):
+        """End-of-run brain scan must classify phase failures into
+        failure_taxonomy + error_pattern_library so the owner can
+        see which subsystems are degrading. SHOPAI_BRAIN_HOOKS=1
+        gated path."""
+        import os
+        prior = os.environ.get("SHOPAI_BRAIN_HOOKS")
+        os.environ["SHOPAI_BRAIN_HOOKS"] = "1"
+        try:
+            # Reset singletons so the assertion isn't polluted by
+            # other tests running in the suite.
+            from core.brain import brain_facade
+            brain_facade._FAILURE_TAXONOMY = None
+            brain_facade._ERROR_PATTERN_LIBRARY = None
+
+            c = CoreOrchestrator()
+            c.run_cycle()   # Shopify unreachable → fetch errors
+
+            from core.brain.brain_facade import brain
+            snap = brain().introspect()
+            assert snap.failures.get("total", 0) >= 1
+            assert snap.error_patterns.get("observations", 0) >= 1
+        finally:
+            if prior is None:
+                os.environ.pop("SHOPAI_BRAIN_HOOKS", None)
+            else:
+                os.environ["SHOPAI_BRAIN_HOOKS"] = prior
+
+    def test_events_phase_survives_list_optimization(self):
+        """Regression for AUDIT_LOG P2 (2026-04-20).
+
+        _phase_campaigns stores optimizer.optimize() output directly,
+        which is a list of action dicts. _phase_events then reads
+        ``campaigns["optimization"]`` and previously called .get() on
+        it, crashing with AttributeError and producing no events.
+        """
+        c = CoreOrchestrator()
+        cfg = {
+            "campaigns": [
+                {
+                    "campaign_id": "c1",
+                    "roas": 1.2, "ctr": 0.5, "cpc": 1.0,
+                    "budget": 100, "spend": 50, "revenue": 60,
+                    "status": "active",
+                },
+            ],
+        }
+        result = c.run_cycle(config=cfg)
+        events = result["phases"]["events"]
+        assert "events_fired" in events
+        # Pause verdict on c1 should have fired an underperform event
+        details = events.get("details", [])
+        assert any(
+            "campaign.underperform" in d for d in details
+        ), f"expected underperform event, got {details}"
+
     def test_kpi_recorded(self):
         c = CoreOrchestrator()
         c.run_cycle()

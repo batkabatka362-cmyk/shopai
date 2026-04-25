@@ -95,6 +95,10 @@ class ShopifyBridge:
 
     # --- Fetch data for engines ---
 
+    def _ensure_connected(self) -> None:
+        if not self._connected and self._shop_url and self._api_key:
+            self.connect()
+
     def fetch_products(self, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch products: DB cache → live API.
 
@@ -106,6 +110,7 @@ class ShopifyBridge:
         if cached:
             return cached
 
+        self._ensure_connected()
         last_error = ""
         if self._connected and self._api:
             try:
@@ -129,6 +134,7 @@ class ShopifyBridge:
         if cached:
             return cached
 
+        self._ensure_connected()
         last_error = ""
         if self._connected and self._api:
             try:
@@ -152,6 +158,7 @@ class ShopifyBridge:
         if cached:
             return cached
 
+        self._ensure_connected()
         last_error = ""
         if self._connected and self._api:
             try:

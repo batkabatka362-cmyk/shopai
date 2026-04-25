@@ -127,6 +127,86 @@ class TestPostPut:
         assert captured["method"] == "PUT"
 
 
+class TestGraphQL:
+    def test_graphql_posts_to_graphql_endpoint(self, monkeypatch):
+        c = _make_client()
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["data"] = json.loads(req.data.decode())
+            return _FakeResp(b'{"data": {"shop": {"name": "T"}}}')
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", fake_urlopen,
+        )
+        out = c.graphql(
+            "query { shop { name } }",
+        )
+        assert out == {"data": {"shop": {"name": "T"}}}
+        assert "graphql.json" in captured["url"]
+        assert captured["method"] == "POST"
+        assert captured["data"]["query"] == "query { shop { name } }"
+
+    def test_graphql_passes_variables(self, monkeypatch):
+        c = _make_client()
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured["data"] = json.loads(req.data.decode())
+            return _FakeResp(b'{"data": null}')
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", fake_urlopen,
+        )
+        c.graphql(
+            "mutation($x: String!) { ping(x: $x) }",
+            variables={"x": "hello"},
+        )
+        assert captured["data"]["variables"] == {"x": "hello"}
+
+    def test_graphql_errors_surface_under_error_key(
+        self, monkeypatch,
+    ):
+        """Shopify GraphQL errors come as ``errors[]`` in a
+        200 body — we promote them to the ``error`` key so
+        callers can do a uniform ``if "error" in resp:`` check."""
+        c = _make_client()
+
+        def fake_urlopen(req, timeout):
+            return _FakeResp(
+                b'{"errors": [{"message": "bad field"}], '
+                b'"data": null}',
+            )
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", fake_urlopen,
+        )
+        out = c.graphql("query { noSuchField }")
+        assert "error" in out
+        assert "bad field" in out["error"]
+        assert out["errors"] == [{"message": "bad field"}]
+
+    def test_graphql_http_error_returns_error_dict(
+        self, monkeypatch,
+    ):
+        c = _make_client()
+
+        def fake_urlopen(req, timeout):
+            import urllib.error
+            raise urllib.error.HTTPError(
+                req.full_url, 500, "Server Error",
+                {}, io.BytesIO(b'{"error": "oops"}'),
+            )
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", fake_urlopen,
+        )
+        out = c.graphql("query { shop { name } }")
+        assert "error" in out
+
+
 class TestRetry:
     def test_retries_on_429(self, monkeypatch):
         c = _make_client()

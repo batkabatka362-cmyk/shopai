@@ -1,0 +1,1 @@
+"""Automation adapter package (stub)."""

@@ -501,8 +501,10 @@ class TestAutonomousControllerAdapter:
         assert ac._adapter_router is not None
         assert hasattr(ac, "_adapter_status")
 
-        # 7 LLM + 4 Shopify + 3 search + 2 shipping + 2 email = 18
-        assert len(ac._adapter_status) == 18
+        # 7 LLM + 4 Shopify + 3 search + 2 shipping + 2 email = 18 required.
+        # Later bootstraps (payment/image/reviews/ads/…) may add more — the
+        # contract is "at minimum, phases 1-5 load", not a fixed total.
+        assert len(ac._adapter_status) >= 18
         names = set(ac._adapter_status.keys())
         # Phase 1 LLM adapters
         assert {

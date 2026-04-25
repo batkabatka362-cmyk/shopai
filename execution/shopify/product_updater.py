@@ -25,6 +25,8 @@ class ProductUpdater:
         api_key: str,
         product_id: str | int,
         updates: dict[str, Any],
+        *,
+        verify: bool = True,
     ) -> dict[str, Any]:
         """PUT updated fields onto an existing Shopify product.
 
@@ -33,9 +35,15 @@ class ProductUpdater:
             api_key:    Shopify Admin API access token.
             product_id: Numeric Shopify product ID.
             updates:    Dict of fields to change (title, body_html, tags, …).
+            verify:     When True (default), the write is followed by a
+                        read-back through ``post_write_verifier``;
+                        any field drift is attached as
+                        ``{"drift": {...}}`` in the response. The
+                        write itself still reports ``status="updated"``
+                        — callers decide whether drift is fatal.
 
         Returns:
-            ``{"status": "updated", "product": {...}}`` or
+            ``{"status": "updated", "product": {...}, "drift": {...}}`` or
             ``{"status": "error", "error": "..."}``
         """
         url = self._build_url(shop_url, f"/admin/api/2024-01/products/{product_id}.json")
@@ -44,9 +52,23 @@ class ProductUpdater:
 
         try:
             response = self._make_request("PUT", url, headers, payload)
-            return {"status": "updated", "product": response.get("product", response)}
+            result = {
+                "status": "updated",
+                "product": response.get("product", response),
+            }
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
+
+        if verify and updates:
+            drift = self._verify_product(
+                shop_url=shop_url,
+                api_key=api_key,
+                product_id=product_id,
+                expected=updates,
+            )
+            if drift is not None:
+                result["drift"] = drift
+        return result
 
     def update_inventory(
         self,
@@ -89,15 +111,20 @@ class ProductUpdater:
         product_id: str | int,
         variant_id: str | int,
         new_price: float | str,
+        *,
+        verify: bool = True,
     ) -> dict[str, Any]:
         """Update the price of a specific product variant.
 
         Args:
             variant_id: Shopify variant ID to change.
             new_price:  New price (will be cast to a 2-decimal string).
+            verify:     Read-back after the write and attach drift info
+                        when the actual price differs from expected.
 
         Returns:
-            ``{"status": "updated", "variant": {...}}`` or error dict.
+            ``{"status": "updated", "variant": {...}, "drift": {...}}``
+            or error dict.
         """
         price_str = f"{float(new_price):.2f}"
         url = self._build_url(
@@ -108,9 +135,23 @@ class ProductUpdater:
 
         try:
             response = self._make_request("PUT", url, headers, payload)
-            return {"status": "updated", "variant": response.get("variant", response)}
+            result = {
+                "status": "updated",
+                "variant": response.get("variant", response),
+            }
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
+
+        if verify:
+            drift = self._verify_variant(
+                shop_url=shop_url,
+                api_key=api_key,
+                variant_id=variant_id,
+                expected={"price": price_str},
+            )
+            if drift is not None:
+                result["drift"] = drift
+        return result
 
     def update_bulk(
         self,
@@ -233,3 +274,143 @@ class ProductUpdater:
             "X-Shopify-Access-Token": api_key,
             "Accept": "application/json",
         }
+
+    # ------------------------------------------------------------------ #
+    # Post-write verification (D2 wire-in)                                 #
+    # ------------------------------------------------------------------ #
+
+    def _fetch_product(
+        self, shop_url: str, api_key: str,
+        product_id: str | int,
+    ) -> dict[str, Any]:
+        url = self._build_url(
+            shop_url,
+            f"/admin/api/2024-01/products/{product_id}.json",
+        )
+        headers = self._build_headers(api_key)
+        body = self._make_request("GET", url, headers)
+        return body.get("product") or body or {}
+
+    def _fetch_variant(
+        self, shop_url: str, api_key: str,
+        variant_id: str | int,
+    ) -> dict[str, Any]:
+        url = self._build_url(
+            shop_url,
+            f"/admin/api/2024-01/variants/{variant_id}.json",
+        )
+        headers = self._build_headers(api_key)
+        body = self._make_request("GET", url, headers)
+        return body.get("variant") or body or {}
+
+    def _verify_product(
+        self, *,
+        shop_url: str,
+        api_key: str,
+        product_id: str | int,
+        expected: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Read the product back and return a drift dict if any
+        expected field differs. Returns ``None`` when everything
+        matches (success — no drift).
+        """
+        try:
+            from execution.verify.post_write_verifier import (
+                verify_write,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        # Only verify fields we actually wrote.
+        fields = tuple(expected.keys())
+        if not fields:
+            return None
+        report = verify_write(
+            read_fn=lambda: self._fetch_product(
+                shop_url, api_key, product_id,
+            ),
+            expected=expected,
+            fields=fields,
+            tolerance={
+                "price": 0.01,
+                "compare_at_price": 0.01,
+            },
+            allow_missing=(
+                "body_html", "tags", "metafields",
+            ),
+        )
+        if not report.drift:
+            return None
+        self._emit_drift_outcome(
+            resource="product",
+            resource_id=str(product_id),
+            diffs=list(report.field_diffs),
+            read_ok=report.read_ok,
+            error=report.error,
+        )
+        return report.as_dict()
+
+    def _verify_variant(
+        self, *,
+        shop_url: str,
+        api_key: str,
+        variant_id: str | int,
+        expected: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        try:
+            from execution.verify.post_write_verifier import (
+                verify_write,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        report = verify_write(
+            read_fn=lambda: self._fetch_variant(
+                shop_url, api_key, variant_id,
+            ),
+            expected=expected,
+            fields=tuple(expected.keys()),
+            tolerance={"price": 0.01},
+        )
+        if not report.drift:
+            return None
+        self._emit_drift_outcome(
+            resource="variant",
+            resource_id=str(variant_id),
+            diffs=list(report.field_diffs),
+            read_ok=report.read_ok,
+            error=report.error,
+        )
+        return report.as_dict()
+
+    def _emit_drift_outcome(
+        self,
+        *,
+        resource: str,
+        resource_id: str,
+        diffs: list[dict[str, Any]],
+        read_ok: bool,
+        error: str,
+    ) -> None:
+        """Best-effort fire a learning signal when a Shopify
+        write drifts from expectation. Silent on missing deps."""
+        try:
+            from core.integration.engine_outcome_bus import (
+                EngineOutcome,
+                get_engine_outcome_bus,
+            )
+            get_engine_outcome_bus().report(EngineOutcome(
+                engine="shopify_product_updater",
+                kpi="execution_drift",
+                value=float(len(diffs)),
+                ok=False,
+                source="shopify",
+                context={
+                    "resource": resource,
+                    "resource_id": resource_id,
+                    "diffs": diffs,
+                    "read_ok": read_ok,
+                    "error": error,
+                },
+            ))
+        except Exception:  # noqa: BLE001
+            # Drift emission is diagnostic, never fatal.
+            pass

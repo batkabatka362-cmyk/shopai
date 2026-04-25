@@ -10,6 +10,10 @@ build/
 .backups/
 /data/
 !core/data/
+/logs/
+/reports/
+/backups/
+core/reflection/.state/
 *.db
 *.db-shm
 *.db-wal
@@ -30,3 +34,16 @@ vault/.obsidian/themes/
 vault/.obsidian/hotkeys.json
 vault/ShopAI/Learned/
 vault/.shopai_import_state.json
+
+# Runtime-generated notes (pattern summarizer, cycle journal)
+vault/Knowledge/brain-summary-*.md
+vault/Decisions/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*.md
+vault/Wins/Cycle-Win-*.md
+vault/Errors/Cycle-Error-*.md
+
+# v24 experience_recorder runtime mirrors
+vault/Decisions/Decision-*.md
+vault/Decisions/Decision *.md
+vault/Assessments/
+vault/LLM/
+vault/Cycle Plans/

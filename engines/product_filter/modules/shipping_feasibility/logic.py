@@ -10,13 +10,7 @@ from .data import (
     get_shipping_cost_estimate, get_hazmat_info,
 )
 from .rules import check_weight_limit
-
-
-def _billable_weight(weight_kg, dimensions_cm, divisor=5000):
-    """Return the greater of actual weight and dimensional weight."""
-    vol = dimensions_cm.get("length", 0) * dimensions_cm.get("width", 0) * dimensions_cm.get("height", 0)
-    dim_weight = vol / divisor if divisor else weight_kg
-    return max(weight_kg, dim_weight)
+from .utils import billable_weight as _billable_weight
 
 
 def recommend_shipping_method(product):

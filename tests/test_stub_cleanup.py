@@ -179,29 +179,55 @@ class TestAmazonAdapterStub:
 
 class TestShopifyBridgeNoMockFallback:
     def test_fetch_products_raises_when_unavailable(self):
+        """Clear Shopify env so CI dummy values don't make bridge
+        attempt a real 401 call."""
+        import os
+        from unittest.mock import patch
         from core.bridge.shopify_bridge import (
             ShopifyBridge, ShopifyBridgeUnavailable,
         )
-        sb = ShopifyBridge()
-        with pytest.raises(ShopifyBridgeUnavailable) as exc:
-            sb.fetch_products()
-        assert exc.value.resource == "products"
+        with patch.dict(
+            os.environ,
+            {"SHOPAI_SHOPIFY_URL": "",
+             "SHOPAI_SHOPIFY_KEY": ""},
+            clear=False,
+        ):
+            sb = ShopifyBridge()
+            with pytest.raises(ShopifyBridgeUnavailable) as exc:
+                sb.fetch_products()
+            assert exc.value.resource == "products"
 
     def test_fetch_orders_raises_when_unavailable(self):
+        import os
+        from unittest.mock import patch
         from core.bridge.shopify_bridge import (
             ShopifyBridge, ShopifyBridgeUnavailable,
         )
-        sb = ShopifyBridge()
-        with pytest.raises(ShopifyBridgeUnavailable):
-            sb.fetch_orders()
+        with patch.dict(
+            os.environ,
+            {"SHOPAI_SHOPIFY_URL": "",
+             "SHOPAI_SHOPIFY_KEY": ""},
+            clear=False,
+        ):
+            sb = ShopifyBridge()
+            with pytest.raises(ShopifyBridgeUnavailable):
+                sb.fetch_orders()
 
     def test_fetch_customers_raises_when_unavailable(self):
+        import os
+        from unittest.mock import patch
         from core.bridge.shopify_bridge import (
             ShopifyBridge, ShopifyBridgeUnavailable,
         )
-        sb = ShopifyBridge()
-        with pytest.raises(ShopifyBridgeUnavailable):
-            sb.fetch_customers()
+        with patch.dict(
+            os.environ,
+            {"SHOPAI_SHOPIFY_URL": "",
+             "SHOPAI_SHOPIFY_KEY": ""},
+            clear=False,
+        ):
+            sb = ShopifyBridge()
+            with pytest.raises(ShopifyBridgeUnavailable):
+                sb.fetch_customers()
 
     def test_no_mock_helpers_remain(self):
         """Pin: ``_mock_products / orders / customers`` are gone."""

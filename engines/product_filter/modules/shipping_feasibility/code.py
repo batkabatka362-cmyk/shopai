@@ -14,13 +14,7 @@ from .rules import (
 )
 from .logic import recommend_shipping_method, calculate_shipping_margin_impact, optimize_packaging
 from .knowledge import get_heuristic_warnings, diagnose_shipping_result
-
-
-def _billable_weight(weight_kg, dims, divisor=5000):
-    """Return the greater of actual weight and dimensional weight."""
-    vol = dims.get("length", 0) * dims.get("width", 0) * dims.get("height", 0)
-    dim_wt = vol / divisor if divisor else weight_kg
-    return max(weight_kg, dim_wt)
+from .utils import billable_weight as _billable_weight
 
 
 def _evaluate_product(product):

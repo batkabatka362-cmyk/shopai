@@ -89,6 +89,10 @@ class TestCJMetadata:
             Capability.SOURCING_GET_PRODUCT,
             Capability.SOURCING_CREATE_ORDER,
             Capability.SOURCING_GET_ORDER_STATUS,
+            Capability.SOURCING_CANCEL_ORDER,
+            Capability.SOURCING_LIST_ORDERS,
+            Capability.SOURCING_GET_SHIPPING_METHODS,
+            Capability.SOURCING_GET_VARIANT_STOCK,
         }
 
     def test_unconfigured_without_email(self):

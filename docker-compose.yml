@@ -1,25 +1,33 @@
 # ShopAI docker-compose stack.
 #
-# Services:
-#   shopai-daemon  — autonomous cycle loop (no ports, only talks to
-#                    Shopify + the local Ollama container)
-#   shopai-api     — HTTP API server (port 8080, /health for probes)
-#   ollama         — local LLM server (Mistral / Qwen / LLaMA family)
-#   ollama-init    — one-shot pulls the models ShopAI needs on first start
+# Default services (minimal — runs on any Windows/Mac/Linux with
+# Docker Desktop, ~500 MB total download):
+#   shopai-daemon  — autonomous cycle loop
+#   shopai-api     — HTTP API server (port 8080)
+#   cloudflared    — public https tunnel for Shopify webhooks
 #
-# Usage:
+# Cloud LLMs (Groq / Gemini / DeepSeek) are called directly via
+# API keys in .env — no local model needed by default. First-run
+# is fast + lightweight.
+#
+# Optional profiles:
+#   --profile ollama  → adds local LLM server (~15 GB model pulls)
+#   --profile gpu     → NVIDIA-accelerated Ollama (implies ollama)
+#
+# Usage (Windows / Mac / Linux desktop):
 #     cp .env.example .env
-#     # edit .env — set SHOPAI_SHOPIFY_URL + SHOPAI_SHOPIFY_CLIENT_ID/SECRET
+#     # edit .env — at minimum SHOPAI_SHOPIFY_URL + SHOPAI_SHOPIFY_KEY
 #     docker compose up -d
-#     docker compose logs -f shopai-daemon
+#     # Find the public webhook URL:
+#     docker compose logs cloudflared | grep trycloudflare
+#     # Put that URL in .env as SHOPAI_WEBHOOK_CALLBACK_URL and
+#     # restart: docker compose up -d --force-recreate shopai-daemon
 #
-# The daemon and API share the same data volume so they see the same
-# SQLite files, memory, and OAuth token cache. Both depend on ollama
-# being HEALTHY (not just started) so the cognitive layer always has
-# its reasoning substrate ready.
+# Local LLM (optional, large download):
+#     docker compose --profile ollama up -d
 #
-# Override the model set via the SHOPAI_OLLAMA_MODELS env var
-# (space-separated tags). Default: mistral qwen2.5 llama3.2
+# GPU acceleration (NVIDIA only):
+#     docker compose --profile gpu up -d
 
 services:
   shopai-daemon:
@@ -35,18 +43,12 @@ services:
     volumes:
       - shopai_data:/app/data
       - shopai_logs:/app/logs
-    depends_on:
-      ollama:
-        condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
     restart: unless-stopped
-    # Daemon doesn't expose HTTP, so disable the image's /health
-    # healthcheck (which targets port 8080).
     healthcheck:
       disable: true
 
   shopai-api:
+    build: .
     image: shopai:latest
     container_name: shopai-api
     command: ["api"]
@@ -62,30 +64,69 @@ services:
       - shopai_logs:/app/logs
     depends_on:
       shopai-daemon:
-        condition: service_started  # built once via daemon
-      ollama:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
 
+  # Public https tunnel — Shopify webhooks POST to this URL and the
+  # request reaches shopai-api:8080. Free, no auth token required
+  # (random trycloudflare.com subdomain on each start). For a stable
+  # subdomain swap this command for `cloudflared tunnel run <name>`
+  # with a Cloudflare account.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: shopai-tunnel
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://shopai-api:8080
+    depends_on:
+      shopai-api:
+        condition: service_started
+    restart: unless-stopped
+
+  # Ollama is OPT-IN via `--profile ollama up -d`. Default
+  # ShopAI stack skips local LLM and uses cloud APIs (Groq /
+  # Gemini / DeepSeek) configured in .env. This keeps first-
+  # run download size to ~500 MB instead of ~15 GB and avoids
+  # the ollama-health-on-WSL2 cold-start issues.
   ollama:
     image: ollama/ollama:latest
     container_name: shopai-ollama
+    profiles: ["ollama"]
     ports:
       - "11434:11434"
     volumes:
       - ollama_models:/root/.ollama
     restart: unless-stopped
     healthcheck:
-      # Ollama exposes /api/tags as a no-auth list of installed models.
-      # If it returns 200 the daemon is alive AND the model store is
-      # mounted correctly.
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:11434/api/tags > /dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    # GPU is optional — comment this block out on CPU-only hosts.
-    # Without GPU, Ollama still runs but inference is slower.
+      # ollama CLI is guaranteed present inside the image;
+      # `ollama list` returns 0 only when the server is up.
+      # `wget` is NOT shipped in ollama/ollama so the previous
+      # wget-based check failed immediately on Windows Docker
+      # Desktop. Bumped start_period to 90s — first boot on
+      # WSL2 + slow disk can exceed 30s.
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 90s
+
+  # GPU-enabled Ollama (NVIDIA only). Activated by:
+  #     docker compose --profile gpu up -d
+  # When this profile is active the plain `ollama` service above
+  # is still the one referenced; Docker Compose merges profiles
+  # cumulatively, so rename / override via docker-compose.gpu.yml
+  # if you need a second Ollama instance. For the common case
+  # (optional GPU boost) we expose the profile purely as a flag
+  # users can run `docker compose --profile gpu up -d` with, which
+  # then requires the NVIDIA Container Toolkit on the host.
+  ollama-gpu:
+    extends:
+      service: ollama
+    image: ollama/ollama:latest
+    container_name: shopai-ollama-gpu
+    profiles: ["gpu"]
     deploy:
       resources:
         reservations:
@@ -93,18 +134,14 @@ services:
             - driver: nvidia
               capabilities: ["gpu"]
 
-  # One-shot init container that pulls the required models so the
-  # main daemon doesn't have to wait for the first cycle to be slow.
-  # Exits cleanly once every requested model is present in the
-  # ollama_models volume.
   ollama-init:
     image: ollama/ollama:latest
     container_name: shopai-ollama-init
+    profiles: ["ollama"]
     depends_on:
       ollama:
         condition: service_healthy
     environment:
-      # Override the default set with SHOPAI_OLLAMA_MODELS in .env
       SHOPAI_OLLAMA_MODELS: ${SHOPAI_OLLAMA_MODELS:-mistral qwen2.5 llama3.2}
     entrypoint: /bin/sh
     command:
@@ -112,7 +149,7 @@ services:
       - |
         set -e
         echo "[ollama-init] waiting for ollama at ollama:11434..."
-        until wget -q -O - http://ollama:11434/api/tags > /dev/null 2>&1; do
+        until OLLAMA_HOST=http://ollama:11434 ollama list > /dev/null 2>&1; do
           sleep 2
         done
         echo "[ollama-init] ollama is up; pulling models: $$SHOPAI_OLLAMA_MODELS"
@@ -126,6 +163,6 @@ services:
     restart: "no"
 
 volumes:
-  shopai_data:   # SQLite databases + caches
-  shopai_logs:   # rotated log files
-  ollama_models: # downloaded LLM weights (~5-15GB depending on tags)
+  shopai_data:
+  shopai_logs:
+  ollama_models:

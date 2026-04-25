@@ -41,7 +41,7 @@ signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
-def run_daemon(store_id="deguar", interval=600, max_cycles=0):
+def run_daemon(store_id="ts0efe-ih", interval=600, max_cycles=0):
     global _running
 
     print()
@@ -54,9 +54,27 @@ def run_daemon(store_id="deguar", interval=600, max_cycles=0):
     print("  Cycles:   {}".format(max_cycles if max_cycles else "unlimited"))
     print()
 
+    # Load runtime settings (auto_approve / live execution come from
+    # config/settings.json so operators don't have to thread CLI flags
+    # through every layer)
+    import json
+    settings_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config", "settings.json",
+    )
+    settings = {}
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except Exception:
+        pass
+    auto_approve = bool(settings.get("auto_approve", False))
+    live = bool(settings.get("enable_live_execution", False))
+    print("  Mode:     auto_approve={} live={}".format(auto_approve, live))
+
     # Initialize once
     from core.autonomous.controller import AutonomousController
-    ac = AutonomousController(auto_approve=False)
+    ac = AutonomousController(auto_approve=auto_approve)
     ac.initialize()
 
     # Start dashboard
@@ -79,9 +97,26 @@ def run_daemon(store_id="deguar", interval=600, max_cycles=0):
     print("=" * 55)
     print()
 
+    # Write pidfile so `shopai autopilot-status` can see us.
+    try:
+        from core.system.pidfile import write as _pf_write
+        _pf_write("daemon")
+    except Exception:
+        pass
+
     cycle_num = 0
     total_insights = 0
     total_actions = 0
+    last_housekeep_ts = 0.0
+    housekeep_interval_s = 86_400.0   # 24h — adjust via SHOPAI_HOUSEKEEP_S
+
+    import os as _os
+    try:
+        housekeep_interval_s = float(
+            _os.environ.get("SHOPAI_HOUSEKEEP_S", "86400"),
+        )
+    except (TypeError, ValueError):
+        pass
 
     while _running:
         cycle_num += 1
@@ -99,11 +134,15 @@ def run_daemon(store_id="deguar", interval=600, max_cycles=0):
             phases = len(result.get("phases", {}))
             layers = result.get("phases", {}).get("layers", {}).get("layers_run", 0)
             insights = result.get("phases", {}).get("layers", {}).get("total_insights", 0)
-            smart = result.get("phases", {}).get("smart_execution", {}).get("total", 0)
+            # Actions are accounted for under phases.execution.executed when
+            # auto_approve=True (the common case now); smart_execution is
+            # empty because nothing is left pending for the smart executor.
+            exec_phase = result.get("phases", {}).get("execution", {})
+            actions = exec_phase.get("executed", 0) + exec_phase.get("smart_executed", 0)
             score = result.get("phases", {}).get("learning", {}).get("brain_learning", {}).get("score", 0)
 
             total_insights += insights
-            total_actions += smart
+            total_actions += actions
 
             # Log
             from core.system.structured_logger import get_structured_logger
@@ -122,13 +161,35 @@ def run_daemon(store_id="deguar", interval=600, max_cycles=0):
             # Print summary
             ts = time.strftime("%H:%M:%S")
             print("[{}] Cycle {:3d} | {:.1f}s | {}/12 layers | {} insights | {} actions | score {}".format(
-                ts, cycle_num, elapsed, layers, insights, smart, score))
+                ts, cycle_num, elapsed, layers, insights, actions, score))
 
             # Print alerts
             alerts = result.get("phases", {}).get("alerts", {})
             if alerts.get("critical", 0) > 0:
                 for msg in alerts.get("messages", []):
                     print("  ALERT: {}".format(msg))
+
+            # v24-A3: once-per-interval brain housekeep. Runs memory
+            # consolidation, drift summary, learning-curve roll-up.
+            # Controlled by SHOPAI_BRAIN_HOOKS and the housekeep
+            # interval above. Fail-soft.
+            now_ts = time.time()
+            if (
+                _os.environ.get("SHOPAI_BRAIN_HOOKS", "0") == "1"
+                and now_ts - last_housekeep_ts >= housekeep_interval_s
+            ):
+                try:
+                    from core.brain.brain_facade import brain as _brain
+                    hk = _brain().housekeep()
+                    last_housekeep_ts = now_ts
+                    print("[{}] housekeep: {}".format(
+                        time.strftime("%H:%M:%S"),
+                        hk.get("status", "ok")
+                        if isinstance(hk, dict) else "ok",
+                    ))
+                except Exception as exc:
+                    print("[{}] housekeep ERROR: {}".format(
+                        time.strftime("%H:%M:%S"), str(exc)[:80]))
 
         except Exception as exc:
             print("[{}] Cycle {} ERROR: {}".format(
@@ -148,6 +209,13 @@ def run_daemon(store_id="deguar", interval=600, max_cycles=0):
             if not _running:
                 break
             time.sleep(1)
+
+    # Clear pidfile on clean shutdown.
+    try:
+        from core.system.pidfile import clear as _pf_clear
+        _pf_clear("daemon")
+    except Exception:
+        pass
 
     # Shutdown summary
     print()
@@ -173,7 +241,7 @@ def run_daemon(store_id="deguar", interval=600, max_cycles=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ShopAI Autonomous Daemon")
-    parser.add_argument("--store", default="deguar", help="Store ID")
+    parser.add_argument("--store", default="ts0efe-ih", help="Store ID")
     parser.add_argument("--interval", type=int, default=600, help="Seconds between cycles")
     parser.add_argument("--cycles", type=int, default=0, help="Max cycles (0=unlimited)")
     args = parser.parse_args()

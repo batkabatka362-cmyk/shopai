@@ -147,10 +147,16 @@ class ModelCoordinator:
         name = product.get("name", product.get("title", ""))
         price = product.get("price", 0)
         cost = product.get("cost", 0)
+        # Business model comes from the product payload when the
+        # caller supplies it; defaults to the legacy phrasing for
+        # backward compat with all existing callers.
+        model_label = (
+            product.get("business_model") or "dropshipping"
+        )
 
         # Analyzer: evaluate product potential
         analysis = self.analyze(
-            f"Evaluate this product for dropshipping. Score 1-10. Product: {name}, Price: ${price}, Cost: ${cost}. Reply JSON: {{\"score\": N, \"verdict\": \"buy/skip\", \"reason\": \"...\"}}",
+            f"Evaluate this product for {model_label}. Score 1-10. Product: {name}, Price: ${price}, Cost: ${cost}. Reply JSON: {{\"score\": N, \"verdict\": \"buy/skip\", \"reason\": \"...\"}}",
             product,
         )
 

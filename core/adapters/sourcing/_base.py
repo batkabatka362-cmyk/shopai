@@ -201,6 +201,14 @@ class SourcingBaseAdapter(BaseAdapter):
             Capability.SOURCING_GET_PRODUCT:     self._do_get_product,
             Capability.SOURCING_CREATE_ORDER:    self._do_create_order,
             Capability.SOURCING_GET_ORDER_STATUS: self._do_get_order_status,
+            Capability.SOURCING_CANCEL_ORDER:    self._do_cancel_order,
+            Capability.SOURCING_LIST_ORDERS:     self._do_list_orders,
+            Capability.SOURCING_GET_SHIPPING_METHODS: (
+                self._do_get_shipping_methods
+            ),
+            Capability.SOURCING_GET_VARIANT_STOCK: (
+                self._do_get_variant_stock
+            ),
         }
         handler = dispatch.get(capability)
         if handler is None:
@@ -237,6 +245,40 @@ class SourcingBaseAdapter(BaseAdapter):
     ) -> AdapterResult:
         raise NotImplementedError(
             f"{type(self).__name__}._do_get_order_status must be implemented",
+        )
+
+    # Wave-5 extensions — concrete adapters opt in by adding
+    # the capability to their ``capabilities`` set + overriding
+    # the corresponding hook. Base raises NotImplementedError
+    # so a mis-wired dispatch surfaces immediately rather than
+    # returning silently-empty data.
+
+    def _do_cancel_order(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{type(self).__name__}._do_cancel_order must be implemented",
+        )
+
+    def _do_list_orders(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{type(self).__name__}._do_list_orders must be implemented",
+        )
+
+    def _do_get_shipping_methods(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{type(self).__name__}._do_get_shipping_methods must be implemented",
+        )
+
+    def _do_get_variant_stock(
+        self, capability: Capability, params: dict[str, Any],
+    ) -> AdapterResult:
+        raise NotImplementedError(
+            f"{type(self).__name__}._do_get_variant_stock must be implemented",
         )
 
     # ── Validation helpers ─────────────────────────────────────
@@ -317,6 +359,38 @@ class SourcingBaseAdapter(BaseAdapter):
             raise AdapterValidationError(
                 self.name,
                 "'order_id' is required for sourcing_get_order_status",
+            )
+
+    def _validate_cancel_order(self, params: dict[str, Any]) -> None:
+        oid = params.get("order_id")
+        if not oid or not isinstance(oid, str):
+            raise AdapterValidationError(
+                self.name,
+                "'order_id' is required for sourcing_cancel_order",
+            )
+
+    def _validate_get_shipping_methods(
+        self, params: dict[str, Any],
+    ) -> None:
+        # Country + at least one variant id are required to
+        # fetch a shipping quote; suppliers refuse routing
+        # calculations without both.
+        for key in ("country", "variant_id"):
+            if not params.get(key):
+                raise AdapterValidationError(
+                    self.name,
+                    f"'{key}' is required for "
+                    "sourcing_get_shipping_methods",
+                )
+
+    def _validate_get_variant_stock(
+        self, params: dict[str, Any],
+    ) -> None:
+        vid = params.get("variant_id")
+        if not vid or not isinstance(vid, str):
+            raise AdapterValidationError(
+                self.name,
+                "'variant_id' is required for sourcing_get_variant_stock",
             )
 
     # ── Record normalisation ───────────────────────────────────

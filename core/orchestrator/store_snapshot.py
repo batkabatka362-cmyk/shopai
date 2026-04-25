@@ -145,13 +145,24 @@ class StoreSnapshot:
         }
 
     def update_marketing(self, campaign_result: dict[str, Any]) -> None:
-        """Update marketing state from campaign analysis."""
+        """Update marketing state from campaign analysis.
+
+        ``optimization`` may arrive as either a list of action dicts
+        (when campaigns were supplied) or a dict with an ``actions``
+        key (when there were none). Handle both — the pre-audit
+        code crashed with AttributeError on the list form.
+        """
         if not campaign_result or campaign_result.get("status") in ("unavailable", "no_data"):
             return
+        opt = campaign_result.get("optimization")
+        if isinstance(opt, list):
+            optimization_actions = len(opt)
+        elif isinstance(opt, dict):
+            optimization_actions = len(opt.get("actions", []))
+        else:
+            optimization_actions = 0
         self.marketing = {
-            "optimization_actions": len(
-                campaign_result.get("optimization", {}).get("actions", [])
-            ),
+            "optimization_actions": optimization_actions,
             "has_targeting": "targeting" in campaign_result,
             "health": campaign_result.get("health", {}),
         }

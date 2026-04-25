@@ -22,6 +22,43 @@ Usage:
     python cli.py health                         # System health check
     python cli.py status                         # Full system status
     python cli.py setup                          # Interactive setup wizard
+
+Module map (intended decomposition, not yet physical split)
+─────────────────────────────────────────────────────────────
+At 5000+ lines this file is too long for a single module.
+A future refactor should extract each command group into
+``cli_commands/<group>.py`` with a ``register(subparsers)`` +
+``dispatch(args)`` pair. The mapping below is the plan; the
+physical split is deferred because every command group has
+inter-module helper usage that needs untangling first.
+
+  Group           → Future home
+  ──────────────── ─────────────────────────────────────────
+  store, sync,    → cli_commands/store.py
+  db, config
+  mind, engines,  → cli_commands/brain.py
+  run, explain,
+  explains, plan-*
+  actions,        → cli_commands/ops.py
+  health, setup,
+  status
+  simulate,       → cli_commands/evaluate.py
+  predict
+  brain-learned,  → cli_commands/learning.py
+  memory, trust
+  vault-sweep,    → cli_commands/vault.py
+  niches
+  ask-support,    → cli_commands/support.py
+  notify,
+  owner-poll
+  federation      → cli_commands/federation.py
+  risk, crisis    → cli_commands/safety.py
+  agentic,        → cli_commands/channels.py
+  landed-cost
+
+Rule: until the split happens, new commands follow the
+same ``sub.add_parser(...) + def handle_<cmd>(args)``
+pattern used by existing commands in this file.
 """
 
 import argparse
@@ -29,6 +66,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 from utils.logger import get_logger
 
@@ -114,6 +152,183 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub.add_parser("check", help="Validate env vars against schema")
     config_sub.add_parser("show", help="Show current config values + defaults")
 
+    # ── Autopilot daemon status (pidfile-driven) ──────────────
+    owner_ask_p = sub.add_parser(
+        "owner-ask",
+        help=(
+            "Parse an owner phrase + dispatch to the matching "
+            "MCP tool, then send the reply to Telegram. Used "
+            "by the owner_loop daemon; safe to run by hand to "
+            "preview parsing / responses."
+        ),
+    )
+    owner_ask_p.add_argument(
+        "text",
+        help="Owner message text (e.g. 'trust scores')",
+    )
+    owner_ask_p.add_argument(
+        "--no-send", action="store_true",
+        help="Compose the reply but don't push to Telegram",
+    )
+    owner_ask_p.add_argument(
+        "--chat-id", default=None,
+    )
+    owner_ask_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    notify_errors_p = sub.add_parser(
+        "notify-errors",
+        help=(
+            "Push cycle-error digest from the daemon log to "
+            "Telegram. Counterpart to `shopai notify` which "
+            "sends launch summaries."
+        ),
+    )
+    notify_errors_p.add_argument(
+        "--hours", type=float, default=24.0,
+        help="Window to scan (hours, default 24)",
+    )
+    notify_errors_p.add_argument(
+        "--log", default="data/autopilot_loop.log",
+    )
+    notify_errors_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Compose but do not send",
+    )
+    notify_errors_p.add_argument(
+        "--chat-id", default=None,
+        help=(
+            "Override Telegram chat id (default "
+            "TELEGRAM_CHAT_ID env)"
+        ),
+    )
+    notify_errors_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    autopilot_status_p = sub.add_parser(
+        "autopilot-status",
+        help=(
+            "Show whether the 24/7 autopilot daemon "
+            "(run_daemon.py) is running: PID, uptime, and "
+            "latest cycle from the log."
+        ),
+    )
+    autopilot_status_p.add_argument(
+        "--log",
+        default="data/autopilot_loop.log",
+        help=(
+            "Path to autopilot cycle log "
+            "(default data/autopilot_loop.log)"
+        ),
+    )
+    autopilot_status_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── Build llms.txt artifacts (Wave E-1) ───────────────────
+    agents_p = sub.add_parser(
+        "agents",
+        help=(
+            "Inspect AgentManager — the lifecycle registry "
+            "for every specialised agent (content, finance, "
+            "marketing, research, customer, ops)."
+        ),
+    )
+    agents_sub = agents_p.add_subparsers(
+        dest="agents_action",
+    )
+    agents_list = agents_sub.add_parser(
+        "list",
+        help="Show every registered agent + status",
+    )
+    agents_list.add_argument(
+        "--type",
+        default="",
+        help="Filter by agent type (e.g. content, finance)",
+    )
+    agents_list.add_argument(
+        "--json", action="store_true",
+    )
+    agents_get = agents_sub.add_parser(
+        "get",
+        help="Show one agent record by id",
+    )
+    agents_get.add_argument("agent_id")
+    agents_get.add_argument(
+        "--json", action="store_true",
+    )
+
+    cites_p = sub.add_parser(
+        "citations",
+        help=(
+            "Inspect the owner-curated citation store used by "
+            "the GEO quote-sandwich wire. Files live at "
+            "data/citations/<niche>.json."
+        ),
+    )
+    cites_sub = cites_p.add_subparsers(
+        dest="citations_action",
+    )
+    cites_list = cites_sub.add_parser(
+        "list",
+        help="List every curated niche",
+    )
+    cites_list.add_argument(
+        "--json", action="store_true",
+    )
+    cites_show = cites_sub.add_parser(
+        "show",
+        help="Print citations for one niche (or a product)",
+    )
+    cites_show.add_argument(
+        "niche", help="Niche slug (e.g. pet, beauty)",
+    )
+    cites_show.add_argument(
+        "--json", action="store_true",
+    )
+
+    llms_p = sub.add_parser(
+        "build-llms-txt",
+        help=(
+            "Generate llms.txt, llms-full.txt + per-product "
+            "markdown mirrors under data/llms/. Served by "
+            "api/server.py at /llms.txt + /llms-full.txt."
+        ),
+    )
+    llms_p.add_argument(
+        "--store-name",
+        default="",
+        help=(
+            "Store display name (defaults to the active "
+            "store's name)"
+        ),
+    )
+    llms_p.add_argument(
+        "--store-url",
+        default="",
+        help=(
+            "Canonical store URL (defaults to "
+            "SHOPAI_SHOPIFY_URL env)"
+        ),
+    )
+    llms_p.add_argument(
+        "--products-json", default="",
+        help=(
+            "Optional path to a JSON file with a list of "
+            "product dicts. When omitted, uses the owner's "
+            "Shopify store via the connector."
+        ),
+    )
+    llms_p.add_argument(
+        "--out-dir", default="data/llms",
+        help="Output directory (default data/llms)",
+    )
+    llms_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── Cognitive (Mind) commands ────────────────────────────
     mind_p = sub.add_parser("mind", help="Inspect / drive the cognitive Mind")
     mind_sub = mind_p.add_subparsers(dest="mind_action")
@@ -192,8 +407,1544 @@ def build_parser() -> argparse.ArgumentParser:
     learn_p = sub.add_parser("learn", help="Show learning status")
     learn_p.add_argument("--details", action="store_true", help="Show detailed learning data")
 
+    # ── Launch commands (Goal-Driven Executor) ──────────────
+    launch_p = sub.add_parser("launch", help="Launch a new product end-to-end")
+    launch_p.add_argument("--alibaba-url", default="", help="Alibaba product URL")
+    launch_p.add_argument("--title", default="", help="Product title (manual mode)")
+    launch_p.add_argument("--price", type=float, default=0.0,
+                          help="Source price (manual mode only)")
+    launch_p.add_argument("--gallery", default="",
+                          help="Comma-separated image URLs (manual mode only)")
+    launch_p.add_argument("--target-price", type=float, default=None,
+                          help="Retail price (default: AI computes from cost + margin)")
+    launch_p.add_argument("--ad-budget", type=float, default=20.0,
+                          help="Daily Meta Ads budget in USD (default 20)")
+    launch_p.add_argument("--niche", default="", help="Niche / product category")
+    launch_p.add_argument("--tone",
+                          choices=["urgent", "friendly", "luxury", "informative"],
+                          default="friendly")
+    launch_p.add_argument("--dry-run", action="store_true",
+                          help="Print the goal without running the pipeline")
+    launch_p.add_argument("--min-win-prob", type=float, default=0.0,
+                          help="Abort launch if predictor win_probability "
+                               "is below this (0.0-1.0, default 0.0)")
+    launch_p.add_argument("--predict-only", action="store_true",
+                          help="Run the pre-launch predictor and exit")
+
+    launches_p = sub.add_parser("launches", help="List active launches + verdicts")
+    launches_p.add_argument("--json", action="store_true",
+                            help="Emit raw JSON instead of a table")
+
+    replay_p = sub.add_parser(
+        "replay-orders",
+        help=(
+            "Feed historical / synthetic Shopify order "
+            "webhook payloads through the live pipeline. "
+            "Exercises the full learning loop (Deliberation "
+            "back-fill + engine outcome bus + pattern miner) "
+            "without needing real traffic."
+        ),
+    )
+    replay_p.add_argument(
+        "path",
+        nargs="?",
+        default="",
+        help=(
+            "JSONL file of Shopify order dicts (one per "
+            "line). Optional when --synthesize N is passed."
+        ),
+    )
+    replay_p.add_argument(
+        "--throttle", type=float, default=0.0,
+        help="Seconds between orders (default 0)",
+    )
+    replay_p.add_argument(
+        "--synthesize", type=int, default=0,
+        help=(
+            "Skip the file + generate N deterministic "
+            "synthetic orders instead. Useful before a T1 "
+            "live deploy to validate the learning loop."
+        ),
+    )
+    replay_p.add_argument(
+        "--seed", type=int, default=42,
+        help="Seed for --synthesize (default 42)",
+    )
+    replay_p.add_argument(
+        "--attach-decision-rate", type=float, default=0.6,
+        help=(
+            "--synthesize only: fraction of orders that get a "
+            "fake shopai_decision_id note attribute "
+            "(default 0.6)"
+        ),
+    )
+    replay_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    cycles_p = sub.add_parser(
+        "cycles",
+        help=(
+            "Tail the autopilot_loop log — recent daemon "
+            "cycles with launch counts + errors + duration"
+        ),
+    )
+    cycles_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Number of recent cycles to show (default 20)",
+    )
+    cycles_p.add_argument(
+        "--log",
+        default="data/autopilot_loop.log",
+        help="Path to autopilot log (default data/autopilot_loop.log)",
+    )
+    cycles_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    ingest_p = sub.add_parser(
+        "ingest-knowledge",
+        help=(
+            "Pull an external URL / file into the structured "
+            "knowledge base so the oracle has source-cited "
+            "facts (brand docs, changelogs, supplier FAQs). "
+            "Opt-in — owner runs when a new source is "
+            "worth ingesting."
+        ),
+    )
+    ingest_group = ingest_p.add_mutually_exclusive_group(
+        required=True,
+    )
+    ingest_group.add_argument(
+        "--url",
+        help="HTTP(S) URL to fetch + parse",
+    )
+    ingest_group.add_argument(
+        "--file",
+        help="Local file path (markdown / txt / html)",
+    )
+    ingest_p.add_argument(
+        "--subject",
+        help="Override subject label (else first H1/H2)",
+    )
+    ingest_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    search_p = sub.add_parser(
+        "search",
+        help=(
+            "Cross-source search — web + supplier catalogs. "
+            "One query, merged + deduped results ranked by "
+            "source weight. Owner-facing."
+        ),
+    )
+    search_p.add_argument("query", help="Search query (quoted)")
+    search_p.add_argument(
+        "--scope",
+        default="all",
+        choices=("all", "web", "products"),
+        help="Restrict to web / products / both (default all)",
+    )
+    search_p.add_argument(
+        "--limit", type=int, default=10,
+        help="Max results per source (default 10)",
+    )
+    search_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    ready_p = sub.add_parser(
+        "ready-for-live",
+        help=(
+            "Single-verb pre-T1 gate. Runs env + doctor + "
+            "learning loop + live-health checks and emits "
+            "READY or BLOCKED with a fix list."
+        ),
+    )
+    ready_p.add_argument(
+        "--skip-learning-loop",
+        action="store_true",
+        help=(
+            "Don't run the 5-order synthetic replay "
+            "(use when the daemon is already live)"
+        ),
+    )
+    ready_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    live_health_p = sub.add_parser(
+        "live-health",
+        help=(
+            "Rolling health digest — doctor probes + recent "
+            "autopilot cycles + per-engine trends fused into "
+            "a single verdict (healthy / degrading / "
+            "needs_attention)."
+        ),
+    )
+    live_health_p.add_argument(
+        "--cycles", type=int, default=20,
+        help="Recent cycles to aggregate (default 20)",
+    )
+    live_health_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    rule_quality_p = sub.add_parser(
+        "rule-quality",
+        help=(
+            "Inspect the RuleBook's quality via lift — which "
+            "learned rules are true positives, which are noise, "
+            "which are false positives. Answers the T2 KPI "
+            "'PatternMiner true-positive rate >= 60%%'."
+        ),
+    )
+    rule_quality_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Rules to surface in the table (default 20)",
+    )
+    rule_quality_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of a table",
+    )
+
+    kill_p = sub.add_parser("kill",
+                            help="Force-kill a launch regardless of ROAS")
+    kill_p.add_argument("launch_id", help="launch_<id> to kill")
+
+    # ── Reasoning ───────────────────────────────────────────
+    reason_p = sub.add_parser("reason",
+                              help="Multi-step reasoning chain over memory")
+    reason_p.add_argument("question", help="Free-text question")
+    reason_p.add_argument("--k", type=int, default=6,
+                          help="Number of memories to pull (default 6)")
+    reason_p.add_argument("--json", action="store_true",
+                          help="Emit raw JSON instead of a narrative")
+
+    # ── Ask the oracle ─────────────────────────────────────
+    ask_p = sub.add_parser("ask",
+                            help="Ask the brain a question (one-shot Q&A)")
+    ask_p.add_argument("question", help="Free-text question")
+    ask_p.add_argument("--k", type=int, default=8,
+                       help="Memory rows to consider (default 8)")
+    ask_p.add_argument("--json", action="store_true",
+                       help="Emit raw JSON instead of human text")
+
+    # ── Plan synthesis ──────────────────────────────────────
+    plan_p = sub.add_parser("plan",
+                            help="Turn a free-text goal into an action DAG")
+    plan_p.add_argument("goal", help="Free-text goal (e.g. 'scale winners')")
+    plan_p.add_argument("--json", action="store_true")
+
+    # ── Skills ──────────────────────────────────────────────
+    skills_p = sub.add_parser("skills",
+                              help="View the brain's skill tree")
+    skills_p.add_argument("--category", default=None,
+                          help="Filter by category")
+    skills_p.add_argument("--min-conf", type=float, default=None,
+                          dest="min_conf",
+                          help="Filter by minimum confidence")
+    skills_p.add_argument("--json", action="store_true")
+
+    # ── Human feedback ──────────────────────────────────────
+    feedback_p = sub.add_parser("feedback",
+                                help="Up/down vote a memory to steer the brain")
+    feedback_p.add_argument("memory_id", type=int,
+                            help="ID of the memory to rate")
+    feedback_p.add_argument("sign", type=str,
+                            help="+1 / up / +, or -1 / down / -")
+    feedback_p.add_argument("note", nargs="?", default="",
+                            help="Optional note explaining your rating")
+
+    # ── Daily opportunity scout ─────────────────────────────
+    digest_p = sub.add_parser("digest",
+                              help="Run the proactive opportunity scout")
+    digest_p.add_argument("--narrative", action="store_true",
+                          help="Also generate an LLM narrative")
+    digest_p.add_argument("--json", action="store_true")
+
+    # ── Causal inference ────────────────────────────────────
+    why_p = sub.add_parser("why",
+                           help="Investigate likely causes for a launch outcome")
+    why_p.add_argument("launch_id", help="launch_<id> to investigate")
+    why_p.add_argument("--window", type=int, default=7,
+                       help="Days of memory context around the anchor (default 7)")
+    why_p.add_argument("--json", action="store_true")
+
+    # ── Multi-turn chat ─────────────────────────────────────
+    chat_p = sub.add_parser("chat",
+                            help="Multi-turn conversation with the brain")
+    chat_sub = chat_p.add_subparsers(dest="chat_action")
+    say_p = chat_sub.add_parser("say", help="Send one turn to a session")
+    say_p.add_argument("question", help="Free-text message")
+    say_p.add_argument("--session", default="", help="Session id (new if empty)")
+    say_p.add_argument("--json", action="store_true")
+    chat_sub.add_parser("list", help="List recent sessions")
+    show_p = chat_sub.add_parser("show", help="Show a session transcript")
+    show_p.add_argument("session_id")
+
+    # ── Semantic memory ─────────────────────────────────────
+    similar_p = sub.add_parser("similar",
+                               help="Find memories semantically close to a query")
+    similar_p.add_argument("query", help="Free-text query")
+    similar_p.add_argument("--k", type=int, default=5, help="Top K (default 5)")
+    similar_p.add_argument("--level", type=int, default=0,
+                           help="Min level (0=event, 1=pattern, 2=rule, 3=strategy)")
+    similar_p.add_argument("--category", default=None,
+                           help="Filter by memory category")
+
+    # ── Competitor monitoring ───────────────────────────────
+    comp_p = sub.add_parser("competitor",
+                            help="Track a competitor product URL")
+    comp_sub = comp_p.add_subparsers(dest="comp_action")
+    comp_add = comp_sub.add_parser("add", help="Add URL to tracker")
+    comp_add.add_argument("url")
+    comp_rm = comp_sub.add_parser("remove", help="Stop tracking URL")
+    comp_rm.add_argument("url")
+    comp_sub.add_parser("list", help="Show tracked URLs + last snapshot")
+    comp_sub.add_parser("check", help="Probe every tracked URL now")
+
+    intel_p = sub.add_parser(
+        "competitor-intel",
+        help=(
+            "Scrape a public Shopify store's catalog + "
+            "theme + installed apps + offers. Optional "
+            "LLM-synthesised strategic take."
+        ),
+    )
+    intel_p.add_argument(
+        "stores", nargs="+",
+        help=(
+            "One or more competitor Shopify domains "
+            "(e.g., allbirds.com gymshark.com). "
+            "Uses public /products.json so no auth."
+        ),
+    )
+    intel_p.add_argument(
+        "--our-store", default="deguar.myshopify.com",
+        help="Your store (context for LLM insights)",
+    )
+    intel_p.add_argument(
+        "--no-llm", action="store_true",
+        help="Skip LLM insight synthesis (raw scrape only)",
+    )
+    intel_p.add_argument(
+        "--json", action="store_true",
+        help="Emit full JSON report",
+    )
+    intel_p.add_argument(
+        "--no-persist", action="store_true",
+        help=(
+            "Don't write JSONL history (by default "
+            "each run appends to "
+            "data/competitor_intel/<store>.jsonl "
+            "so repeat runs surface diffs)."
+        ),
+    )
+    intel_p.add_argument(
+        "--storage-dir", default="data/competitor_intel",
+        help=(
+            "Where to store longitudinal JSONL history "
+            "(default: data/competitor_intel)."
+        ),
+    )
+
+    # ── Deguar health (aggregator wrapper) ───────────────────
+    health_p = sub.add_parser(
+        "deguar-health",
+        help=(
+            "Run all 6 Deguar audit scripts + doctor probe and "
+            "render a single markdown report. Cron-friendly."
+        ),
+    )
+    health_p.add_argument(
+        "--out", default="reports/",
+        help="Report directory (or '-' for stdout only).",
+    )
+    health_p.add_argument(
+        "--skip", default="",
+        help=(
+            "CSV of audit names to skip (doctor, scope_audit, "
+            "collection_check, webhook_check, tracking_check, "
+            "checkout_check, live_audit)."
+        ),
+    )
+
+    # ── Budget + Buyer engine ───────────────────────────────
+    bp_p = sub.add_parser(
+        "budget-plan",
+        help=(
+            "Thompson-Sampling ad budget allocator. Reads SKU "
+            "performance from a JSON file + total budget, "
+            "prints recommended daily spend per SKU."
+        ),
+    )
+    bp_p.add_argument(
+        "--input",
+        help=(
+            "Path to JSON file: [{\"sku\": \"...\", "
+            "\"orders\": N, \"revenue_usd\": ..., "
+            "\"ad_spend_usd\": ..., \"days_active\": N}, ...]"
+        ),
+    )
+    bp_p.add_argument(
+        "--total", type=float, required=True,
+        help="Total daily budget in USD.",
+    )
+    bp_p.add_argument(
+        "--min-per-sku", type=float, default=0.0,
+        help=(
+            "Floor per SKU in USD — no active product ever "
+            "gets less than this (keeps long-tail alive)."
+        ),
+    )
+    bp_p.add_argument(
+        "--max-per-sku", type=float, default=0.0,
+        help=(
+            "Cap per SKU in USD — a runaway winner won't eat "
+            "the whole budget (0 = no cap)."
+        ),
+    )
+    bp_p.add_argument(
+        "--seed", type=int, default=0,
+        help="RNG seed for reproducible Thompson samples.",
+    )
+    bp_p.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON instead of a human table.",
+    )
+
+    bpl_p = sub.add_parser(
+        "budget-plans",
+        help=(
+            "List recent autopilot budget plans saved to "
+            "reports/budget_plans/. Read-only review."
+        ),
+    )
+    bpl_p.add_argument(
+        "--limit", type=int, default=5,
+        help="Max recent plans to show (default 5).",
+    )
+    bpl_p.add_argument(
+        "--json", action="store_true",
+        help="Emit full JSON payload.",
+    )
+    bpl_p.add_argument(
+        "--reports-dir", default="reports/budget_plans",
+    )
+
+    ls_p = sub.add_parser(
+        "ltv-stats",
+        help=(
+            "Customer Lifetime Value summary — total "
+            "customers, segment split (VIP / regular / "
+            "one-time / dormant), avg + median LTV, GMV."
+        ),
+    )
+    ls_p.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON.",
+    )
+    ls_p.add_argument(
+        "--top", type=int, default=10,
+        help="Show top-N customers by total spend (0 = skip).",
+    )
+
+    # ── Email campaign engine ───────────────────────────────
+    es_p = sub.add_parser(
+        "email-stats",
+        help=(
+            "Per-flow stats from the email campaign engine "
+            "(welcome / abandoned-cart / post-purchase / "
+            "win-back). Read-only."
+        ),
+    )
+    es_p.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON instead of human table.",
+    )
+
+    eu_p = sub.add_parser(
+        "email-unsubscribe",
+        help=(
+            "Add a recipient to the local unsubscribe list. "
+            "Future enrolls + dispatches will skip them."
+        ),
+    )
+    eu_p.add_argument("email")
+    eu_p.add_argument(
+        "--source", default="cli",
+        help="Audit source tag (default: 'cli').",
+    )
+
+    # ── Approval queue (Phase 2 of 4×4 matrix work) ──────────
+    pa_p = sub.add_parser(
+        "pending-approvals",
+        help=(
+            "List HIGH/CRITICAL actions queued for owner "
+            "confirm. Empty queue prints a clean message."
+        ),
+    )
+    pa_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Max rows (default 20).",
+    )
+    pa_p.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON instead of human table.",
+    )
+
+    ap_p = sub.add_parser(
+        "approve-request",
+        help=(
+            "Approve a queued HIGH/CRITICAL action by "
+            "request_id (risk-gate queue, not the revision "
+            "journal — see `shopai approve` for that)."
+        ),
+    )
+    ap_p.add_argument("request_id")
+    ap_p.add_argument(
+        "--reason", default="",
+        help="Optional decision note (audit trail).",
+    )
+    ap_p.add_argument(
+        "--owner", default="owner",
+        help="Owner identifier (default: 'owner').",
+    )
+
+    dn_p = sub.add_parser(
+        "deny-request",
+        help="Deny a queued HIGH/CRITICAL action by request_id.",
+    )
+    dn_p.add_argument("request_id")
+    dn_p.add_argument(
+        "--reason", default="",
+        help="Why — surfaces in the audit trail.",
+    )
+    dn_p.add_argument(
+        "--owner", default="owner",
+        help="Owner identifier (default: 'owner').",
+    )
+
+    # ── Publisher bundle (v38+) ──────────────────────────────
+    # ``publish`` goes through execution.launch.publisher_bundle
+    # which is the v38-era transactional launch pipeline.
+    # The older ``launch`` command uses the Goal-Driven Executor
+    # (Alibaba URL / manual fields); both coexist.
+    publish_p = sub.add_parser(
+        "publish",
+        help=(
+            "Publish a winner end-to-end via publisher_bundle "
+            "(Shopify product + PAUSED Meta campaign)"
+        ),
+    )
+    publish_p.add_argument(
+        "winner_json",
+        help=(
+            "Path to JSON with winner fields "
+            "(title/price/image_url/...) or '-' for stdin"
+        ),
+    )
+    publish_p.add_argument(
+        "--budget", type=float, default=20.0,
+        help="Daily ad budget USD (default $20)",
+    )
+    publish_p.add_argument(
+        "--platform", default="facebook",
+        choices=["facebook", "instagram", "tiktok", "google"],
+    )
+    publish_p.add_argument(
+        "--live", action="store_true",
+        help=(
+            "Live writes (also needs "
+            "SHOPAI_ENABLE_LIVE_EXECUTION=1)"
+        ),
+    )
+    publish_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    activate_p = sub.add_parser(
+        "activate",
+        help=(
+            "Flip a PAUSED Meta campaign to ACTIVE after "
+            "readiness + constraints pass"
+        ),
+    )
+    activate_p.add_argument("campaign_id")
+    activate_p.add_argument(
+        "--budget", type=float, default=0.0,
+        help=(
+            "Daily budget for pre-flight sanity "
+            "(optional)"
+        ),
+    )
+    activate_p.add_argument(
+        "--auto-approve", action="store_true",
+        help=(
+            "Skip owner confirmation gate — required "
+            "when not dry_run"
+        ),
+    )
+    activate_p.add_argument(
+        "--live", action="store_true",
+    )
+    activate_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    autopilot_p = sub.add_parser(
+        "autopilot",
+        help=(
+            "Full-autonomy: winner sources → publish → "
+            "activate. Per CLAUDE.md §4c, dry-run by default."
+        ),
+    )
+    autopilot_p.add_argument(
+        "--seeds",
+        default="data/winner_seeds.json",
+        help=(
+            "ManualSeedSource JSON file "
+            "(default data/winner_seeds.json)"
+        ),
+    )
+    autopilot_p.add_argument(
+        "--peers",
+        default="",
+        help=(
+            "Comma-separated peer Shopify store URLs "
+            "for PeerStoreObserverSource "
+            "(e.g. a.myshopify.com,b.com)"
+        ),
+    )
+    autopilot_p.add_argument(
+        "--max-launches", type=int, default=1,
+        help="Max winners to launch in one run (default 1)",
+    )
+    autopilot_p.add_argument(
+        "--top-n", type=int, default=5,
+        help="Top-N winners to rank before cap (default 5)",
+    )
+    autopilot_p.add_argument(
+        "--budget", type=float, default=20.0,
+        help="Daily ad budget USD (default $20)",
+    )
+    autopilot_p.add_argument(
+        "--platform", default="facebook",
+        choices=["facebook", "instagram", "tiktok", "google"],
+    )
+    autopilot_p.add_argument(
+        "--no-activate", action="store_true",
+        help=(
+            "Publish only; skip campaign activation"
+        ),
+    )
+    autopilot_p.add_argument(
+        "--live", action="store_true",
+        help=(
+            "Live writes (also needs "
+            "SHOPAI_ENABLE_LIVE_EXECUTION=1)"
+        ),
+    )
+    autopilot_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    publications_p = sub.add_parser(
+        "publications",
+        help="Recent publisher_bundle publications",
+    )
+    publications_p.add_argument(
+        "--limit", type=int, default=10,
+    )
+    publications_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    activations_p = sub.add_parser(
+        "activations",
+        help="Recent campaign_activator runs",
+    )
+    activations_p.add_argument(
+        "--limit", type=int, default=10,
+    )
+    activations_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── Self-revision journal (Sprint 2 #6) ──────────────────
+    pending_p = sub.add_parser(
+        "pending",
+        help=(
+            "Show proposals in self_revision_journal "
+            "awaiting owner approval"
+        ),
+    )
+    pending_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    pending_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    approve_p = sub.add_parser(
+        "approve",
+        help=(
+            "Approve a pending revision by id "
+            "(launches the rule into applied state)"
+        ),
+    )
+    approve_p.add_argument("revision_id")
+    approve_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "Also mark as applied (default: just accepted)"
+        ),
+    )
+
+    reject_p = sub.add_parser(
+        "reject",
+        help="Reject a pending revision by id",
+    )
+    reject_p.add_argument("revision_id")
+
+    # ── Launch learning (Sprint 2 #2) ────────────────────────
+    distill_p = sub.add_parser(
+        "distill",
+        help=(
+            "Run launch_learner over recent episodes — "
+            "promotes patterns to pending proposals"
+        ),
+    )
+    distill_p.add_argument(
+        "--window", type=int, default=200,
+        help="Episode window (default 200)",
+    )
+    distill_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # `digest` is taken by the older opportunity scout; use
+    # `report` for the v38-era launch digest.
+    report_p = sub.add_parser(
+        "report",
+        help=(
+            "Launch digest — launches, learnings, "
+            "journal, spend, insights (v38+)"
+        ),
+    )
+    report_p.add_argument(
+        "--hours", type=float, default=24.0 * 7,
+        help="Window in hours (default 168 / 7d)",
+    )
+    report_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── L8 simulator ─────────────────────────────────────────
+    sim_p = sub.add_parser(
+        "simulate",
+        help=(
+            "Monte Carlo pre-launch profit projection "
+            "(L8 — see docs/AGI_STACK.md)"
+        ),
+    )
+    sim_p.add_argument(
+        "--cost", type=float, required=True,
+        help="Unit cost (COGS + fulfilment)",
+    )
+    sim_p.add_argument(
+        "--price", type=float, required=True,
+        help="Retail price",
+    )
+    sim_p.add_argument(
+        "--budget", type=float, required=True,
+        help="Daily ad budget USD",
+    )
+    sim_p.add_argument("--days", type=int, default=3)
+    sim_p.add_argument(
+        "--cvr-mean", type=float, default=0.02,
+    )
+    sim_p.add_argument(
+        "--cvr-stddev", type=float, default=0.01,
+    )
+    sim_p.add_argument(
+        "--cpc-mean", type=float, default=1.20,
+    )
+    sim_p.add_argument(
+        "--cpc-stddev", type=float, default=0.40,
+    )
+    sim_p.add_argument(
+        "--refund-rate", type=float, default=0.05,
+    )
+    sim_p.add_argument(
+        "--trials", type=int, default=1000,
+    )
+    sim_p.add_argument(
+        "--seed", type=int, default=1337,
+    )
+    sim_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── L7 legal templates ───────────────────────────────────
+    legal_p = sub.add_parser(
+        "legal",
+        help=(
+            "Render region-aware legal pages (privacy / terms "
+            "/ returns / shipping / cookies)"
+        ),
+    )
+    legal_p.add_argument(
+        "--region", default="US",
+        choices=("US", "EU", "UK"),
+    )
+    legal_p.add_argument(
+        "--store", default="",
+        help=(
+            "Store name (defaults to SHOPAI_SHOPIFY_URL "
+            "subdomain)"
+        ),
+    )
+    legal_p.add_argument(
+        "--email", default="",
+        help=(
+            "Contact email (defaults to SHOPAI_CONTACT_EMAIL)"
+        ),
+    )
+    legal_p.add_argument(
+        "--kind",
+        choices=(
+            "privacy", "terms", "returns",
+            "shipping", "cookies",
+        ),
+        default=None,
+        help="Render just one page (default: all five)",
+    )
+    legal_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── LX.6 owner dialog ────────────────────────────────────
+    poll_p = sub.add_parser(
+        "owner-poll",
+        help=(
+            "Poll Telegram for owner commands and dispatch "
+            "to brain handlers (approve/reject/status/etc.)"
+        ),
+    )
+    poll_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    poll_p.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Process commands without sending replies back"
+        ),
+    )
+    poll_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    notify_p = sub.add_parser(
+        "notify",
+        help=(
+            "Send launch digest to the owner via Telegram "
+            "(LX.6 owner dialog)"
+        ),
+    )
+    notify_p.add_argument(
+        "--hours", type=float, default=24.0 * 7,
+        help="Window in hours (default 168 / 7d)",
+    )
+    notify_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Compose the message without actually sending",
+    )
+    notify_p.add_argument(
+        "--chat-id", type=str, default=None,
+        help="Override TELEGRAM_CHAT_ID for this message",
+    )
+    notify_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── World model what-if prediction ───────────────────────
+    predict_p = sub.add_parser(
+        "predict",
+        help=(
+            "Calibrated what-if prediction for an action "
+            "(L4 reasoning — Track 10)"
+        ),
+    )
+    predict_p.add_argument(
+        "action",
+        help=(
+            "Action vocabulary: launch | scale | kill | "
+            "hold | add_cross_sell | wait"
+        ),
+    )
+    predict_p.add_argument(
+        "--kpi", default="roas",
+        choices=("roas", "cvr", "revenue", "aov"),
+    )
+    predict_p.add_argument(
+        "--niche", default="unknown",
+    )
+    predict_p.add_argument(
+        "--price-band",
+        choices=("low", "mid", "high"), default="mid",
+    )
+    predict_p.add_argument(
+        "--margin-band",
+        choices=("low", "mid", "high"), default="mid",
+    )
+    predict_p.add_argument(
+        "--tone", default="friendly",
+    )
+    predict_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── Landed cost calculator (Wave F-1) ────────────────────
+    landed_p = sub.add_parser(
+        "landed-cost",
+        help=(
+            "Landed cost + de-minimis aware routing "
+            "(FOB + duty + VAT + shipping + processing)"
+        ),
+    )
+    landed_p.add_argument(
+        "--fob", type=float, required=True,
+        help="Supplier cost USD",
+    )
+    landed_p.add_argument(
+        "--destination",
+        choices=("US", "EU", "UK"),
+        required=True,
+    )
+    landed_p.add_argument(
+        "--origin", default="CN",
+        help="Origin country code (default CN)",
+    )
+    landed_p.add_argument(
+        "--hts", default="",
+        help="HTS code (optional; drives duty category)",
+    )
+    landed_p.add_argument(
+        "--shipping", type=float, default=0.0,
+    )
+    landed_p.add_argument(
+        "--fulfillment", type=float, default=0.0,
+    )
+    landed_p.add_argument(
+        "--target-margin", type=float, default=0.30,
+        help="Target retail margin (default 0.30)",
+    )
+    landed_p.add_argument(
+        "--de-minimis",
+        choices=(
+            "active", "suspended_cn", "suspended_all",
+        ),
+        default=None,
+        help=(
+            "Override US de-minimis status (default reads "
+            "SHOPAI_US_DE_MINIMIS_STATUS env)"
+        ),
+    )
+    landed_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── Agentic Storefront channels (Wave B-1) ───────────────
+    agentic_p = sub.add_parser(
+        "agentic",
+        help=(
+            "Agentic Storefront channels — ChatGPT, Perplexity, "
+            "Copilot, Gemini enrollment + attribution"
+        ),
+    )
+    agentic_sub = agentic_p.add_subparsers(
+        dest="agentic_action",
+    )
+    agentic_status = agentic_sub.add_parser(
+        "status",
+        help="Per-channel enrollment + order counts",
+    )
+    agentic_status.add_argument(
+        "--force", action="store_true",
+        help="Bypass 5-minute status cache",
+    )
+    agentic_status.add_argument(
+        "--json", action="store_true",
+    )
+    agentic_metrics = agentic_sub.add_parser(
+        "metrics",
+        help=(
+            "Roll up orders by agentic channel over window"
+        ),
+    )
+    agentic_metrics.add_argument(
+        "--days", type=int, default=7,
+    )
+    agentic_metrics.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── Moby vote comparator (Wave C-1 A7) ───────────────────
+    moby_p = sub.add_parser(
+        "moby",
+        help=(
+            "Triple Whale Moby vote comparator — log "
+            "shopai/moby disagreements + report win-rate"
+        ),
+    )
+    moby_sub = moby_p.add_subparsers(dest="moby_action")
+    moby_rate = moby_sub.add_parser(
+        "win-rate",
+        help=(
+            "Win-rate summary: moby vs shopai on resolved "
+            "disagreements"
+        ),
+    )
+    moby_rate.add_argument(
+        "--json", action="store_true",
+    )
+    moby_log = moby_sub.add_parser(
+        "log",
+        help="Recent disagreement rows (default 20)",
+    )
+    moby_log.add_argument(
+        "--limit", type=int, default=20,
+    )
+    moby_log.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── fal.ai video budget (Wave D-1 A6) ────────────────────
+    fal_p = sub.add_parser(
+        "fal",
+        help=(
+            "fal.ai video router — budget status + model "
+            "catalogue"
+        ),
+    )
+    fal_sub = fal_p.add_subparsers(dest="fal_action")
+    fal_status = fal_sub.add_parser(
+        "status",
+        help="Config + total spend so far",
+    )
+    fal_status.add_argument(
+        "--json", action="store_true",
+    )
+    fal_spent = fal_sub.add_parser(
+        "spent",
+        help=(
+            "Weekly spend for one SKU "
+            "(vs weekly cap)"
+        ),
+    )
+    fal_spent.add_argument(
+        "sku", help="Product SKU",
+    )
+    fal_spent.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── OAuth token status (Wave F-1 D1) ─────────────────────
+    oauth_p = sub.add_parser(
+        "oauth",
+        help=(
+            "Shopify OAuth token status — source + expiry "
+            "+ refresh health"
+        ),
+    )
+    oauth_sub = oauth_p.add_subparsers(dest="oauth_action")
+    oauth_status = oauth_sub.add_parser(
+        "status",
+        help=(
+            "Show current token source "
+            "(expiring_oauth | legacy_static | none)"
+        ),
+    )
+    oauth_status.add_argument(
+        "--shop",
+        help="Shop domain; defaults to SHOPAI_SHOPIFY_URL",
+    )
+    oauth_status.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── Brain state synthesizer ──────────────────────────────
+    brain_p = sub.add_parser(
+        "brain",
+        help=(
+            "Holistic brain state snapshot — crisis + risk + "
+            "memory + learning + trust + rationale + "
+            "derived priorities (Track 9)"
+        ),
+    )
+    brain_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── Decision rationale replay ────────────────────────────
+    explain_p = sub.add_parser(
+        "explain",
+        help=(
+            "Replay a decision's rationale tree from the "
+            "persistent ledger"
+        ),
+    )
+    explain_p.add_argument(
+        "decision_id",
+        help="Decision id returned by activator/publisher",
+    )
+    explain_p.add_argument(
+        "--json", action="store_true",
+    )
+    explain_recent_p = sub.add_parser(
+        "explains",
+        help="Recent decisions with rationale records",
+    )
+    explain_recent_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    explain_recent_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── Obsidian vault read-back ─────────────────────────────
+    vault_p = sub.add_parser(
+        "vault-sweep",
+        help=(
+            "Scan OBSIDIAN_VAULT_PATH for frontmatter-tagged "
+            "constraint notes and apply them"
+        ),
+    )
+    vault_p.add_argument(
+        "--vault", default="",
+        help=(
+            "Vault path (default OBSIDIAN_VAULT_PATH env)"
+        ),
+    )
+    vault_p.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Parse notes but skip sink.register (preview)"
+        ),
+    )
+    vault_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── L2 source trust ──────────────────────────────────────
+    trust_p = sub.add_parser(
+        "trust",
+        help=(
+            "Source trust calibrator — per-source hit-rate "
+            "× freshness"
+        ),
+    )
+    trust_sub = trust_p.add_subparsers(
+        dest="trust_action",
+    )
+    trust_sub.add_parser(
+        "status",
+        help="Ranked list of all registered sources",
+    )
+    trust_set = trust_sub.add_parser(
+        "baseline",
+        help="Set baseline trust for a source",
+    )
+    trust_set.add_argument("--source", required=True)
+    trust_set.add_argument(
+        "--trust", type=float, required=True,
+    )
+
+    # ── L3 memory consolidator ───────────────────────────────
+    mem_p = sub.add_parser(
+        "memory",
+        help=(
+            "Memory consolidator — episode → concept → "
+            "procedure ladder"
+        ),
+    )
+    mem_sub = mem_p.add_subparsers(dest="mem_action")
+    mem_sub.add_parser(
+        "status",
+        help="Counts by layer + active thresholds",
+    )
+    mem_run = mem_sub.add_parser(
+        "consolidate",
+        help="Run one ladder sweep (promote + decay + archive)",
+    )
+    mem_run.add_argument(
+        "--json", action="store_true",
+    )
+    mem_concepts = mem_sub.add_parser(
+        "concepts",
+        help="List top concepts by priority × evidence",
+    )
+    mem_concepts.add_argument(
+        "--limit", type=int, default=20,
+    )
+    mem_concepts.add_argument(
+        "--json", action="store_true",
+    )
+    mem_procs = mem_sub.add_parser(
+        "procedures",
+        help="List promoted procedures",
+    )
+    mem_procs.add_argument(
+        "--limit", type=int, default=20,
+    )
+    mem_procs.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── L9 learning / rulebook ───────────────────────────────
+    learned_p = sub.add_parser(
+        "brain-learned",
+        help=(
+            "Show the RuleBook — what the brain has learned "
+            "from episodes + outcomes"
+        ),
+    )
+    learned_sub = learned_p.add_subparsers(
+        dest="learned_action",
+    )
+    learned_sub.add_parser(
+        "status",
+        help=(
+            "Rule counts by status + active thresholds"
+        ),
+    )
+    learned_top = learned_sub.add_parser(
+        "top",
+        help=(
+            "Highest-confidence rules (ranked by "
+            "confidence = wins × coverage)"
+        ),
+    )
+    learned_top.add_argument(
+        "--limit", type=int, default=10,
+    )
+    learned_top.add_argument(
+        "--json", action="store_true",
+    )
+    learned_ls = learned_sub.add_parser(
+        "list",
+        help="List rules by status",
+    )
+    learned_ls.add_argument(
+        "--status",
+        choices=(
+            "proposed", "active",
+            "deprecated", "killed",
+        ),
+        default="proposed",
+    )
+    learned_ls.add_argument(
+        "--limit", type=int, default=20,
+    )
+    learned_ls.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── L2 niche discovery ───────────────────────────────────
+    niches_p = sub.add_parser(
+        "niches",
+        help=(
+            "Discover + rank niches from the winner pool "
+            "(trend-enriched by Google Trends)"
+        ),
+    )
+    niches_p.add_argument(
+        "--candidates", type=int, default=50,
+        help="Max candidates to pull from sources",
+    )
+    niches_p.add_argument(
+        "--limit", type=int, default=10,
+        help="Top niches to show",
+    )
+    niches_p.add_argument(
+        "--no-trends", action="store_true",
+        help=(
+            "Skip Google Trends scoring (pure rollup ranking)"
+        ),
+    )
+    niches_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── L4 long-horizon planning ─────────────────────────────
+    plan_p = sub.add_parser(
+        "plan-quarter",
+        help=(
+            "Build a weekly-milestone plan from a quarterly "
+            "revenue goal (L4)"
+        ),
+    )
+    plan_p.add_argument(
+        "--monthly-target", type=float, required=True,
+        help="Revenue target in USD/month at deadline",
+    )
+    plan_p.add_argument(
+        "--weeks", type=int, default=13,
+        help="Plan duration in weeks (default 13 = 1 quarter)",
+    )
+    plan_p.add_argument(
+        "--sku-target", type=int, default=20,
+    )
+    plan_p.add_argument(
+        "--roas-target", type=float, default=1.8,
+    )
+    plan_p.add_argument(
+        "--ramp",
+        choices=("linear", "front_loaded", "back_loaded"),
+        default="linear",
+    )
+    plan_p.add_argument(
+        "--niche", default="",
+    )
+    plan_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    checkin_p = sub.add_parser(
+        "plan-checkin",
+        help=(
+            "Check current revenue against a quarterly plan "
+            "(verdict: ahead / on_track / behind / at_risk)"
+        ),
+    )
+    checkin_p.add_argument(
+        "--monthly-target", type=float, required=True,
+    )
+    checkin_p.add_argument(
+        "--weeks", type=int, default=13,
+    )
+    checkin_p.add_argument(
+        "--week-elapsed", type=int, required=True,
+        help=(
+            "Weeks since plan started (1-based; use week 0 "
+            "for pre-kickoff)"
+        ),
+    )
+    checkin_p.add_argument(
+        "--revenue", type=float, required=True,
+        help="Cumulative revenue so far, USD",
+    )
+    checkin_p.add_argument(
+        "--skus-live", type=int, default=0,
+    )
+    checkin_p.add_argument(
+        "--current-roas", type=float, default=0.0,
+    )
+    checkin_p.add_argument(
+        "--ramp",
+        choices=("linear", "front_loaded", "back_loaded"),
+        default="linear",
+    )
+    checkin_p.add_argument(
+        "--sku-target", type=int, default=20,
+    )
+    checkin_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── LX.5 multi-store federation ──────────────────────────
+    fed_p = sub.add_parser(
+        "federation",
+        help=(
+            "Multi-store federation — pool rules across "
+            "stores by similarity (LX.5)"
+        ),
+    )
+    fed_sub = fed_p.add_subparsers(dest="fed_action")
+    fed_sub.add_parser(
+        "status",
+        help="List registered stores + rule counts",
+    )
+    fed_register = fed_sub.add_parser(
+        "register",
+        help="Register a store (idempotent — re-register updates traits)",
+    )
+    fed_register.add_argument(
+        "--store", required=True,
+        help="Store id (unique)",
+    )
+    fed_register.add_argument(
+        "--trait", action="append", default=[],
+        help=(
+            "key=value; repeatable. "
+            "Example: --trait niche=pet --trait currency=USD"
+        ),
+    )
+    fed_register.add_argument(
+        "--weight", type=float, default=1.0,
+    )
+    fed_observe = fed_sub.add_parser(
+        "observe",
+        help=(
+            "Record a rule observation. Observations accumulate."
+        ),
+    )
+    fed_observe.add_argument(
+        "--store", required=True,
+    )
+    fed_observe.add_argument(
+        "--rule", required=True,
+    )
+    fed_observe.add_argument(
+        "--wins", type=int, required=True,
+    )
+    fed_observe.add_argument(
+        "--uses", type=int, required=True,
+    )
+    fed_score = fed_sub.add_parser(
+        "score",
+        help=(
+            "Federated score for a rule at a target store "
+            "(weighted by trait similarity)"
+        ),
+    )
+    fed_score.add_argument(
+        "--target", required=True,
+        help="Target store_id",
+    )
+    fed_score.add_argument(
+        "--rule", required=True,
+    )
+    fed_score.add_argument(
+        "--json", action="store_true",
+    )
+    fed_best = fed_sub.add_parser(
+        "best",
+        help="Top federated rules for a target store",
+    )
+    fed_best.add_argument(
+        "--target", required=True,
+    )
+    fed_best.add_argument(
+        "--limit", type=int, default=10,
+    )
+    fed_best.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── LX.1 customer support ────────────────────────────────
+    ask_support_p = sub.add_parser(
+        "ask-support",
+        help=(
+            "Preview how the LX.1 support chatbot would "
+            "answer a customer question (rule-based, LLM-free)"
+        ),
+    )
+    ask_support_p.add_argument("question", type=str)
+    ask_support_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── LX.4 crisis response ─────────────────────────────────
+    crisis_p = sub.add_parser(
+        "crisis",
+        help=(
+            "Crisis responder — kill switch + event-driven "
+            "escalation"
+        ),
+    )
+    crisis_sub = crisis_p.add_subparsers(
+        dest="crisis_action",
+    )
+    crisis_status = crisis_sub.add_parser(
+        "status", help="Show current crisis level + events",
+    )
+    crisis_status.add_argument(
+        "--json", action="store_true",
+    )
+    crisis_halt = crisis_sub.add_parser(
+        "halt",
+        help="Trip the emergency halt (blocks all live writes)",
+    )
+    crisis_halt.add_argument(
+        "--reason", default="",
+        help="Reason recorded alongside the halt",
+    )
+    crisis_sub.add_parser(
+        "resume", help="Clear a manual halt",
+    )
+    crisis_events = crisis_sub.add_parser(
+        "events",
+        help="Recent crisis events (limit = 20 by default)",
+    )
+    crisis_events.add_argument(
+        "--limit", type=int, default=20,
+    )
+    crisis_events.add_argument(
+        "--json", action="store_true",
+    )
+
+    # ── L7 risk / tripwire ───────────────────────────────────
+    risk_p = sub.add_parser(
+        "risk",
+        help="Risk tripwire — $ caps and current spend",
+    )
+    risk_sub = risk_p.add_subparsers(dest="risk_action")
+    risk_status_p = risk_sub.add_parser(
+        "status",
+        help="Today's ad spend vs caps + chargeback rate",
+    )
+    risk_status_p.add_argument(
+        "--json", action="store_true",
+    )
+    risk_limits_p = risk_sub.add_parser(
+        "limits",
+        help="Show active tripwire limits and their env overrides",
+    )
+    risk_limits_p.add_argument(
+        "--json", action="store_true",
+    )
+    risk_recent_p = risk_sub.add_parser(
+        "recent",
+        help="Recent spend events booked by the tripwire",
+    )
+    risk_recent_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    risk_recent_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # ── System commands ──────────────────────────────────────
-    sub.add_parser("health", help="System health check")
+    sub.add_parser("health", help="System health check (module imports)")
+    doctor_p = sub.add_parser(
+        "doctor",
+        help=(
+            "End-to-end readiness check — tells you exactly what "
+            "to fix"
+        ),
+    )
+    doctor_p.add_argument(
+        "--json", action="store_true",
+        help="Machine-readable output",
+    )
+    doctor_p.add_argument(
+        "--network", action="store_true",
+        help=(
+            "Also run network-dependent checks (webhook "
+            "registered, credentials validate via live call)"
+        ),
+    )
+    doctor_p.add_argument(
+        "--snippet", action="store_true",
+        help=(
+            "Print the Shopify attribution Liquid snippet for "
+            "pasting into theme.liquid"
+        ),
+    )
     sub.add_parser("status", help="Full system status")
     sub.add_parser("setup", help="Interactive setup wizard")
     sub.add_parser("start", help="Start the orchestrator")
@@ -308,6 +2059,19 @@ def _cmd_store_configure(args) -> None:
         print("No store specified and no active store set.")
         return
 
+    # When the owner types an explicit store_id it must exist in
+    # the registry. Otherwise get_credentials() would happily
+    # return env-var fallback credentials for a *different*
+    # store — a cross-store write that's easy to miss.
+    if args.store_id and hasattr(sm, "db"):
+        store_row = sm.db.get_store(args.store_id)
+        if not store_row:
+            print(
+                f"Store {args.store_id!r} not found "
+                "in registry.",
+            )
+            return
+
     creds = sm.get_credentials(store_id)
     if not creds or not creds.get("shop_url"):
         print(f"Store {store_id!r} not found or has no shop_url.")
@@ -398,6 +2162,76 @@ def _format_feature_summary(name: str, data: dict) -> str:
         return f"templates={data.get('template_count', 0)} ({', '.join(data.get('templates', []))})"
     if name == "payments":
         return f"active={data.get('active_count', 0)}, missing={data.get('missing_count', 0)}"
+    if name == "pages":
+        created = data.get("created") or []
+        skipped = data.get("skipped") or []
+        errs = len(data.get("errors") or [])
+        return (
+            f"created={len(created)}, skipped={len(skipped)}, "
+            f"errors={errs}"
+        )
+    if name == "policies":
+        updated = data.get("updated") or []
+        errs = len(data.get("errors") or [])
+        return f"updated={len(updated)}, errors={errs}"
+    if name == "menus":
+        updated = data.get("updated") or []
+        errs = len(data.get("errors") or [])
+        return f"updated={len(updated)}, errors={errs}"
+    if name == "brand":
+        written = data.get("written") or []
+        errs = len(data.get("errors") or [])
+        return (
+            f"written={len(written)} "
+            f"({', '.join(written)}), errors={errs}"
+        )
+    if name == "redirects":
+        created = data.get("created") or []
+        skipped = data.get("skipped") or []
+        errs = len(data.get("errors") or [])
+        return (
+            f"created={len(created)}, "
+            f"skipped={len(skipped)}, errors={errs}"
+        )
+    if name == "blog":
+        created = data.get("created", "") or ""
+        skipped = data.get("skipped", "") or ""
+        errs = len(data.get("errors") or [])
+        if created:
+            return f"created={created}, errors={errs}"
+        if skipped:
+            return f"skipped={skipped}, errors={errs}"
+        return f"status={data.get('status', '?')}, errors={errs}"
+    if name == "webhooks":
+        subscribed = data.get("subscribed") or []
+        existing = data.get("existing") or []
+        errs = len(data.get("errors") or [])
+        status = data.get("status", "?")
+        if status == "skipped":
+            return f"skipped ({data.get('reason', '')[:40]})"
+        return (
+            f"subscribed={len(subscribed)}, "
+            f"existing={len(existing)}, errors={errs}"
+        )
+    if name == "script_tags":
+        installed = data.get("installed") or []
+        existing = data.get("existing") or []
+        errs = len(data.get("errors") or [])
+        status = data.get("status", "?")
+        if status == "skipped":
+            return f"skipped ({data.get('reason', '')[:40]})"
+        return (
+            f"installed={len(installed)}, "
+            f"existing={len(existing)}, errors={errs}"
+        )
+    if name == "metafield_definitions":
+        created = data.get("created") or []
+        existing = data.get("existing") or []
+        errs = len(data.get("errors") or [])
+        return (
+            f"created={len(created)}, "
+            f"existing={len(existing)}, errors={errs}"
+        )
     return str(data)[:60]
 
 
@@ -1209,6 +3043,1686 @@ def _cmd_learn(args) -> None:
 
 # ── System Commands ──────────────────────────────────────────
 
+def _cmd_launch(args) -> None:
+    """Run the Goal-Driven launch pipeline end-to-end."""
+    from workflows.launch import LaunchPipeline, LaunchGoal
+    from core.adapters.llm.bootstrap import register_all as _register_llms
+    _register_llms()  # idempotent; enables ContentStep's LLM call
+
+    manual_payload = None
+    if args.title:
+        gallery = [u.strip() for u in (args.gallery or "").split(",") if u.strip()]
+        manual_payload = {
+            "title": args.title,
+            "price_usd": args.price or 0.0,
+            "gallery_urls": gallery,
+        }
+
+    goal = LaunchGoal(
+        alibaba_url=args.alibaba_url or None,
+        manual_payload=manual_payload,
+        target_price=args.target_price,
+        ad_budget_day=args.ad_budget,
+        niche=args.niche,
+        copy_tone=args.tone,
+    )
+
+    if args.dry_run:
+        import dataclasses
+        print(json.dumps(dataclasses.asdict(goal), indent=2, default=str))
+        return
+
+    if goal.source_kind() == "manual" and not goal.manual_payload:
+        print("ERR: supply --alibaba-url OR --title (and --price / --gallery)",
+              file=sys.stderr)
+        sys.exit(2)
+
+    # Pre-launch prediction — honours --predict-only + --min-win-prob
+    if getattr(args, "predict_only", False) or getattr(args, "min_win_prob", 0) > 0:
+        from core.autonomous.launch_predictor import predict as _predict
+        pred = _predict(goal).as_dict()
+        print(f"\nPREDICTION  grade={pred['grade']}  "
+              f"win_probability={pred['win_probability']:.2f}")
+        for r in pred.get("rationale", []):
+            print(f"  • {r}")
+        if args.predict_only:
+            return
+        if pred["win_probability"] < args.min_win_prob:
+            print(f"\n  ABORTED — below --min-win-prob {args.min_win_prob}")
+            sys.exit(4)
+
+    result = LaunchPipeline().run(goal)
+    print(f"\n[{result.status.upper()}] {result.launch_id}  "
+          f"({result.duration_s:.1f}s)")
+    if result.shopify_product_id:
+        print(f"  Shopify: https://admin.shopify.com/store/"
+              f"{os.environ.get('SHOPAI_SHOPIFY_URL', '').split('.')[0]}"
+              f"/products/{result.shopify_product_id}")
+    if result.shopify_handle:
+        print(f"  Storefront: https://"
+              f"{os.environ.get('SHOPAI_SHOPIFY_URL', '')}"
+              f"/products/{result.shopify_handle}")
+    print()
+    for s in result.steps:
+        marker = {"ok": "✓", "skipped": "·", "failed": "✗"}.get(s.status, " ")
+        line = f"  {marker} {s.name:18s} {s.duration_s:5.2f}s"
+        if s.error:
+            line += f"  {s.error[:60]}"
+        print(line)
+    if result.failed_step:
+        print(f"\n  aborted at {result.failed_step}: {result.failure_reason}")
+        sys.exit(3)
+
+
+def _cmd_owner_ask(
+    *,
+    text: str,
+    send: bool,
+    chat_id: str | None,
+    as_json: bool,
+) -> None:
+    """Parse an owner phrase via the tool dispatcher and
+    optionally push the reply to Telegram. Safe by default —
+    write tools require 'confirm' in the message."""
+    from agents.owner_dialog.tool_dispatcher import (
+        OwnerToolDispatcher,
+    )
+    result = OwnerToolDispatcher().dispatch(
+        text, chat_id=chat_id, send=send,
+    )
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    intent = result.intent
+    if intent is None:
+        print("✗ no intent matched")
+    else:
+        confirm = (
+            " [confirm]" if intent.confirmed
+            else " [needs confirm]" if intent.write
+            else ""
+        )
+        print(
+            f"intent: {intent.tool}{confirm}  "
+            f"args={intent.arguments}"
+        )
+    print()
+    if result.sent:
+        print(
+            f"✓ sent to Telegram "
+            f"(message_id={result.message_id})"
+        )
+    elif result.reason:
+        print(f"— not sent: {result.reason}")
+    print()
+    print("Reply text:")
+    print(result.text)
+
+
+def _cmd_notify_errors(
+    *,
+    hours: float,
+    log_path: str,
+    dry_run: bool,
+    chat_id: str | None,
+    as_json: bool,
+) -> None:
+    """Scan the autopilot log for errors in the last N hours
+    and push a digest to Telegram."""
+    from agents.owner_dialog.cycle_error_digest import (
+        send_error_digest,
+    )
+    result = send_error_digest(
+        log_path=log_path,
+        hours=hours,
+        dry_run=dry_run,
+        chat_id=chat_id,
+    )
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    if result.sent:
+        print(
+            f"✓ Sent error digest to Telegram "
+            f"(message_id={result.message_id}, "
+            f"{result.errors_found} errors in "
+            f"{result.cycles_scanned} cycles)"
+        )
+        return
+    if result.reason == "dry_run":
+        print("— dry run — composed message below —")
+        print()
+        print(result.text)
+        return
+    print(f"✗ Not sent: {result.reason}")
+    if result.text:
+        print()
+        print("Preview:")
+        print(result.text)
+
+
+def _cmd_autopilot_status(
+    *, log_path: str, as_json: bool,
+) -> None:
+    """Report daemon running status (from pidfile) + the latest
+    cycle from the autopilot log. Exit code is always 0 — this
+    is a status command, not a health gate."""
+    from pathlib import Path as _P
+    from core.system.pidfile import read_status
+    status = read_status("daemon")
+
+    # Latest cycle snippet from the log
+    last_cycle: dict | None = None
+    log = _P(log_path)
+    if log.exists():
+        try:
+            lines = log.read_text().strip().splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    last_cycle = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        except OSError:
+            pass
+
+    payload = {
+        "daemon": status.as_dict(),
+        "latest_cycle": last_cycle,
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2, default=str))
+        return
+    print("Autopilot daemon status")
+    print()
+    if status.running:
+        uptime_h = status.uptime_s / 3600
+        print(
+            f"  running: ✓  pid={status.pid}  "
+            f"uptime={uptime_h:.1f}h"
+        )
+    else:
+        print(f"  running: ✗  {status.detail}")
+        print(
+            "  Start with: `python scripts/run_daemon.py` "
+            "or `systemctl start shopai-daemon`"
+        )
+    print()
+    if last_cycle:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%S",
+            time.localtime(
+                float(last_cycle.get("ts", 0)),
+            ),
+        )
+        print("  Latest cycle:")
+        print(
+            f"    cycle:      "
+            f"{last_cycle.get('cycle', '?')}"
+        )
+        print(f"    ts:         {ts}")
+        print(
+            f"    mode:       "
+            f"{last_cycle.get('mode', '?')}"
+        )
+        print(
+            f"    launches:   "
+            f"{last_cycle.get('launches', 0)} "
+            f"({last_cycle.get('successful', 0)} ok)"
+        )
+        print(
+            f"    duration:   "
+            f"{float(last_cycle.get('duration_s', 0)):.2f}s"
+        )
+        if last_cycle.get("error"):
+            print(
+                f"    error:      {last_cycle['error']}",
+            )
+    else:
+        print("  No cycles recorded yet.")
+
+
+def _cmd_agents_list(
+    *, type_filter: str | None, as_json: bool,
+) -> None:
+    """Show every agent registered with AgentManager, or a
+    subset filtered by type."""
+    from agents.manager import get_agent_manager
+    mgr = get_agent_manager()
+    records = mgr.list_agents(agent_type=type_filter or None)
+    if as_json:
+        print(json.dumps(
+            {
+                "count": len(records),
+                "agents": records,
+            },
+            indent=2,
+        ))
+        return
+    if not records:
+        if type_filter:
+            print(
+                f"No agents of type {type_filter!r}.",
+            )
+        else:
+            print(
+                "No agents registered yet. Register via "
+                "AgentManager.register_agent(id, type, "
+                "config)."
+            )
+        return
+    print(
+        f"Registered agents ({len(records)}):"
+    )
+    print(
+        f"  {'id':<20} {'type':<15} {'status':<12} "
+        f"created"
+    )
+    for r in records:
+        print(
+            f"  {str(r.get('id', ''))[:19]:<20} "
+            f"{str(r.get('type', ''))[:14]:<15} "
+            f"{str(r.get('status', ''))[:11]:<12} "
+            f"{str(r.get('created_at', ''))[:19]}"
+        )
+
+
+def _cmd_agents_get(
+    *, agent_id: str, as_json: bool,
+) -> None:
+    from agents.manager import get_agent_manager
+    try:
+        record = get_agent_manager().get_agent(agent_id)
+    except KeyError:
+        if as_json:
+            print(json.dumps(
+                {"error": f"unknown agent: {agent_id}"},
+                indent=2,
+            ))
+        else:
+            print(f"✗ unknown agent: {agent_id}")
+        sys.exit(1)
+    if as_json:
+        print(json.dumps(record, indent=2))
+        return
+    print(f"Agent {record.get('id', '')}:")
+    for k, v in record.items():
+        print(f"  {k}: {v}")
+
+
+def _cmd_citations_list(*, as_json: bool) -> None:
+    """List every curated niche in the citation store."""
+    from execution.seo.citation_store import (
+        available_niches,
+    )
+    niches = available_niches()
+    if as_json:
+        print(json.dumps({"niches": niches}, indent=2))
+        return
+    if not niches:
+        print(
+            "No citations curated yet. Create "
+            "data/citations/<niche>.json with a list of "
+            "{claim, quote, source_name, source_type, "
+            "citation, citation_url} dicts.",
+        )
+        return
+    print(f"Citation niches ({len(niches)}):")
+    for n in niches:
+        print(f"  • {n}")
+
+
+def _cmd_citations_show(
+    *, niche: str, as_json: bool,
+) -> None:
+    """Print the resolved citations for a niche (or a
+    product dict where product.niche=<niche>). Useful for
+    owner to preview what GEO sandwich would attach."""
+    from execution.seo.citation_store import (
+        resolve_citations_for,
+    )
+    cites = resolve_citations_for({"niche": niche})
+    if as_json:
+        print(json.dumps(
+            {"niche": niche, "citations": cites},
+            indent=2,
+        ))
+        return
+    if not cites:
+        print(
+            f"No citations for niche {niche!r}. "
+            f"Add data/citations/{niche}.json or let "
+            "default.json cover it."
+        )
+        return
+    print(
+        f"Citations for niche {niche!r} "
+        f"({len(cites)} entries):"
+    )
+    for c in cites:
+        print(
+            f"  • {str(c.get('source_name', ''))[:30]:<30}"
+            f"  {str(c.get('claim', ''))[:60]}"
+        )
+
+
+def _cmd_build_llms_txt(
+    *,
+    store_name: str,
+    store_url: str,
+    products_json: str,
+    out_dir: str,
+    as_json: bool,
+) -> None:
+    """Build llms.txt artifacts for the active store and write
+    them to disk under ``out_dir``. The API server at
+    ``api/server.py`` serves these files at /llms.txt,
+    /llms-full.txt, and /llms-mirror/<slug>.md.
+    """
+    from pathlib import Path as _P
+    from execution.seo.llms_txt import build_llms_txt
+
+    store_url = (
+        store_url
+        or os.environ.get("SHOPAI_SHOPIFY_URL", "")
+    )
+    if not store_url:
+        print(
+            "SHOPAI_SHOPIFY_URL not set — pass --store-url "
+            "or add it to .env",
+        )
+        sys.exit(2)
+    if not store_name:
+        store_name = store_url.split(".")[0] or "Store"
+
+    products: list[dict] = []
+    if products_json:
+        path = _P(products_json)
+        if not path.exists():
+            print(f"File not found: {products_json}")
+            sys.exit(2)
+        try:
+            products = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            print(f"Bad JSON: {exc}")
+            sys.exit(2)
+        if not isinstance(products, list):
+            print("JSON must be a list of product dicts")
+            sys.exit(2)
+    else:
+        # Pull live products via the connector.
+        try:
+            from core.bridge.shopify_connector import (
+                ShopifyLiveConnector,
+            )
+            conn = ShopifyLiveConnector()
+            data = conn.fetch_store_data()
+            raw = data.get("products") or []
+            if isinstance(raw, list):
+                products = [
+                    p for p in raw
+                    if isinstance(p, dict)
+                ]
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"Could not fetch products from "
+                f"Shopify: {exc}",
+            )
+            sys.exit(2)
+
+    if not products:
+        print(
+            "No products found. Either sync Shopify first "
+            "(`shopai sync`) or pass --products-json.",
+        )
+        sys.exit(2)
+
+    index = build_llms_txt(
+        store_name=store_name,
+        store_url=store_url,
+        products=products,
+    )
+
+    out = _P(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "llms.txt").write_text(index.short_txt)
+    (out / "llms-full.txt").write_text(index.full_txt)
+    mirror_dir = out / "products"
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    # Clear stale mirrors so deleted products don't linger
+    for existing in mirror_dir.glob("*.md"):
+        existing.unlink()
+    for path, body in index.product_mirrors:
+        rel = path.lstrip("/")
+        if rel.startswith("products/"):
+            rel = rel[len("products/"):]
+        (mirror_dir / rel).write_text(body)
+
+    summary = {
+        "out_dir": str(out.resolve()),
+        "store_name": store_name,
+        "store_url": store_url,
+        "products_written": len(products),
+        "short_txt_chars": len(index.short_txt),
+        "full_txt_chars": len(index.full_txt),
+        "mirrors_written": len(index.product_mirrors),
+    }
+    if as_json:
+        print(json.dumps(summary, indent=2))
+        return
+    print(f"✓ llms.txt artifacts written to {out.resolve()}")
+    print(
+        f"  products:        {summary['products_written']}"
+    )
+    print(
+        f"  llms.txt:        "
+        f"{summary['short_txt_chars']} chars"
+    )
+    print(
+        f"  llms-full.txt:   "
+        f"{summary['full_txt_chars']} chars"
+    )
+    print(
+        f"  mirrors:         {summary['mirrors_written']}"
+    )
+    print(
+        "  Served by API at /llms.txt + /llms-full.txt + "
+        "/llms-mirror/<slug>.md"
+    )
+
+
+def _cmd_replay_orders(
+    *,
+    path: str,
+    throttle_s: float,
+    as_json: bool,
+    synthesize: int = 0,
+    seed: int = 42,
+    attach_decision_rate: float = 0.6,
+) -> None:
+    """Feed a JSONL file of Shopify order payloads (or
+    generate ``synthesize`` synthetic ones) through the live
+    webhook pipeline. Exercises the entire learning loop on
+    historical / synthetic data."""
+    from agents.replay import (
+        replay_orders,
+        replay_orders_from_file,
+        synthesize_orders_with_random_decisions,
+    )
+    if synthesize > 0:
+        orders = synthesize_orders_with_random_decisions(
+            count=synthesize,
+            seed=seed,
+            attach_rate=attach_decision_rate,
+        )
+        stats = replay_orders(
+            orders, throttle_s=throttle_s,
+        )
+    else:
+        if not path:
+            print(
+                "Replay requires either a JSONL path or "
+                "--synthesize N",
+            )
+            sys.exit(2)
+        try:
+            stats = replay_orders_from_file(
+                path, throttle_s=throttle_s,
+            )
+        except FileNotFoundError:
+            print(f"File not found: {path}")
+            sys.exit(2)
+    if as_json:
+        print(json.dumps(stats.as_dict(), indent=2))
+        return
+    print(f"Replayed {stats.attempted} orders "
+          f"({stats.successful} ok, "
+          f"{stats.failed} failed, "
+          f"{stats.skipped_non_dict} skipped) "
+          f"in {stats.duration_s:.2f}s")
+    print(
+        f"  revenue replayed:           "
+        f"${stats.total_revenue_usd:.2f}"
+    )
+    print(
+        f"  deliberations back-filled:  "
+        f"{stats.deliberations_observed}"
+    )
+    if stats.failed:
+        print()
+        print("Failures:")
+        for r in stats.results:
+            if not r.ok:
+                print(
+                    f"  {r.order_id:<20} "
+                    f"{r.error[:80]}"
+                )
+
+
+def _cmd_ingest_knowledge(
+    *,
+    url: str,
+    file: str,
+    subject: str,
+    as_json: bool,
+) -> None:
+    """Pull an external URL or file into the structured KB."""
+    from core.memory.knowledge_ingest import (
+        ingest_file, ingest_url,
+    )
+    if url:
+        result = ingest_url(url, subject=subject or None)
+    else:
+        result = ingest_file(
+            file, subject=subject or None,
+        )
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    print(f"Source:  {result.source}")
+    print(f"Subject: {result.subject}")
+    print(f"Written: {result.facts_written}")
+    print(f"Skipped: {result.facts_skipped}")
+    if result.errors:
+        print()
+        print("Errors:")
+        for e in result.errors:
+            print(f"  - {e}")
+
+
+def _cmd_search(
+    *,
+    query: str,
+    scope: str,
+    limit: int,
+    as_json: bool,
+) -> None:
+    """Run the cross-source SearchAgent and print ranked hits."""
+    from agents.search import SearchAgent
+    from core.adapters import get_router
+    # Register the two adapter families SearchAgent uses.
+    # Per-family bootstrap keeps the CLI independent of an
+    # umbrella register_all (no such module exists).
+    for boot in (
+        "core.adapters.search.bootstrap",
+        "core.adapters.sourcing.bootstrap",
+    ):
+        try:
+            mod = __import__(boot, fromlist=["register_all"])
+            mod.register_all()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"warn: {boot} partial: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+    agent = SearchAgent(router=get_router())
+    try:
+        hits = agent.search(
+            query, scope=(scope,), limit=limit,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if as_json:
+        print(json.dumps(
+            [
+                {
+                    "source": h.source,
+                    "kind": h.kind,
+                    "title": h.title,
+                    "url": h.url,
+                    "snippet": h.snippet,
+                    "price_usd": h.price_usd,
+                    "score": h.score,
+                }
+                for h in hits
+            ],
+            indent=2,
+        ))
+        return
+    if not hits:
+        print("No results.")
+        return
+    for i, h in enumerate(hits, start=1):
+        tag = (
+            f"${h.price_usd:.2f}" if h.kind == "product" else h.kind
+        )
+        print(
+            f"{i:>2}. [{h.source} / {tag}] {h.title}"
+        )
+        if h.url:
+            print(f"    {h.url}")
+        if h.snippet:
+            trim = h.snippet[:120]
+            print(f"    {trim}")
+
+
+def _cmd_ready_for_live(
+    *,
+    skip_learning_loop: bool,
+    as_json: bool,
+) -> None:
+    """Run the pre-T1 go-live gate and print the verdict."""
+    from core.readiness.go_live_gate import run_go_live_gate
+    report = run_go_live_gate(
+        skip_learning_loop=skip_learning_loop,
+    )
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(f"Go-live gate: {report.verdict}")
+    print()
+    for c in report.checks:
+        flag = "✓" if c.ok else "✗"
+        print(
+            f"  {flag} {c.name:<16s} {c.reason}"
+        )
+    if report.verdict == "BLOCKED":
+        print()
+        print("To unblock:")
+        for c in report.blocking():
+            # Multi-line fix strings (e.g. env check showing
+            # exact export commands) need indenting after the
+            # first line so the bullet alignment stays clean.
+            fix_lines = (c.fix or "").splitlines()
+            if not fix_lines:
+                print(f"  • {c.name}:")
+                continue
+            print(f"  • {c.name}: {fix_lines[0]}")
+            for extra in fix_lines[1:]:
+                print(f"    {extra}")
+        sys.exit(2)
+
+
+def _cmd_live_health(
+    *, cycles: int, as_json: bool,
+) -> None:
+    """Print the rolling health digest fused from doctor +
+    recent cycles + engine feedback trends."""
+    from core.readiness.health_trend import (
+        compute_live_health,
+    )
+    trend = compute_live_health(cycles_limit=cycles)
+    if as_json:
+        print(json.dumps(trend.as_dict(), indent=2))
+        return
+    print(
+        f"Live health: {trend.verdict.upper()}"
+    )
+    if trend.reasons:
+        print()
+        print("Reasons:")
+        for r in trend.reasons:
+            print(f"  - {r}")
+    print()
+    print(
+        f"Doctor: ok={trend.doctor_ok}, "
+        f"critical={trend.doctor_critical_failures}, "
+        f"warnings={trend.doctor_warnings}"
+    )
+    print(
+        f"Cycles: {trend.cycles_considered} considered, "
+        f"{trend.cycles_with_error} with error, "
+        f"{trend.cycles_live_mode} in live mode"
+    )
+    print(
+        f"Engines: "
+        f"{trend.engines_improving} improving, "
+        f"{trend.engines_stable} stable, "
+        f"{trend.engines_declining} declining"
+    )
+    if trend.recent_cycles:
+        print()
+        print("Recent cycles:")
+        for c in trend.recent_cycles:
+            err = c.get("error") or ""
+            err_flag = "!" if err else " "
+            print(
+                f"  {err_flag} cycle={c.get('cycle', '?')} "
+                f"mode={c.get('mode', '?')} "
+                f"launches={c.get('launches', 0)}/"
+                f"{c.get('successful', 0)} "
+                f"{c.get('duration_s', 0):.1f}s "
+                f"{err[:40]}"
+            )
+
+
+def _cmd_rule_quality(
+    *, limit: int, as_json: bool,
+) -> None:
+    """Print the RuleBook's lift-based quality read.
+
+    Owner asks: "Are my learned rules actually helping, or are
+    they false positives?" The answer comes as a true-positive
+    rate + a per-rule table sorted active-first, lift-desc.
+    """
+    from core.learning.rule_quality import evaluate_rulebook
+    report = evaluate_rulebook()
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(
+        f"RuleBook quality — "
+        f"{report.total_rules} total, "
+        f"{report.applied_rules} applied, "
+        f"baseline win rate "
+        f"{report.baseline_win_rate:.2%}"
+    )
+    print(
+        f"  true_positives:    {report.true_positives}"
+    )
+    print(
+        f"  uncertain:         {report.uncertain}"
+    )
+    print(
+        f"  false_positives:   {report.false_positives}"
+    )
+    print(
+        f"  insufficient:      {report.insufficient_data}"
+    )
+    print(
+        f"  true-positive rate: "
+        f"{report.true_positive_rate:.2%} "
+        f"(T2 KPI ≥ 60%)"
+    )
+    if not report.rules:
+        print()
+        print("(RuleBook empty — nothing to evaluate yet.)")
+        return
+    print()
+    print(
+        f"{'rule_id':<14} {'status':<10} "
+        f"{'applied':>8} {'ema':>6} {'lift':>6} "
+        f"{'verdict':<18} pattern → action"
+    )
+    for q in report.rules[:int(limit)]:
+        pat = (q.pattern or "")[:24]
+        act = (q.action or "")[:24]
+        print(
+            f"{q.rule_id[:12]:<14} {q.status:<10} "
+            f"{q.applied_count:>8d} "
+            f"{q.win_rate_ema:>6.2f} "
+            f"{q.lift:>6.2f} "
+            f"{q.verdict:<18} {pat} → {act}"
+        )
+
+
+def _cmd_cycles(
+    *, log_path: str, limit: int, as_json: bool,
+) -> None:
+    """Tail the autopilot daemon log and print recent cycle
+    summaries. Each line in the log is a CycleSummary as_dict.
+    Missing log file means the daemon hasn't run yet."""
+    from pathlib import Path as _P
+    path = _P(log_path)
+    if not path.exists():
+        if as_json:
+            print(json.dumps({
+                "log_path": log_path,
+                "cycles": [],
+                "note": "log file does not exist yet",
+            }, indent=2))
+            return
+        print(
+            f"No autopilot log at {log_path}. Start the "
+            "daemon (`python scripts/run_daemon.py` or "
+            "systemctl start shopai-daemon) to populate it.",
+        )
+        return
+    limit = max(1, min(int(limit), 1000))
+    cycles: list[dict] = []
+    try:
+        with path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cycles.append(json.loads(line))
+                except json.JSONDecodeError:
+                    # Skip malformed lines rather than fail;
+                    # daemon may have crashed mid-write.
+                    continue
+    except OSError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}, indent=2))
+            return
+        print(f"Could not read log: {exc}")
+        return
+    tail = cycles[-limit:]
+    if as_json:
+        print(json.dumps({
+            "log_path": log_path,
+            "total": len(cycles),
+            "returned": len(tail),
+            "cycles": tail,
+        }, indent=2))
+        return
+    if not tail:
+        print(f"Log at {log_path} is empty.")
+        return
+    print(
+        f"Autopilot cycles ({len(tail)} of "
+        f"{len(cycles)} recorded):"
+    )
+    print(
+        f"  {'#':>5}  {'ts':<19}  {'mode':<7}  "
+        f"{'launches':>8}  {'ok':>4}  {'dur':>6}  error"
+    )
+    for c in tail:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%S",
+            time.localtime(float(c.get("ts", 0))),
+        )
+        dur = float(c.get("duration_s", 0))
+        err = str(c.get("error", ""))[:40]
+        print(
+            f"  {int(c.get('cycle', 0)):>5}  {ts:<19}  "
+            f"{str(c.get('mode', ''))[:7]:<7}  "
+            f"{int(c.get('launches', 0)):>8}  "
+            f"{int(c.get('successful', 0)):>4}  "
+            f"{dur:>6.2f}  {err}"
+        )
+    # Aggregate
+    total_launches = sum(
+        int(c.get("launches", 0)) for c in tail
+    )
+    total_ok = sum(
+        int(c.get("successful", 0)) for c in tail
+    )
+    errors = sum(
+        1 for c in tail if c.get("error")
+    )
+    print()
+    print(
+        f"  Totals: launches={total_launches}  "
+        f"successful={total_ok}  cycles_with_errors={errors}"
+    )
+
+
+def _cmd_launches(args) -> None:
+    """Print per-launch KPIs + verdicts from the ROAS bucketer."""
+    from core.autonomous.launch_evaluator import evaluate
+    report = evaluate()
+    data = report.as_dict()
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+    print(f"Tracked: {data['launches_tracked']}  "
+          f"Evaluated: {data['launches_evaluated']}  "
+          f"Kills: {len(data['kills'])}  "
+          f"Scales: {len(data['scales'])}  "
+          f"Monitors: {len(data['monitors'])}\n")
+    rows = data["kills"] + data["scales"] + data["monitors"]
+    if not rows:
+        print("  (no launches — run `shopai launch` first)")
+        return
+    print(f"  {'VERDICT':10s}  {'LAUNCH_ID':22s}  {'ROAS':6s}  "
+          f"{'REV':>7s}  {'ORD':>4s}  {'DAYS':>5s}  REASON")
+    for r in rows:
+        print(f"  {r['verdict']:10s}  {r['launch_id']:22s}  "
+              f"{r.get('estimated_roas', 0):6.2f}  "
+              f"{r.get('revenue_usd', 0):>7.2f}  "
+              f"{r.get('order_count', 0):>4d}  "
+              f"{r.get('days_live', 0):>5.1f}  "
+              f"{r.get('reason', '')[:60]}")
+
+
+def _cmd_kill(launch_id: str) -> None:
+    """Record a manual kill decision as a memory event + return."""
+    try:
+        from core.memory.intelligence import get_memory_intelligence
+        mi = get_memory_intelligence()
+        mi.create(
+            category="launch",
+            content={"launch_id": launch_id, "verdict": "manual_kill",
+                     "reason": "owner-issued kill via CLI"},
+            action="kill_launch",
+            score=3.0,
+            tags=["launch", "manual_kill", f"launch:{launch_id}"],
+        )
+        print(f"kill recorded for {launch_id}")
+    except Exception as exc:
+        print(f"ERR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_reason(args) -> None:
+    """Run the 4-phase reasoning chain."""
+    from core.adapters.llm.bootstrap import register_all as _reg
+    _reg()
+    from core.brain.reasoner import reason
+    result = reason(args.question, k_memories=args.k)
+    if args.json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    print(f"\nQUESTION: {result.question}")
+    print(f"  duration: {result.duration_s:.1f}s  "
+          f"memories: {len(result.memory_ids)}")
+    print(f"\n-- Research summary --")
+    print(result.summary or "(empty)")
+    print(f"\n-- Hypotheses ({len(result.hypotheses)}) --")
+    for h in result.hypotheses:
+        print(f"  [{h.get('impact', '?'):>4s}] {h['id']}: {h['claim']}")
+        if h.get("test"):
+            print(f"         test: {h['test']}  "
+                  f"(signal: {h.get('signal', '?')}, "
+                  f"cost ${h.get('cost_usd', 0):.0f})")
+    print(f"\n-- Ranked plan --")
+    for h in result.ranked:
+        print(f"  #{h.get('rank', 99)}  {h['claim']}")
+        if h.get("rationale"):
+            print(f"       → {h['rationale']}")
+
+
+def _cmd_ask(args) -> None:
+    """One-shot Q&A over the memory + LLM chain."""
+    from core.adapters.llm.bootstrap import register_all as _reg
+    _reg()
+    from core.brain.oracle import ask
+    a = ask(args.question, k_memories=args.k)
+    if args.json:
+        print(json.dumps(a.as_dict(), indent=2))
+        return
+    print(f"\n{a.text}\n")
+    print(f"  — cited {len(a.cited_ids)} memories, "
+          f"confidence {a.confidence:.0%}, "
+          f"{a.duration_s:.1f}s via {a.adapter}/{a.model}")
+
+
+def _cmd_plan(args) -> None:
+    """Synthesize an action DAG from a free-text goal."""
+    from core.brain.planner import synthesize
+    plan = synthesize(args.goal)
+    if args.json:
+        print(json.dumps(plan.as_dict(), indent=2))
+        return
+    print(f"\nPLAN {plan.id}  goal={plan.goal!r}")
+    print(f"  total cost ${plan.total_cost:.2f}  "
+          f"aggregate win_prob {plan.aggregate_win_prob:.0%}  "
+          f"expected value ${plan.expected_value:.2f}")
+    print()
+    if not plan.nodes:
+        print("  (no actions — empty goal?)")
+        return
+    for n in plan.nodes:
+        deps = ("→ " + ",".join(n.depends_on)) if n.depends_on else ""
+        print(f"  {n.id:20s}  {n.kind:16s}  w_p={n.win_prob:.0%}  "
+              f"${n.cost_usd:6.2f}  {deps}")
+        if n.rationale:
+            print(f"    └─ {n.rationale[:100]}")
+
+
+def _cmd_skills(args) -> None:
+    """List the skill tree with confidence + use counts."""
+    from core.brain.skills import registry
+    skills = registry().list_all(
+        category=args.category,
+        min_confidence=args.min_conf,
+    )
+    if args.json:
+        print(json.dumps([s.as_dict() for s in skills], indent=2))
+        return
+    if not skills:
+        print("(no skills registered — run the launch pipeline once)")
+        return
+    print(f"  {'CONF':>6s}  {'±':>5s}  {'USES':>5s}  {'WINS':>5s}  "
+          f"{'CATEGORY':12s}  NAME")
+    for s in sorted(skills, key=lambda x: (-x.confidence, -x.uses)):
+        print(f"  {s.confidence:>6.2f}  {s.uncertainty:>5.2f}  "
+              f"{s.uses:>5d}  {s.wins:>5d}  {s.category:12s}  {s.name}")
+
+
+def _cmd_feedback(args) -> None:
+    """Up/down-vote a memory id and record the reason as a
+    ``category=feedback`` event."""
+    raw = args.sign.strip().lower()
+    if raw in ("+1", "up", "+", "1"):
+        sign = 1
+    elif raw in ("-1", "down", "-"):
+        sign = -1
+    else:
+        print(f"ERR: sign must be +1/-1/up/down (got {args.sign!r})",
+              file=sys.stderr)
+        sys.exit(2)
+    from core.brain.feedback import record
+    result = record(args.memory_id, sign, args.note)
+    if result.feedback_memory_id is None and result.new_score == 0.0:
+        print(f"ERR: memory {args.memory_id} not found", file=sys.stderr)
+        sys.exit(3)
+    arrow = "↑" if sign > 0 else "↓"
+    print(f"Feedback recorded {arrow}  memory #{result.memory_id} "
+          f"{result.prior_score:.2f} → {result.new_score:.2f}  "
+          f"(feedback id #{result.feedback_memory_id})")
+
+
+def _cmd_digest(args) -> None:
+    """Run the proactive opportunity scout."""
+    if args.narrative:
+        from core.adapters.llm.bootstrap import register_all as _reg
+        _reg()
+    from core.autonomous.opportunity_scout import scout
+    report = scout(include_narrative=args.narrative)
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(f"\nDIGEST {report.date}  ({len(report.opportunities)} opportunities)")
+    if not report.opportunities:
+        print("  (brain is quiet — no proactive signals this pass)")
+        return
+    by_kind: dict[str, int] = {}
+    for o in report.opportunities:
+        by_kind[o.kind] = by_kind.get(o.kind, 0) + 1
+    print("  counts: " + ", ".join(f"{k}={v}" for k, v in by_kind.items()))
+    print()
+    for o in report.opportunities[:12]:
+        print(f"  [{o.kind:12s}] score={o.score:5.2f}  {o.headline}")
+        if o.detail:
+            print(f"               {o.detail[:100]}")
+    if report.narrative:
+        print("\n-- Morning brief --\n")
+        print(report.narrative)
+
+
+def _cmd_why(args) -> None:
+    """Run the causal-inference engine on a launch and print the
+    ranked list of candidate root causes."""
+    from core.brain.causal_inference import investigate_launch
+    report = investigate_launch(args.launch_id)
+    if args.window:
+        report.window_days = args.window
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    if not report.anchor_ts:
+        print(f"ERR: no launch memory for {args.launch_id}", file=sys.stderr)
+        sys.exit(2)
+    print(f"Causal investigation for {report.target_id}  "
+          f"(±{report.window_days} days around anchor)")
+    if not report.candidates:
+        print("  (no correlated events found in window)")
+        return
+    print(f"\n  {'STRENGTH':>8s}  {'CATEGORY':16s}  {'EVIDENCE':>8s}  SUMMARY")
+    for c in report.candidates[:8]:
+        print(f"  {c.strength:>8.2f}  {c.category:16s}  {c.evidence_count:>8d}  {c.summary[:80]}")
+
+
+def _cmd_chat(args) -> None:
+    """Multi-turn chat backed by ChatSession persistence."""
+    from core.adapters.llm.bootstrap import register_all as _reg
+    _reg()
+    from core.brain.chat_session import send, ChatStore
+
+    action = getattr(args, "chat_action", None)
+    if action == "list":
+        rows = ChatStore.list_ids(limit=20)
+        if not rows:
+            print("(no chat sessions — start one with `shopai chat say`)")
+            return
+        print(f"  {'SESSION':24s}  {'TURNS':>5s}  TITLE")
+        for r in rows:
+            print(f"  {r['id']:24s}  {r['turn_count']:>5d}  {r['title'][:80]}")
+        return
+    if action == "show":
+        session = ChatStore.get(args.session_id)
+        if session is None:
+            print(f"ERR: unknown session {args.session_id}", file=sys.stderr)
+            sys.exit(2)
+        print(f"Session {session.id}  ({len(session.turns)} turns)")
+        for t in session.turns:
+            prefix = "USER" if t.role == "user" else "ORACLE"
+            print(f"\n[{prefix}] {t.text}")
+            if t.cited_ids:
+                print(f"       cites: {t.cited_ids}")
+        return
+    if action == "say":
+        out = send(args.session or None, args.question)
+        if args.json:
+            print(json.dumps(out, indent=2))
+            return
+        if "error" in out:
+            print(f"ERR: {out['error']}", file=sys.stderr)
+            sys.exit(3)
+        print(f"\n{out['answer']}\n")
+        print(f"  — session {out['session_id']} (turn {out['turn_count']}), "
+              f"cites {out['cited_ids']}, "
+              f"{out['memories_used']} memories, "
+              f"via {out['adapter']}/{out['model']}")
+        return
+    print("ERR: use `shopai chat say|list|show`", file=sys.stderr)
+    sys.exit(2)
+
+
+def _cmd_similar(args) -> None:
+    """Semantic search over the memory store."""
+    from core.memory.semantic_index import retrieve_similar, stats
+    idx = stats()
+    if not idx.get("configured"):
+        print("ERR: embedding client unconfigured "
+              "(set GEMINI_API_KEY or GOOGLE_API_KEY)", file=sys.stderr)
+        sys.exit(2)
+    if idx["indexed"] == 0:
+        print("WARN: memory index is empty — run the daemon for a cycle "
+              "or call core.memory.semantic_index.index_pending()")
+    hits = retrieve_similar(args.query, k=args.k, level_min=args.level,
+                            category=args.category)
+    if not hits:
+        print("(no matches)")
+        return
+    print(f"Top {len(hits)} matches for: {args.query!r}")
+    print(f"  {'SIM':>6s}  LVL  {'CATEGORY':18s}  {'ACTION':16s}  ID")
+    for h in hits:
+        m = h["memory"]
+        print(f"  {h['score']:>6.3f}   {m['level']}   "
+              f"{m['category']:18s}  {m['action']:16s}  {m['id']}")
+
+
+def _cmd_competitor(args) -> None:
+    """Manage the competitor price tracker."""
+    from core.autonomous import competitor_monitor as cm
+    action = getattr(args, "comp_action", None)
+    if action == "add":
+        ok = cm.add_url(args.url)
+        print("added" if ok else "already tracked or invalid URL")
+    elif action == "remove":
+        ok = cm.remove_url(args.url)
+        print("removed" if ok else "not tracked")
+    elif action == "list":
+        rows = cm.list_tracked()
+        if not rows:
+            print("(no tracked URLs — `shopai competitor add <url>` to add one)")
+            return
+        print(f"  {'PRICE':>8s}  {'CHECKED':>10s}  URL")
+        for r in rows:
+            price = r.get("last_price")
+            ts = r.get("last_checked", 0)
+            age = f"{int((time.time() - ts) / 60)}m" if ts else "never"
+            pricestr = f"${price:.2f}" if isinstance(price, (int, float)) else "-"
+            print(f"  {pricestr:>8s}  {age:>10s}  {r['url'][:80]}")
+    elif action == "check":
+        result = cm.check_all()
+        print(f"checked {result['checked']} URLs — "
+              f"{len(result['changes'])} significant price changes")
+        for c in result.get("changes", [])[:10]:
+            print(f"  {c['delta_pct']:+.1f}%  {c['old_price']} → "
+                  f"{c['new_price']}  {c['url'][:80]}")
+    else:
+        print("ERR: use `competitor add|remove|list|check`", file=sys.stderr)
+        sys.exit(2)
+
+
+def _cmd_competitor_intel(args) -> None:
+    """Scrape + analyse one or more public Shopify stores.
+
+    Uses ``/products.json`` + ``/collections.json`` + homepage
+    HTML — no auth needed, no Shopify token used. The LLM step
+    is optional (``--no-llm`` skips it; otherwise we route via
+    ``core.llm_gateway.ask`` which picks the cheapest
+    configured adapter). Each run is appended to
+    ``<storage_dir>/<store>.jsonl`` so repeat runs surface
+    diffs (``--no-persist`` to disable)."""
+    from agents.competitor_intel import (
+        analyze_competitors, diff_vs_last,
+        load_history, save_report,
+    )
+
+    llm = None
+    if not args.no_llm:
+        try:
+            from core.llm_gateway import ask as _gateway_ask
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN: llm gateway unavailable ({exc}) — "
+                  f"running raw scrape only", file=sys.stderr)
+            _gateway_ask = None
+        if _gateway_ask is not None:
+            def llm(prompt: str) -> str:
+                res = _gateway_ask(
+                    prompt,
+                    purpose="reasoning",
+                    max_cost=0.02,
+                    max_latency_ms=15_000,
+                )
+                if not res.ok:
+                    raise RuntimeError(res.error or "llm call failed")
+                return res.text
+
+    # Load previous scrape per store BEFORE running the new one,
+    # so the diff is against what was on disk at invocation time.
+    previous: dict[str, dict | None] = {}
+    if not args.no_persist:
+        for s in args.stores:
+            try:
+                hist = load_history(
+                    s, storage_dir=args.storage_dir, limit=1,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: history load failed for {s}: {exc}",
+                      file=sys.stderr)
+                hist = []
+            previous[s] = hist[-1] if hist else None
+
+    reports = analyze_competitors(
+        args.stores,
+        our_store=args.our_store,
+        llm=llm,
+    )
+
+    # Persist AFTER the scrape so each file line represents a
+    # completed scrape (partial reports from crashes don't
+    # pollute the history).
+    if not args.no_persist:
+        for r in reports:
+            try:
+                save_report(r, storage_dir=args.storage_dir)
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARN: persist failed for {r.store}: "
+                      f"{exc}", file=sys.stderr)
+
+    if args.json:
+        payload = []
+        for r in reports:
+            d = r.as_dict()
+            if not args.no_persist:
+                d["diff"] = diff_vs_last(r, previous.get(r.store))
+            payload.append(d)
+        print(json.dumps(payload, indent=2))
+        return
+
+    for r in reports:
+        print(f"\n═══ {r.store} ═══")
+        s = r.summary()
+        if r.errors:
+            print(f"  errors: {', '.join(r.errors)}")
+        if r.catalog and r.catalog.product_count:
+            c = r.catalog
+            print(f"  products: {c.product_count}")
+            print(f"  prices:   ${c.price_range[0]:.2f}–"
+                  f"${c.price_range[1]:.2f} "
+                  f"(median ${c.median_price:.2f})")
+            if c.currencies:
+                print(f"  currencies: {', '.join(c.currencies)}")
+            if c.top_types:
+                print(f"  top types:  "
+                      f"{', '.join(c.top_types[:5])}")
+            if c.top_tags:
+                print(f"  top tags:   "
+                      f"{', '.join(c.top_tags[:8])}")
+            if c.newest_products:
+                print("  newest:")
+                for np in c.newest_products[:3]:
+                    print(f"    - {np['title'][:60]}")
+        else:
+            print("  (catalog empty or private)")
+        if r.homepage:
+            hp = r.homepage
+            if hp.theme_hint:
+                print(f"  theme:     {hp.theme_hint}")
+            if hp.apps_detected:
+                print(f"  apps:      "
+                      f"{', '.join(hp.apps_detected[:10])}")
+            if hp.hero_heading:
+                print(f"  hero H1:   {hp.hero_heading[:100]}")
+            if hp.announcement_bar:
+                print(f"  banner:    "
+                      f"{hp.announcement_bar[:100]}")
+        if r.collection_handles:
+            print(f"  collections: {len(r.collection_handles)}")
+        if not args.no_persist:
+            d = diff_vs_last(r, previous.get(r.store))
+            if d.get("baseline"):
+                print("  diff:      (first scrape — no baseline)")
+            else:
+                deltas = []
+                pcd = d["product_count_delta"]
+                if pcd:
+                    deltas.append(f"products {pcd:+d}")
+                mpd = d["median_price_delta_usd"]
+                if abs(mpd) >= 0.01:
+                    deltas.append(f"median ${mpd:+.2f}")
+                if d["new_apps"]:
+                    deltas.append(
+                        f"new apps: {', '.join(d['new_apps'])}",
+                    )
+                if d["lost_apps"]:
+                    deltas.append(
+                        f"lost apps: {', '.join(d['lost_apps'])}",
+                    )
+                if d["added_handles"]:
+                    deltas.append(
+                        f"+{len(d['added_handles'])} SKUs",
+                    )
+                if d["removed_handles"]:
+                    deltas.append(
+                        f"-{len(d['removed_handles'])} SKUs",
+                    )
+                if deltas:
+                    print(f"  diff:      {'; '.join(deltas)}")
+                else:
+                    print("  diff:      (no change since last scrape)")
+        if r.insights:
+            print("\n  ── strategic take ──")
+            for ln in r.insights.splitlines():
+                print(f"  {ln}")
+
+
+# ── Approval queue (Phase 2 of 4×4 matrix) ──────────────
+
+
+def _cmd_budget_plan(args) -> None:
+    """Thompson-Sampling ad budget allocator."""
+    from core.engines.budget_buyer import (
+        BudgetAllocator, SKUPerformance,
+    )
+    if not args.input:
+        print(
+            "ERR: --input <path> required — JSON file with "
+            "SKU performance records.\n"
+            "Example: [{\"sku\": \"galaxy\", \"orders\": 30, "
+            "\"revenue_usd\": 600, \"ad_spend_usd\": 100, "
+            "\"days_active\": 7}]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    try:
+        with open(args.input, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"ERR: cannot read {args.input}: {exc}",
+              file=sys.stderr)
+        sys.exit(2)
+    if not isinstance(raw, list):
+        print(
+            "ERR: --input JSON must be a list of SKU records",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    perf: list = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        try:
+            perf.append(SKUPerformance(
+                sku=str(row.get("sku") or ""),
+                product_id=str(row.get("product_id") or ""),
+                orders=int(row.get("orders") or 0),
+                revenue_usd=float(row.get("revenue_usd") or 0),
+                ad_spend_usd=float(row.get("ad_spend_usd") or 0),
+                impressions=int(row.get("impressions") or 0),
+                clicks=int(row.get("clicks") or 0),
+                days_active=max(
+                    1, int(row.get("days_active") or 1),
+                ),
+            ))
+        except ValueError as exc:
+            print(f"WARN: skipping row: {exc}",
+                  file=sys.stderr)
+    if not perf:
+        print("ERR: no valid SKU records in input",
+              file=sys.stderr)
+        sys.exit(2)
+    seed = args.seed if args.seed else None
+    allocator = BudgetAllocator(seed=seed)
+    max_per = args.max_per_sku if args.max_per_sku > 0 else None
+    allocs = allocator.allocate(
+        total_daily_usd=args.total,
+        performance=perf,
+        min_per_sku_usd=args.min_per_sku,
+        max_per_sku_usd=max_per,
+    )
+    if args.json:
+        print(json.dumps(
+            [a.as_dict() for a in allocs], indent=2,
+        ))
+        return
+    print(f"Budget plan — ${args.total:.2f}/day across "
+          f"{len(allocs)} SKUs")
+    print(f"  seed={seed}  floor=${args.min_per_sku:.2f}  "
+          f"cap={'$' + str(max_per) if max_per else 'none'}")
+    print()
+    print(f"  {'SKU':24s} {'USD/DAY':>10s} {'SHARE':>7s}  "
+          f"{'OBS ROAS':>9s}  ORDERS  REASON")
+    print("  " + "-" * 96)
+    for a in sorted(
+        allocs, key=lambda x: -x.recommended_daily_usd,
+    ):
+        print(
+            f"  {a.sku[:24]:24s} "
+            f"${a.recommended_daily_usd:>9.2f} "
+            f"{a.share_pct:>6.1f}%  "
+            f"{a.observed_roas:>9.2f}  "
+            f"{a.orders_observed:>6d}  "
+            f"{a.reason[:40]}"
+        )
+    total = sum(a.recommended_daily_usd for a in allocs)
+    print(f"\n  Total: ${total:.2f}")
+
+
+def _cmd_budget_plans(args) -> None:
+    """List recent autopilot-saved budget plans."""
+    from core.engines.budget_buyer import list_plans
+    plans = list_plans(
+        reports_dir=args.reports_dir, limit=args.limit,
+    )
+    if args.json:
+        print(json.dumps(plans, indent=2))
+        return
+    if not plans:
+        print(f"(no plans in {args.reports_dir})")
+        return
+    print(f"Recent budget plans ({len(plans)}):")
+    for plan in plans:
+        allocs = plan.get("allocations") or []
+        total = plan.get("total_daily_usd", 0)
+        print(
+            f"\n  {plan.get('plan_id', '?')} — "
+            f"${total:.2f}/day across "
+            f"{len(allocs)} SKUs "
+            f"(seen {plan.get('campaigns_seen', 0)} "
+            f"campaigns, "
+            f"unmatched {plan.get('campaigns_unmatched', 0)})"
+        )
+        for a in sorted(
+            allocs,
+            key=lambda x: -x.get("recommended_daily_usd", 0),
+        )[:5]:
+            print(
+                f"    {a.get('sku', '?')[:30]:30s} "
+                f"${a.get('recommended_daily_usd', 0):>7.2f} "
+                f"({a.get('share_pct', 0):>4.1f}%) "
+                f"obs ROAS {a.get('observed_roas', 0):>4.2f}"
+            )
+        if len(allocs) > 5:
+            print(f"    ... +{len(allocs) - 5} more")
+    print(f"\nFull plans in: {args.reports_dir}/")
+
+
+def _cmd_ltv_stats(args) -> None:
+    """Customer LTV summary + top-N customers."""
+    from core.engines.budget_buyer import get_engine
+    engine = get_engine()
+    stats = engine.ltv_stats()
+    if args.json:
+        payload = {"stats": stats}
+        if args.top > 0:
+            payload["top_customers"] = [
+                c.as_dict()
+                for c in engine.top_customers(limit=args.top)
+            ]
+        print(json.dumps(payload, indent=2))
+        return
+    print("Customer LTV summary")
+    print(f"  total customers: {stats['total_customers']}")
+    print(f"  total GMV:       ${stats['total_gmv_usd']:.2f}")
+    print(f"  avg LTV:         ${stats['avg_ltv_usd']:.2f}")
+    print(f"  median LTV:      ${stats['median_ltv_usd']:.2f}")
+    print()
+    print("Segment split")
+    for seg, n in sorted(stats["segments"].items()):
+        print(f"  {seg:10s} {n}")
+    if args.top > 0:
+        top = engine.top_customers(limit=args.top)
+        if top:
+            print()
+            print(f"Top {len(top)} by spend:")
+            for c in top:
+                print(
+                    f"  ${c.total_spent_usd:>8.2f}  "
+                    f"{c.orders_count:>3d}×  {c.email}"
+                )
+
+
+def _cmd_email_stats(args) -> None:
+    """Per-flow email campaign stats."""
+    from core.engines.email_campaigns import get_engine
+    engine = get_engine()
+    stats = engine.stats()
+    if args.json:
+        print(json.dumps(stats, indent=2))
+        return
+    totals = stats["totals"]
+    print("Email campaign engine — totals")
+    print(f"  total:    {totals['total']}")
+    print(f"  pending:  {totals['pending']}")
+    print(f"  sent:     {totals['sent']}")
+    print(f"  failed:   {totals['failed']}")
+    print(f"  skipped:  "
+          f"{totals['skipped_missing_ctx']} missing ctx, "
+          f"{totals['skipped_unsubscribed']} unsub, "
+          f"{totals['cancelled']} cancelled")
+    print(f"  unsubscribes: {stats['unsubscribes']}")
+    print()
+    flows = stats.get("flows") or {}
+    if flows:
+        print("Per flow:")
+        for flow_id in sorted(flows):
+            per = flows[flow_id]
+            parts = [
+                f"{k}={v}" for k, v in sorted(per.items())
+                if v
+            ]
+            print(f"  {flow_id:17s} {' · '.join(parts)}")
+    else:
+        print("(no enrollments yet)")
+
+
+def _cmd_email_unsubscribe(args) -> None:
+    """Add a recipient to the unsubscribe list."""
+    from core.engines.email_campaigns import get_engine
+    ok = get_engine().unsubscribe(
+        args.email, source=args.source,
+    )
+    if ok:
+        print(f"✓ unsubscribed {args.email}")
+    else:
+        print(f"ERR: could not unsubscribe {args.email}",
+              file=sys.stderr)
+        sys.exit(2)
+
+
+def _cmd_pending_approvals(args) -> None:
+    """List HIGH/CRITICAL actions waiting for owner confirm."""
+    from core.system.approval_queue import get_queue
+    from core.system import risk_gate
+
+    q = get_queue()
+    # Sweep stale before showing — owner shouldn't see expired
+    # rows mixed in as "pending"
+    q.expire_old()
+    pending = q.pending()[: args.limit]
+
+    if args.json:
+        print(json.dumps(
+            [r.as_dict() for r in pending], indent=2,
+        ))
+        return
+
+    if not pending:
+        print("(no pending approvals)")
+        stats = q.stats()
+        print(
+            f"  total={stats['total']} "
+            f"approved={stats['approved']} "
+            f"denied={stats['denied']} "
+            f"expired={stats['expired']}"
+        )
+        return
+
+    print(f"Pending ({len(pending)}):\n")
+    for r in pending:
+        age_s = int(time.time() - r.requested_at)
+        ttl_s = int(r.expires_at - time.time())
+        age = f"{age_s // 60}m{age_s % 60}s"
+        ttl = (
+            f"{max(0, ttl_s) // 60}m{max(0, ttl_s) % 60}s"
+            if ttl_s > 0 else "EXPIRED"
+        )
+        print(
+            f"  [{r.risk_level.value.upper():8s}] "
+            f"{r.request_id}  {r.action_type:25s}  "
+            f"age={age:>7s}  ttl={ttl:>7s}"
+        )
+        # One-line payload summary — truncated so a big dict
+        # doesn't swamp the terminal
+        if r.payload:
+            payload_preview = json.dumps(r.payload)[:100]
+            print(f"    payload: {payload_preview}")
+        print(f"    why gated: {risk_gate.describe(r.risk_level)}")
+    print()
+    print("  Approve:  shopai approve <request_id> [--reason ...]")
+    print("  Deny:     shopai deny <request_id> --reason ...")
+
+
+def _cmd_approve_request(args) -> None:
+    """Approve a HIGH/CRITICAL action in the risk-gate queue.
+    Distinct from ``_cmd_approve`` which is for the
+    self-revision journal (separate flow)."""
+    from core.system.approval_queue import get_queue
+    q = get_queue()
+    result = q.approve(
+        args.request_id, owner_id=args.owner, reason=args.reason,
+    )
+    if result is None:
+        print(f"ERR: no request with id {args.request_id}",
+              file=sys.stderr)
+        sys.exit(2)
+    if result.status != "approved":
+        print(
+            f"NOTE: request {args.request_id} is now "
+            f"{result.status} (was already decided or expired)"
+        )
+        sys.exit(1)
+    print(f"✓ Approved {args.request_id}  "
+          f"({result.action_type}, {result.risk_level.value})")
+    if result.decision_reason:
+        print(f"  reason: {result.decision_reason}")
+
+
+def _cmd_deny_request(args) -> None:
+    from core.system.approval_queue import get_queue
+    q = get_queue()
+    result = q.deny(
+        args.request_id, owner_id=args.owner, reason=args.reason,
+    )
+    if result is None:
+        print(f"ERR: no request with id {args.request_id}",
+              file=sys.stderr)
+        sys.exit(2)
+    if result.status != "denied":
+        print(
+            f"NOTE: request {args.request_id} is now "
+            f"{result.status} (was already decided or expired)"
+        )
+        sys.exit(1)
+    print(f"✓ Denied {args.request_id}  "
+          f"({result.action_type}, {result.risk_level.value})")
+    if result.decision_reason:
+        print(f"  reason: {result.decision_reason}")
+
+
 def _cmd_health() -> None:
     import importlib
     from engines.registry import engine_count
@@ -1241,6 +4755,2069 @@ def _cmd_health() -> None:
 
     print(f"\nEngines: {engine_count()}")
     print(f"Status:  {'ALL OK' if all_ok else 'SOME FAILURES'}")
+
+
+def _cmd_doctor(
+    *,
+    as_json: bool = False,
+    network: bool = False,
+    snippet: bool = False,
+) -> None:
+    """End-to-end readiness diagnostic. Tells the owner exactly
+    what env / wiring / webhook fixes are needed for real work."""
+    if snippet:
+        from execution.launch.shopify_attribution import (
+            build_liquid_snippet, install_instructions,
+        )
+        shop = os.environ.get(
+            "SHOPAI_SHOPIFY_URL", "your-store.myshopify.com",
+        )
+        print(install_instructions(shop))
+        print()
+        print("─" * 60)
+        print("SNIPPET (paste into layout/theme.liquid):")
+        print("─" * 60)
+        print(build_liquid_snippet())
+        return
+    from core.readiness.health_check import run_all
+    report = run_all(network=network)
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(report.as_text())
+    # Non-zero exit when blocked so shell scripts / CI can branch
+    if report.verdict == "blocked":
+        sys.exit(2)
+    if report.verdict == "degraded":
+        sys.exit(1)
+
+
+# ── Launch pipeline handlers ───────────────────────────────
+
+def _read_winner(source: str) -> dict:
+    """Read winner JSON from file path or stdin ('-')."""
+    if source == "-":
+        data = sys.stdin.read()
+    else:
+        path = Path(source)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"winner file not found: {source}",
+            )
+        data = path.read_text()
+    try:
+        winner = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"winner_json is not valid JSON: {exc}",
+        ) from exc
+    if not isinstance(winner, dict):
+        raise ValueError(
+            "winner_json must decode to an object",
+        )
+    return winner
+
+
+def _cmd_publish(
+    *,
+    winner_json: str,
+    budget: float,
+    platform: str,
+    live: bool,
+    as_json: bool,
+) -> None:
+    """Run publisher_bundle for one winner."""
+    from execution.launch.publisher_bundle import (
+        LaunchRequest, PublisherBundle,
+    )
+    try:
+        winner = _read_winner(winner_json)
+    except Exception as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"[launch] error: {exc}")
+        sys.exit(2)
+    shop_url = os.environ.get(
+        "SHOPAI_SHOPIFY_URL", "",
+    )
+    api_key = os.environ.get(
+        "SHOPAI_SHOPIFY_KEY",
+        os.environ.get(
+            "SHOPAI_SHOPIFY_CLIENT_SECRET", "",
+        ),
+    )
+    meta_account = os.environ.get(
+        "META_ADS_ACCOUNT_ID",
+        os.environ.get("meta_ads_account_id", ""),
+    )
+    try:
+        req = LaunchRequest(
+            winner=winner,
+            shop_url=shop_url,
+            api_key=api_key,
+            ad_budget_daily=budget,
+            platform=platform,
+            meta_account_id=meta_account,
+            live=live,
+        )
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"[launch] request invalid: {exc}")
+            print(
+                "(hint: ensure SHOPAI_SHOPIFY_URL is set; "
+                "use --live only with real Shopify token)"
+            )
+        sys.exit(2)
+    bundle = PublisherBundle()
+    result = bundle.launch(req)
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    status = "✓" if result.ok else "✗"
+    mode = "DRY-RUN" if result.dry_run else "LIVE"
+    print(
+        f"[publish {status} {mode}] decision={result.decision_id}"
+    )
+    print(f"  product_id     : {result.product_id}")
+    print(f"  product_handle : {result.product_handle}")
+    print(f"  campaign_id    : {result.campaign_id}")
+    print(f"  tracking_url   : {result.tracking_url}")
+    if not result.ok:
+        print(f"  note           : {result.note}")
+    print("  steps:")
+    for s in result.steps:
+        icon = {
+            "success": "✓", "dry_run": "·",
+            "error": "✗",
+        }.get(s.status, "?")
+        print(f"    {icon} {s.name}: {s.status}")
+        if s.error:
+            print(f"        error: {s.error}")
+    if not result.ok:
+        sys.exit(1)
+
+
+def _cmd_activate(
+    *,
+    campaign_id: str,
+    budget: float,
+    auto_approve: bool,
+    live: bool,
+    as_json: bool,
+) -> None:
+    """Run campaign_activator to flip PAUSED→ACTIVE."""
+    from execution.launch.campaign_activator import (
+        ActivateRequest, CampaignActivator,
+    )
+    try:
+        req = ActivateRequest(
+            campaign_id=campaign_id,
+            daily_budget_usd=budget,
+            auto_approve=auto_approve,
+            live=live,
+        )
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"[activate] request invalid: {exc}")
+        sys.exit(2)
+    activator = CampaignActivator()
+    result = activator.activate(req)
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    verdict_icon = {
+        "activated": "✓",
+        "dry_run": "·",
+        "pending": "?",
+        "blocked": "✗",
+    }.get(result.verdict, "?")
+    print(
+        f"[activate {verdict_icon} {result.verdict.upper()}] "
+        f"campaign={result.campaign_id}"
+    )
+    print(f"  decision_id : {result.decision_id}")
+    if result.block_reason:
+        print(f"  blocked     : {result.block_reason}")
+    if result.pending_reason:
+        print(f"  pending     : {result.pending_reason}")
+    print("  steps:")
+    for s in result.steps:
+        icon = {
+            "ok": "✓", "dry_run": "·",
+            "blocked": "✗", "pending": "?",
+            "error": "✗",
+        }.get(s.status, "?")
+        print(
+            f"    {icon} {s.name}: {s.status} "
+            f"— {s.note}"
+        )
+    if result.verdict == "blocked":
+        sys.exit(1)
+    if result.verdict == "pending":
+        sys.exit(2)
+
+
+def _cmd_autopilot(
+    *,
+    seeds: str,
+    peers: str,
+    max_launches: int,
+    top_n: int,
+    budget: float,
+    platform: str,
+    auto_activate: bool,
+    live: bool,
+    as_json: bool,
+) -> None:
+    """Full-autonomy chain: discovery → publish → activate."""
+    from execution.launch.autopilot import (
+        Autopilot, AutopilotRequest,
+    )
+    from agents.research.sources.manual_seed import (
+        ManualSeedSource,
+    )
+    from agents.research.sources.peer_store_observer import (
+        PeerStoreObserverSource,
+    )
+    from agents.research.sources.cj_dropshipping import (
+        CJDropshippingSource,
+    )
+    from agents.research.sources.aliexpress_scraper import (
+        AliExpressScraperSource,
+    )
+    # Build sources from CLI flags + env
+    sources = []
+    seed_path = Path(seeds) if seeds else None
+    if seed_path and seed_path.exists():
+        sources.append(ManualSeedSource(seed_path))
+    peer_list = [
+        p.strip() for p in peers.split(",") if p.strip()
+    ]
+    if peer_list:
+        sources.append(
+            PeerStoreObserverSource(peer_list),
+        )
+    # CJ auto-enables on CJ_EMAIL + CJ_API_KEY
+    cj = CJDropshippingSource()
+    if cj.is_available():
+        sources.append(cj)
+    # AliExpress opt-in via env gate
+    ali = AliExpressScraperSource()
+    if ali.is_available():
+        sources.append(ali)
+    if not sources:
+        msg = (
+            "No winner sources available. "
+            "Either create --seeds file or pass --peers. "
+            "See 'shopai doctor --snippet' for template."
+        )
+        if as_json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(f"[autopilot] {msg}")
+        sys.exit(2)
+    shop_url = os.environ.get(
+        "SHOPAI_SHOPIFY_URL", "",
+    )
+    api_key = os.environ.get(
+        "SHOPAI_SHOPIFY_KEY",
+        os.environ.get(
+            "SHOPAI_SHOPIFY_CLIENT_SECRET", "",
+        ),
+    )
+    meta_account = os.environ.get(
+        "META_ADS_ACCOUNT_ID",
+        os.environ.get("meta_ads_account_id", ""),
+    )
+    try:
+        req = AutopilotRequest(
+            shop_url=shop_url,
+            api_key=api_key,
+            winner_sources=sources,
+            max_launches=max_launches,
+            top_n=top_n,
+            ad_budget_daily=budget,
+            platform=platform,
+            meta_account_id=meta_account,
+            auto_activate=auto_activate,
+            live=live,
+        )
+    except ValueError as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"[autopilot] request invalid: {exc}")
+        sys.exit(2)
+    pilot = Autopilot()
+    run = pilot.run(req)
+    if as_json:
+        print(json.dumps(run.as_dict(), indent=2))
+        return
+    mode = "DRY-RUN" if run.dry_run else "LIVE"
+    print(
+        f"[autopilot {mode}] run={run.id} "
+        f"examined={run.winners_examined} "
+        f"ranked={run.winners_ranked} "
+        f"launches={len(run.launches)} "
+        f"successful={run.successful_launches}"
+    )
+    for l in run.launches:
+        pub_icon = {
+            "ok": "✓", "dry_run": "·", "error": "✗",
+        }.get(l.publish_verdict, "?")
+        act_icon = {
+            "activated": "✓", "dry_run": "·",
+            "pending": "?", "blocked": "✗",
+            "skipped": "-", "error": "✗",
+        }.get(l.activate_verdict, "?")
+        print(
+            f"  [{pub_icon}/{act_icon}] {l.winner_title[:40]}"
+        )
+        print(
+            f"      decision : {l.decision_id}"
+        )
+        if l.product_handle:
+            print(
+                f"      handle   : {l.product_handle}"
+            )
+        if l.campaign_id:
+            print(
+                f"      campaign : {l.campaign_id}"
+            )
+        if l.block_reason:
+            print(
+                f"      blocked  : {l.block_reason}"
+            )
+    if run.successful_launches == 0 and run.launches:
+        sys.exit(1)
+
+
+# ── Self-revision journal (Sprint 2) ────────────────────────
+
+def _cmd_pending(
+    *, limit: int, as_json: bool,
+) -> None:
+    """Show revision_journal proposals awaiting owner approval."""
+    from core.brain.brain_facade import _revision_journal
+    journal = _revision_journal()
+    pending = journal.by_status("proposed")
+    pending = pending[:limit]
+    if as_json:
+        print(json.dumps(
+            [p.as_dict() for p in pending], indent=2,
+        ))
+        return
+    if not pending:
+        print("No pending proposals.")
+        return
+    print(f"Pending proposals ({len(pending)}):")
+    for p in pending:
+        print(
+            f"  [{p.id[:10]}] kind={p.kind} "
+            f"target={p.target} "
+            f"evidence={p.evidence_score:.2f}"
+        )
+        print(f"      new: {p.new_value}")
+        print(f"      why: {p.reason}")
+
+
+def _cmd_approve(
+    *, revision_id: str, apply_too: bool,
+) -> None:
+    """Approve a pending revision → accepted (or applied)."""
+    from core.brain.brain_facade import _revision_journal
+    journal = _revision_journal()
+    try:
+        rev = journal.accept(revision_id)
+    except ValueError as exc:
+        print(f"[approve] {exc}")
+        sys.exit(2)
+    print(
+        f"[approve ✓] {rev.id[:10]} → accepted "
+        f"(target={rev.target})"
+    )
+    if apply_too:
+        try:
+            applied = journal.mark_applied(rev.id)
+            print(
+                f"[apply ✓] {applied.id[:10]} → applied"
+            )
+        except ValueError as exc:
+            print(f"[apply] {exc}")
+            sys.exit(2)
+
+
+def _cmd_reject(*, revision_id: str) -> None:
+    """Reject a pending revision."""
+    from core.brain.brain_facade import _revision_journal
+    journal = _revision_journal()
+    try:
+        rev = journal.reject(revision_id)
+    except ValueError as exc:
+        print(f"[reject] {exc}")
+        sys.exit(2)
+    print(
+        f"[reject ✗] {rev.id[:10]} → rejected "
+        f"(target={rev.target})"
+    )
+
+
+def _cmd_distill(
+    *, window: int, as_json: bool,
+) -> None:
+    """Run launch_learner — episodes → rules → journal."""
+    from agents.learning.launch_learner import LaunchLearner
+    learner = LaunchLearner()
+    report = learner.distill(window_limit=window)
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(
+        f"[distill] examined={report.episodes_examined} "
+        f"clusters={report.clusters_formed} "
+        f"proposals={len(report.proposals)} "
+        f"accepted={report.accepted}"
+    )
+    for p in report.proposals:
+        icon = {
+            "accept": "✓", "defer": "?", "skip": "-",
+            "reject_all": "✗",
+        }.get(p.arbitration_verdict, "?")
+        print(
+            f"  [{icon}] {p.statement[:80]}"
+        )
+        if p.journal_revision_id:
+            print(
+                f"      → journal rev "
+                f"{p.journal_revision_id[:10]}"
+            )
+        elif p.note:
+            print(f"      note: {p.note[:70]}")
+
+
+def _cmd_report(
+    *, hours: float, as_json: bool,
+) -> None:
+    """Compose + render the launch digest (v38+)."""
+    from agents.learning.launch_digest import (
+        compose_digest,
+    )
+    digest = compose_digest(period_hours=hours)
+    if as_json:
+        print(json.dumps(digest.as_dict(), indent=2))
+        return
+    print(digest.as_text())
+
+
+def _cmd_publications(
+    *, limit: int, as_json: bool,
+) -> None:
+    """Show recent publisher_bundle.recent() entries."""
+    from execution.launch.publisher_bundle import (
+        PublisherBundle,
+    )
+    bundle = PublisherBundle()
+    recent = bundle.recent(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in recent],
+            indent=2,
+        ))
+        return
+    if not recent:
+        print(
+            "No publications yet (in-process history; "
+            "run under a daemon for persistent history)."
+        )
+        return
+    print(f"Recent publications ({len(recent)}):")
+    for r in recent:
+        icon = "✓" if r.ok else "✗"
+        mode = "dry" if r.dry_run else "live"
+        print(
+            f"  {icon} [{mode}] {r.decision_id} "
+            f"handle={r.product_handle} "
+            f"campaign={r.campaign_id}"
+        )
+
+
+def _cmd_activations(
+    *, limit: int, as_json: bool,
+) -> None:
+    """Show recent campaign_activator.recent() entries."""
+    from execution.launch.campaign_activator import (
+        CampaignActivator,
+    )
+    activator = CampaignActivator()
+    recent = activator.recent(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in recent],
+            indent=2,
+        ))
+        return
+    if not recent:
+        print("No activations yet.")
+        return
+    print(f"Recent activations ({len(recent)}):")
+    for r in recent:
+        icon = {
+            "activated": "✓", "dry_run": "·",
+            "pending": "?", "blocked": "✗",
+        }.get(r.verdict, "?")
+        print(
+            f"  {icon} {r.verdict:10s} campaign={r.campaign_id} "
+            f"decision={r.decision_id}"
+        )
+
+
+def _cmd_predict(args) -> None:
+    from core.brain.world_model_calibration import (
+        get_world_model_calibration,
+    )
+    calib = get_world_model_calibration()
+    pred = calib.predict(
+        action=args.action,
+        kpi=args.kpi,
+        context={
+            "niche": args.niche,
+            "price_band": args.price_band,
+            "margin_band": args.margin_band,
+            "copy_tone": args.tone,
+        },
+    )
+    if args.json:
+        print(json.dumps(pred.as_dict(), indent=2))
+        return
+    band_mark = {
+        "tight": "✓", "moderate": "·",
+        "loose": "!", "uninformed": "?",
+    }.get(pred.band, "?")
+    print(
+        f"{band_mark} Prediction — action={args.action} "
+        f"kpi={args.kpi}"
+    )
+    print()
+    print(
+        f"  Base mean:              {pred.mean:.3f}"
+    )
+    print(
+        f"  Base stdev:             {pred.stdev:.3f}"
+    )
+    print(
+        f"  Calibrated stdev:       "
+        f"{pred.calibrated_stdev:.3f}"
+    )
+    print(
+        f"  Bias-adjusted mean:     "
+        f"{pred.bias_adjusted_mean:.3f}"
+    )
+    print(
+        f"  Band:                   {pred.band}"
+    )
+    print(
+        f"  World-model samples:    {pred.samples}"
+    )
+    print(
+        f"  Calibration samples:    "
+        f"{pred.calibration_sample_count}"
+    )
+    print()
+    print(f"  {pred.explanation}")
+
+
+def _cmd_landed_cost(args) -> None:
+    from execution.fulfillment.landed_cost import (
+        LandedCostInput,
+        calculate_landed_cost,
+        minimum_retail_for_margin,
+    )
+    inp = LandedCostInput(
+        fob_usd=float(args.fob),
+        destination=args.destination,
+        origin=args.origin or "CN",
+        hts_code=args.hts or "",
+        shipping_usd=float(args.shipping),
+        fulfillment_fee_usd=float(args.fulfillment),
+    )
+    breakdown = calculate_landed_cost(
+        inp, de_minimis_override=args.de_minimis,
+    )
+    min_retail = minimum_retail_for_margin(
+        inp,
+        target_margin=float(args.target_margin),
+        de_minimis_override=args.de_minimis,
+    )
+    if args.json:
+        out = breakdown.as_dict()
+        out["minimum_retail_for_target_margin"] = round(
+            min_retail, 2,
+        )
+        out["target_margin"] = float(args.target_margin)
+        print(json.dumps(out, indent=2))
+        return
+    print(
+        f"Landed cost — {args.origin}→{args.destination} "
+        f"FOB ${args.fob:.2f}"
+    )
+    print()
+    print(
+        f"  FOB:                ${breakdown.fob_usd:>8.2f}"
+    )
+    print(
+        f"  Shipping:           ${breakdown.shipping_usd:>8.2f}"
+    )
+    print(
+        f"  Duty ({breakdown.duty_rate:.0%}):        "
+        f"${breakdown.duty_usd:>8.2f}"
+    )
+    print(
+        f"  VAT ({breakdown.vat_rate:.0%}):         "
+        f"${breakdown.vat_usd:>8.2f}"
+    )
+    print(
+        f"  Payment processing: "
+        f"${breakdown.payment_processing_usd:>8.2f}"
+    )
+    print(
+        f"  Fulfillment fee:    "
+        f"${breakdown.fulfillment_fee_usd:>8.2f}"
+    )
+    print(f"  {'':─>40}")
+    print(
+        f"  TOTAL:              ${breakdown.total_usd:>8.2f}"
+    )
+    print()
+    print(
+        f"  De-minimis: "
+        + (
+            "APPLIED ✓" if breakdown.de_minimis_applied
+            else "NOT applied"
+        )
+    )
+    if breakdown.notes:
+        for n in breakdown.notes:
+            print(f"    · {n}")
+    print()
+    print(
+        f"  Min retail for {float(args.target_margin):.0%} "
+        f"margin: ${min_retail:.2f}"
+    )
+
+
+def _cmd_agentic_status(
+    *, force: bool, as_json: bool,
+) -> None:
+    from core.bridge.agentic_storefront import (
+        get_agentic_bridge,
+    )
+    bridge = get_agentic_bridge()
+    statuses = bridge.status(force=force)
+    if as_json:
+        print(json.dumps(
+            [s.as_dict() for s in statuses], indent=2,
+        ))
+        return
+    print("Agentic storefront channels:")
+    print()
+    print(
+        f"  {'Channel':<12} {'Enabled':>8}  "
+        f"{'Orders':>8}  Note"
+    )
+    for s in statuses:
+        mark = "✓" if s.enabled else "·"
+        print(
+            f"  {s.channel:<12} {mark:>8}  "
+            f"{s.total_orders:>8}  {s.note}"
+        )
+    print()
+    print(
+        "Shopify admin > Online Store > Sales channels > "
+        "Agentic Storefronts to toggle."
+    )
+
+
+def _cmd_agentic_metrics(
+    *, days: int, as_json: bool,
+) -> None:
+    from core.bridge.agentic_storefront import (
+        get_agentic_bridge,
+    )
+    try:
+        from core.memory.memory_intelligence import (
+            MemoryIntelligence,
+        )
+        mem = MemoryIntelligence()
+        orders = mem.recent_orders(
+            window_days=int(days),
+        ) if hasattr(
+            mem, "recent_orders",
+        ) else []
+    except Exception:  # noqa: BLE001
+        orders = []
+    bridge = get_agentic_bridge()
+    metrics = bridge.aggregate(
+        orders, window_days=int(days),
+    )
+    if as_json:
+        print(json.dumps(
+            [m.as_dict() for m in metrics], indent=2,
+        ))
+        return
+    if not metrics:
+        print(
+            f"No agentic orders in last {days}d.\n"
+            "Either channels not enabled, or no AI-"
+            "referred orders yet. Check `shopai agentic "
+            "status`."
+        )
+        return
+    print(f"Agentic channel GMV — last {days}d:")
+    print(
+        f"  {'Channel':<12} {'Orders':>7}  "
+        f"{'GMV':>10}  {'AOV':>8}"
+    )
+    for m in metrics:
+        print(
+            f"  {m.channel:<12} {m.orders:>7}  "
+            f"${m.gmv_usd:>9.2f}  ${m.aov_usd:>7.2f}"
+        )
+
+
+def _cmd_moby_win_rate(*, as_json: bool) -> None:
+    from core.brain.moby_vote_comparator import (
+        get_moby_vote_comparator,
+    )
+    rate = get_moby_vote_comparator().win_rate()
+    if as_json:
+        print(json.dumps(rate, indent=2))
+        return
+    if not rate or not rate.get("total_resolved"):
+        print(
+            "Moby win-rate: no resolved disagreements yet."
+            "\nDisagreements auto-resolve when a paid "
+            "order fires OutcomeRecorder with the same "
+            "decision_id."
+        )
+        return
+    total = int(rate["total_resolved"])
+    print(f"Moby win-rate — {total} resolved disagreements:")
+    print(
+        f"  moby_only:     "
+        f"{rate.get('moby_only', 0):>4}"
+    )
+    print(
+        f"  shopai_only:   "
+        f"{rate.get('shopai_only', 0):>4}"
+    )
+    print(
+        f"  both_correct:  "
+        f"{rate.get('both_correct', 0):>4}"
+    )
+    print(
+        f"  both_wrong:    "
+        f"{rate.get('both_wrong', 0):>4}"
+    )
+    print(
+        f"  moby_win_rate:   "
+        f"{rate.get('moby_win_rate', 0):.1%}"
+    )
+    print(
+        f"  shopai_win_rate: "
+        f"{rate.get('shopai_win_rate', 0):.1%}"
+    )
+
+
+def _cmd_moby_log(*, limit: int, as_json: bool) -> None:
+    from core.adapters.triplewhale.moby import (
+        get_moby_adapter,
+    )
+    rows = get_moby_adapter().recent_disagreements(
+        limit=limit,
+    )
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in rows], indent=2,
+        ))
+        return
+    if not rows:
+        print("No recorded disagreements.")
+        return
+    print(f"Moby ↔ ShopAI disagreements (last {len(rows)}):")
+    print(
+        f"  {'decision_id':<24} "
+        f"{'moby':<18} {'shopai':<18} "
+        f"{'outcome':<12} winner"
+    )
+    for r in rows:
+        print(
+            f"  {r.decision_id[:23]:<24} "
+            f"{r.moby_vote[:17]:<18} "
+            f"{r.shopai_vote[:17]:<18} "
+            f"{(r.actual_outcome or 'pending')[:11]:<12} "
+            f"{r.winner or '-'}"
+        )
+
+
+def _cmd_fal_status(*, as_json: bool) -> None:
+    from core.adapters.fal.video_router import (
+        FalVideoRouter,
+    )
+    router = FalVideoRouter()
+    stats = router.stats()
+    router.close()
+    if as_json:
+        print(json.dumps(stats, indent=2))
+        return
+    print("fal.ai video router:")
+    print(
+        f"  configured:          "
+        f"{stats.get('configured')}"
+    )
+    print(
+        f"  weekly_cap_usd:      "
+        f"${stats.get('weekly_cap_usd', 0):.2f}"
+    )
+    print(
+        f"  total_spend_usd:     "
+        f"${stats.get('total_spend_usd', 0):.2f}"
+    )
+    print(
+        f"  total_generations:   "
+        f"{stats.get('total_generations', 0)}"
+    )
+    print(
+        f"  catalogue_size:      "
+        f"{stats.get('catalogue_size', 0)}"
+    )
+    if not stats.get("configured"):
+        print("  (set FAL_KEY to enable live generation)")
+
+
+def _cmd_fal_spent(*, sku: str, as_json: bool) -> None:
+    from core.adapters.fal.video_router import (
+        FalVideoRouter,
+    )
+    router = FalVideoRouter()
+    spent = router.spent_this_week(sku)
+    cap = router.stats().get("weekly_cap_usd", 0)
+    router.close()
+    remaining = max(0.0, float(cap) - float(spent))
+    payload = {
+        "sku": sku,
+        "spent_this_week_usd": round(spent, 4),
+        "weekly_cap_usd": round(float(cap), 2),
+        "remaining_usd": round(remaining, 4),
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return
+    print(f"fal.ai weekly spend for {sku}:")
+    print(f"  spent:     ${spent:.2f}")
+    print(f"  cap:       ${float(cap):.2f}")
+    print(f"  remaining: ${remaining:.2f}")
+
+
+def _cmd_oauth_status(
+    *, shop: str | None, as_json: bool,
+) -> None:
+    from core.auth.token_resolver import (
+        has_oauth_config, source_for,
+    )
+    target_shop = shop or os.environ.get(
+        "SHOPAI_SHOPIFY_URL", "",
+    )
+    payload = {
+        "shop": target_shop,
+        "oauth_configured": has_oauth_config(),
+        "source": source_for(target_shop),
+    }
+    if has_oauth_config() and target_shop:
+        try:
+            from core.auth.token_resolver import _get_auth
+            auth = _get_auth()
+            if auth is not None:
+                payload["token_status"] = (
+                    auth.token_status(target_shop)
+                )
+        except Exception as exc:  # noqa: BLE001
+            payload["token_status_error"] = str(exc)
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return
+    print("Shopify OAuth token status:")
+    print(f"  shop:             {payload['shop'] or '(unset)'}")
+    print(
+        f"  oauth_configured: "
+        f"{payload['oauth_configured']}"
+    )
+    print(f"  source:           {payload['source']}")
+    ts = payload.get("token_status")
+    if isinstance(ts, dict):
+        for k, v in ts.items():
+            print(f"    {k}: {v}")
+    elif "token_status_error" in payload:
+        print(
+            f"  error: {payload['token_status_error']}",
+        )
+    if payload["source"] == "none":
+        print(
+            "  (set SHOPAI_SHOPIFY_CLIENT_ID + "
+            "CLIENT_SECRET + install via OAuth, "
+            "or set SHOPAI_SHOPIFY_KEY for legacy "
+            "custom apps)"
+        )
+
+
+def _cmd_brain_snapshot(*, as_json: bool) -> None:
+    from core.brain.brain_state_synthesizer import (
+        get_brain_state_synthesizer,
+    )
+    synth = get_brain_state_synthesizer()
+    state = synth.snapshot()
+    if as_json:
+        print(json.dumps(state.as_dict(), indent=2))
+        return
+    icon = {
+        "green": "✓", "yellow": "?",
+        "red": "✗",
+    }.get(state.crisis_level, "?")
+    print(
+        f"{icon} Brain snapshot — "
+        f"crisis={state.crisis_level.upper()}  "
+        + ("(HALTED)" if state.halted else "")
+    )
+    print()
+    print(
+        f"  Ad spend today:   "
+        f"{state.tripwire_utilisation:.0%} of cap  "
+        f"(${state.tripwire_remaining_usd:.2f} remaining)"
+    )
+    if state.rule_counts:
+        inline = "  ".join(
+            f"{k}={v}"
+            for k, v in sorted(state.rule_counts.items())
+        )
+        print(f"  Learned rules:    {inline}")
+    if state.memory_counts:
+        inline = "  ".join(
+            f"{k}={v}"
+            for k, v in state.memory_counts.items()
+        )
+        print(f"  Memory:           {inline}")
+    if state.trust_top:
+        names = ", ".join(
+            f"{s}({t:.0%})"
+            for s, t in state.trust_top[:3]
+        )
+        print(f"  Top sources:      {names}")
+    print(
+        f"  Decisions logged: {state.rationale_total}"
+    )
+    print()
+    if state.priorities:
+        print("Priorities:")
+        for p in state.priorities:
+            mark = {
+                "critical": "✗",
+                "warning": "!",
+                "info": "·",
+            }.get(p.level, "·")
+            print(f"  {mark} [{p.level}] {p.message}")
+            if p.detail:
+                print(f"      {p.detail}")
+    else:
+        print("Priorities: (none — system idle)")
+    if state.notes:
+        print()
+        print("Notes:")
+        for n in state.notes:
+            print(f"  • {n}")
+
+
+def _cmd_vault_sweep(
+    *, vault: str, dry_run: bool, as_json: bool,
+) -> None:
+    from core.adapters.obsidian.read_back import (
+        ObsidianReadBack,
+    )
+    path = vault or os.environ.get(
+        "OBSIDIAN_VAULT_PATH", "",
+    )
+    if not path:
+        print(
+            "Vault path missing — pass --vault or set "
+            "OBSIDIAN_VAULT_PATH."
+        )
+        return
+    rb = ObsidianReadBack(vault_path=path)
+    if not rb.is_available():
+        print(f"Vault path not a directory: {path}")
+        return
+    sink = None if dry_run else _default_constraint_sink()
+    report = rb.sweep(constraint_sink=sink)
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(f"Vault sweep: {path}")
+    print(f"  Scanned:           {report.scanned}")
+    print(f"  Applied:           {report.applied}")
+    print(
+        f"  Skipped inactive:  {report.skipped_inactive}"
+    )
+    print(
+        f"  Skipped expired:   {report.skipped_expired}"
+    )
+    print(
+        f"  Skipped invalid:   {report.skipped_invalid}"
+    )
+    if report.errors:
+        print()
+        print("  Errors:")
+        for e in report.errors:
+            print(f"    • {e}")
+
+
+def _default_constraint_sink():
+    """Wrap behavioral_constraint_registry in a register()
+    shim that matches the ObsidianReadBack contract. Returns
+    None silently when the registry isn't reachable."""
+    try:
+        from core.brain.behavioral_constraint_registry import (
+            BehavioralConstraintRegistry,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+    class _Sink:
+        def __init__(self):
+            self._reg = BehavioralConstraintRegistry()
+
+        def register(
+            self, *, constraint_id, kind, scope,
+            priority, note, source,
+        ):
+            # Behavioral constraints in ShopAI use a different
+            # shape; we store a light-weight record in the
+            # registry's note store so owner vault rules surface
+            # in 'shopai brain' reports without requiring a
+            # schema migration.
+            try:
+                self._reg.register_note(
+                    note_id=constraint_id,
+                    kind=kind,
+                    scope=scope,
+                    priority=priority,
+                    note=note,
+                    source=source,
+                )
+            except AttributeError:
+                # Older registries don't expose register_note;
+                # fall through silently so the sweep still
+                # reports the applied_id.
+                pass
+    return _Sink()
+
+
+def _cmd_explain_decision(
+    *, decision_id: str, as_json: bool,
+) -> None:
+    from core.decision.rationale_ledger import (
+        get_rationale_ledger,
+    )
+    ledger = get_rationale_ledger()
+    if as_json:
+        rec = ledger.get(decision_id)
+        if rec is None:
+            print(json.dumps(
+                {"error": "not found"}, indent=2,
+            ))
+            return
+        print(json.dumps(rec.as_dict(), indent=2))
+        return
+    print(ledger.explain(decision_id))
+
+
+def _cmd_explain_recent(
+    *, limit: int, as_json: bool,
+) -> None:
+    from core.decision.rationale_ledger import (
+        get_rationale_ledger,
+    )
+    ledger = get_rationale_ledger()
+    records = ledger.recent(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in records], indent=2,
+        ))
+        return
+    if not records:
+        print(
+            "No rationales recorded yet. Run a launch via "
+            "`shopai autopilot` to populate."
+        )
+        return
+    print(f"Recent decisions ({len(records)}):")
+    for r in records:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%SZ",
+            time.gmtime(r.ts),
+        )
+        print(
+            f"  {ts}  {r.decision_id:24s}  "
+            f"nodes={r.node_count:>3}  "
+            f"{r.summary[:40]}"
+        )
+
+
+def _cmd_trust_status() -> None:
+    from core.data.source_trust_calibrator import (
+        get_calibrator,
+    )
+    c = get_calibrator()
+    ranked = c.ranked()
+    if not ranked:
+        print(
+            "No sources registered yet. Use 'shopai trust "
+            "baseline --source NAME --trust 0.5' to add one."
+        )
+        return
+    print("Source trust (ranked):")
+    print(
+        f"  {'Source':<22} {'Trust':>6}  "
+        f"{'Samples':>8}  {'Win EMA':>8}  "
+        f"{'Err EMA':>8}"
+    )
+    for name, trust in ranked:
+        stats = c.get(name)
+        print(
+            f"  {name:<22} {trust:>6.2f}  "
+            f"{stats.samples:>8d}  "
+            f"{stats.win_ema:>8.2%}  "
+            f"{stats.error_rate_ema:>8.2%}"
+        )
+
+
+def _cmd_trust_set_baseline(
+    *, source: str, trust_value: float,
+) -> None:
+    from core.data.source_trust_calibrator import (
+        get_calibrator,
+    )
+    c = get_calibrator()
+    c.register(source, baseline_trust=trust_value)
+    print(
+        f"✓ {source} baseline trust set to "
+        f"{trust_value:.2f}"
+    )
+
+
+def _cmd_memory_status() -> None:
+    from core.memory.consolidator import get_consolidator
+    c = get_consolidator()
+    s = c.stats()
+    print("Memory consolidator — episode → concept → procedure")
+    print(f"  Episodes:         {s['episodes']}")
+    print(f"  Concepts:         {s['concepts']}")
+    print(f"  Procedures:       {s['procedures']}")
+    print(f"  Cold archive:     {s['cold_archive']}")
+    print()
+    print(
+        f"  min_episodes→concept:           "
+        f"{s['min_episodes_for_concept']}"
+    )
+    print(
+        f"  min_concept_refs→procedure:     "
+        f"{s['min_concept_refs_for_procedure']}"
+    )
+    print(
+        f"  min_success_rate:               "
+        f"{s['min_success_rate']:.0%}"
+    )
+    print(
+        f"  stale_after:                    "
+        f"{int(s['stale_after_s'] / 86400)}d"
+    )
+
+
+def _cmd_memory_consolidate(*, as_json: bool) -> None:
+    from core.memory.consolidator import get_consolidator
+    c = get_consolidator()
+    report = c.consolidate()
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print("✓ Consolidation sweep complete")
+    print(
+        f"  Episodes seen:       {report.episodes_seen}"
+    )
+    print(
+        f"  Concepts promoted:   "
+        f"{report.concepts_promoted}"
+    )
+    print(
+        f"  Procedures promoted: "
+        f"{report.procedures_promoted}"
+    )
+    print(f"  Stale decayed:       {report.stale_decayed}")
+    print(f"  Cold archived:       {report.cold_archived}")
+
+
+def _cmd_memory_concepts(
+    *, limit: int, as_json: bool,
+) -> None:
+    from core.memory.consolidator import get_consolidator
+    c = get_consolidator()
+    concepts = c.concepts(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [c.as_dict() for c in concepts], indent=2,
+        ))
+        return
+    if not concepts:
+        print("No concepts yet.")
+        return
+    print(f"Top {len(concepts)} concepts:")
+    for cc in concepts:
+        procedure_mark = " →P" if cc.promoted_to_procedure else ""
+        print(
+            f"  [{cc.concept_id[:8]}] "
+            f"{cc.signature:18s}  "
+            f"ev={cc.evidence_count:>3} "
+            f"refs={cc.refs:>3} "
+            f"succ={cc.success_rate:.0%} "
+            f"prio={cc.priority:.2f}"
+            f"{procedure_mark}"
+        )
+
+
+def _cmd_memory_procedures(
+    *, limit: int, as_json: bool,
+) -> None:
+    from core.memory.consolidator import get_consolidator
+    c = get_consolidator()
+    procs = c.procedures(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [p.as_dict() for p in procs], indent=2,
+        ))
+        return
+    if not procs:
+        print("No procedures promoted yet.")
+        return
+    print(f"Promoted procedures ({len(procs)}):")
+    for p in procs:
+        print(
+            f"  [{p.procedure_id[:8]}] "
+            f"{p.signature:22s}  "
+            f"refs={p.refs:>3} "
+            f"success={p.success_rate:.0%}"
+        )
+
+
+def _cmd_brain_learned_status() -> None:
+    from core.learning.rulebook import get_rulebook
+    book = get_rulebook()
+    s = book.stats()
+    print("RuleBook — what the brain has learned")
+    print(f"  Total rules:      {s['total_rules']}")
+    for status, count in (
+        s.get("by_status") or {}
+    ).items():
+        print(f"    {status:12s}  {count}")
+    print()
+    print(
+        f"  Auto-activate:    {s['min_evidence_for_active']}"
+        f" evidence @ "
+        f"{s['min_win_rate_for_active']:.0%} win-rate"
+    )
+    print(
+        f"  Auto-kill:        "
+        f"{s['kill_after_applied']} applied @ "
+        f"< {s['kill_win_rate_floor']:.0%} win-rate"
+    )
+
+
+def _cmd_brain_learned_top(
+    *, limit: int, as_json: bool,
+) -> None:
+    from core.learning.rulebook import get_rulebook
+    book = get_rulebook()
+    rules = book.top_by_confidence(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in rules], indent=2,
+        ))
+        return
+    if not rules:
+        print("No learned rules yet.")
+        return
+    print(
+        f"Top {len(rules)} rules by confidence:"
+    )
+    print(
+        f"  {'Status':>10}  {'Conf':>5}  "
+        f"{'Win%':>5}  {'N':>3}  Pattern → Action"
+    )
+    for r in rules:
+        print(
+            f"  {r.status:>10}  "
+            f"{r.confidence:>5.2f}  "
+            f"{r.win_rate_ema:>5.0%}  "
+            f"{r.applied_count:>3}  "
+            f"{r.pattern[:40]:40s} → {r.action}"
+        )
+
+
+def _cmd_brain_learned_list(
+    *, status: str, limit: int, as_json: bool,
+) -> None:
+    from core.learning.rulebook import get_rulebook
+    book = get_rulebook()
+    rules = book.by_status(status, limit=limit)
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in rules], indent=2,
+        ))
+        return
+    if not rules:
+        print(f"No {status} rules.")
+        return
+    print(f"{status.upper()} rules ({len(rules)}):")
+    for r in rules:
+        print(
+            f"  [{r.rule_id[:10]}] "
+            f"{r.origin:18s}  "
+            f"evidence={r.evidence_count:>3}  "
+            f"applied={r.applied_count:>3}  "
+            f"win_ema={r.win_rate_ema:.0%}"
+        )
+        print(
+            f"      {r.pattern}  →  {r.action}"
+        )
+        if r.note:
+            print(f"      note: {r.note}")
+
+
+def _cmd_niches(
+    *,
+    candidate_limit: int,
+    show_limit: int,
+    skip_trends: bool,
+    as_json: bool,
+) -> None:
+    """Discover + rank niches from winner sources. Trend-enriched
+    by default unless --no-trends."""
+    from agents.research.niche_discoverer import (
+        build_default_niche_discoverer,
+    )
+    # Pull candidates from the autopilot's shared winner searcher
+    try:
+        from agents.research.winner_searcher import (
+            WinnerSearcher,
+        )
+        from agents.research.sources.manual_seed import (
+            ManualSeedSource,
+        )
+        searcher = WinnerSearcher(
+            sources=[ManualSeedSource()],
+        )
+        search_result = searcher.search(
+            per_source_limit=candidate_limit,
+            top_n=max(candidate_limit, show_limit),
+            publish=False,
+        )
+        pool = [s.candidate for s in search_result.ranked]
+    except Exception as exc:
+        print(f"Winner search failed: {exc}")
+        return
+    discoverer = build_default_niche_discoverer(
+        attach_trend_scorer=not skip_trends,
+    )
+    reports = discoverer.discover(pool, persist=True)[:show_limit]
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in reports], indent=2,
+        ))
+        return
+    if not reports:
+        print(
+            "No niches discovered. Seed winners with "
+            "winner_seeds.json or configure CJ/AliExpress."
+        )
+        return
+    print(
+        f"Top {len(reports)} niches "
+        + ("(trend-enriched)" if not skip_trends else "(rollup only)")
+    )
+    print()
+    print(
+        f"  {'Niche':<12} {'Cnt':>4} {'Mgn':>6} "
+        f"{'Dmd':>6} {'Sat':>5} {'Trend':>6} "
+        f"{'Rank':>7}  Dir"
+    )
+    for r in reports:
+        arrow = {
+            "rising": "↑",
+            "falling": "↓",
+            "stable": "·",
+        }.get(r.trend_direction, "?")
+        print(
+            f"  {r.label:<12} {r.candidate_count:>4} "
+            f"{r.avg_margin:>6.0%} "
+            f"{r.avg_demand:>6.1f} "
+            f"{r.saturation_score:>5.2f} "
+            f"{r.trend_signal_score:>6.2f} "
+            f"{r.ranked_score:>7.3f}  {arrow}"
+        )
+
+
+def _cmd_plan_quarter(args) -> None:
+    from core.planning.quarterly_planner import (
+        QuarterlyGoal,
+        build_quarterly_plan,
+    )
+    now = time.time()
+    weeks = max(1, int(args.weeks))
+    goal = QuarterlyGoal(
+        revenue_target_monthly_usd=float(
+            args.monthly_target,
+        ),
+        start_ts=now,
+        deadline_ts=now + weeks * 7 * 24 * 3600.0,
+        sku_target=int(args.sku_target),
+        roas_target=float(args.roas_target),
+        ramp_curve=args.ramp,
+        niche=args.niche or "",
+    )
+    plan = build_quarterly_plan(goal)
+    if args.json:
+        print(json.dumps(plan.as_dict(), indent=2))
+        return
+    print(
+        f"Quarterly plan — {weeks} weeks, "
+        f"${goal.revenue_target_monthly_usd:,.0f}/mo target"
+    )
+    print(
+        f"  Ramp: {goal.ramp_curve}  "
+        f"SKU target: {goal.sku_target}  "
+        f"ROAS floor: {goal.roas_target:.2f}"
+    )
+    print()
+    print(
+        f"  {'Week':>4}  {'Date':>10}  "
+        f"{'Cum rev':>10}  {'SKUs':>4}  {'ROAS':>5}"
+    )
+    for m in plan.milestones:
+        date_str = time.strftime(
+            "%Y-%m-%d", time.gmtime(m.target_ts),
+        )
+        print(
+            f"  {m.week_index:>4}  {date_str}  "
+            f"${m.cumulative_revenue_usd:>9,.0f}  "
+            f"{m.skus_live_target:>4}  "
+            f"{m.roas_target:>5.2f}"
+        )
+
+
+def _cmd_plan_checkin(args) -> None:
+    from core.planning.quarterly_planner import (
+        QuarterlyGoal,
+        build_quarterly_plan,
+        check_in,
+    )
+    week_s = 7 * 24 * 3600.0
+    weeks = max(1, int(args.weeks))
+    elapsed = max(0, int(args.week_elapsed))
+    # Plan started `elapsed` weeks ago; deadline at weeks * week_s
+    # from start
+    now = time.time()
+    start_ts = now - elapsed * week_s
+    deadline_ts = start_ts + weeks * week_s
+    goal = QuarterlyGoal(
+        revenue_target_monthly_usd=float(
+            args.monthly_target,
+        ),
+        start_ts=start_ts,
+        deadline_ts=deadline_ts,
+        sku_target=int(args.sku_target),
+        ramp_curve=args.ramp,
+    )
+    plan = build_quarterly_plan(goal)
+    report = check_in(
+        plan,
+        current_revenue_usd=float(args.revenue),
+        current_skus_live=int(args.skus_live),
+        current_roas=float(args.current_roas),
+        now_ts=now,
+    )
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    icon = {
+        "ahead": "⇧", "on_track": "✓",
+        "behind": "⇩", "at_risk": "✗",
+    }.get(report.verdict, "?")
+    print(
+        f"{icon} {report.verdict.upper()} "
+        f"(ratio {report.ratio:.0%}, "
+        f"missed {report.missed_milestones})"
+    )
+    print()
+    print(f"  Reason:         {report.reason}")
+    if report.current_milestone is not None:
+        m = report.current_milestone
+        print(
+            f"  Active mile:    week {m.week_index}  "
+            f"target ${m.cumulative_revenue_usd:,.0f}"
+        )
+    if report.next_milestone is not None:
+        m = report.next_milestone
+        print(
+            f"  Next mile:      week {m.week_index}  "
+            f"target ${m.cumulative_revenue_usd:,.0f}"
+        )
+    print()
+    print(f"  Recommend: {report.recommendation}")
+
+
+def _parse_trait_pairs(pairs: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in pairs or []:
+        if "=" not in raw:
+            continue
+        k, v = raw.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if k:
+            out[k] = v
+    return out
+
+
+def _cmd_federation_status() -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    stores = fed.stores()
+    s = fed.stats()
+    print("Multi-store federation")
+    print(f"  Stores:       {len(stores)}")
+    print(f"  Observations: {s.get('observations', 0)}")
+    print(f"  Unique rules: {s.get('rules', 0)}")
+    if stores:
+        print()
+        print("  Registered stores:")
+        for spec in stores:
+            traits = ", ".join(
+                f"{k}={v}" for k, v in spec.traits.items()
+            ) or "(no traits)"
+            print(
+                f"    • {spec.store_id} "
+                f"[weight={spec.weight:.2f}]  "
+                f"{traits}"
+            )
+
+
+def _cmd_federation_register(
+    *, store: str, trait_pairs: list[str], weight: float,
+) -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    traits = _parse_trait_pairs(trait_pairs)
+    fed.register_store(
+        store, traits=traits, weight=weight,
+    )
+    print(
+        f"✓ Registered {store} "
+        f"[weight={weight:.2f}]  "
+        + (
+            ", ".join(
+                f"{k}={v}" for k, v in traits.items()
+            ) or "(no traits)"
+        )
+    )
+
+
+def _cmd_federation_observe(
+    *, store: str, rule: str, wins: int, uses: int,
+) -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    obs = fed.observe(
+        store, rule, wins=wins, uses=uses,
+    )
+    print(
+        f"✓ Observed {rule} @ {store}: "
+        f"wins={obs.wins}, uses={obs.uses}, "
+        f"rate={obs.win_rate:.2%}"
+    )
+
+
+def _cmd_federation_score(
+    *, target: str, rule: str, as_json: bool,
+) -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    report = fed.federated_score(
+        target_store=target, rule_id=rule,
+    )
+    if as_json:
+        print(json.dumps(report.as_dict(), indent=2))
+        return
+    print(
+        f"Federated score for rule={rule} "
+        f"target={target}:"
+    )
+    print(
+        f"  score: {report.federated_score:.4f}"
+    )
+    if report.contributors:
+        print()
+        print("  Contributors:")
+        for c in report.contributors:
+            print(
+                f"    • {c.get('store_id')}  "
+                f"weight={c.get('weight', 0):.3f}  "
+                f"win_rate={c.get('win_rate', 0):.2%}  "
+                f"uses={c.get('uses', 0)}"
+            )
+    else:
+        print("  (no observations yet)")
+
+
+def _cmd_federation_best(
+    *, target: str, limit: int, as_json: bool,
+) -> None:
+    from core.federation import get_federator
+    fed = get_federator()
+    best = fed.best_rules_for(
+        target_store=target, top_n=limit,
+    )
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in best], indent=2,
+        ))
+        return
+    if not best:
+        print(f"No federated rules yet for {target}.")
+        return
+    print(
+        f"Top federated rules for {target}:"
+    )
+    for r in best:
+        print(
+            f"  • {r.rule_id:30s}  "
+            f"score={r.federated_score:.4f}"
+        )
+
+
+def _cmd_ask_support(
+    *, question: str, as_json: bool,
+) -> None:
+    """Preview the LX.1 first-line support answer for a question."""
+    from agents.customer.support_chatbot import SupportChatbot
+    bot = SupportChatbot()
+    answer = bot.answer(question)
+    if as_json:
+        print(json.dumps(answer.as_dict(), indent=2))
+        return
+    icon = "✓" if answer.verdict == "answered" else "→"
+    print(
+        f"{icon} {answer.verdict.upper()} "
+        f"(kind={answer.kind}, "
+        f"confidence={answer.confidence:.2f})"
+    )
+    if answer.matched_rules:
+        print(
+            "  matched: "
+            + ", ".join(answer.matched_rules)
+        )
+    if answer.text:
+        print()
+        print(answer.text)
+    if answer.verdict == "escalate":
+        print()
+        print(
+            f"  Escalate because: {answer.escalate_reason}"
+        )
+
+
+def _cmd_crisis_status(*, as_json: bool) -> None:
+    from core.crisis.response import get_crisis_responder
+    cr = get_crisis_responder()
+    s = cr.stats()
+    if as_json:
+        print(json.dumps(s, indent=2))
+        return
+    state = s["state"]
+    icon = {"green": "✓", "yellow": "?", "red": "✗"}.get(
+        state["level"], "?",
+    )
+    print(
+        f"{icon} Crisis level: {state['level'].upper()}"
+    )
+    print(f"  Halted:            {state['halted']}")
+    print(f"  Reason:            {state['reason']}")
+    print(
+        f"  Events in window:  {state['recent_event_count']}"
+    )
+    if state["triggered_kinds"]:
+        print(
+            "  Triggered kinds:   "
+            + ", ".join(state["triggered_kinds"])
+        )
+    print(
+        f"  Window:            {int(s['window_s']/60)} min"
+    )
+    print(
+        f"  Red threshold:     {s['red_threshold']} events"
+    )
+    print(
+        f"  Env kill switch:   "
+        f"{'set' if s['env_halt_set'] else 'not set'}"
+    )
+
+
+def _cmd_crisis_halt(*, reason: str) -> None:
+    from core.crisis.response import get_crisis_responder
+    cr = get_crisis_responder()
+    cr.halt(reason=reason or "")
+    print(
+        "✗ Emergency halt engaged"
+        + (f" ({reason})" if reason else "")
+    )
+    print("  Clear with: shopai crisis resume")
+
+
+def _cmd_crisis_resume() -> None:
+    from core.crisis.response import get_crisis_responder
+    cr = get_crisis_responder()
+    cr.resume()
+    print("✓ Manual halt cleared")
+    state = cr.detect_state()
+    if state.halted:
+        print(
+            f"  Still halted by: {state.reason}",
+        )
+
+
+def _cmd_crisis_events(*, limit: int, as_json: bool) -> None:
+    from core.crisis.response import get_crisis_responder
+    cr = get_crisis_responder()
+    events = cr.recent_events(limit=limit)
+    if as_json:
+        print(json.dumps(
+            [e.as_dict() for e in events], indent=2,
+        ))
+        return
+    if not events:
+        print("No crisis events recorded.")
+        return
+    print(f"Recent crisis events ({len(events)}):")
+    for ev in events:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%SZ",
+            time.gmtime(ev.ts),
+        )
+        sev = ev.severity.upper()
+        print(
+            f"  {ts}  [{sev:8s}] {ev.kind:22s} "
+            f"{ev.note}"
+        )
+
+
+def _cmd_simulate(args) -> None:
+    """Pre-launch Monte Carlo projection."""
+    from simulation.launch_simulator import (
+        LaunchCandidate,
+        simulate_launch,
+    )
+    c = LaunchCandidate(
+        cost=float(args.cost),
+        price=float(args.price),
+        daily_budget_usd=float(args.budget),
+        days=int(args.days),
+        est_cvr_mean=float(args.cvr_mean),
+        est_cvr_stddev=float(args.cvr_stddev),
+        est_cpc_mean=float(args.cpc_mean),
+        est_cpc_stddev=float(args.cpc_stddev),
+        refund_rate=float(args.refund_rate),
+    )
+    proj = simulate_launch(
+        c,
+        n_trials=int(args.trials),
+        seed=int(args.seed),
+    )
+    if args.json:
+        print(json.dumps(proj.as_dict(), indent=2))
+        return
+    verdict_icon = {
+        "go": "✓", "caution": "?", "stand_down": "✗",
+    }.get(proj.verdict, "?")
+    print(
+        f"{verdict_icon} {proj.verdict.upper()}: "
+        f"{proj.reason}"
+    )
+    print()
+    print(f"  Margin:      {c.margin_ratio():.1%}")
+    print(f"  Spend:       ${c.daily_budget_usd * c.days:.2f}")
+    print(
+        f"  Break-even:  {proj.break_even_prob:.0%}"
+    )
+    print(
+        f"  Expected ROAS: {proj.expected_roas:.2f}x"
+    )
+    print(f"  Expected orders: {proj.expected_orders:.1f}")
+    print()
+    print("  Profit distribution:")
+    print(
+        f"    p25: ${proj.profit_p25:>8.2f}"
+    )
+    print(
+        f"    p50: ${proj.profit_p50:>8.2f}"
+    )
+    print(
+        f"    p75: ${proj.profit_p75:>8.2f}"
+    )
+    print(
+        f"    mean ${proj.profit_mean:>7.2f} "
+        f"± ${proj.profit_stddev:.2f}"
+    )
+
+
+def _cmd_legal(
+    *,
+    region: str,
+    store: str,
+    email: str,
+    kind: str | None,
+    as_json: bool,
+) -> None:
+    """Render L7 legal pages for a region."""
+    from core.legal.compliance import render_legal_pages
+
+    store_name = store or _infer_store_name()
+    contact = email or os.environ.get(
+        "SHOPAI_CONTACT_EMAIL", "",
+    )
+    if not contact:
+        print(
+            "Missing contact email — pass --email or set "
+            "SHOPAI_CONTACT_EMAIL.",
+        )
+        return
+    try:
+        pageset = render_legal_pages(
+            store_name=store_name,
+            contact_email=contact,
+            region=region,
+            include=(kind,) if kind else None,
+        )
+    except ValueError as exc:
+        print(f"Invalid input: {exc}")
+        return
+    if as_json:
+        print(json.dumps(pageset.as_dict(), indent=2))
+        return
+    for page in pageset.pages:
+        print(f"# ── {page.title} ({page.region}) ──")
+        print()
+        print(page.markdown)
+        print()
+        print()
+
+
+def _infer_store_name() -> str:
+    raw = os.environ.get("SHOPAI_SHOPIFY_URL", "")
+    if not raw:
+        return "Your Store"
+    domain = (
+        raw.replace("https://", "")
+        .replace("http://", "")
+        .replace(".myshopify.com", "")
+        .strip("/")
+    )
+    return domain.replace("-", " ").title() or "Your Store"
+
+
+def _cmd_owner_poll(
+    *, limit: int, dry_run: bool, as_json: bool,
+) -> None:
+    """One-shot poll Telegram → dispatch to brain handlers."""
+    from agents.owner_dialog.dispatcher import (
+        OwnerDialogDispatcher,
+        build_default_handlers,
+    )
+    from core.adapters.telegram_bot import (
+        TelegramBotAdapter,
+    )
+    bot = TelegramBotAdapter()
+    if not bot.is_available():
+        print(
+            "Telegram not configured — set "
+            "TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID."
+        )
+        return
+    dispatcher = OwnerDialogDispatcher(
+        bot=bot,
+        handlers=build_default_handlers(),
+    )
+    results = dispatcher.poll_and_dispatch(
+        limit=limit, reply=not dry_run,
+    )
+    if as_json:
+        print(json.dumps(
+            [r.as_dict() for r in results], indent=2,
+        ))
+        return
+    if not results:
+        print("No new owner commands.")
+        return
+    print(f"Dispatched {len(results)} command(s):")
+    for r in results:
+        icon = "✓" if r.ok else "✗"
+        print(
+            f"  {icon} [{r.update_id}] "
+            f"{r.verb or '(unknown)':10s}  "
+            + (
+                f"→ replied (id={r.sent_message_id})"
+                if r.sent_message_id
+                else "no reply sent"
+            )
+        )
+        if r.error:
+            print(f"      error: {r.error}")
+
+
+def _cmd_notify(
+    *, hours: float, dry_run: bool,
+    chat_id: str | None, as_json: bool,
+) -> None:
+    """Compose launch digest and push to Telegram."""
+    from agents.owner_dialog.notify import notify_owner
+    result = notify_owner(
+        period_hours=hours,
+        dry_run=dry_run,
+        chat_id=chat_id,
+    )
+    if as_json:
+        print(json.dumps(result.as_dict(), indent=2))
+        return
+    if result.sent:
+        print(
+            f"✓ Sent digest to Telegram "
+            f"(message_id={result.message_id})"
+        )
+        return
+    if result.reason == "dry_run":
+        print("— dry run — composed digest below —")
+        print()
+        print(result.text)
+        return
+    print(f"✗ Not sent: {result.reason}")
+    if result.text:
+        print()
+        print("Preview:")
+        print(result.text)
+
+
+def _cmd_risk_status(*, as_json: bool) -> None:
+    """Show today's ad spend rollup vs caps."""
+    from core.risk.tripwire import get_risk_tripwire
+    tw = get_risk_tripwire()
+    s = tw.status()
+    if as_json:
+        print(json.dumps(s, indent=2))
+        return
+    lim = s["limits"]
+    today = s["today"]
+    cb = s["chargebacks"]
+    print("Risk tripwire — today")
+    print(
+        f"  Ad spend:       ${today['ad_spend_usd']:.2f} / "
+        f"${lim['daily_ad_spend_usd']:.2f} "
+        f"({today['utilisation']:.0%})"
+    )
+    print(
+        f"  Remaining:      ${today['remaining_usd']:.2f}"
+    )
+    print(
+        f"  Per-campaign:   ${lim['per_campaign_cap_usd']:.2f} cap"
+    )
+    print(
+        f"  Margin floor:   {lim['min_margin_ratio']:.2%}"
+    )
+    print(
+        f"  Escalate at:    {lim['escalate_pct']:.0%} of daily"
+    )
+    print()
+    print(
+        f"Chargebacks (last {cb['window_days']}d): "
+        f"{cb['bad']}/{cb['total']} = {cb['rate']:.2%} "
+        f"(cap {lim['max_chargeback_rate']:.2%})"
+    )
+
+
+def _cmd_risk_limits(*, as_json: bool) -> None:
+    """Show tripwire limits plus their env-var overrides."""
+    from core.risk.tripwire import get_risk_tripwire
+    tw = get_risk_tripwire()
+    lim = tw.limits().as_dict()
+    env_map = {
+        "daily_ad_spend_usd": "SHOPAI_RISK_DAILY_CAP_USD",
+        "per_campaign_cap_usd": "SHOPAI_RISK_PER_CAMPAIGN_CAP_USD",
+        "min_margin_ratio": "SHOPAI_RISK_MIN_MARGIN",
+        "max_chargeback_rate": "SHOPAI_RISK_MAX_CHARGEBACK",
+        "escalate_pct": "SHOPAI_RISK_ESCALATE_PCT",
+    }
+    if as_json:
+        out = {
+            k: {
+                "value": v,
+                "env_var": env_map[k],
+                "env_set": os.environ.get(env_map[k], ""),
+            }
+            for k, v in lim.items()
+        }
+        print(json.dumps(out, indent=2))
+        return
+    print("Risk tripwire — limits")
+    for key, val in lim.items():
+        env_name = env_map[key]
+        env_val = os.environ.get(env_name, "")
+        marker = f"  (env={env_val})" if env_val else ""
+        print(f"  {key:22s} = {val}{marker}")
+    print()
+    print("Override with env vars, e.g.:")
+    print("  export SHOPAI_RISK_DAILY_CAP_USD=100")
+
+
+def _cmd_risk_recent(*, limit: int, as_json: bool) -> None:
+    """Recent spend events booked by the tripwire."""
+    from core.risk.tripwire import get_risk_tripwire
+    tw = get_risk_tripwire()
+    recent = tw.recent_spend(limit=limit)
+    if as_json:
+        print(json.dumps(recent, indent=2))
+        return
+    if not recent:
+        print("No spend events recorded.")
+        return
+    print(f"Recent spend ({len(recent)}):")
+    for ev in recent:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M:%SZ",
+            time.gmtime(ev["ts"]),
+        )
+        camp = ev["campaign_id"] or "-"
+        print(
+            f"  {ts}  ${ev['amount_usd']:>7.2f}  "
+            f"{ev['category']:10s}  campaign={camp}"
+        )
 
 
 def _cmd_status() -> None:
@@ -1499,8 +7076,589 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_pipeline(args.pipeline_name, getattr(args, "input"))
         return
 
+    if args.command == "launch":
+        _cmd_launch(args)
+        return
+
+    if args.command == "launches":
+        _cmd_launches(args)
+        return
+
+    if args.command == "replay-orders":
+        _cmd_replay_orders(
+            path=str(args.path or ""),
+            throttle_s=float(args.throttle),
+            as_json=bool(args.json),
+            synthesize=int(args.synthesize),
+            seed=int(args.seed),
+            attach_decision_rate=float(
+                args.attach_decision_rate,
+            ),
+        )
+        return
+
+    if args.command == "ingest-knowledge":
+        _cmd_ingest_knowledge(
+            url=str(args.url or ""),
+            file=str(args.file or ""),
+            subject=str(args.subject or ""),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "search":
+        _cmd_search(
+            query=str(args.query),
+            scope=str(args.scope),
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "ready-for-live":
+        _cmd_ready_for_live(
+            skip_learning_loop=bool(
+                args.skip_learning_loop,
+            ),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "live-health":
+        _cmd_live_health(
+            cycles=int(args.cycles),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "rule-quality":
+        _cmd_rule_quality(
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "cycles":
+        _cmd_cycles(
+            log_path=str(args.log),
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "agents":
+        action = (
+            getattr(args, "agents_action", None)
+            or "list"
+        )
+        if action == "list":
+            _cmd_agents_list(
+                type_filter=str(args.type) or None,
+                as_json=bool(args.json),
+            )
+        elif action == "get":
+            _cmd_agents_get(
+                agent_id=str(args.agent_id),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "citations":
+        action = (
+            getattr(args, "citations_action", None)
+            or "list"
+        )
+        if action == "list":
+            _cmd_citations_list(
+                as_json=bool(args.json),
+            )
+        elif action == "show":
+            _cmd_citations_show(
+                niche=str(args.niche),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "build-llms-txt":
+        _cmd_build_llms_txt(
+            store_name=str(args.store_name),
+            store_url=str(args.store_url),
+            products_json=str(args.products_json),
+            out_dir=str(args.out_dir),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "autopilot-status":
+        _cmd_autopilot_status(
+            log_path=str(args.log),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "notify-errors":
+        _cmd_notify_errors(
+            hours=float(args.hours),
+            log_path=str(args.log),
+            dry_run=bool(args.dry_run),
+            chat_id=args.chat_id,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "owner-ask":
+        _cmd_owner_ask(
+            text=str(args.text),
+            send=not bool(args.no_send),
+            chat_id=args.chat_id,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "kill":
+        _cmd_kill(args.launch_id)
+        return
+
+    if args.command == "reason":
+        _cmd_reason(args)
+        return
+
+    if args.command == "ask":
+        _cmd_ask(args)
+        return
+
+    if args.command == "chat":
+        _cmd_chat(args)
+        return
+
+    if args.command == "why":
+        _cmd_why(args)
+        return
+
+    if args.command == "digest":
+        _cmd_digest(args)
+        return
+
+    if args.command == "feedback":
+        _cmd_feedback(args)
+        return
+
+    if args.command == "skills":
+        _cmd_skills(args)
+        return
+
+    if args.command == "plan":
+        _cmd_plan(args)
+        return
+
+    if args.command == "similar":
+        _cmd_similar(args)
+        return
+
+    if args.command == "competitor":
+        _cmd_competitor(args)
+        return
+
+    if args.command == "competitor-intel":
+        _cmd_competitor_intel(args)
+        return
+
+    if args.command == "budget-plan":
+        _cmd_budget_plan(args)
+        return
+
+    if args.command == "budget-plans":
+        _cmd_budget_plans(args)
+        return
+
+    if args.command == "ltv-stats":
+        _cmd_ltv_stats(args)
+        return
+
+    if args.command == "email-stats":
+        _cmd_email_stats(args)
+        return
+
+    if args.command == "email-unsubscribe":
+        _cmd_email_unsubscribe(args)
+        return
+
+    if args.command == "pending-approvals":
+        _cmd_pending_approvals(args)
+        return
+
+    if args.command == "approve-request":
+        _cmd_approve_request(args)
+        return
+
+    if args.command == "deny-request":
+        _cmd_deny_request(args)
+        return
+
+    if args.command == "deguar-health":
+        from scripts.deguar_health_report import main as _hr_main
+        argv = ["--out", args.out]
+        if args.skip:
+            argv += ["--skip", args.skip]
+        sys.exit(_hr_main(argv))
+
     if args.command == "health":
         _cmd_health()
+        return
+
+    if args.command == "doctor":
+        _cmd_doctor(
+            as_json=bool(getattr(args, "json", False)),
+            network=bool(getattr(args, "network", False)),
+            snippet=bool(getattr(args, "snippet", False)),
+        )
+        return
+
+    if args.command == "publish":
+        _cmd_publish(
+            winner_json=args.winner_json,
+            budget=float(args.budget),
+            platform=args.platform,
+            live=bool(args.live),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "activate":
+        _cmd_activate(
+            campaign_id=args.campaign_id,
+            budget=float(args.budget),
+            auto_approve=bool(args.auto_approve),
+            live=bool(args.live),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "autopilot":
+        _cmd_autopilot(
+            seeds=args.seeds,
+            peers=args.peers,
+            max_launches=int(args.max_launches),
+            top_n=int(args.top_n),
+            budget=float(args.budget),
+            platform=args.platform,
+            auto_activate=not args.no_activate,
+            live=bool(args.live),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "pending":
+        _cmd_pending(
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "approve":
+        _cmd_approve(
+            revision_id=args.revision_id,
+            apply_too=bool(args.apply),
+        )
+        return
+
+    if args.command == "reject":
+        _cmd_reject(revision_id=args.revision_id)
+        return
+
+    if args.command == "distill":
+        _cmd_distill(
+            window=int(args.window),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "report":
+        _cmd_report(
+            hours=float(args.hours),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "publications":
+        _cmd_publications(
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "activations":
+        _cmd_activations(
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "predict":
+        _cmd_predict(args)
+        return
+
+    if args.command == "landed-cost":
+        _cmd_landed_cost(args)
+        return
+
+    if args.command == "agentic":
+        action = (
+            getattr(args, "agentic_action", None)
+            or "status"
+        )
+        if action == "status":
+            _cmd_agentic_status(
+                force=bool(args.force),
+                as_json=bool(args.json),
+            )
+        elif action == "metrics":
+            _cmd_agentic_metrics(
+                days=int(args.days),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "moby":
+        action = (
+            getattr(args, "moby_action", None)
+            or "win-rate"
+        )
+        if action == "win-rate":
+            _cmd_moby_win_rate(
+                as_json=bool(args.json),
+            )
+        elif action == "log":
+            _cmd_moby_log(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "fal":
+        action = (
+            getattr(args, "fal_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_fal_status(
+                as_json=bool(args.json),
+            )
+        elif action == "spent":
+            _cmd_fal_spent(
+                sku=str(args.sku),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "oauth":
+        action = (
+            getattr(args, "oauth_action", None)
+            or "status"
+        )
+        if action == "status":
+            _cmd_oauth_status(
+                shop=getattr(args, "shop", None),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "brain":
+        _cmd_brain_snapshot(as_json=bool(args.json))
+        return
+
+    if args.command == "vault-sweep":
+        _cmd_vault_sweep(
+            vault=args.vault or "",
+            dry_run=bool(args.dry_run),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "explain":
+        _cmd_explain_decision(
+            decision_id=args.decision_id,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "explains":
+        _cmd_explain_recent(
+            limit=int(args.limit),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "trust":
+        action = (
+            getattr(args, "trust_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_trust_status()
+        elif action == "baseline":
+            _cmd_trust_set_baseline(
+                source=args.source,
+                trust_value=float(args.trust),
+            )
+        return
+
+    if args.command == "memory":
+        action = (
+            getattr(args, "mem_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_memory_status()
+        elif action == "consolidate":
+            _cmd_memory_consolidate(
+                as_json=bool(args.json),
+            )
+        elif action == "concepts":
+            _cmd_memory_concepts(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        elif action == "procedures":
+            _cmd_memory_procedures(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "brain-learned":
+        action = (
+            getattr(args, "learned_action", None)
+            or "status"
+        )
+        if action == "status":
+            _cmd_brain_learned_status()
+        elif action == "top":
+            _cmd_brain_learned_top(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        elif action == "list":
+            _cmd_brain_learned_list(
+                status=args.status,
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "niches":
+        _cmd_niches(
+            candidate_limit=int(args.candidates),
+            show_limit=int(args.limit),
+            skip_trends=bool(args.no_trends),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "plan-quarter":
+        _cmd_plan_quarter(args)
+        return
+
+    if args.command == "plan-checkin":
+        _cmd_plan_checkin(args)
+        return
+
+    if args.command == "federation":
+        action = (
+            getattr(args, "fed_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_federation_status()
+        elif action == "register":
+            _cmd_federation_register(
+                store=args.store,
+                trait_pairs=args.trait,
+                weight=float(args.weight),
+            )
+        elif action == "observe":
+            _cmd_federation_observe(
+                store=args.store,
+                rule=args.rule,
+                wins=int(args.wins),
+                uses=int(args.uses),
+            )
+        elif action == "score":
+            _cmd_federation_score(
+                target=args.target,
+                rule=args.rule,
+                as_json=bool(args.json),
+            )
+        elif action == "best":
+            _cmd_federation_best(
+                target=args.target,
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "ask-support":
+        _cmd_ask_support(
+            question=args.question,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "crisis":
+        action = (
+            getattr(args, "crisis_action", None) or "status"
+        )
+        if action == "status":
+            _cmd_crisis_status(as_json=bool(args.json))
+        elif action == "halt":
+            _cmd_crisis_halt(reason=args.reason)
+        elif action == "resume":
+            _cmd_crisis_resume()
+        elif action == "events":
+            _cmd_crisis_events(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
+        return
+
+    if args.command == "simulate":
+        _cmd_simulate(args)
+        return
+
+    if args.command == "legal":
+        _cmd_legal(
+            region=args.region,
+            store=args.store or "",
+            email=args.email or "",
+            kind=args.kind,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "owner-poll":
+        _cmd_owner_poll(
+            limit=int(args.limit),
+            dry_run=bool(args.dry_run),
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "notify":
+        _cmd_notify(
+            hours=float(args.hours),
+            dry_run=bool(args.dry_run),
+            chat_id=args.chat_id,
+            as_json=bool(args.json),
+        )
+        return
+
+    if args.command == "risk":
+        action = getattr(args, "risk_action", None) or "status"
+        if action == "status":
+            _cmd_risk_status(as_json=bool(args.json))
+        elif action == "limits":
+            _cmd_risk_limits(as_json=bool(args.json))
+        elif action == "recent":
+            _cmd_risk_recent(
+                limit=int(args.limit),
+                as_json=bool(args.json),
+            )
         return
 
     if args.command == "status":

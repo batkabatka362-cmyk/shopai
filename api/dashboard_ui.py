@@ -49,8 +49,12 @@ footer { text-align: center; color: #484f58; margin-top: 24px; font-size: 12px; 
 <script>
 async function load() {
     try {
-        const r = await fetch('/api/dashboard_data');
+        const [r, l] = await Promise.all([
+            fetch('/api/dashboard_data'),
+            fetch('/api/launches').catch(() => null),
+        ]);
         const d = await r.json();
+        d._launches = l ? await l.json().catch(() => null) : null;
         render(d);
     } catch(e) {
         document.getElementById('dashboard').innerHTML = '<p>Error loading: ' + e + '</p>';
@@ -118,6 +122,59 @@ function render(d) {
     alerts.slice(0, 5).forEach(a => {
         h += '<div class="alert ' + a.severity + '">' + a.message + '</div>';
     });
+    h += '</div>';
+
+    // Launches (Goal-Driven Executor)
+    const launches = d._launches || {};
+    const summary = launches.summary || {};
+    const report = launches.report || {};
+    const allRows = [
+        ...(report.kills || []),
+        ...(report.scales || []),
+        ...(report.monitors || []),
+    ];
+    h += '<div class="card" style="grid-column: 1 / -1"><h3>Active Launches (' +
+        (summary.tracked || 0) + ')</h3>';
+    if (summary.tracked) {
+        h += '<div style="margin-bottom:8px">' +
+             '<span class="tag" style="background:#4a0000">' +
+             (summary.kill || 0) + ' kill</span> ' +
+             '<span class="tag" style="background:#003300">' +
+             (summary.scale || 0) + ' scale</span> ' +
+             '<span class="tag">' + (summary.monitor || 0) + ' monitor</span>' +
+             '</div>';
+        h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+        h += '<thead><tr style="text-align:left;color:#8b949e">' +
+             '<th style="padding:4px">Verdict</th><th>Launch</th>' +
+             '<th style="text-align:right">ROAS</th>' +
+             '<th style="text-align:right">Revenue</th>' +
+             '<th style="text-align:right">Orders</th>' +
+             '<th style="text-align:right">Days</th>' +
+             '<th>Reason</th></tr></thead><tbody>';
+        allRows.slice(0, 12).forEach(r => {
+            const vcolor = r.verdict === 'kill' ? '#f85149' :
+                           r.verdict === 'scale' ? '#3fb950' :
+                           r.verdict === 'hold' ? '#58a6ff' : '#8b949e';
+            h += '<tr style="border-top:1px solid #30363d">' +
+                 '<td style="padding:4px;color:' + vcolor + ';font-weight:600">' +
+                 r.verdict + '</td>' +
+                 '<td style="padding:4px;color:#8b949e;font-family:monospace">' +
+                 r.launch_id + '</td>' +
+                 '<td style="padding:4px;text-align:right">' +
+                 (r.estimated_roas ? r.estimated_roas.toFixed(2) : '-') + '</td>' +
+                 '<td style="padding:4px;text-align:right">$' +
+                 (r.revenue_usd || 0).toFixed(2) + '</td>' +
+                 '<td style="padding:4px;text-align:right">' +
+                 (r.order_count || 0) + '</td>' +
+                 '<td style="padding:4px;text-align:right">' +
+                 (r.days_live || 0).toFixed(1) + '</td>' +
+                 '<td style="padding:4px;color:#8b949e">' +
+                 (r.reason || '').substring(0, 80) + '</td></tr>';
+        });
+        h += '</tbody></table></div>';
+    } else {
+        h += '<p style="color:#8b949e">No launches yet — run <code>shopai launch</code> or POST /api/launch</p>';
+    }
     h += '</div>';
 
     h += '</div>';

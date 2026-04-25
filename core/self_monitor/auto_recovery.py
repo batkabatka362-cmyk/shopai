@@ -88,7 +88,7 @@ class AutoRecovery:
     def _recover_cache_full(self, context: dict[str, Any]) -> dict[str, Any]:
         """Clear short-term caches (safe, reversible)."""
         try:
-            from memory import ShortTermCache
+            from core.memory import ShortTermCache
             cache = ShortTermCache()
             cache.clear()
             return {"recovered": True, "action": "cleared_short_term_cache"}
@@ -122,7 +122,7 @@ class AutoRecovery:
         """Reduce memory usage by clearing non-essential caches."""
         actions = []
         try:
-            from memory import ShortTermCache
+            from core.memory import ShortTermCache
             ShortTermCache().clear()
             actions.append("cleared_short_term_cache")
         except Exception as exc:

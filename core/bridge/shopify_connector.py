@@ -20,7 +20,24 @@ class ShopifyLiveConnector:
 
     def __init__(self) -> None:
         self._shop_url = os.environ.get("SHOPAI_SHOPIFY_URL", "")
-        self._api_key = os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+        # D1: resolve through ExpiringTokenAuth when OAuth env is
+        # set so we auto-refresh on 60-min expiry; fall back to
+        # the legacy static SHOPAI_SHOPIFY_KEY when it isn't.
+        try:
+            from core.auth.token_resolver import (
+                resolve_access_token,
+            )
+            self._api_key = resolve_access_token(
+                self._shop_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "token resolver failed, using legacy: %s",
+                exc,
+            )
+            self._api_key = os.environ.get(
+                "SHOPAI_SHOPIFY_KEY", "",
+            )
         self._connected = False
         self._last_call = 0.0
         self._call_count = 0

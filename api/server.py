@@ -21,6 +21,49 @@ from api.validation import (
 logger = get_logger("api.server")
 
 
+def _lookup_launch_ids(shop: str, product_ids: list[int]) -> list[str]:
+    """Return the ``shopai/launch_id`` metafield for each product that
+    has one. Used by the order webhook to tag revenue events with the
+    launch that produced them. Silently returns an empty list on any
+    failure — revenue signal must still land in memory even when the
+    correlation step fails.
+    """
+    import os
+    import urllib.error
+    import urllib.request
+
+    if not shop or not product_ids:
+        return []
+    token = os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+    if not token:
+        return []
+
+    launch_ids: list[str] = []
+    for pid in product_ids[:20]:  # cap for safety
+        url = (
+            f"https://{shop}/admin/api/2024-01/products/{pid}/metafields.json"
+            "?namespace=shopai&key=launch_id"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "X-Shopify-Access-Token": token,
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+            continue
+        for mf in data.get("metafields", []):
+            val = mf.get("value")
+            if val:
+                launch_ids.append(str(val))
+                break
+    return launch_ids
+
+
 class ShopAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for ShopAI API."""
 
@@ -40,7 +83,17 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/experience": self._get_experience,
             "/api/webhooks": self._list_webhooks,
             "/api/stores": self._list_stores,
+            "/api/launches": self._list_launches,
+            # Wave E-1: llms.txt + llms-full.txt served from disk
+            "/llms.txt": self._llms_txt,
+            "/llms-full.txt": self._llms_full_txt,
         }
+
+        if path.startswith("/llms-mirror/") and path.endswith(".md"):
+            # Serve one product mirror as markdown
+            slug = path[len("/llms-mirror/"):-len(".md")]
+            self._llms_mirror(slug)
+            return
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
             engine_name, err = validate_safe_name(path.split("/")[-1], "engine")
@@ -56,9 +109,52 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         else:
             self._json_response(404, {"error": f"Not found: {path}"})
 
+    # Write endpoints that mutate state / trigger outbound
+    # HTTP / spend money. These require an API token via the
+    # Authorization: Bearer <token> header. /api/webhook/shopify
+    # is excluded because it has its own HMAC-based auth.
+    _AUTHED_POST_PATHS = frozenset({
+        "/api/task",
+        "/api/chain",
+        "/api/batch",
+        "/api/analyze",
+        "/api/agent",
+        "/api/workflow",
+        "/api/auto/cycle",
+        "/api/store/sync",
+        "/api/launch",
+    })
+
+    def _check_bearer_auth(self) -> bool:
+        """Return True iff the request carries a valid
+        bearer token. On failure emits 401 and returns False
+        so the caller can short-circuit.
+
+        When no master token is configured the APIAuth returns
+        True for any token — caller deployments without
+        SHOPAI_API_TOKEN set retain backward compatibility."""
+        auth_header = self.headers.get("Authorization", "")
+        token = ""
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+        from api.auth import get_api_auth
+        if not get_api_auth().validate(token):
+            self._json_response(
+                401, {"error": "missing or invalid bearer token"},
+            )
+            return False
+        return True
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        # SSRF / unauthorized-action defence: every write
+        # endpoint except /api/webhook/shopify (HMAC-authed)
+        # requires a bearer token matching SHOPAI_API_TOKEN.
+        if path in self._AUTHED_POST_PATHS:
+            if not self._check_bearer_auth():
+                return
 
         body = self._read_body()
         if body is None:
@@ -74,6 +170,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/workflow": self._run_workflow,
             "/api/auto/cycle": self._auto_cycle,
             "/api/store/sync": self._store_sync,
+            "/api/launch": self._launch_product,
         }
 
         handler = routes.get(path)
@@ -83,6 +180,82 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": f"Not found: {path}"})
 
     # --- GET handlers ---
+
+    def _text_response(
+        self,
+        status: int,
+        body: str,
+        *,
+        content_type: str = "text/plain; charset=utf-8",
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header(
+            "Access-Control-Allow-Origin", "*",
+        )
+        encoded = body.encode("utf-8")
+        self.send_header(
+            "Content-Length", str(len(encoded)),
+        )
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _llms_txt(self) -> None:
+        """Serve ``data/llms/llms.txt`` if it exists."""
+        self._serve_llms_file(
+            relative="llms.txt",
+            content_type="text/plain; charset=utf-8",
+        )
+
+    def _llms_full_txt(self) -> None:
+        self._serve_llms_file(
+            relative="llms-full.txt",
+            content_type="text/plain; charset=utf-8",
+        )
+
+    def _llms_mirror(self, slug: str) -> None:
+        """Serve a product markdown mirror. Slug is
+        untrusted input — guard against path traversal."""
+        import re
+        if not re.match(r"^[a-z0-9\-]{1,80}$", slug):
+            self._text_response(
+                400, "invalid slug",
+            )
+            return
+        self._serve_llms_file(
+            relative=f"products/{slug}.md",
+            content_type="text/markdown; charset=utf-8",
+        )
+
+    def _serve_llms_file(
+        self, *, relative: str, content_type: str,
+    ) -> None:
+        from pathlib import Path as _P
+        root = _P("data/llms")
+        target = (root / relative).resolve()
+        # Path-traversal guard: must stay under the root.
+        try:
+            target.relative_to(root.resolve())
+        except ValueError:
+            self._text_response(400, "bad path")
+            return
+        if not target.is_file():
+            self._text_response(
+                404,
+                "Not built yet. Run "
+                "`shopai build-llms-txt` first.",
+            )
+            return
+        try:
+            body = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            self._text_response(
+                500, f"read error: {exc}",
+            )
+            return
+        self._text_response(
+            200, body, content_type=content_type,
+        )
 
     def _liveness(self) -> None:
         """Lightweight liveness probe. Returns immediately without any
@@ -162,6 +335,26 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             logger.warning("store listing failed: %s", exc)
             self._json_response(200, {"stores": [], "error": str(exc)})
 
+    def _list_launches(self) -> None:
+        """Dashboard endpoint — per-launch KPIs + kill/scale verdicts.
+
+        Cheap call: pure aggregation over the memory store, no
+        external API. Returns the evaluator report plus a compact
+        summary counts block for the UI.
+        """
+        from core.autonomous.launch_evaluator import evaluate
+        report = evaluate()
+        self._json_response(200, {
+            "summary": {
+                "tracked": report.launches_tracked,
+                "evaluated": report.launches_evaluated,
+                "kill": len(report.kill_recommendations),
+                "scale": len(report.scale_recommendations),
+                "monitor": len(report.monitor_recommendations),
+            },
+            "report": report.as_dict(),
+        })
+
     # --- POST handlers ---
 
     def _submit_task(self, body: dict) -> None:
@@ -237,6 +430,49 @@ class ShopAIHandler(BaseHTTPRequestHandler):
 
     def _handle_webhook(self, body: dict) -> None:
         """Handle Shopify webhook event — triggers engines + records experience."""
+        # Defence-in-depth: per-IP token-bucket rate limit
+        # ahead of HMAC verification. An attacker who only
+        # sends garbage can otherwise burn CPU on the HMAC
+        # compare path. 429 + Retry-After tells legit
+        # callers when to back off.
+        try:
+            from core.webhooks.rate_limiter import (
+                get_webhook_rate_limiter,
+            )
+            client_ip = (
+                self.client_address[0]
+                if isinstance(
+                    getattr(self, "client_address", None),
+                    tuple,
+                ) and self.client_address
+                else "_unknown"
+            )
+            rl = get_webhook_rate_limiter().consume(
+                client_ip,
+            )
+            if not rl.allowed:
+                self.send_response(429)
+                self.send_header(
+                    "Content-Type", "application/json",
+                )
+                self.send_header(
+                    "Retry-After",
+                    str(max(1, int(rl.retry_after_s + 0.5))),
+                )
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps({
+                        "error": "rate limit exceeded",
+                        "retry_after_s": round(
+                            rl.retry_after_s, 2,
+                        ),
+                    }).encode(),
+                )
+                return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "rate limiter unavailable: %s", exc,
+            )
         topic, err = validate_webhook_topic(
             self.headers.get("X-Shopify-Topic", body.get("topic", "")))
         if err:
@@ -277,6 +513,86 @@ class ShopAIHandler(BaseHTTPRequestHandler):
                 db.upsert_customers(store_id, handler._normalize_customer(body))
         except Exception as exc:
             logger.debug("Webhook experience/cache: %s", exc)
+
+        # Abandoned-cart enrolment. Shopify fires
+        # ``checkouts/update`` on each mutation to a cart page;
+        # we enroll the buyer into the abandoned_cart email
+        # flow if email + line items are present. The flow's
+        # 1h/1d delays do the waiting — we don't need our own
+        # timer. §4b.D idempotent: engine dedupes by
+        # (recipient × flow × step_id).
+        if "checkouts/update" in topic or "checkouts/create" in topic:
+            try:
+                from core.webhooks.checkout_handler import (
+                    handle_checkout_update,
+                )
+                handle_checkout_update(body)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "abandoned-cart enrolment skipped: %s",
+                    exc,
+                )
+
+        # Welcome flow enrolment. customers/create fires on
+        # email-list signups + first-time guests. Filter is
+        # inside handle_customer_create — only orders_count=0
+        # + accepts_marketing customers get the welcome flow;
+        # buyers with orders take the post_purchase path via
+        # order_handler.
+        if "customers/create" in topic:
+            try:
+                from core.webhooks.customer_handler import (
+                    handle_customer_create,
+                )
+                handle_customer_create(body)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "welcome enrolment skipped: %s", exc,
+                )
+
+        # Reward-signal bridge: orders are the closing leg of the
+        # decision → action → outcome loop the learning pipeline
+        # depends on. Record each order as a memory event tagged
+        # with the originating launch_id so pattern promotion
+        # aggregates rewards per-launch instead of globally.
+        if "orders/create" in topic:
+            try:
+                from core.memory.intelligence import get_memory_intelligence
+                line_items = body.get("line_items") or []
+                product_ids = [
+                    li.get("product_id") for li in line_items if li.get("product_id")
+                ]
+                # Look up launch_id metafield for each product so the
+                # event is tagged with the launch that produced this
+                # order. Launch_id comes from workflows/launch/ —
+                # products created outside the launch pipeline stay
+                # unlabeled, which is fine.
+                launch_ids = _lookup_launch_ids(shop, product_ids)
+                tags = ["revenue", "order"]
+                if store_id:
+                    tags.append(store_id)
+                tags.extend(f"launch:{lid}" for lid in launch_ids)
+
+                get_memory_intelligence().create(
+                    category="order",
+                    content={
+                        "shop": shop,
+                        "order_id": body.get("id"),
+                        "total_price": float(body.get("total_price", 0) or 0),
+                        "currency": body.get("currency"),
+                        "product_ids": product_ids,
+                        "launch_ids": launch_ids,
+                        "line_count": len(line_items),
+                        "customer_email": body.get("email"),
+                        "source_name": body.get("source_name"),
+                        "landing_site": body.get("landing_site"),
+                    },
+                    action="purchase",
+                    score=5.0,  # orders = highest-fidelity reward signal
+                    tags=tags,
+                )
+            except Exception as exc:
+                logger.debug("memory create failed: %s", exc)
 
         self._json_response(200, result)
 
@@ -357,6 +673,60 @@ class ShopAIHandler(BaseHTTPRequestHandler):
 
         result = self.orchestrator.run_workflow(workflow, data)
         self._json_response(200, result)
+
+    def _launch_product(self, body: dict) -> None:
+        """Owner-facing endpoint that runs the Goal-Driven launch
+        pipeline. Body fields map 1:1 to LaunchGoal:
+
+            POST /api/launch
+            {
+              "alibaba_url": "https://...",          # optional
+              "spy_url": "https://minea.com/...",   # optional
+              "supplier_sku": "CJ-12345",            # optional
+              "manual_payload": {...},               # optional
+              "target_price": 29.99,
+              "ad_budget_day": 20.0,
+              "ad_kill_roas": 1.5,
+              "ad_kill_after_days": 3,
+              "niche": "pets",
+              "copy_tone": "urgent",
+              "store_id": "ts0efe-ih"
+            }
+        """
+        from workflows.launch import LaunchPipeline, LaunchGoal
+
+        try:
+            goal = LaunchGoal(
+                alibaba_url=body.get("alibaba_url"),
+                spy_url=body.get("spy_url"),
+                supplier_sku=body.get("supplier_sku"),
+                manual_payload=body.get("manual_payload"),
+                target_price=body.get("target_price"),
+                margin_floor=float(body.get("margin_floor", 0.30)),
+                ad_budget_day=float(body.get("ad_budget_day", 20.0)),
+                ad_kill_roas=float(body.get("ad_kill_roas", 1.5)),
+                ad_kill_after_days=int(body.get("ad_kill_after_days", 3)),
+                niche=body.get("niche", ""),
+                copy_tone=body.get("copy_tone", "friendly"),
+                store_id=body.get("store_id", ""),
+            )
+        except (TypeError, ValueError) as exc:
+            self._json_response(400, {"error": f"invalid goal: {exc}"})
+            return
+
+        # Reject if no source pointer at all
+        if goal.source_kind() == "manual" and not goal.manual_payload:
+            self._json_response(400, {
+                "error": "must supply one of: alibaba_url, spy_url, "
+                         "supplier_sku, manual_payload",
+            })
+            return
+
+        result = LaunchPipeline().run(goal)
+        status_code = 200 if result.status == "complete" else (
+            207 if result.status == "partial" else 422
+        )
+        self._json_response(status_code, result.as_dict())
 
     # --- Helpers ---
 

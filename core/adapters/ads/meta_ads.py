@@ -1,21 +1,33 @@
 """MetaAdsAdapter — Meta (Facebook/Instagram) Marketing API.
 
 Meta Ads covers Facebook, Instagram, Messenger, and Audience
-Network advertising. This adapter wraps the Marketing API v21.0
-for:
+Network advertising. This adapter wraps the Marketing API
+(defaults to v25.0 — the Q1 2026 GA that deprecated ASC/AAC
+smart-promotion shims + the 7dv/28dv attribution windows).
+
+Capabilities:
 
   * **Performance** — fetch campaign insights (reach, impressions,
-    spend, conversions)
-  * **Campaigns** — create new campaigns
-  * **Budget** — update daily/lifetime budget
+    spend, conversions); deprecated attribution windows in
+    ``action_attribution_windows`` are translated to the
+    2026 codes so existing callers don't 400-fail.
+  * **Campaigns** — create new campaigns.
+  * **Budget** — update daily/lifetime budget.
 
-Authentication: long-lived access token + ad account ID.
+Configurable overrides (2026 API rollover):
+
+  * ``SHOPAI_META_API_VERSION`` env var — override the graph
+    version used in the base URL (e.g. ``v26.0`` when it GAs).
+  * ``SHOPAI_META_ATTRIBUTION_REMAP`` env var — set to ``0``
+    to disable the 7dv/28dv → 1dv/7dv_click translation and
+    pass the caller's windows through unmodified.
 
 Free tier: None (pay-per-impression/click).
 Reference: https://developers.facebook.com/docs/marketing-apis
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from ..base import AdapterResult, Capability
@@ -24,16 +36,76 @@ from ..errors import AdapterValidationError
 from ._base import AdsBaseAdapter
 
 
-_META_API_VERSION = "v21.0"
+_DEFAULT_META_API_VERSION = "v25.0"
+
+# Q1 2026 deprecation map — old code → new code.
+# Callers that still construct insights queries with the old
+# 7dv/28dv windows would get a 400; we translate proactively.
+_ATTRIBUTION_WINDOW_REMAP = {
+    "7dv": "1dv",
+    "28dv": "7dv_click",
+}
+
+
+def _resolved_api_version() -> str:
+    """Resolve the Graph API version (env override or default).
+    Read per-instance rather than captured at import time so a
+    long-running daemon can rotate versions without reboot."""
+    override = os.environ.get(
+        "SHOPAI_META_API_VERSION", "",
+    ).strip()
+    return override or _DEFAULT_META_API_VERSION
+
+
+def _normalize_attribution_windows(
+    windows: Any,
+) -> list[str]:
+    """Translate deprecated 7dv/28dv attribution windows to
+    their 2026 equivalents. Unknown codes pass through so new
+    windows (1d_view, 7d_click, etc.) still work. Returns a
+    de-duplicated list preserving input order.
+
+    Opt-out via ``SHOPAI_META_ATTRIBUTION_REMAP=0``.
+    """
+    if os.environ.get(
+        "SHOPAI_META_ATTRIBUTION_REMAP", "",
+    ) == "0":
+        if isinstance(windows, list):
+            return [str(w) for w in windows]
+        if windows is None:
+            return []
+        return [str(windows)]
+    if windows is None:
+        return []
+    if not isinstance(windows, list):
+        windows = [windows]
+    out: list[str] = []
+    seen: set[str] = set()
+    for w in windows:
+        code = str(w)
+        mapped = _ATTRIBUTION_WINDOW_REMAP.get(code, code)
+        if mapped in seen:
+            continue
+        seen.add(mapped)
+        out.append(mapped)
+    return out
 
 
 class MetaAdsAdapter(AdsBaseAdapter):
     name = "meta_ads"
-    base_url = f"https://graph.facebook.com/{_META_API_VERSION}"
     config_alias = "meta_ads_access_token"
-
     priority = 80
     cost_per_call = 0.0
+
+    @property
+    def base_url(self) -> str:  # type: ignore[override]
+        """Graph API base URL, re-evaluated per call so
+        ``SHOPAI_META_API_VERSION`` env overrides land without
+        an adapter reload."""
+        return (
+            f"https://graph.facebook.com/"
+            f"{_resolved_api_version()}"
+        )
 
     # ── Configuration ──────────────────────────────────────────
 
@@ -74,6 +146,18 @@ class MetaAdsAdapter(AdsBaseAdapter):
             f"{self.base_url}/{account_id}/insights"
             f"?fields={fields}&date_preset={date_preset}&level={level}"
         )
+        # Optional attribution window override — Q1 2026
+        # Meta rollover deprecated 7dv/28dv; translate proactively
+        # so callers that still pass the old codes keep working.
+        windows = _normalize_attribution_windows(
+            params.get("action_attribution_windows"),
+        )
+        if windows:
+            import urllib.parse as _qs
+            url += (
+                "&action_attribution_windows="
+                + _qs.quote(",".join(windows))
+            )
         raw = self._http_request("GET", url)
 
         campaigns = []

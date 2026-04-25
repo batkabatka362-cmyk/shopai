@@ -23,6 +23,7 @@ store_registry.py stays stable.
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, Optional
 
@@ -80,6 +81,15 @@ ALL_FEATURES = (
     "referral",
     "emails",
     "payments",
+    "pages",
+    "policies",
+    "menus",
+    "brand",
+    "redirects",
+    "blog",
+    "webhooks",
+    "script_tags",
+    "metafield_definitions",
 )
 
 
@@ -192,6 +202,534 @@ _SHIPPING_ZONES = {
 }
 
 
+# ── Page templates (store builder expansion Phase 1a) ───────────────
+
+_PAGE_TONES: dict[str, str] = {
+    "home": "cozy, welcoming, domestic-expert",
+    "fashion": "confident, trend-aware, style-forward",
+    "tech": "precise, benefit-focused, concise",
+    "beauty": "caring, sensorial, gentle",
+    "general": "friendly, clear, trustworthy",
+}
+
+
+def _page_templates(
+    niche: str, store_display: str,
+) -> list[dict[str, str]]:
+    """Return the three trust-signal page definitions for a
+    niche. Hard-coded safe copy (no LLM cost, deterministic);
+    later versions can LLM-augment the tone.
+    """
+    tone = _PAGE_TONES.get(niche, _PAGE_TONES["general"])
+    store_display = (store_display or "").strip() or "Our Store"
+    about = (
+        f"<h1>About {store_display}</h1>"
+        f"<p>Welcome to {store_display}. We curate "
+        f"products carefully chosen for quality, value, "
+        f"and customer delight. Our storefront focuses "
+        f"on a {tone} experience for every shopper.</p>"
+        f"<p>Questions? Visit our Contact page or email "
+        f"hello@{store_display.lower().replace(' ', '')}"
+        f".com.</p>"
+    )
+    contact = (
+        f"<h1>Contact {store_display}</h1>"
+        f"<p>We respond to every message within one "
+        f"business day.</p>"
+        f"<ul>"
+        f"<li><strong>Email:</strong> support@"
+        f"{store_display.lower().replace(' ', '')}.com</li>"
+        f"<li><strong>Order questions:</strong> include "
+        f"your order number for fastest help</li>"
+        f"<li><strong>Returns &amp; refunds:</strong> see "
+        f"our refund policy page</li>"
+        f"</ul>"
+    )
+    faq = (
+        f"<h1>Frequently Asked Questions</h1>"
+        f"<h2>How fast will my order ship?</h2>"
+        f"<p>Most orders ship within 1-2 business days. "
+        f"Delivery takes 3-7 business days to most US "
+        f"addresses.</p>"
+        f"<h2>What's your return policy?</h2>"
+        f"<p>Unused items can be returned within 30 days "
+        f"for a full refund. See our refund policy page "
+        f"for full details.</p>"
+        f"<h2>Do you ship internationally?</h2>"
+        f"<p>Yes. We currently ship to the US, Canada, "
+        f"the UK, and Australia. Rates and delivery "
+        f"times vary by destination.</p>"
+        f"<h2>Can I cancel or change my order?</h2>"
+        f"<p>If your order has not yet shipped, email "
+        f"us within 12 hours and we will do our best "
+        f"to adjust or cancel it.</p>"
+    )
+    return [
+        {
+            "handle": "about",
+            "title": f"About {store_display}",
+            "body_html": about,
+        },
+        {
+            "handle": "contact",
+            "title": "Contact Us",
+            "body_html": contact,
+        },
+        {
+            "handle": "faq",
+            "title": "FAQ",
+            "body_html": faq,
+        },
+    ]
+
+
+# ── Policy templates (store builder expansion Phase 1f) ─────────────
+
+# Shopify GraphQL ShopPolicyType → human title.
+_POLICY_TYPES = {
+    "PRIVACY_POLICY": "Privacy Policy",
+    "REFUND_POLICY": "Refund Policy",
+    "TERMS_OF_SERVICE": "Terms of Service",
+    "SHIPPING_POLICY": "Shipping Policy",
+}
+
+
+def _policy_templates(
+    niche: str, store_display: str,
+) -> dict[str, str]:
+    """Return {policy_type: body_html} for the four policies
+    every consumer storefront needs.
+
+    Hard-coded safe templates (no LLM cost, deterministic,
+    no fabricated details). Owner reviews + customises
+    before publishing live — the configurator can stage them
+    via dry_run.
+    """
+    store_display = (store_display or "").strip() or "Our Store"
+    privacy = (
+        f"<h1>Privacy Policy</h1>"
+        f"<p>{store_display} respects your privacy. "
+        f"We collect the minimum personal data needed to "
+        f"fulfil orders and improve our service.</p>"
+        f"<h2>What we collect</h2>"
+        f"<ul>"
+        f"<li>Name + email + shipping address (to "
+        f"fulfil orders)</li>"
+        f"<li>Payment details (processed by our payment "
+        f"provider; never stored by us)</li>"
+        f"<li>Browser / device info (to detect fraud and "
+        f"improve site performance)</li>"
+        f"</ul>"
+        f"<h2>Your rights</h2>"
+        f"<p>You can request a copy of the data we hold "
+        f"about you, or ask us to delete it, by emailing "
+        f"privacy@"
+        f"{store_display.lower().replace(' ', '')}.com.</p>"
+    )
+    refund = (
+        f"<h1>Refund Policy</h1>"
+        f"<p>We offer a 30-day return window for most "
+        f"products. Items must be unused, in original "
+        f"packaging, and include a copy of the order "
+        f"confirmation.</p>"
+        f"<h2>How to start a return</h2>"
+        f"<ol>"
+        f"<li>Email returns@"
+        f"{store_display.lower().replace(' ', '')}.com with "
+        f"your order number</li>"
+        f"<li>We will send you a return shipping label</li>"
+        f"<li>Once the item is received and inspected, we "
+        f"will issue a refund to your original payment "
+        f"method within 5 business days</li>"
+        f"</ol>"
+        f"<p>Sale items and personalised products are "
+        f"final sale and cannot be returned.</p>"
+    )
+    tos = (
+        f"<h1>Terms of Service</h1>"
+        f"<p>By using {store_display} you agree to these "
+        f"terms. Please read them carefully.</p>"
+        f"<h2>Order acceptance</h2>"
+        f"<p>We reserve the right to refuse or cancel any "
+        f"order, for any reason, at our discretion. If we "
+        f"cancel your order after payment, you will be "
+        f"refunded in full.</p>"
+        f"<h2>Accuracy</h2>"
+        f"<p>We do our best to describe products "
+        f"accurately. Colours may appear slightly "
+        f"different on different screens.</p>"
+        f"<h2>Liability</h2>"
+        f"<p>Our maximum liability for any claim is the "
+        f"amount you paid for the order.</p>"
+    )
+    shipping = (
+        f"<h1>Shipping Policy</h1>"
+        f"<p>We aim to ship every order within 1-2 "
+        f"business days of receiving it.</p>"
+        f"<h2>Delivery times</h2>"
+        f"<ul>"
+        f"<li>United States: 3-7 business days</li>"
+        f"<li>Canada: 5-10 business days</li>"
+        f"<li>United Kingdom: 7-14 business days</li>"
+        f"<li>Australia: 7-14 business days</li>"
+        f"</ul>"
+        f"<h2>Tracking</h2>"
+        f"<p>You will receive a tracking link by email "
+        f"as soon as your order ships. Contact support@"
+        f"{store_display.lower().replace(' ', '')}.com if "
+        f"your package hasn't arrived within the "
+        f"estimated window.</p>"
+    )
+    return {
+        "PRIVACY_POLICY": privacy,
+        "REFUND_POLICY": refund,
+        "TERMS_OF_SERVICE": tos,
+        "SHIPPING_POLICY": shipping,
+    }
+
+
+_POLICY_UPDATE_MUTATION = """
+mutation shopPolicyUpdate($policy: ShopPolicyInput!) {
+  shopPolicyUpdate(shopPolicy: $policy) {
+    userErrors { field message }
+    shopPolicy { id type body }
+  }
+}
+""".strip()
+
+
+# ── Menu templates (store builder expansion Phase 1b) ───────────────
+
+
+_MENUS_QUERY = """
+query listMenus {
+  menus(first: 20) {
+    nodes { id handle title }
+  }
+}
+""".strip()
+
+
+# ── Metafield definitions (Phase 2f) ────────────────────────────────
+
+_METAFIELD_DEF_CREATE_MUTATION = """
+mutation metafieldDefinitionCreate(
+    $definition: MetafieldDefinitionInput!,
+) {
+  metafieldDefinitionCreate(definition: $definition) {
+    createdDefinition { id name key namespace type { name } }
+    userErrors { field message code }
+  }
+}
+""".strip()
+
+
+# The base set of product metafields every consumer storefront
+# benefits from — once defined, products can populate them from
+# the admin UI, PIM exports, or product_creator itself, and the
+# data surfaces in Schema.org JSON-LD + Storefront API.
+#
+# Shape: name, key, description, type. Namespace always "custom"
+# (Shopify's reserved namespace for storefront-facing metafields
+# in 2024.01+).
+_PRODUCT_METAFIELD_DEFINITIONS: list[dict[str, str]] = [
+    {
+        "name": "Warranty",
+        "key": "warranty",
+        "description": (
+            "Warranty terms (e.g., '1-year limited')"
+        ),
+        "type": "single_line_text_field",
+    },
+    {
+        "name": "Materials",
+        "key": "materials",
+        "description": (
+            "Materials or ingredients, one per line"
+        ),
+        "type": "list.single_line_text_field",
+    },
+    {
+        "name": "Care instructions",
+        "key": "care_instructions",
+        "description": (
+            "How to use + care for the product"
+        ),
+        "type": "multi_line_text_field",
+    },
+    {
+        "name": "Country of origin",
+        "key": "country_of_origin",
+        "description": (
+            "ISO country code or full name"
+        ),
+        "type": "single_line_text_field",
+    },
+    {
+        "name": "Video URL",
+        "key": "video_url",
+        "description": (
+            "Hero video URL (YouTube / fal.ai / Vimeo)"
+        ),
+        "type": "url",
+    },
+]
+
+
+_MENU_UPDATE_MUTATION = """
+mutation menuUpdate(
+    $id: ID!,
+    $title: String!,
+    $items: [MenuItemUpdateInput!]!,
+    $handle: String!,
+) {
+  menuUpdate(id: $id, title: $title, items: $items,
+             handle: $handle) {
+    menu { id handle title items { title url } }
+    userErrors { field message }
+  }
+}
+""".strip()
+
+
+def _menu_items_for_niche(niche: str) -> dict[str, list[dict[str, str]]]:
+    """Return {handle: [MenuItemCreateInput]} for the two
+    default Shopify menus (main-menu + footer).
+
+    Main-menu drives top-level store navigation. Footer drives
+    legal / contact links that every page shows. Both use
+    simple HTTP relative URLs so this works on any domain /
+    market config.
+
+    Items are niche-aware at the Shop vs Collections level —
+    a home-decor store shows "Rooms" where a fashion store
+    shows "New Arrivals".
+    """
+    # Collection-ish link for the niche (falls back to
+    # /collections/all when the niche label doesn't map
+    # cleanly). Niche names come from NICHE_CONFIGS keys.
+    niche_label = {
+        "home": "Shop Home",
+        "fashion": "New Arrivals",
+        "tech": "Gadgets",
+        "beauty": "Skincare",
+        "general": "Shop All",
+    }.get(niche, "Shop All")
+
+    main_menu = [
+        {"title": "Home", "type": "FRONTPAGE", "url": "/"},
+        {
+            "title": niche_label,
+            "type": "HTTP",
+            "url": "/collections/all",
+        },
+        {
+            "title": "About",
+            "type": "HTTP", "url": "/pages/about",
+        },
+        {
+            "title": "FAQ",
+            "type": "HTTP", "url": "/pages/faq",
+        },
+        {
+            "title": "Contact",
+            "type": "HTTP", "url": "/pages/contact",
+        },
+    ]
+    footer = [
+        {
+            "title": "About Us",
+            "type": "HTTP", "url": "/pages/about",
+        },
+        {
+            "title": "Contact",
+            "type": "HTTP", "url": "/pages/contact",
+        },
+        {
+            "title": "FAQ",
+            "type": "HTTP", "url": "/pages/faq",
+        },
+        {
+            "title": "Privacy Policy",
+            "type": "HTTP", "url": "/policies/privacy-policy",
+        },
+        {
+            "title": "Refund Policy",
+            "type": "HTTP", "url": "/policies/refund-policy",
+        },
+        {
+            "title": "Shipping Policy",
+            "type": "HTTP",
+            "url": "/policies/shipping-policy",
+        },
+        {
+            "title": "Terms of Service",
+            "type": "HTTP", "url": "/policies/terms-of-service",
+        },
+    ]
+    return {"main-menu": main_menu, "footer": footer}
+
+
+# ── Brand + SEO metafield templates (Phase 2a) ──────────────────────
+
+# Niche → brand voice + colour + default SEO shape.
+# Every field is the AI-safe starting point; owner edits in
+# admin after first-pass config.
+_BRAND_VOICES: dict[str, dict[str, Any]] = {
+    "home": {
+        "voice": "warm, practical, homey",
+        "tagline": "Make every room feel like yours.",
+        "color_primary": "#8B5E3C",
+        "color_secondary": "#EEE6D4",
+        "typography_heading": "Playfair Display",
+        "typography_body": "Inter",
+        "schema_org_type": "Store",
+    },
+    "fashion": {
+        "voice": "confident, trend-aware, uplifting",
+        "tagline": "Dress like tomorrow.",
+        "color_primary": "#1A1A1A",
+        "color_secondary": "#F5F5F5",
+        "typography_heading": "Cormorant Garamond",
+        "typography_body": "Work Sans",
+        "schema_org_type": "ClothingStore",
+    },
+    "tech": {
+        "voice": "precise, benefit-focused, concise",
+        "tagline": "Smarter tools, simpler life.",
+        "color_primary": "#0F172A",
+        "color_secondary": "#38BDF8",
+        "typography_heading": "JetBrains Mono",
+        "typography_body": "Inter",
+        "schema_org_type": "ElectronicsStore",
+    },
+    "beauty": {
+        "voice": "caring, sensorial, gentle",
+        "tagline": "Glow on your terms.",
+        "color_primary": "#E8B4B4",
+        "color_secondary": "#FFF7F5",
+        "typography_heading": "Libre Caslon Text",
+        "typography_body": "DM Sans",
+        "schema_org_type": "BeautySalon",
+    },
+    "general": {
+        "voice": "friendly, clear, trustworthy",
+        "tagline": "Quality picks, curated for you.",
+        "color_primary": "#1E40AF",
+        "color_secondary": "#F1F5F9",
+        "typography_heading": "Inter",
+        "typography_body": "Inter",
+        "schema_org_type": "Store",
+    },
+}
+
+
+def _blog_welcome_article(
+    niche: str, store_display: str,
+) -> dict[str, Any]:
+    """Return a welcome article dict Shopify REST expects.
+
+    Niche-aware body + SEO summary. No author / image —
+    Shopify defaults both. Handle is stable per store so
+    re-running the configurator doesn't duplicate the
+    article.
+    """
+    tone = _PAGE_TONES.get(niche, _PAGE_TONES["general"])
+    niche_word = {
+        "home": "home essentials",
+        "fashion": "wardrobe staples",
+        "tech": "everyday tech",
+        "beauty": "self-care picks",
+        "general": "curated essentials",
+    }.get(niche, "curated essentials")
+    slug = store_display.lower().replace(" ", "-")
+    handle = f"welcome-to-{slug}"[:63]
+    title = f"Welcome to {store_display}"
+    body_html = (
+        f"<h2>Hello, and thanks for stopping by.</h2>"
+        f"<p>{store_display} is a {tone} storefront "
+        f"curating {niche_word}. Every product here is "
+        f"chosen for quality, value, and customer delight — "
+        f"no filler, no pressure.</p>"
+        f"<h3>What to expect</h3>"
+        f"<ul>"
+        f"<li>Fast shipping within 1-2 business days</li>"
+        f"<li>30-day returns on most items</li>"
+        f"<li>Friendly support — real people, quick "
+        f"replies</li>"
+        f"</ul>"
+        f"<p>Got questions? Check our <a "
+        f"href=\"/pages/faq\">FAQ</a> or email us from the "
+        f"<a href=\"/pages/contact\">Contact</a> page. We "
+        f"read every message.</p>"
+    )
+    summary_html = (
+        f"Welcome to {store_display}. Here's what you can "
+        f"expect from our {niche_word} curation."
+    )
+    return {
+        "title": title,
+        "handle": handle,
+        "body_html": body_html,
+        "summary_html": summary_html,
+        "published": True,
+        "tags": f"welcome,{niche}",
+    }
+
+
+def _brand_metafields(
+    niche: str, store_display: str,
+) -> list[dict[str, Any]]:
+    """Return the list of metafield dicts (namespace=shopai)
+    that encode brand + SEO defaults. Other engines
+    (content_generator, email_templates, ad_copy) read these
+    so brand stays consistent without hard-coding per-engine
+    defaults."""
+    voice = _BRAND_VOICES.get(niche, _BRAND_VOICES["general"])
+    store_display = (
+        (store_display or "").strip() or "Our Store"
+    )
+    brand = {
+        "store_name": store_display,
+        "niche": niche,
+        "voice": voice["voice"],
+        "tagline": voice["tagline"],
+        "color_primary": voice["color_primary"],
+        "color_secondary": voice["color_secondary"],
+        "typography": {
+            "heading": voice["typography_heading"],
+            "body": voice["typography_body"],
+        },
+    }
+    seo_defaults = {
+        "meta_description_template": (
+            f"{store_display} — {voice['tagline']}"
+        ),
+        "og_image_url": "",
+        "schema_org_type": voice["schema_org_type"],
+        "canonical_rules": {
+            "products": "/products/{handle}",
+            "collections": "/collections/{handle}",
+            "pages": "/pages/{handle}",
+        },
+        "robots_default": "index, follow",
+    }
+    return [
+        {
+            "namespace": "shopai",
+            "key": "brand",
+            "type": "json",
+            "value": json.dumps(brand),
+        },
+        {
+            "namespace": "shopai",
+            "key": "seo_defaults",
+            "type": "json",
+            "value": json.dumps(seo_defaults),
+        },
+    ]
+
+
 # Niche → loyalty point rules
 _LOYALTY_RULES = {
     "beauty":  {"earn_per_dollar": 2, "redeem_value_cents": 1, "welcome_bonus": 100},
@@ -269,6 +807,42 @@ class StoreConfigurator:
             results["emails"] = self._setup_emails(client, niche, store_name)
         if "payments" in selected:
             results["payments"] = self._setup_payments(client, niche)
+        if "pages" in selected:
+            results["pages"] = self._setup_pages(
+                client, niche, store_name,
+            )
+        if "policies" in selected:
+            results["policies"] = self._setup_policies(
+                client, niche, store_name,
+            )
+        if "menus" in selected:
+            results["menus"] = self._setup_menus(
+                client, niche, config,
+            )
+        if "brand" in selected:
+            results["brand"] = self._setup_brand(
+                client, niche, store_name, config,
+            )
+        if "redirects" in selected:
+            results["redirects"] = self._setup_redirects(
+                client, niche,
+            )
+        if "blog" in selected:
+            results["blog"] = self._setup_blog(
+                client, niche, store_name,
+            )
+        if "webhooks" in selected:
+            results["webhooks"] = self._setup_webhooks(
+                client, shop_url, token,
+            )
+        if "script_tags" in selected:
+            results["script_tags"] = self._setup_script_tags(
+                client,
+            )
+        if "metafield_definitions" in selected:
+            results["metafield_definitions"] = (
+                self._setup_metafield_definitions(client)
+            )
 
         self._record(results)
 
@@ -1316,6 +1890,911 @@ class StoreConfigurator:
             "missing_gateways": missing,
             "country": country,
             "currency": currency,
+        }
+
+    # ── Feature: Pages (About / Contact / FAQ) ─────────────────
+
+    def _setup_pages(
+        self, client: ShopifyClient, niche: str, store_name: str,
+    ) -> dict[str, Any]:
+        """Create the three trust-signal pages every storefront
+        needs: About, Contact, FAQ.
+
+        Why this matters (Store Builder Expansion plan, Phase 1a):
+        a fresh Shopify store defaults to zero content pages.
+        Visitors landing from Meta Ads drop off at a policy-less
+        storefront — they can't tell whether the shop is real.
+        Three trust pages jump conversion + unblock Meta's
+        automatic policy auditor.
+
+        Shopify REST ``pages`` API is idempotent on handle — we
+        query existing pages, skip any that already exist by
+        handle, and create the rest. Dry-run logs the planned
+        inserts without calling the API.
+        """
+        store_display = store_name or "Our Store"
+        pages_plan = _page_templates(niche, store_display)
+        existing_handles: set[str] = set()
+        try:
+            resp = client.get(
+                "pages.json", params={"limit": 250},
+            )
+            if "error" not in resp:
+                for p in resp.get("pages", []) or []:
+                    h = str(p.get("handle") or "").strip()
+                    if h:
+                        existing_handles.add(h)
+            else:
+                logger.warning(
+                    "pages fetch failed: %s",
+                    resp.get("error"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "pages fetch raised: %s", exc,
+            )
+
+        created: list[str] = []
+        skipped: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for page in pages_plan:
+            handle = page["handle"]
+            if handle in existing_handles:
+                skipped.append(handle)
+                continue
+            if self._dry_run:
+                self._plan.append({
+                    "action": "create_page",
+                    "path": "pages.json",
+                    "method": "POST",
+                    "handle": handle,
+                    "title": page["title"],
+                    "body_preview": page["body_html"][:80],
+                    "description": (
+                        f"Create page '{page['title']}' "
+                        f"(handle={handle})"
+                    ),
+                })
+                created.append(handle)
+                continue
+            body = {
+                "page": {
+                    "title": page["title"],
+                    "handle": handle,
+                    "body_html": page["body_html"],
+                    "published": True,
+                },
+            }
+            try:
+                resp = client.post(
+                    "pages.json", json=body,
+                )
+                if "error" in resp:
+                    errors.append({
+                        "handle": handle,
+                        "error": resp["error"],
+                    })
+                    continue
+                created.append(handle)
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "handle": handle,
+                    "error": str(exc),
+                })
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "created": created,
+            "skipped": skipped,
+            "errors": errors,
+            "niche": niche,
+        }
+
+    # ── Feature: Policies (Privacy / Refund / ToS / Shipping) ──
+
+    def _setup_policies(
+        self, client: ShopifyClient, niche: str, store_name: str,
+    ) -> dict[str, Any]:
+        """Write the four legal policies via GraphQL
+        ``shopPolicyUpdate``. Store-details REST returns
+        policies read-only — mutations require GraphQL.
+
+        Meta's ads policy auditor + GDPR both need these
+        live on the storefront before paid acquisition. Hard-
+        coded safe templates today; LLM augmentation deferred
+        (paranoid mode — policies are legal text, don't fabricate).
+        """
+        templates = _policy_templates(niche, store_name)
+        updated: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for policy_type, body_html in templates.items():
+            if self._dry_run:
+                self._plan.append({
+                    "action": "update_policy",
+                    "path": "graphql.json",
+                    "method": "POST",
+                    "policy_type": policy_type,
+                    "body_preview": body_html[:80],
+                    "description": (
+                        f"Update {_POLICY_TYPES[policy_type]} "
+                        f"policy"
+                    ),
+                })
+                updated.append(policy_type)
+                continue
+            variables = {
+                "policy": {
+                    "type": policy_type,
+                    "body": body_html,
+                },
+            }
+            try:
+                resp = client.graphql(
+                    _POLICY_UPDATE_MUTATION,
+                    variables=variables,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "policy_type": policy_type,
+                    "error": str(exc),
+                })
+                continue
+            if "error" in resp:
+                errors.append({
+                    "policy_type": policy_type,
+                    "error": resp.get("error"),
+                })
+                continue
+            # Shopify puts shopPolicyUpdate.userErrors inside
+            # data even when HTTP status is 200.
+            data = resp.get("data") or {}
+            mutation = data.get("shopPolicyUpdate") or {}
+            user_errors = mutation.get("userErrors") or []
+            if user_errors:
+                errors.append({
+                    "policy_type": policy_type,
+                    "error": "; ".join(
+                        e.get("message", "?")
+                        for e in user_errors
+                    ),
+                })
+                continue
+            updated.append(policy_type)
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "updated": updated,
+            "errors": errors,
+            "niche": niche,
+            "note": (
+                "Owner should review each policy before "
+                "publishing live — hard-coded safe defaults "
+                "may need business-specific edits."
+            ),
+        }
+
+    # ── Feature: Navigation menus (main-menu + footer) ─────────
+
+    def _setup_menus(
+        self, client: ShopifyClient, niche: str, config: dict,
+    ) -> dict[str, Any]:
+        """Update the two default Shopify menus (main-menu +
+        footer) with niche-appropriate items.
+
+        Shopify creates main-menu + footer automatically on
+        every new store. We find them by handle then call
+        `menuUpdate` with our item list. Handle uniqueness
+        makes this idempotent — run it N times, the menu
+        ends the same.
+
+        Works via GraphQL (Shopify's Menu API is GraphQL-only
+        since API 2024-04). Falls through cleanly when the
+        GraphQL call fails so the rest of configure() keeps
+        running.
+        """
+        plan = _menu_items_for_niche(niche)
+        updated: list[str] = []
+        errors: list[dict[str, Any]] = []
+
+        if self._dry_run:
+            for handle, items in plan.items():
+                self._plan.append({
+                    "action": "update_menu",
+                    "path": "graphql.json",
+                    "method": "POST",
+                    "handle": handle,
+                    "item_count": len(items),
+                    "body_preview": ", ".join(
+                        i["title"] for i in items
+                    )[:80],
+                    "description": (
+                        f"Update menu '{handle}' "
+                        f"({len(items)} items)"
+                    ),
+                })
+                updated.append(handle)
+            return {
+                "status": "dry_run",
+                "updated": updated,
+                "errors": errors,
+                "niche": niche,
+            }
+
+        # Discover menu IDs by handle
+        try:
+            resp = client.graphql(_MENUS_QUERY)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "error",
+                "updated": updated,
+                "errors": [
+                    {"handle": "*", "error": str(exc)},
+                ],
+                "niche": niche,
+            }
+        if "error" in resp:
+            return {
+                "status": "error",
+                "updated": updated,
+                "errors": [
+                    {"handle": "*", "error": resp["error"]},
+                ],
+                "niche": niche,
+            }
+        nodes = (
+            resp.get("data", {}).get("menus", {}).get(
+                "nodes", [],
+            ) or []
+        )
+        by_handle: dict[str, dict[str, Any]] = {
+            str(n.get("handle", "")): n for n in nodes
+            if isinstance(n, dict)
+        }
+
+        for handle, items in plan.items():
+            menu = by_handle.get(handle)
+            if menu is None:
+                errors.append({
+                    "handle": handle,
+                    "error": "menu not found",
+                })
+                continue
+            try:
+                resp = client.graphql(
+                    _MENU_UPDATE_MUTATION,
+                    variables={
+                        "id": menu["id"],
+                        "handle": handle,
+                        "title": str(menu.get(
+                            "title", handle,
+                        )),
+                        "items": items,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "handle": handle,
+                    "error": str(exc),
+                })
+                continue
+            if "error" in resp:
+                errors.append({
+                    "handle": handle,
+                    "error": resp.get("error"),
+                })
+                continue
+            data = resp.get("data") or {}
+            mutation = data.get("menuUpdate") or {}
+            user_errors = mutation.get("userErrors") or []
+            if user_errors:
+                errors.append({
+                    "handle": handle,
+                    "error": "; ".join(
+                        e.get("message", "?")
+                        for e in user_errors
+                    ),
+                })
+                continue
+            updated.append(handle)
+        return {
+            "status": (
+                "success" if not errors else (
+                    "partial" if updated else "error"
+                )
+            ),
+            "updated": updated,
+            "errors": errors,
+            "niche": niche,
+        }
+
+    # ── Feature: Brand + SEO metafields ────────────────────────
+
+    def _setup_brand(
+        self,
+        client: ShopifyClient,
+        niche: str,
+        store_name: str,
+        config: dict,
+    ) -> dict[str, Any]:
+        """Write niche-aware brand + SEO metafields so every
+        AI engine (content generator, email templates, ad
+        copy, schema-org emitter) reads brand voice / colours /
+        tagline / schema-org type from one structured source.
+
+        Two metafields written to namespace `shopai`:
+          * `brand`       — voice / tagline / colours / typography
+          * `seo_defaults` — meta description template / schema
+            type / canonical rules / robots default
+
+        Idempotent — same POST overwrites the same (namespace,
+        key) pair. Plan entries flow through `_write` so
+        dry_run log shape matches every other feature.
+        """
+        fields = _brand_metafields(niche, store_name)
+        written: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for mf in fields:
+            result = self._write(
+                client, "POST", "metafields.json",
+                {"metafield": mf},
+                description=(
+                    f"Save {mf['namespace']}.{mf['key']} "
+                    f"metafield"
+                ),
+            )
+            if result.get("error"):
+                errors.append({
+                    "key": f"{mf['namespace']}.{mf['key']}",
+                    "error": str(result.get("error")),
+                })
+                continue
+            if result.get("metafield") or result.get(
+                "dry_run",
+            ):
+                written.append(mf["key"])
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "niche": niche,
+            "store_name": (
+                store_name or "Our Store"
+            ),
+            "written": written,
+            "errors": errors,
+        }
+
+    # ── Feature: Product metafield definitions ─────────────────
+
+    def _setup_metafield_definitions(
+        self, client: ShopifyClient,
+    ) -> dict[str, Any]:
+        """Create typed metafield definitions at the PRODUCT
+        ownerType so every product can carry structured data
+        the storefront theme + Schema.org JSON-LD + Storefront
+        API read.
+
+        5 definitions (warranty / materials / care_instructions
+        / country_of_origin / video_url) chosen for the
+        intersection of Schema.org Product properties +
+        conversion-critical trust signals.
+
+        Idempotent — Shopify returns
+        ``userErrors.code=TAKEN`` on re-creation, which we
+        translate into the ``existing`` bucket so a second
+        configure run is a clean no-op.
+        """
+        existing: list[str] = []
+        created: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for defn in _PRODUCT_METAFIELD_DEFINITIONS:
+            key = defn["key"]
+            if self._dry_run:
+                self._plan.append({
+                    "action": "create_metafield_definition",
+                    "path": "graphql.json",
+                    "method": "POST",
+                    "namespace": "custom",
+                    "key": key,
+                    "type": defn["type"],
+                    "description": (
+                        f"Create product metafield "
+                        f"definition custom.{key} "
+                        f"({defn['type']})"
+                    ),
+                })
+                created.append(key)
+                continue
+            variables = {
+                "definition": {
+                    "namespace": "custom",
+                    "key": key,
+                    "name": defn["name"],
+                    "description": defn["description"],
+                    "type": defn["type"],
+                    "ownerType": "PRODUCT",
+                },
+            }
+            try:
+                resp = client.graphql(
+                    _METAFIELD_DEF_CREATE_MUTATION,
+                    variables=variables,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "key": key,
+                    "error": str(exc),
+                })
+                continue
+            if "error" in resp:
+                errors.append({
+                    "key": key,
+                    "error": resp.get("error"),
+                })
+                continue
+            data = resp.get("data") or {}
+            mutation = (
+                data.get("metafieldDefinitionCreate") or {}
+            )
+            user_errors = mutation.get("userErrors") or []
+            if user_errors:
+                # TAKEN code = already exists → bucket as
+                # "existing" so idempotent reruns stay clean.
+                codes = {
+                    e.get("code") for e in user_errors
+                }
+                if "TAKEN" in codes:
+                    existing.append(key)
+                    continue
+                errors.append({
+                    "key": key,
+                    "error": "; ".join(
+                        e.get("message", "?")
+                        for e in user_errors
+                    ),
+                })
+                continue
+            created.append(key)
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "created": created,
+            "existing": existing,
+            "errors": errors,
+        }
+
+    # ── Feature: Script tags (tracking pixels) ─────────────────
+
+    def _setup_script_tags(
+        self, client: ShopifyClient,
+    ) -> dict[str, Any]:
+        """Auto-install tracking scripts on the storefront.
+
+        Env-gated so owners who only want analytics-off stores
+        don't accidentally install pixels:
+
+          * ``SHOPAI_META_PIXEL_SRC`` — full https URL of the
+            Meta Pixel helper script
+          * ``SHOPAI_TIKTOK_PIXEL_SRC`` — TikTok equivalent
+          * ``SHOPAI_GA_SRC`` — Google Analytics gtag.js URL
+
+        Script tags API is a legacy surface Shopify has
+        deprecated in favour of Web Pixels, but it still works
+        today and requires no Shopify app install. Idempotent
+        — query existing by src, skip duplicates.
+
+        Missing all three env vars → status=skipped (no-op).
+        """
+        sources: list[tuple[str, str]] = []
+        for label, env in (
+            ("meta_pixel", "SHOPAI_META_PIXEL_SRC"),
+            ("tiktok_pixel", "SHOPAI_TIKTOK_PIXEL_SRC"),
+            ("google_analytics", "SHOPAI_GA_SRC"),
+        ):
+            src = os.environ.get(env, "").strip()
+            if src:
+                if not src.startswith("https://"):
+                    continue
+                sources.append((label, src))
+        if not sources:
+            return {
+                "status": "skipped",
+                "reason": (
+                    "no SHOPAI_META_PIXEL_SRC / "
+                    "SHOPAI_TIKTOK_PIXEL_SRC / SHOPAI_GA_SRC "
+                    "configured — export at least one to "
+                    "enable tracking"
+                ),
+                "installed": [],
+                "existing": [],
+                "errors": [],
+            }
+
+        # Fetch existing script_tags so we can skip duplicates
+        existing_srcs: set[str] = set()
+        try:
+            resp = client.get(
+                "script_tags.json", params={"limit": 250},
+            )
+            if "error" not in resp:
+                for t in resp.get("script_tags", []) or []:
+                    s = str(t.get("src") or "").strip()
+                    if s:
+                        existing_srcs.add(s)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "script_tags fetch raised: %s", exc,
+            )
+
+        installed: list[str] = []
+        existing_labels: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for label, src in sources:
+            if src in existing_srcs:
+                existing_labels.append(label)
+                continue
+            result = self._write(
+                client, "POST", "script_tags.json",
+                {
+                    "script_tag": {
+                        "event": "onload",
+                        "src": src,
+                    },
+                },
+                description=(
+                    f"Install {label} script_tag {src}"
+                ),
+            )
+            if result.get("error"):
+                errors.append({
+                    "label": label,
+                    "src": src,
+                    "error": str(result["error"]),
+                })
+                continue
+            if result.get("script_tag") or result.get(
+                "dry_run",
+            ):
+                installed.append(label)
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "installed": installed,
+            "existing": existing_labels,
+            "errors": errors,
+        }
+
+    # ── Feature: Webhook subscriptions (T1 prereq) ─────────────
+
+    def _setup_webhooks(
+        self,
+        client: ShopifyClient,
+        shop_url: str,
+        token: str,
+    ) -> dict[str, Any]:
+        """Subscribe ShopAI's webhook endpoint to the Shopify
+        topics the reward loop + pattern miner need.
+
+        Reads ``SHOPAI_WEBHOOK_CALLBACK_URL`` from env — must
+        be an https URL Shopify can reach. Without it the
+        feature returns ``{"status": "skipped", "reason":
+        "SHOPAI_WEBHOOK_CALLBACK_URL not set"}`` — still
+        useful during T0 (no-op is OK) and non-blocking for
+        the rest of configure().
+
+        Idempotent — core.webhooks.register.register_all()
+        treats an already-subscribed topic as "exists".
+        Topics subscribed: orders/create, orders/paid,
+        orders/cancelled, products/update, app/uninstalled.
+
+        This is what turns a configured store into a T1-ready
+        store — without webhook subscriptions the handler
+        never fires and the learning loop stays dark.
+        """
+        callback = os.environ.get(
+            "SHOPAI_WEBHOOK_CALLBACK_URL", "",
+        ).strip()
+        if not callback:
+            return {
+                "status": "skipped",
+                "reason": (
+                    "SHOPAI_WEBHOOK_CALLBACK_URL not set "
+                    "— export to enable webhook "
+                    "subscription"
+                ),
+                "subscribed": [],
+                "existing": [],
+                "errors": [],
+            }
+        if not callback.startswith("https://"):
+            return {
+                "status": "error",
+                "reason": (
+                    "SHOPAI_WEBHOOK_CALLBACK_URL must be "
+                    "https (Shopify rejects http)"
+                ),
+                "subscribed": [],
+                "existing": [],
+                "errors": [{"error": "non-https URL"}],
+            }
+
+        from core.webhooks.register import (
+            _TOPICS, register_all,
+        )
+
+        if self._dry_run:
+            for topic in _TOPICS:
+                self._plan.append({
+                    "action": "register_webhook",
+                    "path": "webhooks.json",
+                    "method": "POST",
+                    "topic": topic,
+                    "address": callback,
+                    "description": (
+                        f"Subscribe webhook "
+                        f"{topic} → {callback}"
+                    ),
+                })
+            return {
+                "status": "dry_run",
+                "callback": callback,
+                "subscribed": list(_TOPICS),
+                "existing": [],
+                "errors": [],
+            }
+
+        try:
+            status_map = register_all(
+                shop_url, token, callback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "error",
+                "callback": callback,
+                "subscribed": [],
+                "existing": [],
+                "errors": [{"error": str(exc)}],
+            }
+
+        subscribed: list[str] = []
+        existing: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for topic, st in status_map.items():
+            if st == "created":
+                subscribed.append(topic)
+            elif st == "exists":
+                existing.append(topic)
+            else:
+                errors.append({"topic": topic, "error": st})
+        return {
+            "status": (
+                "success" if not errors else (
+                    "partial" if (
+                        subscribed or existing
+                    ) else "error"
+                )
+            ),
+            "callback": callback,
+            "subscribed": subscribed,
+            "existing": existing,
+            "errors": errors,
+        }
+
+    # ── Feature: Blog welcome article ──────────────────────────
+
+    def _setup_blog(
+        self,
+        client: ShopifyClient,
+        niche: str,
+        store_name: str,
+    ) -> dict[str, Any]:
+        """Seed the default `news` blog with one welcome
+        article per niche. A fresh Shopify blog shows "no
+        posts yet" which damages first-visit trust. One
+        welcome post + SEO meta fields keeps the blog
+        looking alive from day one.
+
+        Idempotent by article handle (welcome-to-{slug}).
+        Find the `news` blog by handle. If no `news` blog
+        exists (rare — Shopify creates it by default),
+        skip without error.
+        """
+        store_display = (store_name or "").strip() or "Our Store"
+        article = _blog_welcome_article(niche, store_display)
+        result: dict[str, Any] = {
+            "niche": niche,
+            "blog_id": None,
+            "created": "",
+            "skipped": "",
+            "errors": [],
+        }
+        # Find blog by handle
+        try:
+            resp = client.get(
+                "blogs.json", params={"limit": 50},
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append({
+                "step": "list_blogs",
+                "error": str(exc),
+            })
+            result["status"] = "error"
+            return result
+        if "error" in resp:
+            result["errors"].append({
+                "step": "list_blogs",
+                "error": resp["error"],
+            })
+            result["status"] = "error"
+            return result
+        blogs = resp.get("blogs", []) or []
+        target = None
+        for b in blogs:
+            h = str(b.get("handle") or "").strip()
+            if h in ("news", "blog"):
+                target = b
+                break
+        if target is None:
+            result["status"] = "skipped"
+            result["errors"].append({
+                "step": "find_default_blog",
+                "error": "no 'news' or 'blog' handle found",
+            })
+            return result
+        blog_id = target.get("id")
+        result["blog_id"] = blog_id
+
+        # Check existing articles for our handle
+        existing_handle = article["handle"]
+        if not self._dry_run and blog_id:
+            try:
+                art_resp = client.get(
+                    f"blogs/{blog_id}/articles.json",
+                    params={"limit": 250},
+                )
+                if "error" not in art_resp:
+                    for a in (
+                        art_resp.get("articles", []) or []
+                    ):
+                        h = str(a.get("handle") or "")
+                        if h == existing_handle:
+                            result["skipped"] = existing_handle
+                            result["status"] = "skipped"
+                            return result
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "blog articles fetch raised: %s", exc,
+                )
+
+        # Write the welcome article
+        write_result = self._write(
+            client, "POST",
+            f"blogs/{blog_id}/articles.json",
+            {"article": article},
+            description=(
+                f"Create welcome article "
+                f"'{article['title']}'"
+            ),
+        )
+        if write_result.get("error"):
+            result["errors"].append({
+                "step": "create_article",
+                "error": str(write_result["error"]),
+            })
+            result["status"] = "error"
+            return result
+        if write_result.get("article") or write_result.get(
+            "dry_run",
+        ):
+            result["created"] = existing_handle
+            result["status"] = (
+                "dry_run" if self._dry_run else "success"
+            )
+        else:
+            result["status"] = "error"
+        return result
+
+    # ── Feature: 301 Redirects (marketing URL aliases) ─────────
+
+    def _setup_redirects(
+        self, client: ShopifyClient, niche: str,
+    ) -> dict[str, Any]:
+        """Create the common marketing URL aliases every store
+        needs. Dropshipping ads often link ``/shop`` or
+        ``/store`` — Shopify's default structure is
+        ``/collections/all``, so those vanity URLs 404 without
+        a redirect.
+
+        Seven default redirects keep the usual variants
+        pointing at the right place:
+          /shop, /store, /catalog, /products → /collections/all
+          /blog → /blogs/news
+          /contact → /pages/contact
+          /about → /pages/about
+
+        Idempotent — we query existing redirects first and
+        POST only the ones whose path isn't already claimed.
+        """
+        plan = [
+            ("/shop", "/collections/all"),
+            ("/store", "/collections/all"),
+            ("/catalog", "/collections/all"),
+            ("/products", "/collections/all"),
+            ("/blog", "/blogs/news"),
+            ("/contact", "/pages/contact"),
+            ("/about", "/pages/about"),
+        ]
+        existing_paths: set[str] = set()
+        try:
+            resp = client.get(
+                "redirects.json", params={"limit": 250},
+            )
+            if "error" not in resp:
+                for r in resp.get("redirects", []) or []:
+                    p = str(r.get("path") or "").strip()
+                    if p:
+                        existing_paths.add(p)
+            else:
+                logger.warning(
+                    "redirects fetch failed: %s",
+                    resp.get("error"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "redirects fetch raised: %s", exc,
+            )
+
+        created: list[str] = []
+        skipped: list[str] = []
+        errors: list[dict[str, Any]] = []
+        for path, target in plan:
+            if path in existing_paths:
+                skipped.append(path)
+                continue
+            result = self._write(
+                client, "POST", "redirects.json",
+                {
+                    "redirect": {
+                        "path": path,
+                        "target": target,
+                    },
+                },
+                description=(
+                    f"Create 301 redirect {path} → {target}"
+                ),
+            )
+            if result.get("error"):
+                errors.append({
+                    "path": path,
+                    "error": str(result["error"]),
+                })
+                continue
+            if result.get("redirect") or result.get("dry_run"):
+                created.append(path)
+        return {
+            "status": (
+                "dry_run" if self._dry_run else (
+                    "success" if not errors else "partial"
+                )
+            ),
+            "niche": niche,
+            "created": created,
+            "skipped": skipped,
+            "errors": errors,
         }
 
     # ── Recording ──────────────────────────────────────────────

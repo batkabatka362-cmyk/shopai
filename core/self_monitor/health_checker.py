@@ -19,7 +19,6 @@ REQUIRED_MODULES = [
     ("agents", None),
     ("knowledge", None),
     ("memory", None),
-    ("testing", None),
     ("monitoring", None),
     ("infrastructure", None),
     ("models.routing.model_router", "ModelRouter"),
@@ -96,7 +95,7 @@ class HealthChecker:
     def _check_memory(self) -> dict[str, Any]:
         """Check memory subsystem."""
         try:
-            from memory import ShortTermCache, VectorDB
+            from core.memory import ShortTermCache, VectorDB
             cache = ShortTermCache()
             cache.set("_health_check", True, ttl=5)
             val = cache.get("_health_check")

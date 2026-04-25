@@ -72,6 +72,29 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
             limit = self._parse_limit(limit_raw, default=50, maximum=500)
             self._json_response(self._get_belief_snapshot(limit=limit))
+        elif path == "/api/launches":
+            self._json_response(self._get_launches())
+        elif path == "/api/ask":
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            q = (params.get("q") or [""])[0]
+            self._json_response(self._get_ask(q))
+        elif path == "/api/chat/sessions":
+            self._json_response(self._get_chat_sessions())
+        elif path == "/api/reason":
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            q = (params.get("q") or [""])[0]
+            self._json_response(self._get_reason(q))
+        elif path == "/api/similar":
+            # /api/similar?q=...&k=5&level=1&category=launch
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(self.path).query)
+            q = (params.get("q") or [""])[0]
+            k = int((params.get("k") or ["5"])[0])
+            level = int((params.get("level") or ["0"])[0])
+            cat = (params.get("category") or [None])[0]
+            self._json_response(self._get_similar(q, k, level, cat))
         elif path == "/api/reflection":
             limit_raw = self.path.split("?", 1)[1] if "?" in self.path else ""
             limit = self._parse_limit(limit_raw, default=50, maximum=500)
@@ -82,11 +105,26 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "/api/alerts", "/api/report", "/api/memory",
                 "/api/metrics/adapters", "/api/cognitive",
                 "/api/memory/satellites", "/api/policy/audit",
-                "/api/beliefs", "/api/reflection",
+                "/api/beliefs", "/api/reflection", "/api/launches",
             ]}, 404)
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        if path == "/api/chat/send":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError as exc:
+                logger.debug("chat/send bad json: %s", exc)
+                self._json_response({"error": "bad json"}, 400)
+                return
+            from core.brain.chat_session import send
+            self._json_response(send(
+                payload.get("session_id"),
+                payload.get("question", ""),
+            ))
+            return
         if path == "/api/webhook":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b"{}"
@@ -457,6 +495,80 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             "half_life_seconds": half_life_seconds,
             "timestamp":         now,
         }
+
+    @staticmethod
+    def _get_chat_sessions() -> dict:
+        try:
+            from core.brain.chat_session import ChatStore
+            return {"sessions": ChatStore.list_ids(limit=20)}
+        except Exception as exc:
+            return {"sessions": [], "error": str(exc)[:200]}
+
+    @staticmethod
+    def _get_ask(query: str) -> dict:
+        """One-shot conversational Q&A backed by memory + LLM."""
+        if not query:
+            return {"error": "query string ?q=... required"}
+        try:
+            from core.brain.oracle import ask
+            return ask(query).as_dict()
+        except Exception as exc:
+            return {"error": str(exc)[:200]}
+
+    @staticmethod
+    def _get_reason(query: str) -> dict:
+        """Four-phase research → hypothesize → test → evaluate chain.
+        Returns the ranked plan + step telemetry. Blocking: ~3-8 s."""
+        if not query:
+            return {"error": "query string ?q=... required"}
+        try:
+            from core.brain.reasoner import reason
+            return reason(query).as_dict()
+        except Exception as exc:
+            return {"error": str(exc)[:200]}
+
+    @staticmethod
+    def _get_similar(query: str, k: int, level_min: int, category: str | None) -> dict:
+        """Semantic retrieval endpoint — cosine over Gemini embeddings."""
+        try:
+            from core.memory.semantic_index import retrieve_similar, stats
+            hits = retrieve_similar(
+                query=query, k=max(1, min(k, 20)),
+                level_min=level_min, category=category,
+            )
+            return {
+                "query": query,
+                "k": k, "level_min": level_min, "category": category,
+                "hits": hits,
+                "index": stats(),
+            }
+        except Exception as exc:
+            return {"query": query, "hits": [], "error": str(exc)[:200]}
+
+    @staticmethod
+    def _get_launches() -> dict:
+        """Return per-launch KPIs + kill / scale / monitor verdicts.
+
+        Backed by :func:`core.autonomous.launch_evaluator.evaluate` —
+        a pure aggregation over MemoryIntelligence events, safe to
+        call frequently (no external HTTP).
+        """
+        try:
+            from core.autonomous.launch_evaluator import evaluate
+            report = evaluate()
+            return {
+                "summary": {
+                    "tracked": report.launches_tracked,
+                    "evaluated": report.launches_evaluated,
+                    "kill": len(report.kill_recommendations),
+                    "scale": len(report.scale_recommendations),
+                    "monitor": len(report.monitor_recommendations),
+                },
+                "report": report.as_dict(),
+            }
+        except Exception as exc:
+            logger.debug("launch evaluator failed: %s", exc)
+            return {"summary": {"tracked": 0}, "error": str(exc)[:200]}
 
     @staticmethod
     def _get_reflection_snapshot(limit: int = 50) -> dict:

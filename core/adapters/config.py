@@ -142,6 +142,42 @@ ENV_ALIASES: dict[str, str] = {
     # Meta (Facebook) Ads: long-lived access token + ad account ID
     "meta_ads_access_token": "META_ADS_ACCESS_TOKEN",
     "meta_ads_account_id":   "META_ADS_ACCOUNT_ID",
+    # TikTok Ads (Business API v1.3): long-lived access token +
+    # advertiser id (analogous to Meta's ad-account id).
+    "tiktok_ads_access_token": "TIKTOK_ADS_ACCESS_TOKEN",
+    "tiktok_ads_advertiser_id": "TIKTOK_ADS_ADVERTISER_ID",
+
+    # Amazon SP-API (Selling Partner API, 2026+). Requires
+    # an LWA (Login with Amazon) refresh token from the
+    # seller-central "Develop Apps" portal. AWS sig v4 is
+    # no longer required for most endpoints — Bearer
+    # access_token is sufficient.
+    "amazon_sp_client_id":      "AMAZON_SP_CLIENT_ID",
+    "amazon_sp_client_secret":  "AMAZON_SP_CLIENT_SECRET",
+    "amazon_sp_refresh_token":  "AMAZON_SP_REFRESH_TOKEN",
+    # Amazon region endpoint (na / eu / fe). Default na.
+    "amazon_sp_region":         "AMAZON_SP_REGION",
+    # Marketplace ids, comma-separated. ATVPDKIKX0DER is US.
+    "amazon_sp_marketplace_ids":
+        "AMAZON_SP_MARKETPLACE_IDS",
+
+    # Google Ads (v18 REST). Requires developer-token-approved
+    # app + OAuth2 refresh token per customer.
+    "google_ads_developer_token":
+        "GOOGLE_ADS_DEVELOPER_TOKEN",
+    "google_ads_client_id":        "GOOGLE_ADS_CLIENT_ID",
+    "google_ads_client_secret":    "GOOGLE_ADS_CLIENT_SECRET",
+    # (refresh token + customer id aliases already declared
+    # above — see google_ads_refresh_token /
+    # google_ads_customer_id.)
+
+    # Meta Pages / Instagram organic posting (shares OAuth
+    # with Meta Ads but uses a separate page-scoped access
+    # token + ig-business-account id pair).
+    "meta_page_access_token":      "META_PAGE_ACCESS_TOKEN",
+    "meta_page_id":                "META_PAGE_ID",
+    "instagram_business_account_id":
+        "INSTAGRAM_BUSINESS_ACCOUNT_ID",
 
     # ── Ads intelligence / spy ──────────
     # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
@@ -200,6 +236,10 @@ ENV_ALIASES: dict[str, str] = {
     # The token TTL is 7 days per CJ's docs.
     "cj_email":         "CJ_DROPSHIPPING_EMAIL",
     "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
+    # AutoDS: paid dropshipping API (Bearer token). US warehouse
+    # + multi-marketplace sourcing (AliExpress, Amazon, Walmart,
+    # CJ, DSers). Fallback to CJ when both are configured.
+    "autods":           "AUTODS_API_KEY",
 
     # ── Automation ────────────────────────
     "zapier_nla":       "ZAPIER_NLA_API_KEY",
@@ -245,6 +285,8 @@ ENV_ALIASES: dict[str, str] = {
     # CJ Dropshipping uses email + password → access token exchange.
     "cj_email":         "CJ_DROPSHIPPING_EMAIL",
     "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
+    # AutoDS — single API key (Bearer).
+    "autods":           "AUTODS_API_KEY",
 }
 
 

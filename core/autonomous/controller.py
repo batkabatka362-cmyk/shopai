@@ -265,6 +265,7 @@ class AutonomousController:
                 from core.adapters.analytics.bootstrap import register_all as register_analytics
                 from core.adapters.crm.bootstrap import register_all as register_crm
                 from core.adapters.sourcing.bootstrap import register_all as register_sourcing
+                from core.adapters.social.bootstrap import register_all as register_social
                 llm_status = register_llms()
                 shopify_status = register_shopify()
                 search_status = register_search()
@@ -289,6 +290,7 @@ class AutonomousController:
                 analytics_status = register_analytics()
                 crm_status = register_crm()
                 sourcing_status = register_sourcing()
+                social_status = register_social()
                 self._adapter_status = {
                     **llm_status, **shopify_status,
                     **search_status, **shipping_status,
@@ -304,6 +306,7 @@ class AutonomousController:
                     **automation_status, **helpdesk_status,
                     **analytics_status, **crm_status,
                     **sourcing_status,
+                    **social_status,
                 }
                 self._adapter_router = get_router()
                 logger.info(
@@ -486,6 +489,41 @@ class AutonomousController:
             "cycle_number": self._cycle_count,
             "phases": {},
         }
+
+        # v24-A1: expose cycle id to the gateway/recorder via env so
+        # LLM calls and outcomes can be attributed back to this cycle.
+        os.environ["SHOPAI_CURRENT_CYCLE_ID"] = str(cycle_id)
+
+        # v24-A1: brain_facade attention pre-pass. Fail-soft; missing
+        # brain never blocks the cycle. Opt-in via SHOPAI_BRAIN_HOOKS=1
+        # while shadow behaviour is still being validated.
+        if os.environ.get("SHOPAI_BRAIN_HOOKS", "0") == "1":
+            try:
+                from core.brain.brain_facade import brain as _brain
+                from core.brain.experience_recorder import record_phase
+                pending_events: list[dict[str, Any]] = []
+                # Derive lightweight events from the observations so
+                # attention can rank them without loading live data.
+                for obs in (cycle_result["phases"].get(
+                    "exploration_alert", {}).get("signals") or []):
+                    pending_events.append({
+                        "kind": "exploration",
+                        "ts": time.time(),
+                        "stakes": 0.5,
+                        "detail": obs,
+                    })
+                attn = _brain().rank_by_attention(pending_events, k=5)
+                cycle_result["phases"]["brain_attention"] = {
+                    "top": [a.get("event_id", "") for a in attn],
+                    "n": len(attn),
+                }
+                record_phase(
+                    cycle_id=cycle_id, name="brain_attention",
+                    status="ok",
+                    detail={"ranked": len(attn)},
+                )
+            except Exception as exc:
+                _record("brain_attention", exc)
 
         # Phase 0: TIME + CONTEXT awareness
         try:
@@ -1167,6 +1205,49 @@ class AutonomousController:
         except Exception as exc:
             _record("marketing_automation", exc)
 
+        # Phase 5a1: SOCIAL SCHEDULER — ship queued organic
+        # posts whose publish_at has passed. Owner uses the
+        # scheduler's enqueue() to queue posts (directly or
+        # via content/publisher engines); this phase is the
+        # worker that turns that queue into actual IG / FB
+        # posts via the registered SOCIAL_PUBLISH_POST
+        # adapters. Per-post errors never abort the cycle —
+        # the scheduler returns a summary dict we record.
+        try:
+            from engines.social_scheduler import SocialScheduler
+            if self._adapter_router is not None:
+                sched = SocialScheduler.open()
+                summary = sched.process_due(
+                    router=self._adapter_router,
+                    max_posts=20,
+                )
+                sched.close()
+                cycle_result["phases"]["social_scheduler"] = (
+                    summary
+                )
+        except Exception as exc:
+            _record("social_scheduler", exc)
+
+        # Phase 5a3: TIKTOK SHOP POLLER — pull fresh TikTok
+        # Shop orders and emit EngineOutcome events to the
+        # shared bus. Shopify has a native webhook
+        # (core/webhooks/order_handler.py); TikTok Shop free
+        # tier doesn't, so the poller keeps a local "seen"
+        # cache for §4b.D idempotency across restarts. Soft-
+        # fail: a bad poll never kills the cycle.
+        try:
+            from engines.tiktok_shop_poller import (
+                TikTokShopPoller,
+            )
+            poller = TikTokShopPoller.open()
+            summary = poller.poll_once()
+            poller.close()
+            cycle_result["phases"]["tiktok_shop_poll"] = (
+                summary.as_dict()
+            )
+        except Exception as exc:
+            _record("tiktok_shop_poll", exc)
+
         # Phase 5a2: STRATEGY PLANNER — long-term plans
         if self._cycle_count % 5 == 1:  # Every 5 cycles
             try:
@@ -1490,6 +1571,223 @@ class AutonomousController:
                 }
             except Exception as exc:
                 _record("revenue_strategy", exc)
+
+        # Phase 8k2b: LAUNCH EVALUATOR — aggregate per-launch ROAS
+        # and surface kill / scale advisories so the autonomous
+        # cycle can act on the reward loop the order webhook feeds.
+        # Deterministic aggregation over MemoryIntelligence (no LLM).
+        try:
+            from core.autonomous.launch_evaluator import evaluate
+            launch_report = evaluate()
+            cycle_result["phases"]["launch_evaluator"] = {
+                "tracked": launch_report.launches_tracked,
+                "evaluated": launch_report.launches_evaluated,
+                "kill": len(launch_report.kill_recommendations),
+                "scale": len(launch_report.scale_recommendations),
+                "monitor": len(launch_report.monitor_recommendations),
+                "kill_ids": [s.launch_id for s in launch_report.kill_recommendations],
+                "scale_ids": [s.launch_id for s in launch_report.scale_recommendations],
+            }
+            # Emit each kill / scale verdict as an advisory action so
+            # the brain's memory picks up the recommendation and the
+            # Meta Ads step (once credentialed) has a todo queue.
+            if self._action_executor:
+                for s in launch_report.kill_recommendations:
+                    self._action_executor.propose_action({
+                        "type": "kill_launch",
+                        "store_id": store_id,
+                        "engine": "launch_evaluator",
+                        "confidence": 0.9,
+                        "reason": s.reason[:120],
+                        "params": {
+                            "launch_id": s.launch_id,
+                            "ad_campaign_id": None,
+                            "shopify_product_id": s.shopify_product_id,
+                        },
+                    })
+                for s in launch_report.scale_recommendations:
+                    self._action_executor.propose_action({
+                        "type": "scale_launch",
+                        "store_id": store_id,
+                        "engine": "launch_evaluator",
+                        "confidence": 0.85,
+                        "reason": s.reason[:120],
+                        "params": {
+                            "launch_id": s.launch_id,
+                            "scale_factor": 2.0,
+                        },
+                    })
+        except Exception as exc:
+            _record("launch_evaluator", exc)
+
+        # Phase 8k2b_calibration: CALIBRATION TRACKER — measures
+        # whether the predictor's win_probability matches realised
+        # outcomes. Drift > |0.15| flags over/under-confidence so
+        # self_critic can compensate.
+        try:
+            from core.brain.calibration import score as _calibrate
+            cal_report = _calibrate()
+            if cal_report.samples > 0:
+                cycle_result["phases"]["calibration"] = {
+                    "samples": cal_report.samples,
+                    "brier_score": round(cal_report.brier_score, 3),
+                    "bias": round(cal_report.bias, 3),
+                    "level": cal_report.level,
+                }
+        except Exception as exc:
+            _record("calibration", exc)
+
+        # Phase 8k2b_metacog: META-COGNITIVE REFLECTION — brain checks
+        # whether it's actually learning, whether it's over-confident,
+        # whether owner feedback is trending negative. Cheap — a few
+        # SQL aggregations per cycle.
+        try:
+            from core.brain.metacognition import reflect
+            reflection = reflect()
+            cycle_result["phases"]["metacognition"] = {
+                "health": reflection.health,
+                "findings": len(reflection.findings),
+                "worst": max(
+                    (f.level for f in reflection.findings),
+                    default="ok",
+                    key=lambda l: {"ok": 0, "warning": 1, "critical": 2}.get(l, 0),
+                ),
+            }
+        except Exception as exc:
+            _record("metacognition", exc)
+
+        # Phase 8k2b_scout: OPPORTUNITY SCOUT — once per calendar day,
+        # run the proactive digest so the owner sees a ranked list of
+        # actionable signals without having to ask.
+        try:
+            import datetime as _dt, os as _os
+            from pathlib import Path as _Path
+            vault = _Path(_os.environ.get("OBSIDIAN_VAULT_PATH", "./vault"))
+            digest_stamp = _Path("data/.digest_stamp")
+            today_iso = _dt.date.today().isoformat()
+            prev = digest_stamp.read_text(encoding="utf-8").strip() if digest_stamp.exists() else ""
+            if prev != today_iso:
+                from core.autonomous.opportunity_scout import scout as _scout
+                digest = _scout(include_narrative=False)
+                cycle_result["phases"]["opportunity_scout"] = {
+                    "date": digest.date,
+                    "opportunities": len(digest.opportunities),
+                    "counts": digest._counts_by_kind(),
+                }
+                digest_stamp.parent.mkdir(parents=True, exist_ok=True)
+                digest_stamp.write_text(today_iso, encoding="utf-8")
+        except Exception as exc:
+            _record("opportunity_scout", exc)
+
+        # Phase 8k2b_creative: CREATIVE A/B ORCHESTRATOR — ranks each
+        # launch's ad variants by Bayesian ROAS, promotes winners
+        # and flags losers for replacement.
+        try:
+            from core.brain.creative_orchestrator import orchestrate
+            creative_report = orchestrate()
+            if creative_report.variants:
+                cycle_result["phases"]["creative_orchestrator"] = {
+                    "variants": len(creative_report.variants),
+                    "promotes": len(creative_report.promotes),
+                    "prunes": len(creative_report.prunes),
+                    "refresh_slots": len(creative_report.refresh_slots),
+                }
+        except Exception as exc:
+            _record("creative_orchestrator", exc)
+
+        # Phase 8k2b_anomaly: ANOMALY DETECTION — z-score every
+        # active launch against its niche baseline, persist deviations
+        # ≥ |2σ| as category=anomaly events.
+        try:
+            from core.autonomous.anomaly_detector import scan as anomaly_scan
+            anomaly_report = anomaly_scan()
+            if anomaly_report.anomalies:
+                cycle_result["phases"]["anomaly_detector"] = {
+                    "checked": anomaly_report.checked,
+                    "anomalies": len(anomaly_report.anomalies),
+                    "recorded": anomaly_report.recorded,
+                }
+        except Exception as exc:
+            _record("anomaly_detector", exc)
+
+        # Phase 8k2b_trend: TIME-SERIES TREND DETECTION — pulls the
+        # last 30 days of order / launch / competitor events, bins by
+        # series, runs rolling-window slope + z-score, persists
+        # inflection points as category=trend memories.
+        try:
+            from core.autonomous.trend_detector import detect as detect_trends
+            trend_report = detect_trends()
+            if trend_report.inflections or trend_report.series:
+                cycle_result["phases"]["trend_detector"] = {
+                    "series": len(trend_report.series),
+                    "inflections": len(trend_report.inflections),
+                    "recorded": trend_report.recorded,
+                }
+        except Exception as exc:
+            _record("trend_detector", exc)
+
+        # Phase 8k2b_transfer: CROSS-NICHE TRANSFER LEARNING — mine
+        # abstract feature combinations that won across ≥2 niches and
+        # persist them as level-3 transfer_strategy memories. New
+        # niches can lean on these to pick tone / price-band without
+        # waiting for local evidence to accumulate.
+        try:
+            from core.brain.transfer_learner import extract as transfer_extract
+            transfer_report = transfer_extract()
+            if transfer_report.promoted > 0:
+                cycle_result["phases"]["transfer_learner"] = {
+                    "examined": transfer_report.examined,
+                    "promoted": transfer_report.promoted,
+                }
+        except Exception as exc:
+            _record("transfer_learner", exc)
+
+        # Phase 8k2b_critique: SELF-CRITIQUE — recompute per-niche
+        # kill/scale thresholds from observed ROAS distribution and
+        # persist the overrides so the next evaluator pass uses them.
+        try:
+            from core.autonomous.self_critic import critique
+            critique_report = critique()
+            if critique_report.verdicts:
+                cycle_result["phases"]["self_critique"] = {
+                    "launches": critique_report.launches_considered,
+                    "updated_niches": critique_report.updated_niches,
+                }
+        except Exception as exc:
+            _record("self_critique", exc)
+
+        # Phase 8k2b_embed: SEMANTIC INDEXING — embed up to 15 recent
+        # level≥1 memories per cycle so the similarity retriever has
+        # fresh coverage. Caps the Gemini free-tier quota since each
+        # index call is one embedContent round trip.
+        try:
+            from core.memory.semantic_index import index_pending
+            embed_summary = index_pending(limit=15, level_min=1)
+            cycle_result["phases"]["semantic_index"] = embed_summary
+        except Exception as exc:
+            _record("semantic_index", exc)
+
+        # Phase 8k2c: PATTERN SUMMARY — once per calendar day, ask
+        # the research LLM to narrate the brain's top rules and write
+        # the result to the Obsidian vault. Skipped quickly when a
+        # note already exists for today, so cycle-time stays flat.
+        try:
+            import datetime as _dt
+            import os as _os
+            from pathlib import Path as _Path
+            vault = _Path(_os.environ.get("OBSIDIAN_VAULT_PATH", "./vault"))
+            today_note = vault / "Knowledge" / f"brain-summary-{_dt.date.today().isoformat()}.md"
+            if vault.exists() and not today_note.exists():
+                from core.autonomous.pattern_summarizer import summarise
+                summary = summarise()
+                cycle_result["phases"]["pattern_summary"] = {
+                    "status": summary.get("status"),
+                    "note": summary.get("note"),
+                    "rule_count": summary.get("rule_count", 0),
+                    "strategy_count": summary.get("strategy_count", 0),
+                }
+        except Exception as exc:
+            _record("pattern_summary", exc)
 
         # Phase 8k3: SEO ANALYSIS
         try:
@@ -1843,6 +2141,87 @@ class AutonomousController:
                 cycle_result["phase_errors"]
             )
             logger.warning("reflection hook failed: %s", exc)
+
+        # v24-A1+A2: brain_facade close-out — record an assessment
+        # event, fan outcome to learning_curve, optionally shadow-run
+        # the facade think() for divergence tracking. All fail-soft.
+        if os.environ.get("SHOPAI_BRAIN_HOOKS", "0") == "1":
+            try:
+                from core.brain.experience_recorder import (
+                    record_assessment, record_outcome,
+                )
+                record_assessment(
+                    cycle_id=cycle_id,
+                    summary=f"cycle {cycle_id} finished with "
+                            f"{cycle_result.get('phase_error_count', 0)} "
+                            f"phase errors",
+                    health_score=float(
+                        cycle_result.get("phases", {})
+                        .get("brain_think", {})
+                        .get("health_score", 0) or 0,
+                    ),
+                    findings=[
+                        {"signal": k, "level": "error"}
+                        for k in (cycle_result.get("phase_errors") or {})
+                    ],
+                )
+                # Numeric KPIs roll up into learning_curve for trend
+                # detection on the cycle subsystem itself.
+                record_outcome(
+                    action_id=str(cycle_id),
+                    kpi="phase_error_count",
+                    value=float(cycle_result.get("phase_error_count", 0)),
+                    source="autonomous_controller",
+                    cycle_id=str(cycle_id),
+                )
+            except Exception as exc:
+                _record("brain_closeout", exc)
+
+        if os.environ.get("SHOPAI_BRAIN_SHADOW", "0") == "1":
+            try:
+                from core.brain.brain_facade import brain as _brain
+                shadow = _brain().think(
+                    observation={
+                        "cycle_id": cycle_id,
+                        "phase_error_count": cycle_result.get(
+                            "phase_error_count", 0,
+                        ),
+                    },
+                )
+                facade_action = shadow.get("chosen_action") or None
+                cycle_result["phases"]["brain_shadow"] = {
+                    "stages": len(shadow.get("stages", [])),
+                    "chosen_kind": (
+                        (facade_action or {}).get("kind", "")
+                    ),
+                }
+                # v32: record divergence between legacy brain.think
+                # output (from the brain_think phase) and facade.
+                legacy_think = (
+                    cycle_result.get("phases", {}).get(
+                        "brain_think", {},
+                    )
+                )
+                legacy_action = None
+                plan = legacy_think.get("action_plan") or []
+                if plan:
+                    first = plan[0]
+                    if isinstance(first, dict):
+                        legacy_action = {
+                            "kind": str(first.get("action", "")),
+                        }
+                _brain().record_shadow_divergence(
+                    context_summary={
+                        "cycle_id": cycle_id,
+                        "phase_errors": cycle_result.get(
+                            "phase_error_count", 0,
+                        ),
+                    },
+                    legacy_action=legacy_action,
+                    facade_action=facade_action,
+                )
+            except Exception as exc:
+                _record("brain_shadow", exc)
 
         return cycle_result
 
@@ -3187,12 +3566,12 @@ class LearningPipeline:
     def _store_episode(self, store_id: str, cycle_id: str, learning: dict[str, Any]) -> None:
         """Store learning episode in long-term memory."""
         try:
-            from memory.long_term.persistent_store import PersistentStore
+            from core.memory import PersistentStore
             store = PersistentStore()
             store.store(
-                f"learning_{cycle_id}",
-                learning,
                 namespace="learning_history",
+                key=f"learning_{cycle_id}",
+                value=learning,
                 metadata={"store_id": store_id, "cycle_id": cycle_id},
             )
         except Exception as exc:

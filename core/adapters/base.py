@@ -73,6 +73,8 @@ class AdapterCategory(str, Enum):
     HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
     CRM = "crm"                            # Customer relationship management (HubSpot)
     SOURCING = "sourcing"                  # Dropshipping suppliers (CJ, AutoDS, Spocket)
+    MARKETPLACE = "marketplace"            # Other marketplaces (Amazon SP-API, eBay, Etsy)
+    SOCIAL = "social"                      # Social page growth (Instagram, Facebook, TikTok organic)
     OTHER = "other"
 
 
@@ -138,6 +140,18 @@ class Capability(str, Enum):
     PAYMENT_REFUND = "payment_refund"
     PAYMENT_CAPTURE = "payment_capture"
     PAYMENT_LIST_DISPUTES = "payment_list_disputes"
+    # Orders v2 (PayPal Checkout, Stripe Payment Intents):
+    # buyer-facing checkout flow. Create order → approve
+    # (vendor-side) → capture order.
+    PAYMENT_CREATE_ORDER = "payment_create_order"
+    PAYMENT_GET_ORDER = "payment_get_order"
+    PAYMENT_CAPTURE_ORDER = "payment_capture_order"
+    # Payouts: send money OUT of the merchant's account
+    # (supplier payments, affiliate commissions).
+    PAYMENT_PAYOUT = "payment_payout"
+    # Read-only observability.
+    PAYMENT_LIST_TRANSACTIONS = "payment_list_transactions"
+    PAYMENT_GET_BALANCE = "payment_get_balance"
 
     # ── Browser automation ────────────────
     BROWSER_SCREENSHOT = "browser_screenshot"
@@ -214,6 +228,22 @@ class Capability(str, Enum):
     SOURCING_GET_PRODUCT = "sourcing_get_product"
     SOURCING_CREATE_ORDER = "sourcing_create_order"
     SOURCING_GET_ORDER_STATUS = "sourcing_get_order_status"
+    SOURCING_CANCEL_ORDER = "sourcing_cancel_order"
+    SOURCING_LIST_ORDERS = "sourcing_list_orders"
+    SOURCING_GET_SHIPPING_METHODS = "sourcing_get_shipping_methods"
+    SOURCING_GET_VARIANT_STOCK = "sourcing_get_variant_stock"
+
+    # ── Amazon SP-API (multi-platform sell) ─
+    AMAZON_LIST_ORDERS = "amazon_list_orders"
+    AMAZON_GET_ORDER = "amazon_get_order"
+    AMAZON_SEARCH_CATALOG = "amazon_search_catalog"
+
+    # ── Social / page growth ──────────────
+    SOCIAL_PUBLISH_POST = "social_publish_post"
+    SOCIAL_SCHEDULE_POST = "social_schedule_post"
+    SOCIAL_GET_INSIGHTS = "social_get_insights"
+    SOCIAL_LIST_POSTS = "social_list_posts"
+    SOCIAL_DELETE_POST = "social_delete_post"
 
 
 # ── Result envelope ────────────────────────────────────────────

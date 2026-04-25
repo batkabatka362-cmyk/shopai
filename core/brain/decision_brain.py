@@ -1109,7 +1109,15 @@ class DecisionBrain:
         prob_text = "\n".join(f"- [{p['severity']}] {p['detail']}" for p in problems[:5])
         opp_text = "\n".join(f"- {o['detail']}" for o in opportunities[:5])
 
-        prompt = f"""You are an expert e-commerce strategist managing a dropshipping store.
+        # Business model comes from the state summary when the
+        # caller supplies it (launch pipeline stamps it on
+        # ``goal.business_model``); default preserves the legacy
+        # prompt phrasing for dropshipping stores like Deguar.
+        model_label = (
+            summary.get("business_model")
+            or "dropshipping"
+        )
+        prompt = f"""You are an expert e-commerce strategist managing a {model_label} store.
 
 STORE STATE:
 - {summary['products']} products, {summary['orders']} orders, {summary['customers']} customers

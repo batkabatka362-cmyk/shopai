@@ -212,13 +212,26 @@ class TestShopifyBridge(unittest.TestCase):
         Shopify credentials were configured. The mock masked real
         API failures, so it has been removed — the bridge now
         raises ``ShopifyBridgeUnavailable`` in the same situation
-        and callers must handle the exception explicitly."""
+        and callers must handle the exception explicitly.
+
+        CI env sometimes exports dummy SHOPAI_SHOPIFY_URL / KEY so
+        we explicitly clear them for the duration of the test. If
+        we didn't, the bridge would try a real 401 HTTP call and
+        raise a different error."""
+        import os
+        from unittest.mock import patch
         from core.bridge.shopify_bridge import (
             ShopifyBridge, ShopifyBridgeUnavailable,
         )
-        sb = ShopifyBridge()
-        with self.assertRaises(ShopifyBridgeUnavailable):
-            sb.fetch_products()
+        with patch.dict(
+            os.environ,
+            {"SHOPAI_SHOPIFY_URL": "",
+             "SHOPAI_SHOPIFY_KEY": ""},
+            clear=False,
+        ):
+            sb = ShopifyBridge()
+            with self.assertRaises(ShopifyBridgeUnavailable):
+                sb.fetch_products()
 
     def test_fetch_for_engine(self):
         from core.bridge.shopify_bridge import ShopifyBridge

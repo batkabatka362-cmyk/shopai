@@ -19,6 +19,23 @@ from utils.logger import get_logger
 logger = get_logger("action_executor")
 
 
+# Action types the brain emits as strategic recommendations rather than
+# per-product API calls. They are tracked in memory + the cycle journal
+# for learning but don't map to a concrete Shopify write on their own.
+# When the matching adapter lands (email/ads/image sourcer) these will
+# promote to real executors.
+_ADVISORY_ACTIONS = frozenset({
+    "pricing_recommendation",  # store-wide price strategy
+    "update_costs",            # flag products missing cost_per_item
+    "add_images",               # flag products needing imagery
+    "marketing_push",           # email/ad campaign trigger
+    "promote_high_margin",     # feature high-margin SKUs in collections
+    "add_products",             # sourcing queue
+    "kill_launch",              # ROAS bucketer → kill advisory
+    "scale_launch",             # ROAS bucketer → scale advisory
+})
+
+
 class ActionExecutor:
     """Executes AI-decided actions on real Shopify stores."""
 
@@ -210,6 +227,23 @@ class ActionExecutor:
             from execution.shopify.store_manager import StoreManager as ShopifyStoreMgr
             mgr = ShopifyStoreMgr()
             return mgr.get_store_info(shop_url, api_key)
+
+        elif action_type in _ADVISORY_ACTIONS:
+            # Strategic decisions the brain emits without an immediate
+            # per-product API call (e.g. "products need cost data",
+            # "marketing push campaign"). Record them as advisories so
+            # the cycle doesn't mark them as failed — the memory layer
+            # still captures the decision for later reinforcement.
+            logger.info(
+                "Advisory recorded: %s (params=%s)",
+                action_type, {k: v for k, v in params.items() if k != "api_key"},
+            )
+            return {
+                "status": "advisory",
+                "action_type": action_type,
+                "note": "advisory decision — no direct Shopify write",
+                "params": params,
+            }
 
         else:
             raise ValueError(f"Unknown action type: {action_type}")

@@ -33,7 +33,7 @@ class FullSystemLoop:
     @classmethod
     def _get_vector_db(cls):
         if cls._shared_vdb is None:
-            from memory.vector_store.vector_db import VectorDB
+            from core.memory import VectorDB
             try:
                 from core.memory.storage_config import vector_db_path
                 cls._shared_vdb = VectorDB(persist_path=vector_db_path())
@@ -51,7 +51,7 @@ class FullSystemLoop:
     @classmethod
     def _get_cache(cls):
         if cls._shared_cache is None:
-            from memory.short_term.cache import ShortTermCache
+            from core.memory import ShortTermCache
             cls._shared_cache = ShortTermCache()
         return cls._shared_cache
 

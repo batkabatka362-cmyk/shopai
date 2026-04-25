@@ -552,7 +552,7 @@ class MainOrchestrator:
             logger.warning("Agents module not available: %s", exc)
 
         try:
-            from memory.vector_store.vector_db import VectorDB
+            from core.memory import VectorDB
             self._vector_db = VectorDB()
             logger.info("VectorDB initialized")
         except Exception as exc:
