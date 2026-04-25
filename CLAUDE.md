@@ -311,6 +311,14 @@ tolerate both forms when the cost is low:
   can't be blank". Adapter defaults customerSelection to `{ all: true }`
   so engines that don't pass it still get the standard public-facing
   discount.
+- `ShopifyPaymentsPayoutSummary` per-bucket fields (chargesGrossAmount,
+  chargesFeeAmount, refundsGrossAmount, ...) DON'T EXIST in the
+  2024-01 schema — the summary type was restructured. Likewise
+  `ShopifyPaymentsBankAccount.last4` and `.accountType` were
+  removed. Stable subset: payout id/status/issuedAt/gross/net plus
+  bankAccount.id/.bankName. Engines that need fee-bucket detail
+  use the bulk-query path or the third-party Shopify Payments
+  REST API.
 
 ### Pattern E: schema-gated fields
 

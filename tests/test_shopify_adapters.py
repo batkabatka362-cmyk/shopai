@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtyfive_adapters(self):
+    def test_register_all_adds_sixtysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 65
+        assert len(status) == 66
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -852,6 +852,7 @@ class TestShopifyBootstrap:
             "shopify_subscription_draft",
             "shopify_catalogs",
             "shopify_fulfillment_hold",
+            "shopify_payments_payouts",
         }
 
     def test_register_all_idempotent(self):
@@ -859,7 +860,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 65
+        assert len(get_registry()) == 66
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1083,6 +1084,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_CATALOG).name == "shopify_catalogs"
         assert router.route(Capability.SHOPIFY_HOLD_FULFILLMENT_ORDER).name == "shopify_fulfillment_hold"
         assert router.route(Capability.SHOPIFY_RELEASE_FULFILLMENT_ORDER_HOLD).name == "shopify_fulfillment_hold"
+        assert router.route(Capability.SHOPIFY_LIST_PAYOUTS).name == "shopify_payments_payouts"
+        assert router.route(Capability.SHOPIFY_GET_PAYOUT).name == "shopify_payments_payouts"
+        assert router.route(Capability.SHOPIFY_GET_PAYMENTS_BALANCE).name == "shopify_payments_payouts"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -17492,4 +17496,189 @@ class TestShopifyFulfillmentHoldAdapter:
         assert ShopifyFulfillmentHoldAdapter._normalise_fulfillment_order(
             {},
         ) == {}
+
+
+# ── ShopifyPaymentsPayoutsAdapter ─────────────────────────
+
+
+class TestShopifyPaymentsPayoutsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter()
+        assert a.name == "shopify_payments_payouts"
+        for cap in (
+            Capability.SHOPIFY_LIST_PAYOUTS,
+            Capability.SHOPIFY_GET_PAYOUT,
+            Capability.SHOPIFY_GET_PAYMENTS_BALANCE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyPaymentsAccount": {
+                "payouts": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "edges": [{"node": {
+                        "id": "gid://shopify/ShopifyPaymentsPayout/p1",
+                        "status": "PAID",
+                        "issuedAt": "2026-04-25T10:00:00Z",
+                        "bankAccount": {
+                            "id": "gid://shopify/ShopifyPaymentsBankAccount/b1",
+                            "bankName": "Chase",
+                        },
+                        "gross": {"amount": "1000.00", "currencyCode": "USD"},
+                        "net": {"amount": "950.00", "currencyCode": "USD"},
+                    }}],
+                },
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_PAYOUTS, {})
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["shop_uses_shopify_payments"] is True
+        p = result.data["payouts"][0]
+        assert p["status"] == "PAID"
+        assert p["gross_amount"] == "1000.00"
+        assert p["net_amount"] == "950.00"
+        assert p["bank_name"] == "Chase"
+
+    def test_list_handles_no_shopify_payments(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyPaymentsAccount": None,
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_PAYOUTS, {})
+        assert result.ok
+        assert result.data["count"] == 0
+        assert result.data["shop_uses_shopify_payments"] is False
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"shopifyPaymentsAccount": None}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_PAYOUTS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_PAYOUT, {})
+        assert not result.ok
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"node": {
+            "id": "gid://shopify/ShopifyPaymentsPayout/p1",
+            "status": "SCHEDULED",
+            "gross": {"amount": "500.00", "currencyCode": "USD"},
+            "net": {"amount": "485.00", "currencyCode": "USD"},
+        }}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_PAYOUT,
+                {"id": "gid://shopify/ShopifyPaymentsPayout/p1"},
+            )
+        assert result.ok
+        p = result.data["payout"]
+        assert p["status"] == "SCHEDULED"
+        assert p["net_amount"] == "485.00"
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"node": None}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_PAYOUT,
+                {"id": "gid://shopify/ShopifyPaymentsPayout/999"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Balance ──────────────────────────────────
+
+    def test_get_balance_happy_path(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyPaymentsAccount": {
+                "balance": [
+                    {"amount": "1234.56", "currencyCode": "USD"},
+                    {"amount": "200.00", "currencyCode": "EUR"},
+                ],
+                "defaultCurrency": "USD",
+                "payoutSchedule": {
+                    "interval": "WEEKLY",
+                    "monthlyAnchor": 0,
+                    "weeklyAnchor": "FRIDAY",
+                },
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_PAYMENTS_BALANCE, {},
+            )
+        assert result.ok
+        assert len(result.data["balances"]) == 2
+        assert result.data["default_currency"] == "USD"
+        assert result.data["payout_interval"] == "WEEKLY"
+        assert result.data["payout_weekly_anchor"] == "FRIDAY"
+
+    def test_get_balance_no_payments_account(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        a = ShopifyPaymentsPayoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyPaymentsAccount": None,
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_PAYMENTS_BALANCE, {},
+            )
+        assert result.ok
+        assert result.data["shop_uses_shopify_payments"] is False
+        assert result.data["balances"] == []
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.payments_payouts import (
+            ShopifyPaymentsPayoutsAdapter,
+        )
+        assert ShopifyPaymentsPayoutsAdapter._normalise_payout({}) == {}
+        assert ShopifyPaymentsPayoutsAdapter._normalise_payout(None) == {}
 
