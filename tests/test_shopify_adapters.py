@@ -790,14 +790,14 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_five_adapters(self):
+    def test_register_all_adds_six_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 5
+        assert len(status) == 6
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
-            "shopify_discount",
+            "shopify_discount", "shopify_files",
         }
 
     def test_register_all_idempotent(self):
@@ -805,7 +805,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 5
+        assert len(get_registry()) == 6
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -840,6 +840,344 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_SET_METAFIELD).name == "shopify_metafield"
         assert router.route(Capability.SHOPIFY_CREATE_DISCOUNT).name == "shopify_discount"
         assert router.route(Capability.SHOPIFY_LIST_DISCOUNTS).name == "shopify_discount"
+        assert router.route(Capability.SHOPIFY_UPLOAD_FILE).name == "shopify_files"
+        assert router.route(Capability.SHOPIFY_LIST_FILES).name == "shopify_files"
+
+
+# ── ShopifyFilesAdapter ─────────────────────────────────────
+
+
+class TestShopifyFilesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter()
+        assert a.name == "shopify_files"
+        assert Capability.SHOPIFY_UPLOAD_FILE in a.capabilities
+        assert Capability.SHOPIFY_LIST_FILES in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_file_inputs validation ────────────────────────
+
+    def test_build_inputs_single_url_form(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        out = ShopifyFilesAdapter._build_file_inputs({
+            "url": "https://cdn.example.com/hero.jpg",
+            "alt": "Product hero image",
+        })
+        assert len(out) == 1
+        assert out[0]["originalSource"] == "https://cdn.example.com/hero.jpg"
+        assert out[0]["contentType"] == "IMAGE"
+        assert out[0]["alt"] == "Product hero image"
+
+    def test_build_inputs_batch_form(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        out = ShopifyFilesAdapter._build_file_inputs({
+            "files": [
+                {"url": "https://cdn.example.com/a.jpg", "alt": "A"},
+                {"url": "https://cdn.example.com/b.png", "alt": "B"},
+            ],
+        })
+        assert len(out) == 2
+        assert out[0]["originalSource"].endswith("/a.jpg")
+        assert out[1]["originalSource"].endswith("/b.png")
+
+    def test_build_inputs_requires_url_or_files(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyFilesAdapter._build_file_inputs({"alt": "foo"})
+        assert "url" in str(exc.value) or "files" in str(exc.value)
+
+    def test_build_inputs_empty_files_list_rejected(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyFilesAdapter._build_file_inputs({"files": []})
+
+    def test_build_inputs_non_dict_entry_rejected(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyFilesAdapter._build_file_inputs({"files": ["not a dict"]})
+
+    def test_build_inputs_missing_url_rejected(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyFilesAdapter._build_file_inputs({"files": [{"alt": "x"}]})
+        assert "url" in str(exc.value)
+
+    def test_build_inputs_rejects_non_http_urls(self):
+        """Shopify only fetches public http(s) URLs. ``data:`` URIs
+        and local file:// paths fail at fetch time with an opaque
+        userErrors message — better to reject them up-front."""
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        for bad in (
+            "data:image/png;base64,abc",
+            "file:///c:/Users/x/img.png",
+            "ftp://files.example.com/x.jpg",
+            "/local/path/img.jpg",
+        ):
+            with pytest.raises(AdapterValidationError) as exc:
+                ShopifyFilesAdapter._build_file_inputs({"url": bad})
+            assert "http" in str(exc.value).lower()
+
+    def test_build_inputs_content_type_aliases_resolve(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        for alias, expected in (
+            ("image", "IMAGE"),
+            ("photo", "IMAGE"),
+            ("PHOTO", "IMAGE"),
+            ("video", "VIDEO"),
+            ("mp4", "VIDEO"),
+            ("file", "FILE"),
+            ("pdf", "FILE"),
+        ):
+            out = ShopifyFilesAdapter._build_file_inputs({
+                "url": "https://x/y.bin", "type": alias,
+            })
+            assert out[0]["contentType"] == expected, alias
+
+    def test_build_inputs_default_type_is_image(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        out = ShopifyFilesAdapter._build_file_inputs({"url": "https://x/y.jpg"})
+        assert out[0]["contentType"] == "IMAGE"
+
+    def test_build_inputs_unknown_type_rejected(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyFilesAdapter._build_file_inputs({
+                "url": "https://x/y", "type": "spreadsheet",
+            })
+
+    def test_build_inputs_alt_truncated_to_512(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        long_alt = "x" * 1000
+        out = ShopifyFilesAdapter._build_file_inputs({
+            "url": "https://x/y.jpg", "alt": long_alt,
+        })
+        assert len(out[0]["alt"]) == 512
+
+    def test_build_inputs_max_files_per_call_enforced(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        too_many = [{"url": f"https://x/{i}.jpg"} for i in range(251)]
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyFilesAdapter._build_file_inputs({"files": too_many})
+        assert "250" in str(exc.value)
+
+    # ── Upload — happy path ──────────────────────────────────
+
+    def test_upload_files_single_image_happy_path(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "fileCreate": {
+                "files": [{
+                    "id": "gid://shopify/MediaImage/1",
+                    "fileStatus": "UPLOADED",
+                    "alt": "Hero",
+                    "createdAt": "2026-04-25T12:00:00Z",
+                    "image": {
+                        "url": "https://cdn.shopify.com/s/files/.../hero.jpg",
+                        "width": 1200,
+                        "height": 800,
+                    },
+                    "mimeType": "image/jpeg",
+                }],
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPLOAD_FILE,
+                {"url": "https://cdn.example.com/hero.jpg", "alt": "Hero"},
+            )
+        assert result.ok
+        assert result.data["uploaded"] == 1
+        f = result.data["files"][0]
+        assert f["kind"] == "image"
+        assert f["url"].endswith("/hero.jpg")
+        assert f["width"] == 1200
+        assert f["height"] == 800
+        assert f["status"] == "UPLOADED"
+        assert f["mime_type"] == "image/jpeg"
+
+    def test_upload_files_user_errors_propagate(self):
+        """If Shopify returns userErrors, the call must surface as a
+        failure result so the router doesn't fall back."""
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "fileCreate": {
+                "files": [],
+                "userErrors": [{
+                    "field": ["files", "0", "originalSource"],
+                    "message": "URL is unreachable",
+                    "code": "INVALID_URL",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPLOAD_FILE,
+                {"url": "https://broken.example.com/missing.jpg"},
+            )
+        assert not result.ok
+
+    def test_upload_files_batch_passes_all_through(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["files"] = v["files"]
+            return {
+                "fileCreate": {
+                    "files": [
+                        {"id": f"gid://m/{i}", "fileStatus": "UPLOADED",
+                         "image": {"url": f"https://cdn/{i}.jpg",
+                                   "width": 100, "height": 100}}
+                        for i in range(3)
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPLOAD_FILE, {
+                "files": [
+                    {"url": "https://x/1.jpg", "alt": "one"},
+                    {"url": "https://x/2.jpg", "alt": "two"},
+                    {"url": "https://x/3.jpg", "alt": "three"},
+                ],
+            })
+        assert result.ok
+        assert result.data["uploaded"] == 3
+        assert len(captured["files"]) == 3
+        assert captured["files"][0]["alt"] == "one"
+
+    # ── _normalise_file ─────────────────────────────────────
+
+    def test_normalise_image_lifts_image_subobject(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        out = ShopifyFilesAdapter._normalise_file({
+            "id": "gid://1", "fileStatus": "READY", "alt": "x",
+            "image": {"url": "https://cdn/y.jpg", "width": 50, "height": 60},
+            "mimeType": "image/jpeg",
+            "createdAt": "2026-01-01T00:00:00Z",
+        })
+        assert out["kind"] == "image"
+        assert out["url"] == "https://cdn/y.jpg"
+        assert out["width"] == 50
+        assert out["height"] == 60
+        assert out["mime_type"] == "image/jpeg"
+
+    def test_normalise_generic_file(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        out = ShopifyFilesAdapter._normalise_file({
+            "id": "gid://2", "fileStatus": "READY",
+            "url": "https://cdn/x.pdf",
+            "originalFileSize": "12345",
+            "mimeType": "application/pdf",
+        })
+        assert out["kind"] == "file"
+        assert out["url"] == "https://cdn/x.pdf"
+        assert out["size_bytes"] == 12345
+        assert out["mime_type"] == "application/pdf"
+
+    def test_normalise_video_lifts_first_source(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        out = ShopifyFilesAdapter._normalise_file({
+            "id": "gid://3", "fileStatus": "READY",
+            "sources": [{
+                "url": "https://cdn/v.mp4",
+                "mimeType": "video/mp4",
+                "format": "mp4",
+                "width": 1920, "height": 1080,
+            }],
+        })
+        assert out["kind"] == "video"
+        assert out["url"] == "https://cdn/v.mp4"
+        assert out["mime_type"] == "video/mp4"
+        assert out["width"] == 1920
+        assert out["height"] == 1080
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        assert ShopifyFilesAdapter._normalise_file(None) == {}  # type: ignore[arg-type]
+        assert ShopifyFilesAdapter._normalise_file("not a dict") == {}  # type: ignore[arg-type]
+
+    # ── List ──────────────────────────────────────────────────
+
+    def test_list_files_happy_path(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "files": {
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur"},
+                "edges": [
+                    {"node": {
+                        "id": "gid://1", "fileStatus": "READY",
+                        "alt": "p1",
+                        "image": {"url": "https://cdn/1.jpg",
+                                  "width": 100, "height": 100},
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_FILES, {"limit": 5})
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["has_next_page"] is True
+        assert result.data["end_cursor"] == "cur"
+        assert result.data["files"][0]["url"] == "https://cdn/1.jpg"
+
+    def test_list_files_clamps_limit_to_max(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"files": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_FILES, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_files_passes_query_through(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v.get("query")
+            return {"files": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_FILES,
+                      {"query": "media_type:IMAGE"})
+        assert captured["query"] == "media_type:IMAGE"
+
+    def test_list_files_rejects_non_string_query(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_LIST_FILES, {"query": 123})
+        assert not result.ok
+
+    def test_list_files_handles_empty_page(self):
+        from core.adapters.shopify.files import ShopifyFilesAdapter
+        a = ShopifyFilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "files": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                      "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_FILES, {})
+        assert result.ok
+        assert result.data["count"] == 0
+        assert result.data["has_next_page"] is False
+        assert result.data["end_cursor"] == ""
 
 
 # ── ShopifyDiscountAdapter ──────────────────────────────────

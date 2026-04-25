@@ -111,6 +111,8 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_REFUND = "shopify_create_refund"
     SHOPIFY_QUERY_SEGMENT = "shopify_query_segment"
     SHOPIFY_SET_METAFIELD = "shopify_set_metafield"
+    SHOPIFY_UPLOAD_FILE = "shopify_upload_file"
+    SHOPIFY_LIST_FILES = "shopify_list_files"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
