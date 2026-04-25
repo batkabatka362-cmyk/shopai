@@ -143,6 +143,12 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_SEGMENT = "shopify_create_segment"
     SHOPIFY_GET_REFUND = "shopify_get_refund"
     SHOPIFY_LIST_ORDER_REFUNDS = "shopify_list_order_refunds"
+    SHOPIFY_CREATE_PAYMENT_CUSTOMIZATION = "shopify_create_payment_customization"
+    SHOPIFY_LIST_PAYMENT_CUSTOMIZATIONS = "shopify_list_payment_customizations"
+    SHOPIFY_DELETE_PAYMENT_CUSTOMIZATION = "shopify_delete_payment_customization"
+    SHOPIFY_CREATE_DELIVERY_CUSTOMIZATION = "shopify_create_delivery_customization"
+    SHOPIFY_LIST_DELIVERY_CUSTOMIZATIONS = "shopify_list_delivery_customizations"
+    SHOPIFY_DELETE_DELIVERY_CUSTOMIZATION = "shopify_delete_delivery_customization"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

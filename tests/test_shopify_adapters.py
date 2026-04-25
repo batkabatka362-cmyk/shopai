@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventeen_adapters(self):
+    def test_register_all_adds_nineteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 17
+        assert len(status) == 19
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -804,6 +804,8 @@ class TestShopifyBootstrap:
             "shopify_themes", "shopify_analytics",
             "shopify_translations", "shopify_customer_segments",
             "shopify_refunds",
+            "shopify_payment_customizations",
+            "shopify_delivery_customizations",
         }
 
     def test_register_all_idempotent(self):
@@ -811,7 +813,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 17
+        assert len(get_registry()) == 19
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -880,6 +882,284 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_REFUND).name == "shopify_refunds"
         assert router.route(Capability.SHOPIFY_LIST_ORDER_REFUNDS).name == "shopify_refunds"
         assert router.route(Capability.SHOPIFY_GET_REFUND).name == "shopify_refunds"
+        assert router.route(Capability.SHOPIFY_CREATE_PAYMENT_CUSTOMIZATION).name == "shopify_payment_customizations"
+        assert router.route(Capability.SHOPIFY_LIST_PAYMENT_CUSTOMIZATIONS).name == "shopify_payment_customizations"
+        assert router.route(Capability.SHOPIFY_DELETE_PAYMENT_CUSTOMIZATION).name == "shopify_payment_customizations"
+        assert router.route(Capability.SHOPIFY_CREATE_DELIVERY_CUSTOMIZATION).name == "shopify_delivery_customizations"
+        assert router.route(Capability.SHOPIFY_LIST_DELIVERY_CUSTOMIZATIONS).name == "shopify_delivery_customizations"
+        assert router.route(Capability.SHOPIFY_DELETE_DELIVERY_CUSTOMIZATION).name == "shopify_delivery_customizations"
+
+
+# ── ShopifyPayment / DeliveryCustomizationsAdapter ─────────
+
+
+class TestShopifyCustomizationsAdapters:
+    """Both adapters share a common base; this test class exercises
+    both prefixes (payment + delivery) with the same scenarios."""
+
+    def test_metadata(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyDeliveryCustomizationsAdapter,
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        pay = ShopifyPaymentCustomizationsAdapter()
+        delv = ShopifyDeliveryCustomizationsAdapter()
+        assert pay.name == "shopify_payment_customizations"
+        assert delv.name == "shopify_delivery_customizations"
+        assert pay._prefix == "payment"
+        assert delv._prefix == "delivery"
+        # Each adapter exposes 3 capabilities.
+        assert len(pay.capabilities) == 3
+        assert len(delv.capabilities) == 3
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Build input validation (shared by both adapters) ──────
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_PAYMENT_CUSTOMIZATION, {
+                "function_id": "fn-1",
+            })
+        assert not result.ok
+
+    def test_create_requires_function_id(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyDeliveryCustomizationsAdapter,
+        )
+        a = ShopifyDeliveryCustomizationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_DELIVERY_CUSTOMIZATION, {
+                "title": "Hide express",
+            })
+        assert not result.ok
+
+    def test_build_input_metafields_validation(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        # Happy path with metafields
+        out = a._build_input({
+            "title": "Hide AmEx",
+            "function_id": "fn-1",
+            "metafields": [
+                {"namespace": "$app:cfg", "key": "threshold",
+                 "type": "number_decimal", "value": 1000},
+            ],
+        })
+        # Numeric value coerced to string per Shopify metafield convention.
+        assert out["metafields"][0]["value"] == "1000"
+        assert out["metafields"][0]["namespace"] == "$app:cfg"
+
+        # Non-list metafields rejected
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "title": "T", "function_id": "f",
+                "metafields": "not a list",
+            })
+        # Missing key
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "title": "T", "function_id": "f",
+                "metafields": [{"value": "v"}],
+            })
+        # Missing value
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "title": "T", "function_id": "f",
+                "metafields": [{"key": "k"}],
+            })
+
+    def test_build_input_enabled_defaults_true(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        out = a._build_input({"title": "T", "function_id": "f"})
+        assert out["enabled"] is True
+        out2 = a._build_input({"title": "T", "function_id": "f",
+                               "enabled": False})
+        assert out2["enabled"] is False
+
+    # ── Create — happy path (both prefixes) ─────────────────
+
+    def test_create_payment_customization_happy_path(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = q
+            # Variable name follows the "input named after the type"
+            # convention (Pattern caught live).
+            captured["input"] = v["paymentCustomization"]
+            return {"paymentCustomizationCreate": {
+                "paymentCustomization": {
+                    "id": "gid://shopify/PaymentCustomization/1",
+                    "title": v["paymentCustomization"]["title"],
+                    "enabled": True,
+                    "functionId": v["paymentCustomization"]["functionId"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_PAYMENT_CUSTOMIZATION,
+                {
+                    "title": "Hide AmEx > $1000",
+                    "function_id": "fn-12345",
+                },
+            )
+        assert result.ok
+        assert result.data["id"].endswith("/1")
+        # The mutation name correctly used the ``payment`` prefix.
+        assert "paymentCustomizationCreate" in captured["query"]
+        assert captured["input"]["functionId"] == "fn-12345"
+
+    def test_create_delivery_customization_happy_path(self):
+        """Same code path, different prefix — verifying the shared
+        base routes correctly to the delivery mutation."""
+        from core.adapters.shopify.customizations import (
+            ShopifyDeliveryCustomizationsAdapter,
+        )
+        a = ShopifyDeliveryCustomizationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = q
+            return {"deliveryCustomizationCreate": {
+                "deliveryCustomization": {
+                    "id": "gid://shopify/DeliveryCustomization/1",
+                    "title": v["deliveryCustomization"]["title"],
+                    "enabled": True,
+                    "functionId": v["deliveryCustomization"]["functionId"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DELIVERY_CUSTOMIZATION,
+                {
+                    "title": "Hide express for heavy orders",
+                    "function_id": "fn-67890",
+                },
+            )
+        assert result.ok
+        # Mutation name uses ``delivery`` prefix even though the
+        # adapter logic is shared.
+        assert "deliveryCustomizationCreate" in captured["query"]
+
+    def test_create_user_errors_propagate(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "paymentCustomizationCreate": {
+                "paymentCustomization": None,
+                "userErrors": [{
+                    "field": ["input", "functionId"],
+                    "message": "Function not found",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_PAYMENT_CUSTOMIZATION,
+                {"title": "T", "function_id": "missing"},
+            )
+        assert not result.ok
+
+    # ── List ───────────────────────────────────────────────
+
+    def test_list_payment_customizations_happy_path(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "paymentCustomizations": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/PaymentCustomization/1",
+                        "title": "Hide AmEx",
+                        "enabled": True,
+                        "functionId": "fn-1",
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_PAYMENT_CUSTOMIZATIONS,
+                {"limit": 10},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["customizations"][0]["function_id"] == "fn-1"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"paymentCustomizations": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_PAYMENT_CUSTOMIZATIONS, {
+                "limit": 9999,
+            })
+        assert captured["first"] == 250
+
+    # ── Delete ─────────────────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyPaymentCustomizationsAdapter,
+        )
+        a = ShopifyPaymentCustomizationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_PAYMENT_CUSTOMIZATION, {},
+            )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.customizations import (
+            ShopifyDeliveryCustomizationsAdapter,
+        )
+        a = ShopifyDeliveryCustomizationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "deliveryCustomizationDelete": {
+                "deletedId": "gid://shopify/DeliveryCustomization/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_DELIVERY_CUSTOMIZATION,
+                {"id": "gid://shopify/DeliveryCustomization/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"].endswith("/1")
 
 
 # ── ShopifyRefundsAdapter ─────────────────────────────────
