@@ -273,6 +273,8 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_PAYMENT_TERMS = "shopify_create_payment_terms"
     SHOPIFY_UPDATE_PAYMENT_TERMS = "shopify_update_payment_terms"
     SHOPIFY_DELETE_PAYMENT_TERMS = "shopify_delete_payment_terms"
+    SHOPIFY_LIST_MARKET_WEB_PRESENCES = "shopify_list_market_web_presences"
+    SHOPIFY_GET_MARKET_WEB_PRESENCE = "shopify_get_market_web_presence"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

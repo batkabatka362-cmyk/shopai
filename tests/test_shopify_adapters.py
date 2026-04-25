@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftyfive_adapters(self):
+    def test_register_all_adds_fiftysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 55
+        assert len(status) == 56
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -842,6 +842,7 @@ class TestShopifyBootstrap:
             "shopify_script_tags",
             "shopify_order_transactions",
             "shopify_payment_terms",
+            "shopify_market_web_presences",
         }
 
     def test_register_all_idempotent(self):
@@ -849,7 +850,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 55
+        assert len(get_registry()) == 56
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1050,6 +1051,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_PAYMENT_TERMS).name == "shopify_payment_terms"
         assert router.route(Capability.SHOPIFY_UPDATE_PAYMENT_TERMS).name == "shopify_payment_terms"
         assert router.route(Capability.SHOPIFY_DELETE_PAYMENT_TERMS).name == "shopify_payment_terms"
+        assert router.route(Capability.SHOPIFY_LIST_MARKET_WEB_PRESENCES).name == "shopify_market_web_presences"
+        assert router.route(Capability.SHOPIFY_GET_MARKET_WEB_PRESENCE).name == "shopify_market_web_presences"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -15135,3 +15138,192 @@ class TestShopifyPaymentTermsAdapter:
         assert ShopifyPaymentTermsAdapter._normalise_template({}) == {}
         assert ShopifyPaymentTermsAdapter._normalise_payment_terms({}) == {}
         assert ShopifyPaymentTermsAdapter._normalise_schedule(None) == {}
+
+
+# ── ShopifyMarketWebPresencesAdapter ──────────────────────
+
+
+class TestShopifyMarketWebPresencesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        a = ShopifyMarketWebPresencesAdapter()
+        assert a.name == "shopify_market_web_presences"
+        for cap in (
+            Capability.SHOPIFY_LIST_MARKET_WEB_PRESENCES,
+            Capability.SHOPIFY_GET_MARKET_WEB_PRESENCE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        a = ShopifyMarketWebPresencesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path_with_presence(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        a = ShopifyMarketWebPresencesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "markets": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/Market/1",
+                    "name": "Primary Market",
+                    "primary": True,
+                    "enabled": True,
+                    "webPresence": {
+                        "id": "gid://shopify/MarketWebPresence/1",
+                        "defaultLocale": {"locale": "en", "name": "English",
+                                          "primary": True, "published": True},
+                        "alternateLocales": [
+                            {"locale": "fr", "name": "French",
+                             "primary": False, "published": True},
+                            {"locale": "de", "name": "German",
+                             "primary": False, "published": True},
+                        ],
+                        "subfolderSuffix": "",
+                        "domain": {
+                            "id": "gid://shopify/Domain/1",
+                            "host": "deguar.myshopify.com",
+                            "url": "https://deguar.myshopify.com",
+                            "sslEnabled": True,
+                        },
+                        "rootUrls": [
+                            {"locale": "en",
+                             "url": "https://deguar.myshopify.com/"},
+                            {"locale": "fr",
+                             "url": "https://deguar.myshopify.com/fr"},
+                        ],
+                    },
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_MARKET_WEB_PRESENCES, {},
+            )
+        assert result.ok
+        p = result.data["presences"][0]
+        assert p["has_presence"] is True
+        assert p["market_name"] == "Primary Market"
+        assert p["market_primary"] is True
+        assert p["default_locale"] == "en"
+        assert p["alternate_locales"] == ["fr", "de"]
+        assert p["domain_host"] == "deguar.myshopify.com"
+        assert len(p["root_urls"]) == 2
+
+    def test_list_marks_market_without_presence(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        a = ShopifyMarketWebPresencesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "markets": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/Market/2",
+                    "name": "Future France",
+                    "primary": False,
+                    "enabled": True,
+                    "webPresence": None,
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_MARKET_WEB_PRESENCES, {},
+            )
+        assert result.ok
+        p = result.data["presences"][0]
+        assert p["has_presence"] is False
+        assert p["market_name"] == "Future France"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        a = ShopifyMarketWebPresencesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"markets": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_MARKET_WEB_PRESENCES,
+                {"limit": 9999},
+            )
+        assert captured["first"] == 250
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        a = ShopifyMarketWebPresencesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_MARKET_WEB_PRESENCE, {})
+        assert not result.ok
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        a = ShopifyMarketWebPresencesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"node": {
+            "id": "gid://shopify/MarketWebPresence/1",
+            "defaultLocale": {"locale": "en"},
+            "alternateLocales": [],
+            "subfolderSuffix": "",
+            "domain": {
+                "host": "shop.example",
+                "url": "https://shop.example",
+                "sslEnabled": True,
+            },
+            "rootUrls": [],
+            "market": {
+                "id": "gid://shopify/Market/1",
+                "name": "Primary",
+                "primary": True,
+                "enabled": True,
+            },
+        }}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_MARKET_WEB_PRESENCE,
+                {"id": "gid://shopify/MarketWebPresence/1"},
+            )
+        assert result.ok
+        p = result.data["presence"]
+        assert p["domain_host"] == "shop.example"
+        assert p["market_primary"] is True
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        a = ShopifyMarketWebPresencesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"node": None}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_MARKET_WEB_PRESENCE,
+                {"id": "gid://shopify/MarketWebPresence/999"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.market_web_presences import (
+            ShopifyMarketWebPresencesAdapter,
+        )
+        assert ShopifyMarketWebPresencesAdapter._normalise_presence({}) == {}
+        assert ShopifyMarketWebPresencesAdapter._normalise_presence(None) == {}

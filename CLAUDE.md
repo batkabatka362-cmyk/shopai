@@ -289,6 +289,11 @@ tolerate both forms when the cost is low:
   STARTS_AT, RELEVANCE, ...) all reject. The much wider
   `CodeDiscountSortKeys` for the code-based discount connection is
   unrelated.
+- `MarketWebPresence.defaultLocale` and `.alternateLocales` return
+  `ShopLocale` objects in 2024-01, NOT bare locale-code strings.
+  Add a `{ locale name primary published }` selection or the query
+  rejects with selectionMismatch. Adapter normaliser accepts both
+  the dict (current) and string (legacy) forms.
 
 ### Pattern E: schema-gated fields
 

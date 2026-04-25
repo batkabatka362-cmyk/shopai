@@ -52,6 +52,7 @@ from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
 from .inventory_shipments import ShopifyInventoryShipmentsAdapter
 from .locations import ShopifyLocationsAdapter
+from .market_web_presences import ShopifyMarketWebPresencesAdapter
 from .marketing_events import ShopifyMarketingEventsAdapter
 from .markets import ShopifyMarketsAdapter
 from .metafield import ShopifyMetafieldAdapter
@@ -139,6 +140,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyScriptTagsAdapter,
     ShopifyOrderTransactionsAdapter,
     ShopifyPaymentTermsAdapter,
+    ShopifyMarketWebPresencesAdapter,
 )
 
 
