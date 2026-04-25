@@ -158,6 +158,9 @@ class Capability(str, Enum):
     SHOPIFY_PAUSE_SUBSCRIPTION_CONTRACT = "shopify_pause_subscription_contract"
     SHOPIFY_RESUME_SUBSCRIPTION_CONTRACT = "shopify_resume_subscription_contract"
     SHOPIFY_CANCEL_SUBSCRIPTION_CONTRACT = "shopify_cancel_subscription_contract"
+    SHOPIFY_LIST_MARKETS = "shopify_list_markets"
+    SHOPIFY_GET_MARKET = "shopify_get_market"
+    SHOPIFY_LIST_SHOP_LOCALES = "shopify_list_shop_locales"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentyone_adapters(self):
+    def test_register_all_adds_twentytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 21
+        assert len(status) == 22
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -808,6 +808,7 @@ class TestShopifyBootstrap:
             "shopify_delivery_customizations",
             "shopify_gift_cards",
             "shopify_subscription_contracts",
+            "shopify_markets",
         }
 
     def test_register_all_idempotent(self):
@@ -815,7 +816,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 21
+        assert len(get_registry()) == 22
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -899,6 +900,189 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_PAUSE_SUBSCRIPTION_CONTRACT).name == "shopify_subscription_contracts"
         assert router.route(Capability.SHOPIFY_RESUME_SUBSCRIPTION_CONTRACT).name == "shopify_subscription_contracts"
         assert router.route(Capability.SHOPIFY_CANCEL_SUBSCRIPTION_CONTRACT).name == "shopify_subscription_contracts"
+        assert router.route(Capability.SHOPIFY_LIST_MARKETS).name == "shopify_markets"
+        assert router.route(Capability.SHOPIFY_GET_MARKET).name == "shopify_markets"
+        assert router.route(Capability.SHOPIFY_LIST_SHOP_LOCALES).name == "shopify_markets"
+
+
+# ── ShopifyMarketsAdapter ──────────────────────────────
+
+
+class TestShopifyMarketsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter()
+        assert a.name == "shopify_markets"
+        for cap in (
+            Capability.SHOPIFY_LIST_MARKETS,
+            Capability.SHOPIFY_GET_MARKET,
+            Capability.SHOPIFY_LIST_SHOP_LOCALES,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List markets ─────────────────────────────
+
+    def test_list_markets_happy_path(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "markets": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Market/1",
+                        "name": "United States",
+                        "handle": "us",
+                        "enabled": True,
+                        "primary": True,
+                        "currencySettings": {
+                            "baseCurrency": {
+                                "currencyCode": "USD",
+                                "currencyName": "US Dollar",
+                            },
+                        },
+                        "regions": {"edges": [
+                            {"node": {
+                                "id": "gid://shopify/MarketRegion/A",
+                                "name": "United States",
+                                "code": "US",
+                            }},
+                        ]},
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_MARKETS, {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 1
+        m = result.data["markets"][0]
+        assert m["primary"] is True
+        assert m["currency_code"] == "USD"
+        assert m["currency_name"] == "US Dollar"
+        assert m["regions"][0]["country_code"] == "US"
+
+    def test_list_markets_clamps_limit(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"markets": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_MARKETS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_markets_empty(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "markets": {"pageInfo": {}, "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_MARKETS, {})
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Get market ───────────────────────────────
+
+    def test_get_market_requires_id(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_MARKET, {})
+        assert not result.ok
+
+    def test_get_market_happy_path(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "market": {
+                "id": "gid://shopify/Market/1",
+                "name": "Europe",
+                "handle": "eu",
+                "enabled": True,
+                "primary": False,
+                "currencySettings": {
+                    "baseCurrency": {"currencyCode": "EUR",
+                                     "currencyName": "Euro"},
+                },
+                "regions": {"edges": []},
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_MARKET, {
+                "id": "gid://shopify/Market/1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["market"]["currency_code"] == "EUR"
+
+    def test_get_market_not_found(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"market": None}):
+            result = a.execute(Capability.SHOPIFY_GET_MARKET, {
+                "id": "gid://shopify/Market/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── List shop locales ───────────────────────
+
+    def test_list_shop_locales_happy_path(self):
+        """``shopLocales`` is a top-level non-paginated list — every
+        call returns the full set. The adapter just normalises."""
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopLocales": [
+                {"locale": "en", "name": "English",
+                 "primary": True, "published": True},
+                {"locale": "fr", "name": "French",
+                 "primary": False, "published": True},
+                {"locale": "es", "name": "Spanish",
+                 "primary": False, "published": False},
+            ],
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_SHOP_LOCALES, {})
+        assert result.ok
+        assert result.data["count"] == 3
+        primary = [l for l in result.data["locales"] if l["primary"]]
+        assert len(primary) == 1
+        assert primary[0]["locale"] == "en"
+
+    def test_list_shop_locales_handles_non_list(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        a = ShopifyMarketsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"shopLocales": None}):
+            result = a.execute(Capability.SHOPIFY_LIST_SHOP_LOCALES, {})
+        assert result.ok
+        assert result.data["count"] == 0
+        assert result.data["locales"] == []
+
+    # ── Normaliser ──────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        assert ShopifyMarketsAdapter._normalise_market(None) == {}  # type: ignore[arg-type]
+
+    def test_normalise_handles_missing_currency_settings(self):
+        from core.adapters.shopify.markets import ShopifyMarketsAdapter
+        out = ShopifyMarketsAdapter._normalise_market({
+            "id": "gid://m/1", "name": "M", "handle": "m",
+            "enabled": True, "primary": False,
+            # No currencySettings at all
+            "regions": {"edges": []},
+        })
+        assert out["currency_code"] == ""
+        assert out["currency_name"] == ""
 
 
 # ── ShopifySubscriptionContractsAdapter ───────────────────
