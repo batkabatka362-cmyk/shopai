@@ -205,6 +205,9 @@ class Capability(str, Enum):
     SHOPIFY_RUN_BULK_QUERY = "shopify_run_bulk_query"
     SHOPIFY_GET_BULK_OPERATION = "shopify_get_bulk_operation"
     SHOPIFY_CANCEL_BULK_OPERATION = "shopify_cancel_bulk_operation"
+    SHOPIFY_GET_SHOP = "shopify_get_shop"
+    SHOPIFY_GET_SHOP_POLICIES = "shopify_get_shop_policies"
+    SHOPIFY_LIST_CURRENCIES = "shopify_list_currencies"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

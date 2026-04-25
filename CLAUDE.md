@@ -263,6 +263,12 @@ tolerate both forms when the cost is low:
 - `Return.declineReason` doesn't exist on the Return type at all —
   echo the value the caller sent rather than reading from the
   response.
+- `ShopFeatures.multiLocation` and `ShopFeatures.onlineStore` were
+  removed in the 2024-01 schema. Stable subset only:
+  branding/captcha/giftCards/harmonizedSystemCode/
+  internationalDomains/internationalPriceOverrides/
+  internationalPriceRules/legacySubscriptionGatewayEnabled/
+  reports/sellsSubscriptions/showMetrics/storefront.
 
 ### Pattern E: schema-gated fields
 

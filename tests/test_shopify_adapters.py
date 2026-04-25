@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtyfour_adapters(self):
+    def test_register_all_adds_thirtyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 34
+        assert len(status) == 35
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -821,6 +821,7 @@ class TestShopifyBootstrap:
             "shopify_customers",
             "shopify_webhooks",
             "shopify_bulk",
+            "shopify_shop",
         }
 
     def test_register_all_idempotent(self):
@@ -828,7 +829,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 34
+        assert len(get_registry()) == 35
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -961,6 +962,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_RUN_BULK_QUERY).name == "shopify_bulk"
         assert router.route(Capability.SHOPIFY_GET_BULK_OPERATION).name == "shopify_bulk"
         assert router.route(Capability.SHOPIFY_CANCEL_BULK_OPERATION).name == "shopify_bulk"
+        assert router.route(Capability.SHOPIFY_GET_SHOP).name == "shopify_shop"
+        assert router.route(Capability.SHOPIFY_GET_SHOP_POLICIES).name == "shopify_shop"
+        assert router.route(Capability.SHOPIFY_LIST_CURRENCIES).name == "shopify_shop"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -9898,3 +9902,137 @@ class TestShopifyBulkOperationsAdapter:
         from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
         assert ShopifyBulkOperationsAdapter._normalise_op({}) == {}
         assert ShopifyBulkOperationsAdapter._normalise_op(None) == {}
+
+
+# ── ShopifyShopAdapter ────────────────────────────────────
+
+
+class TestShopifyShopAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.shop import ShopifyShopAdapter
+        a = ShopifyShopAdapter()
+        assert a.name == "shopify_shop"
+        for cap in (
+            Capability.SHOPIFY_GET_SHOP,
+            Capability.SHOPIFY_GET_SHOP_POLICIES,
+            Capability.SHOPIFY_LIST_CURRENCIES,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.shop import ShopifyShopAdapter
+        a = ShopifyShopAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Get shop ─────────────────────────────────
+
+    def test_get_shop_happy_path(self):
+        from core.adapters.shopify.shop import ShopifyShopAdapter
+        a = ShopifyShopAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"shop": {
+            "id": "gid://shopify/Shop/1",
+            "name": "ShopAI Test",
+            "email": "owner@shopai.dev",
+            "myshopifyDomain": "ts0efe-ih.myshopify.com",
+            "primaryDomain": {
+                "url": "https://ts0efe-ih.myshopify.com",
+                "host": "ts0efe-ih.myshopify.com",
+                "sslEnabled": True,
+            },
+            "ianaTimezone": "America/Chicago",
+            "currencyCode": "USD",
+            "enabledPresentmentCurrencies": ["USD", "EUR"],
+            "plan": {
+                "displayName": "Developer Preview",
+                "partnerDevelopment": True,
+                "shopifyPlus": False,
+            },
+            "billingAddress": {
+                "city": "Minneapolis", "countryCodeV2": "US",
+            },
+            "features": {
+                "giftCards": True, "reports": True,
+            },
+        }}):
+            result = a.execute(Capability.SHOPIFY_GET_SHOP, {})
+        assert result.ok
+        s = result.data["shop"]
+        assert s["myshopify_domain"] == "ts0efe-ih.myshopify.com"
+        assert s["currency_code"] == "USD"
+        assert s["presentment_currencies"] == ["USD", "EUR"]
+        assert s["plan_is_partner_dev"] is True
+        assert s["plan_is_shopify_plus"] is False
+        assert s["features"]["giftCards"] is True
+        assert s["billing_country"] == "US"
+        assert s["ssl_enabled"] is True
+
+    def test_get_shop_missing_returns_empty(self):
+        from core.adapters.shopify.shop import ShopifyShopAdapter
+        a = ShopifyShopAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"shop": None}):
+            result = a.execute(Capability.SHOPIFY_GET_SHOP, {})
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["shop"] == {}
+
+    # ── Policies ─────────────────────────────────
+
+    def test_get_policies_happy_path(self):
+        from core.adapters.shopify.shop import ShopifyShopAdapter
+        a = ShopifyShopAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"shop": {
+            "shopPolicies": [
+                {"id": "gid://shopify/ShopPolicy/1",
+                 "type": "REFUND_POLICY",
+                 "title": "Refund policy",
+                 "url": "https://store/policies/refund",
+                 "body": "All sales final."},
+                {"id": "gid://shopify/ShopPolicy/2",
+                 "type": "PRIVACY_POLICY",
+                 "title": "Privacy policy",
+                 "url": "https://store/policies/privacy",
+                 "body": "We do not sell your data."},
+            ],
+        }}):
+            result = a.execute(Capability.SHOPIFY_GET_SHOP_POLICIES, {})
+        assert result.ok
+        assert result.data["count"] == 2
+        types = {p["type"] for p in result.data["policies"]}
+        assert types == {"REFUND_POLICY", "PRIVACY_POLICY"}
+
+    def test_get_policies_empty_when_none(self):
+        from core.adapters.shopify.shop import ShopifyShopAdapter
+        a = ShopifyShopAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"shop": {"shopPolicies": []}}):
+            result = a.execute(Capability.SHOPIFY_GET_SHOP_POLICIES, {})
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Currencies ───────────────────────────────
+
+    def test_list_currencies_happy_path(self):
+        from core.adapters.shopify.shop import ShopifyShopAdapter
+        a = ShopifyShopAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"shop": {
+            "currencyCode": "USD",
+            "enabledPresentmentCurrencies": ["USD", "EUR", "GBP"],
+            "currencyFormats": {
+                "moneyFormat": "${{amount}}",
+                "moneyInEmailsFormat": "${{amount}}",
+                "moneyWithCurrencyFormat": "${{amount}} USD",
+            },
+        }}):
+            result = a.execute(Capability.SHOPIFY_LIST_CURRENCIES, {})
+        assert result.ok
+        assert result.data["primary_currency"] == "USD"
+        assert result.data["presentment_currencies"] == ["USD", "EUR", "GBP"]
+        assert result.data["money_format"] == "${{amount}}"
+
+    # ── Normaliser ───────────────────────────────
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.shop import ShopifyShopAdapter
+        assert ShopifyShopAdapter._normalise_shop({}) == {}
+        assert ShopifyShopAdapter._normalise_shop(None) == {}
