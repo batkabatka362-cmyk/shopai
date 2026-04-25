@@ -313,7 +313,8 @@ will work after the gate clears.
 
 Two related types in the schema, one with `code` and one without:
 
-- `UserError` (used by `orderEdit*` and `draftOrderCalculate`) → no
+- `UserError` (used by `orderEdit*`, `draftOrderCalculate`,
+  `draftOrderInvoicePreview`, and `draftOrderInvoiceSend`) → no
   `code` field.
 - `UserErrors` (used by everything else) → has `code`.
 

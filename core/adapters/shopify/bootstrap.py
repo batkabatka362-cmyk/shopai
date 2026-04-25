@@ -44,6 +44,7 @@ from .discount_automatic import ShopifyDiscountAutomaticAdapter
 from .discounts import ShopifyDiscountAdapter
 from .disputes import ShopifyDisputesAdapter
 from .draft_order_calculate import ShopifyDraftOrderCalculateAdapter
+from .draft_order_invoice import ShopifyDraftOrderInvoiceSendAdapter
 from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
@@ -141,6 +142,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyOrderTransactionsAdapter,
     ShopifyPaymentTermsAdapter,
     ShopifyMarketWebPresencesAdapter,
+    ShopifyDraftOrderInvoiceSendAdapter,
 )
 
 

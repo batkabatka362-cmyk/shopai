@@ -275,6 +275,8 @@ class Capability(str, Enum):
     SHOPIFY_DELETE_PAYMENT_TERMS = "shopify_delete_payment_terms"
     SHOPIFY_LIST_MARKET_WEB_PRESENCES = "shopify_list_market_web_presences"
     SHOPIFY_GET_MARKET_WEB_PRESENCE = "shopify_get_market_web_presence"
+    SHOPIFY_SEND_DRAFT_ORDER_INVOICE = "shopify_send_draft_order_invoice"
+    SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE = "shopify_preview_draft_order_invoice"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

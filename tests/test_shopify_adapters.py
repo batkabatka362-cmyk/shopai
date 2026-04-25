@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftysix_adapters(self):
+    def test_register_all_adds_fiftyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 56
+        assert len(status) == 57
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -843,6 +843,7 @@ class TestShopifyBootstrap:
             "shopify_order_transactions",
             "shopify_payment_terms",
             "shopify_market_web_presences",
+            "shopify_draft_order_invoice",
         }
 
     def test_register_all_idempotent(self):
@@ -850,7 +851,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 56
+        assert len(get_registry()) == 57
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1053,6 +1054,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_PAYMENT_TERMS).name == "shopify_payment_terms"
         assert router.route(Capability.SHOPIFY_LIST_MARKET_WEB_PRESENCES).name == "shopify_market_web_presences"
         assert router.route(Capability.SHOPIFY_GET_MARKET_WEB_PRESENCE).name == "shopify_market_web_presences"
+        assert router.route(Capability.SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE).name == "shopify_draft_order_invoice"
+        assert router.route(Capability.SHOPIFY_SEND_DRAFT_ORDER_INVOICE).name == "shopify_draft_order_invoice"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -15327,3 +15330,230 @@ class TestShopifyMarketWebPresencesAdapter:
         )
         assert ShopifyMarketWebPresencesAdapter._normalise_presence({}) == {}
         assert ShopifyMarketWebPresencesAdapter._normalise_presence(None) == {}
+
+
+# ── ShopifyDraftOrderInvoiceSendAdapter ───────────────────
+
+
+class TestShopifyDraftOrderInvoiceSendAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter()
+        assert a.name == "shopify_draft_order_invoice"
+        for cap in (
+            Capability.SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE,
+            Capability.SHOPIFY_SEND_DRAFT_ORDER_INVOICE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input ────────────────────────────────────
+
+    def test_preview_requires_draft_order_id(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE, {},
+        )
+        assert not result.ok
+
+    def test_send_requires_draft_order_id(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_DRAFT_ORDER_INVOICE, {"to": "x@y.com"},
+        )
+        assert not result.ok
+
+    def test_email_input_bcc_string_split(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_email_input({
+            "to": "buyer@example.com",
+            "from": "sales@example.com",
+            "bcc": "x@y.com, z@y.com",
+            "subject": "Quote",
+            "custom_message": "Reply with questions.",
+        })
+        assert out["to"] == "buyer@example.com"
+        assert out["from"] == "sales@example.com"
+        assert out["bcc"] == ["x@y.com", "z@y.com"]
+        assert out["customMessage"] == "Reply with questions."
+
+    def test_email_input_to_must_be_string(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_email_input({"to": 123})
+
+    # ── Preview ──────────────────────────────────
+
+    def test_preview_happy_path(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"draftOrderInvoicePreview": {
+                "previewSubject": "Your quote from ShopAI",
+                "previewHtml": "<html><body>Quote</body></html>",
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE,
+                {
+                    "draft_order_id": "gid://shopify/DraftOrder/123",
+                    "to": "buyer@example.com",
+                    "subject": "Your quote from ShopAI",
+                },
+            )
+        assert result.ok
+        assert result.data["subject"] == "Your quote from ShopAI"
+        assert "<html>" in result.data["html"]
+        # Pattern A: id is at the field level, not inside email input.
+        assert captured["id"] == "gid://shopify/DraftOrder/123"
+        assert captured["email"]["to"] == "buyer@example.com"
+        assert captured["email"]["subject"] == "Your quote from ShopAI"
+
+    def test_preview_works_without_email_input(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"draftOrderInvoicePreview": {
+                "previewSubject": "Default subject",
+                "previewHtml": "<html></html>",
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE,
+                {"draft_order_id": "gid://shopify/DraftOrder/1"},
+            )
+        assert result.ok
+        # Email input omitted entirely when caller didn't supply any.
+        assert "email" not in captured
+
+    def test_preview_user_errors_fail_fast(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "draftOrderInvoicePreview": {
+                "previewSubject": "",
+                "previewHtml": "",
+                "userErrors": [{"field": ["id"], "message": "not found"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE,
+                {"draft_order_id": "gid://shopify/DraftOrder/missing"},
+            )
+        assert not result.ok
+
+    # ── Send ─────────────────────────────────────
+
+    def test_send_happy_path(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"draftOrderInvoiceSend": {
+                "draftOrder": {
+                    "id": v["id"],
+                    "name": "#D1",
+                    "status": "OPEN",
+                    "invoiceSentAt": "2026-04-26T10:00:00Z",
+                    "invoiceUrl": "https://store/invoices/abc",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_DRAFT_ORDER_INVOICE,
+                {
+                    "draft_order_id": "gid://shopify/DraftOrder/123",
+                    "to": "buyer@example.com",
+                    "bcc": ["sales@example.com"],
+                },
+            )
+        assert result.ok
+        assert result.data["draft_order_name"] == "#D1"
+        assert result.data["invoice_url"] == "https://store/invoices/abc"
+        assert result.data["invoice_sent_at"] == "2026-04-26T10:00:00Z"
+        assert captured["email"]["bcc"] == ["sales@example.com"]
+
+    def test_send_user_errors_fail_fast(self):
+        from core.adapters.shopify.draft_order_invoice import (
+            ShopifyDraftOrderInvoiceSendAdapter,
+        )
+        a = ShopifyDraftOrderInvoiceSendAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "draftOrderInvoiceSend": {
+                "draftOrder": None,
+                "userErrors": [{"field": ["email", "to"],
+                                "message": "Invalid email"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_DRAFT_ORDER_INVOICE,
+                {
+                    "draft_order_id": "gid://shopify/DraftOrder/123",
+                    "to": "not-an-email",
+                },
+            )
+        assert not result.ok
