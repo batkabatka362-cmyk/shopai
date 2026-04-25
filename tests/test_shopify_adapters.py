@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortyfour_adapters(self):
+    def test_register_all_adds_fortyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 44
+        assert len(status) == 45
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -831,6 +831,7 @@ class TestShopifyBootstrap:
             "shopify_selling_plan_groups",
             "shopify_customer_payment_methods",
             "shopify_apps",
+            "shopify_abandoned_checkouts",
         }
 
     def test_register_all_idempotent(self):
@@ -838,7 +839,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 44
+        assert len(get_registry()) == 45
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1000,6 +1001,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD).name == "shopify_customer_payment_methods"
         assert router.route(Capability.SHOPIFY_GET_CURRENT_APP_INSTALLATION).name == "shopify_apps"
         assert router.route(Capability.SHOPIFY_LIST_APP_INSTALLATIONS).name == "shopify_apps"
+        assert router.route(Capability.SHOPIFY_LIST_ABANDONED_CHECKOUTS).name == "shopify_abandoned_checkouts"
+        assert router.route(Capability.SHOPIFY_GET_ABANDONED_CHECKOUT).name == "shopify_abandoned_checkouts"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -12150,3 +12153,201 @@ class TestShopifyAppsAdapter:
         from core.adapters.shopify.apps import ShopifyAppsAdapter
         assert ShopifyAppsAdapter._normalise_installation({}) == {}
         assert ShopifyAppsAdapter._normalise_installation(None) == {}
+
+
+# ── ShopifyAbandonedCheckoutsAdapter ──────────────────────
+
+
+class TestShopifyAbandonedCheckoutsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter()
+        assert a.name == "shopify_abandoned_checkouts"
+        for cap in (
+            Capability.SHOPIFY_LIST_ABANDONED_CHECKOUTS,
+            Capability.SHOPIFY_GET_ABANDONED_CHECKOUT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "abandonedCheckouts": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/AbandonedCheckout/1",
+                    "name": "#C1",
+                    "abandonedCheckoutUrl": "https://store/recovery/abc",
+                    "createdAt": "2026-04-25T10:00:00Z",
+                    "completedAt": None,
+                    "totalPriceSet": {
+                        "shopMoney": {"amount": "100.00", "currencyCode": "USD"},
+                    },
+                    "subtotalPriceSet": {
+                        "shopMoney": {"amount": "90.00", "currencyCode": "USD"},
+                    },
+                    "customer": {
+                        "id": "gid://shopify/Customer/c1",
+                        "email": "x@y.com",
+                        "firstName": "X",
+                        "numberOfOrders": 0,
+                    },
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_ABANDONED_CHECKOUTS, {},
+            )
+        assert result.ok
+        c = result.data["checkouts"][0]
+        assert c["name"] == "#C1"
+        assert c["customer_email"] == "x@y.com"
+        assert c["is_completed"] is False
+        assert c["total_price"] == "100.00"
+        assert c["abandoned_url"].endswith("/abc")
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"abandonedCheckouts": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_ABANDONED_CHECKOUTS,
+                {"limit": 9999},
+            )
+        assert captured["first"] == 250
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_ABANDONED_CHECKOUTS,
+            {"sort_key": "BAD"},
+        )
+        assert not result.ok
+
+    def test_list_passes_query_filter(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"abandonedCheckouts": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_ABANDONED_CHECKOUTS, {
+                "query": "created_at:>2026-04-01",
+                "sort_key": "CREATED_AT",
+                "reverse": True,
+            })
+        assert captured["query"] == "created_at:>2026-04-01"
+        assert captured["sortKey"] == "CREATED_AT"
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_ABANDONED_CHECKOUT, {})
+        assert not result.ok
+
+    def test_get_happy_path_with_line_items(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter(shop_url="s", access_token="t")
+        line_node = {
+            "id": "gid://shopify/AbandonedCheckoutLineItem/1",
+            "title": "Lantern",
+            "quantity": 2,
+            "sku": "LANT-1",
+            "variantTitle": "Default",
+            "variant": {"id": "v1", "title": "Default"},
+            "product": {"id": "p1", "title": "Lantern"},
+            "originalUnitPriceSet": {
+                "shopMoney": {"amount": "10.00", "currencyCode": "USD"},
+            },
+            "discountedTotalPriceSet": {
+                "shopMoney": {"amount": "20.00", "currencyCode": "USD"},
+            },
+        }
+        checkout_node = {
+            "id": "gid://shopify/AbandonedCheckout/1",
+            "name": "#C1",
+            "totalPriceSet": {
+                "shopMoney": {"amount": "20.00", "currencyCode": "USD"},
+            },
+            "lineItems": {"edges": [{"node": line_node}]},
+            "shippingAddress": {
+                "address1": "1 Main", "city": "Seattle",
+                "country": "US", "zip": "98101", "name": "X",
+            },
+        }
+        with patch.object(a, "_gql", return_value={
+            "abandonedCheckout": checkout_node,
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_ABANDONED_CHECKOUT, {
+                "id": "gid://shopify/AbandonedCheckout/1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        c = result.data["checkout"]
+        assert len(c["line_items"]) == 1
+        assert c["line_items"][0]["sku"] == "LANT-1"
+        assert c["line_items"][0]["quantity"] == 2
+        assert c["shipping_address"]["city"] == "Seattle"
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        a = ShopifyAbandonedCheckoutsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"abandonedCheckout": None}):
+            result = a.execute(Capability.SHOPIFY_GET_ABANDONED_CHECKOUT, {
+                "id": "gid://shopify/AbandonedCheckout/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.abandoned_checkouts import (
+            ShopifyAbandonedCheckoutsAdapter,
+        )
+        assert ShopifyAbandonedCheckoutsAdapter._normalise_checkout({}) == {}
+        assert ShopifyAbandonedCheckoutsAdapter._normalise_line_item(None) == {}

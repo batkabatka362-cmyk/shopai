@@ -22,6 +22,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .abandoned_checkouts import ShopifyAbandonedCheckoutsAdapter
 from .analytics import ShopifyAnalyticsAdapter
 from .apps import ShopifyAppsAdapter
 from .articles import ShopifyArticlesAdapter
@@ -117,6 +118,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifySellingPlanGroupsAdapter,
     ShopifyCustomerPaymentMethodsAdapter,
     ShopifyAppsAdapter,
+    ShopifyAbandonedCheckoutsAdapter,
 )
 
 
