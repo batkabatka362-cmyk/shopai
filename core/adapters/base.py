@@ -178,6 +178,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_CART_TRANSFORM = "shopify_create_cart_transform"
     SHOPIFY_LIST_CART_TRANSFORMS = "shopify_list_cart_transforms"
     SHOPIFY_DELETE_CART_TRANSFORM = "shopify_delete_cart_transform"
+    SHOPIFY_CREATE_VALIDATION = "shopify_create_validation"
+    SHOPIFY_LIST_VALIDATIONS = "shopify_list_validations"
+    SHOPIFY_DELETE_VALIDATION = "shopify_delete_validation"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

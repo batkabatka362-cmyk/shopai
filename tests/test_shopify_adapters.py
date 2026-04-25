@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentyeight_adapters(self):
+    def test_register_all_adds_twentynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 28
+        assert len(status) == 29
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -815,6 +815,7 @@ class TestShopifyBootstrap:
             "shopify_inventory_shipments",
             "shopify_channels",
             "shopify_cart_transforms",
+            "shopify_validations",
         }
 
     def test_register_all_idempotent(self):
@@ -822,7 +823,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 28
+        assert len(get_registry()) == 29
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -926,6 +927,209 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_CART_TRANSFORM).name == "shopify_cart_transforms"
         assert router.route(Capability.SHOPIFY_LIST_CART_TRANSFORMS).name == "shopify_cart_transforms"
         assert router.route(Capability.SHOPIFY_DELETE_CART_TRANSFORM).name == "shopify_cart_transforms"
+        assert router.route(Capability.SHOPIFY_CREATE_VALIDATION).name == "shopify_validations"
+        assert router.route(Capability.SHOPIFY_LIST_VALIDATIONS).name == "shopify_validations"
+        assert router.route(Capability.SHOPIFY_DELETE_VALIDATION).name == "shopify_validations"
+
+
+# ── ShopifyValidationsAdapter ────────────────────────────
+
+
+class TestShopifyValidationsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        a = ShopifyValidationsAdapter()
+        assert a.name == "shopify_validations"
+        for cap in (
+            Capability.SHOPIFY_CREATE_VALIDATION,
+            Capability.SHOPIFY_LIST_VALIDATIONS,
+            Capability.SHOPIFY_DELETE_VALIDATION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        a = ShopifyValidationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_create_input ──────────────────────
+
+    def test_build_input_requires_function_id(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyValidationsAdapter._build_create_input({})
+
+    def test_build_input_enabled_defaults_true(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        out = ShopifyValidationsAdapter._build_create_input({
+            "function_id": "fn-1",
+        })
+        assert out["enable"] is True
+        assert out["blockOnFailure"] is False  # default-False
+
+    def test_build_input_block_on_failure_can_be_true(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        out = ShopifyValidationsAdapter._build_create_input({
+            "function_id": "fn-1",
+            "block_on_failure": True,
+        })
+        assert out["blockOnFailure"] is True
+
+    def test_build_input_title_pass_through(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        out = ShopifyValidationsAdapter._build_create_input({
+            "function_id": "fn-1",
+            "title": "Block sub-$25 orders",
+        })
+        assert out["title"] == "Block sub-$25 orders"
+
+    def test_build_input_title_must_be_string(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyValidationsAdapter._build_create_input({
+                "function_id": "fn-1", "title": 12345,
+            })
+
+    def test_build_input_metafields_coerced(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        out = ShopifyValidationsAdapter._build_create_input({
+            "function_id": "fn-1",
+            "metafields": [
+                {"key": "min_total", "value": 25},
+            ],
+        })
+        # Numeric coerced to string per metafield convention.
+        assert out["metafields"][0]["value"] == "25"
+
+    # ── Create — happy path ─────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        a = ShopifyValidationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"validationCreate": {
+                "validation": {
+                    "id": "gid://shopify/Validation/9",
+                    "title": v["validation"].get("title", ""),
+                    "enabled": v["validation"]["enable"],
+                    "blockOnFailure": v["validation"]["blockOnFailure"],
+                    "shopifyFunction": {
+                        "id": v["validation"]["functionId"],
+                        "title": "Min Order",
+                        "apiType": "validation",
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_VALIDATION, {
+                "function_id": "fn-min-order",
+                "title": "Block sub-$25",
+                "block_on_failure": True,
+            })
+        assert result.ok
+        v = result.data["validation"]
+        assert v["function_id"] == "fn-min-order"
+        assert v["block_on_failure"] is True
+        assert v["title"] == "Block sub-$25"
+        # Variable named after the type (Pattern A in CLAUDE.md).
+        assert "validation" in captured
+
+    def test_create_user_errors_propagate(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        a = ShopifyValidationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "validationCreate": {
+                "validation": None,
+                "userErrors": [{
+                    "field": ["validation", "functionId"],
+                    "message": "Function not found",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_VALIDATION, {
+                "function_id": "missing",
+            })
+        assert not result.ok
+
+    # ── List ────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        a = ShopifyValidationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "validations": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Validation/1",
+                        "title": "Min Order",
+                        "enabled": True,
+                        "blockOnFailure": True,
+                        "shopifyFunction": {
+                            "id": "fn-1", "title": "Min Order Func",
+                            "apiType": "validation",
+                        },
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_VALIDATIONS, {
+                "limit": 10,
+            })
+        assert result.ok
+        assert result.data["count"] == 1
+        v = result.data["validations"][0]
+        assert v["function_api_type"] == "validation"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        a = ShopifyValidationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"validations": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_VALIDATIONS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        a = ShopifyValidationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_DELETE_VALIDATION, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        a = ShopifyValidationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "validationDelete": {
+                "deletedId": "gid://shopify/Validation/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DELETE_VALIDATION, {
+                "id": "gid://shopify/Validation/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"].endswith("/1")
+
+    # ── Normaliser ──────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.validations import ShopifyValidationsAdapter
+        assert ShopifyValidationsAdapter._normalise_validation(None) == {}  # type: ignore[arg-type]
 
 
 # ── ShopifyCartTransformsAdapter ────────────────────────

@@ -51,6 +51,7 @@ from .segments import ShopifyCustomerSegmentsAdapter
 from .subscriptions import ShopifySubscriptionContractsAdapter
 from .themes import ShopifyThemesAdapter
 from .translations import ShopifyTranslationsAdapter
+from .validations import ShopifyValidationsAdapter
 from .web_pixels import ShopifyWebPixelsAdapter
 
 logger = get_logger("adapters.shopify.bootstrap")
@@ -85,6 +86,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyInventoryShipmentsAdapter,
     ShopifyChannelsAdapter,
     ShopifyCartTransformsAdapter,
+    ShopifyValidationsAdapter,
 )
 
 
