@@ -248,6 +248,10 @@ class Capability(str, Enum):
     SHOPIFY_GET_PRICE_LIST = "shopify_get_price_list"
     SHOPIFY_CREATE_PRICE_LIST = "shopify_create_price_list"
     SHOPIFY_DELETE_PRICE_LIST = "shopify_delete_price_list"
+    SHOPIFY_LIST_CARRIER_SERVICES = "shopify_list_carrier_services"
+    SHOPIFY_CREATE_CARRIER_SERVICE = "shopify_create_carrier_service"
+    SHOPIFY_UPDATE_CARRIER_SERVICE = "shopify_update_carrier_service"
+    SHOPIFY_DELETE_CARRIER_SERVICE = "shopify_delete_carrier_service"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

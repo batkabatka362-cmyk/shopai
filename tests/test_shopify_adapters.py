@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortyeight_adapters(self):
+    def test_register_all_adds_fortynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 48
+        assert len(status) == 49
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -835,6 +835,7 @@ class TestShopifyBootstrap:
             "shopify_collections",
             "shopify_metafield_definitions",
             "shopify_price_lists",
+            "shopify_carrier_services",
         }
 
     def test_register_all_idempotent(self):
@@ -842,7 +843,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 48
+        assert len(get_registry()) == 49
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1018,6 +1019,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_PRICE_LIST).name == "shopify_price_lists"
         assert router.route(Capability.SHOPIFY_CREATE_PRICE_LIST).name == "shopify_price_lists"
         assert router.route(Capability.SHOPIFY_DELETE_PRICE_LIST).name == "shopify_price_lists"
+        assert router.route(Capability.SHOPIFY_LIST_CARRIER_SERVICES).name == "shopify_carrier_services"
+        assert router.route(Capability.SHOPIFY_CREATE_CARRIER_SERVICE).name == "shopify_carrier_services"
+        assert router.route(Capability.SHOPIFY_UPDATE_CARRIER_SERVICE).name == "shopify_carrier_services"
+        assert router.route(Capability.SHOPIFY_DELETE_CARRIER_SERVICE).name == "shopify_carrier_services"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -13236,3 +13241,245 @@ class TestShopifyPriceListAdapter:
     def test_normalise_handles_empty(self):
         from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
         assert ShopifyPriceListAdapter._normalise_price_list({}) == {}
+
+
+# ── ShopifyCarrierServicesAdapter ─────────────────────────
+
+
+class TestShopifyCarrierServicesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter()
+        assert a.name == "shopify_carrier_services"
+        for cap in (
+            Capability.SHOPIFY_LIST_CARRIER_SERVICES,
+            Capability.SHOPIFY_CREATE_CARRIER_SERVICE,
+            Capability.SHOPIFY_UPDATE_CARRIER_SERVICE,
+            Capability.SHOPIFY_DELETE_CARRIER_SERVICE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_name(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({"callback_url": "https://x.com/q"},
+                           for_update=False)
+
+    def test_create_requires_callback_url(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({"name": "ShopAI"}, for_update=False)
+
+    def test_callback_url_must_be_http(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "name": "ShopAI",
+                "callback_url": "ftp://x.com/q",
+            }, for_update=False)
+
+    def test_create_full_shape(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        out = a._build_input({
+            "name": "ShopAI Smart Rates",
+            "callback_url": "https://rates.shopai.dev/quote",
+            "supports_service_discovery": True,
+            "active": True,
+        }, for_update=False)
+        assert out["name"] == "ShopAI Smart Rates"
+        assert out["callbackUrl"] == "https://rates.shopai.dev/quote"
+        assert out["supportsServiceDiscovery"] is True
+        assert out["active"] is True
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({"name": "ShopAI"}, for_update=True)
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "carrierServices": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/DeliveryCarrierService/1",
+                    "name": "ShopAI Smart Rates",
+                    "callbackUrl": "https://rates.shopai.dev/quote",
+                    "active": True,
+                    "supportsServiceDiscovery": True,
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_CARRIER_SERVICES, {},
+            )
+        assert result.ok
+        s = result.data["carrier_services"][0]
+        assert s["name"] == "ShopAI Smart Rates"
+        assert s["callback_url"] == "https://rates.shopai.dev/quote"
+        assert s["active"] is True
+        assert s["supports_service_discovery"] is True
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"carrierServices": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_CARRIER_SERVICES,
+                      {"limit": 9999})
+        assert captured["first"] == 250
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"carrierServiceCreate": {
+                "carrierService": {
+                    "id": "gid://shopify/DeliveryCarrierService/new",
+                    "name": v["input"]["name"],
+                    "callbackUrl": v["input"]["callbackUrl"],
+                    "active": True,
+                    "supportsServiceDiscovery": True,
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_CARRIER_SERVICE,
+                {
+                    "name": "ShopAI",
+                    "callback_url": "https://rates.shopai.dev/q",
+                    "supports_service_discovery": True,
+                },
+            )
+        assert result.ok
+        assert captured["input"]["callbackUrl"] == "https://rates.shopai.dev/q"
+        assert captured["input"]["supportsServiceDiscovery"] is True
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"carrierServiceCreate": {
+            "carrierService": None,
+            "userErrors": [{"field": ["callbackUrl"],
+                            "message": "Endpoint failed discovery"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_CARRIER_SERVICE, {
+                "name": "Bad", "callback_url": "https://broken.example",
+            })
+        assert not result.ok
+
+    # ── Update ───────────────────────────────────
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"carrierServiceUpdate": {
+                "carrierService": {
+                    "id": v["input"]["id"],
+                    "name": v["input"].get("name", "old"),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_CARRIER_SERVICE, {
+                "id": "gid://shopify/DeliveryCarrierService/1",
+                "name": "Renamed",
+                "active": False,
+            })
+        assert result.ok
+        assert captured["input"]["id"] == \
+            "gid://shopify/DeliveryCarrierService/1"
+        assert captured["input"]["active"] is False
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_CARRIER_SERVICE, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        a = ShopifyCarrierServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"carrierServiceDelete": {
+            "deletedId": "gid://shopify/DeliveryCarrierService/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_CARRIER_SERVICE, {
+                "id": "gid://shopify/DeliveryCarrierService/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/DeliveryCarrierService/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.carrier_services import (
+            ShopifyCarrierServicesAdapter,
+        )
+        assert ShopifyCarrierServicesAdapter._normalise_service({}) == {}

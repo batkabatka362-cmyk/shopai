@@ -28,6 +28,7 @@ from .apps import ShopifyAppsAdapter
 from .articles import ShopifyArticlesAdapter
 from .bulk import ShopifyBulkOperationsAdapter
 from .bulk_mutations import ShopifyBulkMutationsAdapter
+from .carrier_services import ShopifyCarrierServicesAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
 from .channels import ShopifyChannelsAdapter
 from .collections import ShopifyCollectionsAdapter
@@ -125,6 +126,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCollectionsAdapter,
     ShopifyMetafieldDefinitionsAdapter,
     ShopifyPriceListAdapter,
+    ShopifyCarrierServicesAdapter,
 )
 
 
