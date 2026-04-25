@@ -259,6 +259,10 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_AUTOMATIC_DISCOUNT = "shopify_create_automatic_discount"
     SHOPIFY_LIST_AUTOMATIC_DISCOUNTS = "shopify_list_automatic_discounts"
     SHOPIFY_DELETE_AUTOMATIC_DISCOUNT = "shopify_delete_automatic_discount"
+    SHOPIFY_LIST_METAOBJECT_DEFINITIONS = "shopify_list_metaobject_definitions"
+    SHOPIFY_GET_METAOBJECT_DEFINITION = "shopify_get_metaobject_definition"
+    SHOPIFY_CREATE_METAOBJECT_DEFINITION = "shopify_create_metaobject_definition"
+    SHOPIFY_DELETE_METAOBJECT_DEFINITION = "shopify_delete_metaobject_definition"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

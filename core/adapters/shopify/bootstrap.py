@@ -56,6 +56,7 @@ from .marketing_events import ShopifyMarketingEventsAdapter
 from .markets import ShopifyMarketsAdapter
 from .metafield import ShopifyMetafieldAdapter
 from .metafield_definitions import ShopifyMetafieldDefinitionsAdapter
+from .metaobject_definitions import ShopifyMetaobjectDefinitionsAdapter
 from .metaobjects import ShopifyMetaobjectsAdapter
 from .order_edits import ShopifyOrderEditsAdapter
 from .orders import ShopifyOrdersAdapter
@@ -131,6 +132,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCarrierServicesAdapter,
     ShopifyFulfillmentServicesAdapter,
     ShopifyDiscountAutomaticAdapter,
+    ShopifyMetaobjectDefinitionsAdapter,
 )
 
 

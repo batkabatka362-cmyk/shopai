@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftyone_adapters(self):
+    def test_register_all_adds_fiftytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 51
+        assert len(status) == 52
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -838,6 +838,7 @@ class TestShopifyBootstrap:
             "shopify_carrier_services",
             "shopify_fulfillment_services",
             "shopify_discount_automatic",
+            "shopify_metaobject_definitions",
         }
 
     def test_register_all_idempotent(self):
@@ -845,7 +846,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 51
+        assert len(get_registry()) == 52
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1032,6 +1033,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_AUTOMATIC_DISCOUNTS).name == "shopify_discount_automatic"
         assert router.route(Capability.SHOPIFY_CREATE_AUTOMATIC_DISCOUNT).name == "shopify_discount_automatic"
         assert router.route(Capability.SHOPIFY_DELETE_AUTOMATIC_DISCOUNT).name == "shopify_discount_automatic"
+        assert router.route(Capability.SHOPIFY_LIST_METAOBJECT_DEFINITIONS).name == "shopify_metaobject_definitions"
+        assert router.route(Capability.SHOPIFY_GET_METAOBJECT_DEFINITION).name == "shopify_metaobject_definitions"
+        assert router.route(Capability.SHOPIFY_CREATE_METAOBJECT_DEFINITION).name == "shopify_metaobject_definitions"
+        assert router.route(Capability.SHOPIFY_DELETE_METAOBJECT_DEFINITION).name == "shopify_metaobject_definitions"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -14134,3 +14139,283 @@ class TestShopifyDiscountAutomaticAdapter:
         )
         assert ShopifyDiscountAutomaticAdapter._normalise_discount({}) == {}
         assert ShopifyDiscountAutomaticAdapter._normalise_discount(None) == {}
+
+
+# ── ShopifyMetaobjectDefinitionsAdapter ───────────────────
+
+
+class TestShopifyMetaobjectDefinitionsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter()
+        assert a.name == "shopify_metaobject_definitions"
+        for cap in (
+            Capability.SHOPIFY_LIST_METAOBJECT_DEFINITIONS,
+            Capability.SHOPIFY_GET_METAOBJECT_DEFINITION,
+            Capability.SHOPIFY_CREATE_METAOBJECT_DEFINITION,
+            Capability.SHOPIFY_DELETE_METAOBJECT_DEFINITION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_type(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({
+                "name": "Recipe",
+                "field_definitions": [
+                    {"key": "title", "type": "single_line_text_field"},
+                ],
+            })
+
+    def test_create_requires_field_definitions(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({"type": "recipe", "name": "Recipe"})
+
+    def test_field_definition_requires_key(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_field_definition(
+                {"type": "single_line_text_field"}, 0,
+            )
+
+    def test_field_definition_requires_type(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_field_definition({"key": "title"}, 0)
+
+    def test_create_full_shape(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        out = a._build_create_input({
+            "type": "recipe",
+            "name": "Recipe",
+            "description": "Cookable recipes",
+            "display_name_key": "title",
+            "field_definitions": [
+                {"key": "title", "name": "Title",
+                 "type": "single_line_text_field", "required": True},
+                {"key": "ingredients", "name": "Ingredients",
+                 "type": "list.single_line_text_field"},
+                {"key": "cook_time_minutes", "name": "Cook time",
+                 "type": "number_integer",
+                 "validations": [
+                    {"name": "min", "value": 0},
+                 ]},
+            ],
+        })
+        assert out["type"] == "recipe"
+        assert out["name"] == "Recipe"
+        assert out["displayNameKey"] == "title"
+        assert len(out["fieldDefinitions"]) == 3
+        assert out["fieldDefinitions"][0]["required"] is True
+        assert out["fieldDefinitions"][2]["validations"][0]["value"] == "0"
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metaobjectDefinitions": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/MetaobjectDefinition/1",
+                    "name": "Recipe",
+                    "type": "recipe",
+                    "description": "Cookable recipes",
+                    "displayNameKey": "title",
+                    "fieldDefinitions": [
+                        {
+                            "key": "title", "name": "Title",
+                            "required": True,
+                            "type": {"name": "single_line_text_field",
+                                     "category": "TEXT"},
+                            "validations": [],
+                        },
+                    ],
+                    "metaobjectsCount": {"count": 12},
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_METAOBJECT_DEFINITIONS, {},
+            )
+        assert result.ok
+        d = result.data["definitions"][0]
+        assert d["type"] == "recipe"
+        assert d["name"] == "Recipe"
+        assert len(d["field_definitions"]) == 1
+        assert d["field_definitions"][0]["required"] is True
+        assert d["field_definitions"][0]["type"] == "single_line_text_field"
+        assert d["metaobjects_count"] == 12
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metaobjectDefinitions": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_METAOBJECT_DEFINITIONS,
+                {"limit": 9999},
+            )
+        assert captured["first"] == 250
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_METAOBJECT_DEFINITION, {})
+        assert not result.ok
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metaobjectDefinition": None,
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_METAOBJECT_DEFINITION, {
+                "id": "gid://shopify/MetaobjectDefinition/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metaobjectDefinitionCreate": {
+                "metaobjectDefinition": {
+                    "id": "gid://shopify/MetaobjectDefinition/new",
+                    "name": v["definition"].get("name", ""),
+                    "type": v["definition"]["type"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_METAOBJECT_DEFINITION,
+                {
+                    "type": "recipe",
+                    "name": "Recipe",
+                    "field_definitions": [
+                        {"key": "title", "name": "Title",
+                         "type": "single_line_text_field"},
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["definition"]["type"] == "recipe"
+        assert captured["definition"]["fieldDefinitions"][0]["key"] == "title"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metaobjectDefinitionCreate": {
+                "metaobjectDefinition": None,
+                "userErrors": [{"field": ["type"], "message": "is taken",
+                                "code": "TAKEN"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_METAOBJECT_DEFINITION,
+                {
+                    "type": "dup", "name": "Dup",
+                    "field_definitions": [
+                        {"key": "x", "type": "single_line_text_field"},
+                    ],
+                },
+            )
+        assert not result.ok
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_METAOBJECT_DEFINITION, {},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metaobjectDefinitionDelete": {
+                "deletedId": "gid://shopify/MetaobjectDefinition/1",
+                "userErrors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_METAOBJECT_DEFINITION,
+                {"id": "gid://shopify/MetaobjectDefinition/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/MetaobjectDefinition/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.metaobject_definitions import (
+            ShopifyMetaobjectDefinitionsAdapter,
+        )
+        assert ShopifyMetaobjectDefinitionsAdapter._normalise_definition({}) == {}
