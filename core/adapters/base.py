@@ -227,6 +227,8 @@ class Capability(str, Enum):
     SHOPIFY_GET_DELIVERY_PROFILE = "shopify_get_delivery_profile"
     SHOPIFY_GET_DELIVERY_SETTINGS = "shopify_get_delivery_settings"
     SHOPIFY_CALCULATE_DRAFT_ORDER = "shopify_calculate_draft_order"
+    SHOPIFY_LIST_SELLING_PLAN_GROUPS = "shopify_list_selling_plan_groups"
+    SHOPIFY_GET_SELLING_PLAN_GROUP = "shopify_get_selling_plan_group"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

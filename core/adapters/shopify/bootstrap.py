@@ -58,6 +58,7 @@ from .refunds import ShopifyRefundsAdapter
 from .returns import ShopifyReturnsAdapter
 from .risk import ShopifyRiskAdapter
 from .segments import ShopifyCustomerSegmentsAdapter
+from .selling_plan_groups import ShopifySellingPlanGroupsAdapter
 from .shop import ShopifyShopAdapter
 from .subscriptions import ShopifySubscriptionContractsAdapter
 from .themes import ShopifyThemesAdapter
@@ -111,6 +112,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDisputesAdapter,
     ShopifyDeliveryProfilesAdapter,
     ShopifyDraftOrderCalculateAdapter,
+    ShopifySellingPlanGroupsAdapter,
 )
 
 

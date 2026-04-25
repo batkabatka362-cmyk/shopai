@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortyone_adapters(self):
+    def test_register_all_adds_fortytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 41
+        assert len(status) == 42
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -828,6 +828,7 @@ class TestShopifyBootstrap:
             "shopify_disputes",
             "shopify_delivery_profiles",
             "shopify_draft_order_calculate",
+            "shopify_selling_plan_groups",
         }
 
     def test_register_all_idempotent(self):
@@ -835,7 +836,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 41
+        assert len(get_registry()) == 42
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -990,6 +991,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_DELIVERY_PROFILE).name == "shopify_delivery_profiles"
         assert router.route(Capability.SHOPIFY_GET_DELIVERY_SETTINGS).name == "shopify_delivery_profiles"
         assert router.route(Capability.SHOPIFY_CALCULATE_DRAFT_ORDER).name == "shopify_draft_order_calculate"
+        assert router.route(Capability.SHOPIFY_LIST_SELLING_PLAN_GROUPS).name == "shopify_selling_plan_groups"
+        assert router.route(Capability.SHOPIFY_GET_SELLING_PLAN_GROUP).name == "shopify_selling_plan_groups"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -11420,3 +11423,245 @@ class TestShopifyDraftOrderCalculateAdapter:
         assert ShopifyDraftOrderCalculateAdapter._normalise_calculation(
             {},
         ) == {}
+
+
+# ── ShopifySellingPlanGroupsAdapter ───────────────────────
+
+
+class TestShopifySellingPlanGroupsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter()
+        assert a.name == "shopify_selling_plan_groups"
+        for cap in (
+            Capability.SHOPIFY_LIST_SELLING_PLAN_GROUPS,
+            Capability.SHOPIFY_GET_SELLING_PLAN_GROUP,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path_compact(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "sellingPlanGroups": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/SellingPlanGroup/g1",
+                    "name": "Subscribe & Save",
+                    "merchantCode": "subscribe-save",
+                    "options": ["Delivery every"],
+                    "position": 1,
+                    "description": "",
+                    "appId": "",
+                    "sellingPlans": {"edges": [{"node": {"id": "p1"}}]},
+                    "products": {"edges": [{"node": {"id": "prod1"}}]},
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_SELLING_PLAN_GROUPS, {},
+            )
+        assert result.ok
+        g = result.data["groups"][0]
+        assert g["name"] == "Subscribe & Save"
+        assert g["merchant_code"] == "subscribe-save"
+        assert g["has_plans"] is True
+        assert g["has_products"] is True
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"sellingPlanGroups": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_SELLING_PLAN_GROUPS,
+                {"limit": 9999},
+            )
+        assert captured["first"] == 100
+
+    def test_list_passes_query_filter(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"sellingPlanGroups": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_SELLING_PLAN_GROUPS,
+                {"query": "name:Coffee"},
+            )
+        assert captured["query"] == "name:Coffee"
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_SELLING_PLAN_GROUP, {})
+        assert not result.ok
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"sellingPlanGroup": None}):
+            result = a.execute(Capability.SHOPIFY_GET_SELLING_PLAN_GROUP, {
+                "id": "gid://shopify/SellingPlanGroup/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    def test_get_full_with_recurring_billing_and_percentage_pricing(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter(shop_url="s", access_token="t")
+        plan_node = {
+            "id": "gid://shopify/SellingPlan/p1",
+            "name": "Every 30 days, 10% off",
+            "description": "",
+            "options": ["30 days"],
+            "position": 1,
+            "category": "SUBSCRIPTION",
+            "billingPolicy": {
+                "__typename": "SellingPlanRecurringBillingPolicy",
+                "interval": "DAY",
+                "intervalCount": 30,
+                "minCycles": 1,
+                "maxCycles": 0,
+                "anchors": [],
+            },
+            "deliveryPolicy": {
+                "__typename": "SellingPlanRecurringDeliveryPolicy",
+                "interval": "DAY",
+                "intervalCount": 30,
+                "preAnchorBehavior": "NEXT",
+                "cutoff": 0,
+                "intent": "ON_FULFILLMENT",
+            },
+            "pricingPolicies": [{
+                "__typename": "SellingPlanFixedPricingPolicy",
+                "adjustmentType": "PERCENTAGE",
+                "adjustmentValue": {
+                    "__typename": "SellingPlanPricingPolicyPercentageValue",
+                    "percentage": 10.0,
+                },
+            }],
+        }
+        group = {
+            "id": "gid://shopify/SellingPlanGroup/g1",
+            "name": "Subscribe & Save",
+            "merchantCode": "subscribe-save",
+            "options": ["Delivery every"],
+            "position": 1,
+            "description": "",
+            "summary": "",
+            "appId": "",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "sellingPlans": {"edges": [{"node": plan_node}]},
+            "products": {"edges": [{"node": {
+                "id": "gid://shopify/Product/1",
+                "title": "Coffee",
+                "handle": "coffee",
+            }}]},
+        }
+        with patch.object(a, "_gql", return_value={"sellingPlanGroup": group}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_SELLING_PLAN_GROUP,
+                {"id": "gid://shopify/SellingPlanGroup/g1"},
+            )
+        assert result.ok
+        g = result.data["group"]
+        plan = g["selling_plans"][0]
+        assert plan["billing"]["kind"] == "RECURRING"
+        assert plan["billing"]["interval"] == "DAY"
+        assert plan["billing"]["interval_count"] == 30
+        assert plan["delivery"]["intent"] == "ON_FULFILLMENT"
+        assert plan["pricing"][0]["kind"] == "FIXED"
+        assert plan["pricing"][0]["adjustment_type"] == "PERCENTAGE"
+        assert plan["pricing"][0]["adjustment_percentage"] == 10.0
+        assert g["products"][0]["handle"] == "coffee"
+
+    def test_get_full_with_money_pricing(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        a = ShopifySellingPlanGroupsAdapter(shop_url="s", access_token="t")
+        plan_node = {
+            "id": "gid://shopify/SellingPlan/p1",
+            "name": "x", "description": "", "options": [],
+            "position": 1, "category": "SUBSCRIPTION",
+            "billingPolicy": {},
+            "deliveryPolicy": {},
+            "pricingPolicies": [{
+                "__typename": "SellingPlanRecurringPricingPolicy",
+                "afterCycle": 3,
+                "adjustmentType": "FIXED_AMOUNT",
+                "adjustmentValue": {
+                    "__typename": "MoneyV2",
+                    "amount": "5.00",
+                    "currencyCode": "USD",
+                },
+            }],
+        }
+        group = {
+            "id": "g1", "name": "x", "merchantCode": "",
+            "options": [], "position": 1, "description": "",
+            "summary": "", "appId": "", "createdAt": "",
+            "sellingPlans": {"edges": [{"node": plan_node}]},
+            "products": {"edges": []},
+        }
+        with patch.object(a, "_gql", return_value={"sellingPlanGroup": group}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_SELLING_PLAN_GROUP,
+                {"id": "gid://shopify/SellingPlanGroup/g1"},
+            )
+        plan = result.data["group"]["selling_plans"][0]
+        assert plan["pricing"][0]["kind"] == "RECURRING"
+        assert plan["pricing"][0]["after_cycle"] == 3
+        assert plan["pricing"][0]["adjustment_money_amount"] == "5.00"
+        assert plan["pricing"][0]["adjustment_money_currency"] == "USD"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.selling_plan_groups import (
+            ShopifySellingPlanGroupsAdapter,
+        )
+        assert ShopifySellingPlanGroupsAdapter._normalise_group_compact({}) == {}
+        assert ShopifySellingPlanGroupsAdapter._normalise_group_full({}) == {}
+        assert ShopifySellingPlanGroupsAdapter._normalise_plan(None) == {}
