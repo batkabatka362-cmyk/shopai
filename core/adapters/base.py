@@ -312,6 +312,11 @@ class Capability(str, Enum):
     SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING = "shopify_delete_discount_free_shipping"
     SHOPIFY_CREATE_AUTOMATIC_BXGY = "shopify_create_automatic_bxgy"
     SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING = "shopify_create_automatic_free_shipping"
+    SHOPIFY_LIST_COMPANY_LOCATIONS = "shopify_list_company_locations"
+    SHOPIFY_GET_COMPANY_LOCATION = "shopify_get_company_location"
+    SHOPIFY_CREATE_COMPANY_LOCATION = "shopify_create_company_location"
+    SHOPIFY_UPDATE_COMPANY_LOCATION = "shopify_update_company_location"
+    SHOPIFY_DELETE_COMPANY_LOCATION = "shopify_delete_company_location"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

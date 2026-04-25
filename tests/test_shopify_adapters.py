@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventytwo_adapters(self):
+    def test_register_all_adds_seventythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 72
+        assert len(status) == 73
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -859,6 +859,7 @@ class TestShopifyBootstrap:
             "shopify_app_subscriptions",
             "shopify_discount_code_free_shipping",
             "shopify_discount_automatic_bxgy",
+            "shopify_company_locations",
         }
 
     def test_register_all_idempotent(self):
@@ -866,7 +867,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 72
+        assert len(get_registry()) == 73
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1106,6 +1107,11 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING).name == "shopify_discount_code_free_shipping"
         assert router.route(Capability.SHOPIFY_CREATE_AUTOMATIC_BXGY).name == "shopify_discount_automatic_bxgy"
         assert router.route(Capability.SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING).name == "shopify_discount_automatic_bxgy"
+        assert router.route(Capability.SHOPIFY_LIST_COMPANY_LOCATIONS).name == "shopify_company_locations"
+        assert router.route(Capability.SHOPIFY_GET_COMPANY_LOCATION).name == "shopify_company_locations"
+        assert router.route(Capability.SHOPIFY_CREATE_COMPANY_LOCATION).name == "shopify_company_locations"
+        assert router.route(Capability.SHOPIFY_UPDATE_COMPANY_LOCATION).name == "shopify_company_locations"
+        assert router.route(Capability.SHOPIFY_DELETE_COMPANY_LOCATION).name == "shopify_company_locations"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -19164,4 +19170,427 @@ class TestShopifyDiscountAutomaticBxgyAdapter:
         assert captured["freeShippingAutomaticDiscount"]["title"] == \
             "Free Ship $75+"
         assert result.data["status"] == "SCHEDULED"
+
+
+# ── ShopifyCompanyLocationsAdapter ────────────────────────
+
+
+class TestShopifyCompanyLocationsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter()
+        assert a.name == "shopify_company_locations"
+        for cap in (
+            Capability.SHOPIFY_LIST_COMPANY_LOCATIONS,
+            Capability.SHOPIFY_GET_COMPANY_LOCATION,
+            Capability.SHOPIFY_CREATE_COMPANY_LOCATION,
+            Capability.SHOPIFY_UPDATE_COMPANY_LOCATION,
+            Capability.SHOPIFY_DELETE_COMPANY_LOCATION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ────────────────────────────────────
+
+    def test_list_requires_company_id(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_LIST_COMPANY_LOCATIONS,
+            {"limit": 10},
+        )
+        assert not result.ok
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            return {
+                "company": {
+                    "id": v["companyId"],
+                    "name": "Acme",
+                    "locations": {
+                        "pageInfo": {
+                            "hasNextPage": False, "endCursor": "cur",
+                        },
+                        "edges": [{
+                            "node": {
+                                "id": "gid://shopify/CompanyLocation/1",
+                                "name": "HQ",
+                                "note": "main",
+                                "externalId": "ext-1",
+                                "locale": "en",
+                                "hasTimelineComment": False,
+                                "shippingAddress": {
+                                    "address1": "1 Main",
+                                    "city": "Springfield",
+                                    "country": "United States",
+                                    "countryCode": "US",
+                                    "zip": "62704",
+                                },
+                                "billingAddress": None,
+                            },
+                        }],
+                    },
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_COMPANY_LOCATIONS,
+                {"company_id": "gid://shopify/Company/1", "limit": 10},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["company_name"] == "Acme"
+        loc = result.data["locations"][0]
+        assert loc["name"] == "HQ"
+        assert loc["shipping_address"]["country_code"] == "US"
+        assert loc["billing_address"] == {}
+
+    # ── Get ─────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(Capability.SHOPIFY_GET_COMPANY_LOCATION, {})
+        assert not result.ok
+
+    def test_get_missing_returns_found_false(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={"companyLocation": None}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_COMPANY_LOCATION,
+                {"id": "gid://shopify/CompanyLocation/9999"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["location"] is None
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        node = {
+            "id": "gid://shopify/CompanyLocation/1",
+            "name": "Warehouse A",
+            "note": "",
+            "externalId": "wh-a",
+            "locale": "en",
+            "hasTimelineComment": True,
+            "shippingAddress": {
+                "address1": "500 Logistics Way",
+                "city": "Reno",
+                "countryCode": "US",
+                "zip": "89501",
+            },
+            "billingAddress": {
+                "address1": "PO Box 1",
+                "city": "Reno",
+                "countryCode": "US",
+                "zip": "89501",
+            },
+            "company": {
+                "id": "gid://shopify/Company/1",
+                "name": "Acme",
+            },
+        }
+        with patch.object(a, "_gql", return_value={"companyLocation": node}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_COMPANY_LOCATION,
+                {"id": "gid://shopify/CompanyLocation/1"},
+            )
+        assert result.ok
+        loc = result.data["location"]
+        assert loc["name"] == "Warehouse A"
+        assert loc["company_id"] == "gid://shopify/Company/1"
+        assert loc["company_name"] == "Acme"
+        assert loc["billing_address"]["zip"] == "89501"
+
+    # ── Create ──────────────────────────────────
+
+    def test_create_requires_company_id(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_COMPANY_LOCATION,
+            {"name": "HQ"},
+        )
+        assert not result.ok
+
+    def test_create_requires_name(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({})
+
+    def test_create_address_rejects_unknown_only(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_address(
+                {"unknown_field": "value"}, label="shipping_address",
+            )
+
+    def test_create_address_rejects_non_dict(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_address("123 Main", label="shipping_address")
+
+    def test_create_input_full_shape(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_create_input({
+            "name": "Distribution Center",
+            "note": "ships to West Coast",
+            "external_id": "dc-west",
+            "locale": "en",
+            "phone": "+15551234567",
+            "shipping_address": {
+                "address1": "100 Logistics Dr",
+                "city": "Reno",
+                "country_code": "US",
+                "zip": "89501",
+            },
+            "billing_address": {
+                "address1": "100 Logistics Dr",
+                "country_code": "US",
+                "zip": "89501",
+            },
+        })
+        assert out["name"] == "Distribution Center"
+        assert out["externalId"] == "dc-west"
+        assert out["shippingAddress"]["countryCode"] == "US"
+        assert out["billingAddress"]["zip"] == "89501"
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyLocationCreate": {
+                    "companyLocation": {
+                        "id": "gid://shopify/CompanyLocation/100",
+                        "name": "HQ",
+                        "shippingAddress": {
+                            "address1": "1 Main",
+                            "countryCode": "US",
+                        },
+                        "billingAddress": None,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_COMPANY_LOCATION,
+                {
+                    "company_id": "gid://shopify/Company/1",
+                    "name": "HQ",
+                    "shipping_address": {
+                        "address1": "1 Main", "country_code": "US",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["companyId"] == "gid://shopify/Company/1"
+        assert captured["input"]["name"] == "HQ"
+        assert result.data["location"]["id"] == \
+            "gid://shopify/CompanyLocation/100"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            return {
+                "companyLocationCreate": {
+                    "companyLocation": None,
+                    "userErrors": [{
+                        "field": ["input", "name"],
+                        "message": "Name has already been taken",
+                        "code": "TAKEN",
+                    }],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_COMPANY_LOCATION,
+                {
+                    "company_id": "gid://shopify/Company/1",
+                    "name": "HQ",
+                },
+            )
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_COMPANY_LOCATION,
+            {"name": "New Name"},
+        )
+        assert not result.ok
+
+    def test_update_requires_at_least_one_field(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_COMPANY_LOCATION,
+            {"id": "gid://shopify/CompanyLocation/1"},
+        )
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyLocationUpdate": {
+                    "companyLocation": {
+                        "id": "gid://shopify/CompanyLocation/1",
+                        "name": "HQ Renamed",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_COMPANY_LOCATION,
+                {
+                    "id": "gid://shopify/CompanyLocation/1",
+                    "name": "HQ Renamed",
+                    "note": "updated",
+                },
+            )
+        assert result.ok
+        assert captured["companyLocationId"] == \
+            "gid://shopify/CompanyLocation/1"
+        assert captured["input"]["name"] == "HQ Renamed"
+        assert captured["input"]["note"] == "updated"
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_COMPANY_LOCATION, {},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.company_locations import (
+            ShopifyCompanyLocationsAdapter,
+        )
+        a = ShopifyCompanyLocationsAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            return {
+                "companyLocationDelete": {
+                    "deletedCompanyLocationId":
+                        "gid://shopify/CompanyLocation/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_COMPANY_LOCATION,
+                {"id": "gid://shopify/CompanyLocation/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/CompanyLocation/1"
 
