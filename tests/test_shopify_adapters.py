@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twelve_adapters(self):
+    def test_register_all_adds_thirteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 12
+        assert len(status) == 13
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -801,6 +801,7 @@ class TestShopifyBootstrap:
             "shopify_draft_orders", "shopify_marketing_events",
             "shopify_returns", "shopify_metaobjects",
             "shopify_publications", "shopify_order_edits",
+            "shopify_themes",
         }
 
     def test_register_all_idempotent(self):
@@ -808,7 +809,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 12
+        assert len(get_registry()) == 13
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -864,6 +865,346 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_PUBLISH_RESOURCE).name == "shopify_publications"
         assert router.route(Capability.SHOPIFY_UNPUBLISH_RESOURCE).name == "shopify_publications"
         assert router.route(Capability.SHOPIFY_EDIT_ORDER).name == "shopify_order_edits"
+        assert router.route(Capability.SHOPIFY_LIST_THEMES).name == "shopify_themes"
+        assert router.route(Capability.SHOPIFY_LIST_THEME_FILES).name == "shopify_themes"
+        assert router.route(Capability.SHOPIFY_UPSERT_THEME_FILES).name == "shopify_themes"
+
+
+# ── ShopifyThemesAdapter ───────────────────────────────────
+
+
+class TestShopifyThemesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter()
+        assert a.name == "shopify_themes"
+        for cap in (
+            Capability.SHOPIFY_LIST_THEMES,
+            Capability.SHOPIFY_LIST_THEME_FILES,
+            Capability.SHOPIFY_UPSERT_THEME_FILES,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List themes ──────────────────────────────────────
+
+    def test_list_themes_happy_path(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "themes": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/OnlineStoreTheme/1",
+                        "name": "Dawn",
+                        "role": "MAIN",
+                        "processing": False,
+                        "createdAt": "2026-01-01T00:00:00Z",
+                        "updatedAt": "2026-04-01T00:00:00Z",
+                    }},
+                    {"node": {
+                        "id": "gid://shopify/OnlineStoreTheme/2",
+                        "name": "Backup",
+                        "role": "UNPUBLISHED",
+                        "processing": False,
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_THEMES, {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 2
+        roles = {t["role"] for t in result.data["themes"]}
+        assert roles == {"MAIN", "UNPUBLISHED"}
+
+    def test_list_themes_role_aliases_resolve(self):
+        """Engines pass natural words ('live', 'dev'); the adapter
+        maps them to the canonical UPPER_SNAKE Shopify enum values."""
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["roles"] = v["roles"]
+            return {"themes": {"pageInfo": {}, "edges": []}}
+
+        for friendly, expected in (
+            ("live", "MAIN"),
+            ("published", "MAIN"),
+            ("dev", "DEVELOPMENT"),
+            ("development", "DEVELOPMENT"),
+            ("MAIN", "MAIN"),
+        ):
+            captured.clear()
+            with patch.object(a, "_gql", side_effect=fake_gql):
+                a.execute(Capability.SHOPIFY_LIST_THEMES, {
+                    "role": friendly,
+                })
+            assert captured["roles"] == [expected], friendly
+
+    def test_list_themes_role_filter_string_or_list(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["roles"] = v["roles"]
+            return {"themes": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_THEMES, {
+                "roles": ["main", "demo"],
+            })
+        assert captured["roles"] == ["MAIN", "DEMO"]
+
+    def test_list_themes_invalid_role_type_rejected(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_LIST_THEMES, {
+                "roles": 12345,
+            })
+        assert not result.ok
+
+    def test_list_themes_clamps_limit(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"themes": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_THEMES, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_themes_empty(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "themes": {"pageInfo": {}, "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_THEMES, {})
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── List theme files ─────────────────────────────────
+
+    def test_list_theme_files_requires_theme_id(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_LIST_THEME_FILES, {})
+        assert not result.ok
+
+    def test_list_theme_files_happy_path(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "theme": {
+                "id": "gid://shopify/OnlineStoreTheme/1",
+                "name": "Dawn",
+                "files": {
+                    "pageInfo": {"hasNextPage": True, "endCursor": "cur"},
+                    "edges": [
+                        {"node": {
+                            "filename": "snippets/foo.liquid",
+                            "size": "123",
+                            "contentType": "LIQUID",
+                            "checksumMd5": "abc",
+                        }},
+                    ],
+                },
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_THEME_FILES, {
+                "theme_id": "gid://shopify/OnlineStoreTheme/1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["theme_name"] == "Dawn"
+        assert result.data["count"] == 1
+        f = result.data["files"][0]
+        assert f["filename"] == "snippets/foo.liquid"
+        # Size string from GraphQL coerced to int.
+        assert f["size"] == 123
+
+    def test_list_theme_files_filenames_string_to_list(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["filenames"] = v["filenames"]
+            return {"theme": {"id": "gid://x", "files": {
+                "pageInfo": {}, "edges": [],
+            }}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_THEME_FILES, {
+                "theme_id": "gid://x",
+                "filenames": "snippets/foo.liquid",
+            })
+        assert captured["filenames"] == ["snippets/foo.liquid"]
+
+    def test_list_theme_files_not_found_returns_found_false(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"theme": None}):
+            result = a.execute(Capability.SHOPIFY_LIST_THEME_FILES, {
+                "theme_id": "gid://shopify/OnlineStoreTheme/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["count"] == 0
+
+    def test_list_theme_files_filenames_non_list_rejected(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_LIST_THEME_FILES, {
+                "theme_id": "gid://x",
+                "filenames": 12345,
+            })
+        assert not result.ok
+
+    # ── Upsert theme files ──────────────────────────────
+
+    def test_upsert_requires_theme_id(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_UPSERT_THEME_FILES, {
+                "filename": "snippets/foo.liquid", "body": "{% comment %}{% endcomment %}",
+            })
+        assert not result.ok
+
+    def test_build_files_input_single_form(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        out = ShopifyThemesAdapter._build_files_input({
+            "filename": "snippets/foo.liquid",
+            "body": "{% comment %}hi{% endcomment %}",
+        })
+        assert len(out) == 1
+        assert out[0]["filename"] == "snippets/foo.liquid"
+        assert out[0]["body"] == {
+            "type": "TEXT",
+            "value": "{% comment %}hi{% endcomment %}",
+        }
+
+    def test_build_files_input_batch_form(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        out = ShopifyThemesAdapter._build_files_input({"files": [
+            {"filename": "snippets/a.liquid", "body": "A"},
+            {"filename": "sections/b.liquid", "body": "B"},
+        ]})
+        assert len(out) == 2
+        assert out[1]["filename"] == "sections/b.liquid"
+        assert out[1]["body"]["value"] == "B"
+
+    def test_build_files_input_url_form(self):
+        """Caller can fetch from a URL instead of inline-pasting bytes
+        — useful for the creative pipeline pushing a generated CSS
+        asset hosted on the CDN."""
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        out = ShopifyThemesAdapter._build_files_input({"files": [
+            {"filename": "assets/hero.jpg",
+             "url": "https://cdn.example.com/hero.jpg"},
+        ]})
+        assert out[0]["body"] == {
+            "type": "URL",
+            "value": "https://cdn.example.com/hero.jpg",
+        }
+
+    def test_build_files_input_body_and_url_mutually_exclusive(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyThemesAdapter._build_files_input({"files": [
+                {"filename": "a.liquid", "body": "x",
+                 "url": "https://x"},
+            ]})
+
+    def test_build_files_input_neither_body_nor_url_rejected(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyThemesAdapter._build_files_input({"files": [
+                {"filename": "a.liquid"},
+            ]})
+
+    def test_build_files_input_url_must_be_http(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        for bad in ("/local/path", "ftp://x", "data:image/png;base64,..."):
+            with pytest.raises(AdapterValidationError):
+                ShopifyThemesAdapter._build_files_input({"files": [
+                    {"filename": "x.liquid", "url": bad},
+                ]})
+
+    def test_build_files_input_caps_at_50(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        too_many = [
+            {"filename": f"snippets/x{i}.liquid", "body": "x"}
+            for i in range(51)
+        ]
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyThemesAdapter._build_files_input({"files": too_many})
+        assert "50" in str(exc.value)
+
+    def test_build_files_input_missing_filename(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyThemesAdapter._build_files_input({"files": [
+                {"body": "x"},
+            ]})
+
+    def test_upsert_happy_path(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "themeFilesUpsert": {
+                "upsertedThemeFiles": [
+                    {"filename": "snippets/foo.liquid"},
+                    {"filename": "sections/bar.liquid"},
+                ],
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_UPSERT_THEME_FILES, {
+                "theme_id": "gid://shopify/OnlineStoreTheme/1",
+                "files": [
+                    {"filename": "snippets/foo.liquid", "body": "x"},
+                    {"filename": "sections/bar.liquid", "body": "y"},
+                ],
+            })
+        assert result.ok
+        assert result.data["upserted_count"] == 2
+        assert "snippets/foo.liquid" in result.data["filenames"]
+
+    def test_upsert_user_errors_propagate(self):
+        from core.adapters.shopify.themes import ShopifyThemesAdapter
+        a = ShopifyThemesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "themeFilesUpsert": {
+                "upsertedThemeFiles": [],
+                "userErrors": [{
+                    "field": ["files", "0", "filename"],
+                    "message": "Filename invalid",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_UPSERT_THEME_FILES, {
+                "theme_id": "gid://x",
+                "filename": "INVALID/PATH",
+                "body": "x",
+            })
+        assert not result.ok
 
 
 # ── ShopifyOrderEditsAdapter ───────────────────────────────

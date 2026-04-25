@@ -132,6 +132,9 @@ class Capability(str, Enum):
     SHOPIFY_PUBLISH_RESOURCE = "shopify_publish_resource"
     SHOPIFY_UNPUBLISH_RESOURCE = "shopify_unpublish_resource"
     SHOPIFY_EDIT_ORDER = "shopify_edit_order"
+    SHOPIFY_LIST_THEMES = "shopify_list_themes"
+    SHOPIFY_LIST_THEME_FILES = "shopify_list_theme_files"
+    SHOPIFY_UPSERT_THEME_FILES = "shopify_upsert_theme_files"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
