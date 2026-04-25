@@ -297,7 +297,8 @@ will work after the gate clears.
 
 Two related types in the schema, one with `code` and one without:
 
-- `UserError` (used by `orderEdit*`) → no `code` field.
+- `UserError` (used by `orderEdit*` and `draftOrderCalculate`) → no
+  `code` field.
 - `UserErrors` (used by everything else) → has `code`.
 
 If a mutation rejects with "Field 'code' doesn't exist on type

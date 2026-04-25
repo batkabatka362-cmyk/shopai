@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_forty_adapters(self):
+    def test_register_all_adds_fortyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 40
+        assert len(status) == 41
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -827,6 +827,7 @@ class TestShopifyBootstrap:
             "shopify_bulk_mutations",
             "shopify_disputes",
             "shopify_delivery_profiles",
+            "shopify_draft_order_calculate",
         }
 
     def test_register_all_idempotent(self):
@@ -834,7 +835,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 40
+        assert len(get_registry()) == 41
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -988,6 +989,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_DELIVERY_PROFILES).name == "shopify_delivery_profiles"
         assert router.route(Capability.SHOPIFY_GET_DELIVERY_PROFILE).name == "shopify_delivery_profiles"
         assert router.route(Capability.SHOPIFY_GET_DELIVERY_SETTINGS).name == "shopify_delivery_profiles"
+        assert router.route(Capability.SHOPIFY_CALCULATE_DRAFT_ORDER).name == "shopify_draft_order_calculate"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -11186,3 +11188,235 @@ class TestShopifyDeliveryProfilesAdapter:
         assert ShopifyDeliveryProfilesAdapter._normalise_zone(
             {}, with_rates=True,
         )["zone_id"] == ""
+
+
+# ── ShopifyDraftOrderCalculateAdapter ─────────────────────
+
+
+class TestShopifyDraftOrderCalculateAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        a = ShopifyDraftOrderCalculateAdapter()
+        assert a.name == "shopify_draft_order_calculate"
+        assert Capability.SHOPIFY_CALCULATE_DRAFT_ORDER in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        a = ShopifyDraftOrderCalculateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_requires_line_items(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrderCalculateAdapter._build_input({})
+
+    def test_requires_non_empty_line_items(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrderCalculateAdapter._build_input({"line_items": []})
+
+    def test_line_item_requires_variant_or_title(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrderCalculateAdapter._build_line_item({}, 0)
+
+    def test_line_item_quantity_default_1(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        out = ShopifyDraftOrderCalculateAdapter._build_line_item(
+            {"variant_id": "gid://shopify/ProductVariant/1"}, 0,
+        )
+        assert out["quantity"] == 1
+
+    def test_line_item_quantity_validated_positive(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrderCalculateAdapter._build_line_item(
+                {"variant_id": "gid://shopify/ProductVariant/1",
+                 "quantity": 0}, 0,
+            )
+
+    def test_input_full_shape(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        out = ShopifyDraftOrderCalculateAdapter._build_input({
+            "line_items": [
+                {"variant_id": "gid://shopify/ProductVariant/v1",
+                 "quantity": 2},
+            ],
+            "customer_id": "gid://shopify/Customer/c1",
+            "shipping_address": {
+                "address1": "1 Main St", "city": "Seattle",
+                "province_code": "WA", "country_code": "US",
+                "zip": "98101",
+            },
+            "currency_code": "usd",
+            "tags": "preview, abandoned",
+            "applied_discount": {
+                "value": 10, "value_type": "percentage",
+                "title": "VIP -10%",
+            },
+        })
+        assert out["lineItems"][0]["variantId"] == "gid://shopify/ProductVariant/v1"
+        assert out["purchasingEntity"]["customerId"] == "gid://shopify/Customer/c1"
+        assert out["shippingAddress"]["countryCode"] == "US"
+        assert out["shippingAddress"]["provinceCode"] == "WA"
+        assert out["presentmentCurrencyCode"] == "USD"
+        assert out["tags"] == ["preview", "abandoned"]
+        assert out["appliedDiscount"]["value"] == 10.0
+        assert out["appliedDiscount"]["valueType"] == "PERCENTAGE"
+
+    def test_invalid_discount_value_type_rejected(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrderCalculateAdapter._build_discount(
+                {"value": 10, "value_type": "BOGOF"}, "applied_discount",
+            )
+
+    def test_address_non_string_rejected(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyDraftOrderCalculateAdapter._build_address(
+                {"city": 123}, "shipping_address",
+            )
+
+    # ── Calculate — happy path ───────────────────
+
+    def test_calculate_happy_path(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        a = ShopifyDraftOrderCalculateAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+        calculation = {
+            "subtotalPriceSet": {
+                "shopMoney": {"amount": "20.00", "currencyCode": "USD"},
+            },
+            "totalPriceSet": {
+                "shopMoney": {"amount": "23.40", "currencyCode": "USD"},
+            },
+            "totalShippingPriceSet": {
+                "shopMoney": {"amount": "5.00", "currencyCode": "USD"},
+            },
+            "totalTaxSet": {
+                "shopMoney": {"amount": "1.40", "currencyCode": "USD"},
+            },
+            "currencyCode": "USD",
+            "shippingLine": {
+                "title": "Standard",
+                "shippingRateHandle": "standard-rate",
+                "price": "5.00",
+                "custom": False,
+            },
+            "taxLines": [{"title": "WA Tax", "rate": 0.07, "price": "1.40"}],
+            "appliedDiscount": {
+                "title": "VIP",
+                "description": "10% off",
+                "value": "10.0",
+                "valueType": "PERCENTAGE",
+                "amountV2": {"amount": "2.00", "currencyCode": "USD"},
+            },
+            "lineItems": [{
+                "variant": {"id": "v1", "title": "Default"},
+                "product": {"id": "p1", "title": "Lantern"},
+                "quantity": 2,
+                "sku": "LANT-1",
+                "title": "Lantern",
+                "originalUnitPriceSet": {
+                    "shopMoney": {"amount": "10.00", "currencyCode": "USD"},
+                },
+                "discountedUnitPriceSet": {
+                    "shopMoney": {"amount": "9.00", "currencyCode": "USD"},
+                },
+                "totalDiscountSet": {
+                    "shopMoney": {"amount": "2.00", "currencyCode": "USD"},
+                },
+            }],
+        }
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"draftOrderCalculate": {
+                "calculatedDraftOrder": calculation,
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CALCULATE_DRAFT_ORDER, {
+                "line_items": [
+                    {"variant_id": "gid://shopify/ProductVariant/v1",
+                     "quantity": 2},
+                ],
+            })
+        assert result.ok
+        c = result.data["calculation"]
+        assert c["subtotal_price"] == "20.00"
+        assert c["total_price"] == "23.40"
+        assert c["total_shipping"] == "5.00"
+        assert c["total_tax"] == "1.40"
+        assert c["currency_code"] == "USD"
+        assert c["shipping_title"] == "Standard"
+        assert c["shipping_rate_handle"] == "standard-rate"
+        assert c["applied_discount_title"] == "VIP"
+        assert c["applied_discount_amount"] == "2.00"
+        assert len(c["tax_lines"]) == 1
+        assert c["tax_lines"][0]["rate"] == 0.07
+        assert len(c["line_items"]) == 1
+        li = c["line_items"][0]
+        assert li["product_title"] == "Lantern"
+        assert li["original_unit_price"] == "10.00"
+        assert li["discounted_unit_price"] == "9.00"
+        # Confirm the wire input was assembled correctly.
+        assert captured["input"]["lineItems"][0]["variantId"] == \
+            "gid://shopify/ProductVariant/v1"
+
+    def test_calculate_user_errors_fail_fast(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        a = ShopifyDraftOrderCalculateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"draftOrderCalculate": {
+            "calculatedDraftOrder": None,
+            "userErrors": [{"field": ["lineItems"],
+                            "message": "Variant not found"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CALCULATE_DRAFT_ORDER, {
+                "line_items": [
+                    {"variant_id": "gid://shopify/ProductVariant/missing",
+                     "quantity": 1},
+                ],
+            })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    # ── Normaliser ───────────────────────────────
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.draft_order_calculate import (
+            ShopifyDraftOrderCalculateAdapter,
+        )
+        assert ShopifyDraftOrderCalculateAdapter._normalise_calculation(
+            {},
+        ) == {}
