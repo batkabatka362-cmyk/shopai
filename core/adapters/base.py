@@ -308,6 +308,8 @@ class Capability(str, Enum):
     SHOPIFY_LIST_APP_SUBSCRIPTIONS = "shopify_list_app_subscriptions"
     SHOPIFY_CREATE_APP_SUBSCRIPTION = "shopify_create_app_subscription"
     SHOPIFY_CANCEL_APP_SUBSCRIPTION = "shopify_cancel_app_subscription"
+    SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING = "shopify_create_discount_free_shipping"
+    SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING = "shopify_delete_discount_free_shipping"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

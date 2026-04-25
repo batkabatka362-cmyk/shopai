@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventy_adapters(self):
+    def test_register_all_adds_seventyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 70
+        assert len(status) == 71
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -857,6 +857,7 @@ class TestShopifyBootstrap:
             "shopify_company_contact_roles",
             "shopify_metaobjects_upsert",
             "shopify_app_subscriptions",
+            "shopify_discount_code_free_shipping",
         }
 
     def test_register_all_idempotent(self):
@@ -864,7 +865,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 70
+        assert len(get_registry()) == 71
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1100,6 +1101,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_APP_SUBSCRIPTIONS).name == "shopify_app_subscriptions"
         assert router.route(Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION).name == "shopify_app_subscriptions"
         assert router.route(Capability.SHOPIFY_CANCEL_APP_SUBSCRIPTION).name == "shopify_app_subscriptions"
+        assert router.route(Capability.SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING).name == "shopify_discount_code_free_shipping"
+        assert router.route(Capability.SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING).name == "shopify_discount_code_free_shipping"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -18656,4 +18659,249 @@ class TestShopifyAppSubscriptionsAdapter:
         assert ShopifyAppSubscriptionsAdapter._normalise_subscription(
             {},
         ) == {}
+
+
+# ── ShopifyDiscountCodeFreeShippingAdapter ────────────────
+
+
+class TestShopifyDiscountCodeFreeShippingAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter()
+        assert a.name == "shopify_discount_code_free_shipping"
+        for cap in (
+            Capability.SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING,
+            Capability.SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input ────────────────────────────────────
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "code": "SHIPFREE",
+                "starts_at": "2026-04-26T00:00:00Z",
+            })
+
+    def test_create_requires_code(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_input({
+                "title": "Free Ship",
+                "starts_at": "2026-04-26T00:00:00Z",
+            })
+
+    def test_default_destination_is_all(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_input({
+            "title": "Free Ship",
+            "code": "SHIPFREE",
+            "starts_at": "2026-04-26T00:00:00Z",
+        })
+        assert out["destination"] == {"all": True}
+        # Pattern C from BXGY: customerSelection silently required.
+        assert out["customerSelection"] == {"all": True}
+
+    def test_destination_countries_uppercase(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_destination({"countries": ["us", "ca"]})
+        assert out["countries"]["add"] == ["US", "CA"]
+        assert out["countries"]["includeRestOfWorld"] is False
+
+    def test_destination_invalid_shape_rejected(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_destination({})
+
+    def test_minimum_subtotal_passed(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_input({
+            "title": "Free Ship",
+            "code": "SHIPFREE50",
+            "starts_at": "2026-04-26T00:00:00Z",
+            "minimum_subtotal": 50,
+        })
+        assert (out["minimumRequirement"]["subtotal"]
+                ["greaterThanOrEqualToSubtotal"] == 50.0)
+
+    def test_input_full_shape(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_input({
+            "title": "Free Ship US/CA",
+            "code": "SHIPFREEUSCA",
+            "starts_at": "2026-04-26T00:00:00Z",
+            "ends_at": "2026-12-31T23:59:59Z",
+            "minimum_subtotal": "25.00",
+            "destination": {"countries": ["US", "CA"]},
+            "applies_once_per_customer": True,
+            "usage_limit": 1000,
+        })
+        assert out["title"] == "Free Ship US/CA"
+        assert out["code"] == "SHIPFREEUSCA"
+        assert out["appliesOncePerCustomer"] is True
+        assert out["usageLimit"] == 1000
+        assert out["destination"]["countries"]["add"] == ["US", "CA"]
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"discountCodeFreeShippingCreate": {
+                "codeDiscountNode": {
+                    "id": "gid://shopify/DiscountCodeNode/new",
+                    "codeDiscount": {
+                        "title":
+                            v["freeShippingCodeDiscount"]["title"],
+                        "summary": "Free shipping",
+                        "status": "ACTIVE",
+                        "startsAt":
+                            v["freeShippingCodeDiscount"]["startsAt"],
+                        "endsAt": "",
+                        "appliesOncePerCustomer": False,
+                        "usageLimit": None,
+                        "codes": {"edges": [{
+                            "node": {
+                                "code":
+                                    v["freeShippingCodeDiscount"]["code"],
+                            },
+                        }]},
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING,
+                {
+                    "title": "Free Shipping",
+                    "code": "SHIPFREE",
+                    "starts_at": "2026-04-26T00:00:00Z",
+                },
+            )
+        assert result.ok
+        # Pattern A: variable name matches input type.
+        assert captured["freeShippingCodeDiscount"]["title"] == \
+            "Free Shipping"
+        assert "SHIPFREE" in result.data["codes"]
+        assert result.data["status"] == "ACTIVE"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "discountCodeFreeShippingCreate": {
+                "codeDiscountNode": None,
+                "userErrors": [{"field":
+                                ["freeShippingCodeDiscount", "code"],
+                                "message": "Code is taken",
+                                "code": "TAKEN"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING,
+                {
+                    "title": "Dup",
+                    "code": "DUP",
+                    "starts_at": "2026-04-26T00:00:00Z",
+                },
+            )
+        assert not result.ok
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING, {},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.discount_code_free_shipping import (
+            ShopifyDiscountCodeFreeShippingAdapter,
+        )
+        a = ShopifyDiscountCodeFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={"discountCodeDelete": {
+            "deletedCodeDiscountId":
+                "gid://shopify/DiscountCodeNode/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING,
+                {"id": "gid://shopify/DiscountCodeNode/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/DiscountCodeNode/1"
 
