@@ -305,6 +305,9 @@ class Capability(str, Enum):
     SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE = "shopify_revoke_company_contact_role"
     SHOPIFY_UPSERT_METAOBJECT = "shopify_upsert_metaobject"
     SHOPIFY_BULK_DELETE_METAOBJECTS = "shopify_bulk_delete_metaobjects"
+    SHOPIFY_LIST_APP_SUBSCRIPTIONS = "shopify_list_app_subscriptions"
+    SHOPIFY_CREATE_APP_SUBSCRIPTION = "shopify_create_app_subscription"
+    SHOPIFY_CANCEL_APP_SUBSCRIPTION = "shopify_cancel_app_subscription"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

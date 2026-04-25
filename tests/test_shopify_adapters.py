@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtynine_adapters(self):
+    def test_register_all_adds_seventy_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 69
+        assert len(status) == 70
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -856,6 +856,7 @@ class TestShopifyBootstrap:
             "shopify_order_invoice",
             "shopify_company_contact_roles",
             "shopify_metaobjects_upsert",
+            "shopify_app_subscriptions",
         }
 
     def test_register_all_idempotent(self):
@@ -863,7 +864,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 69
+        assert len(get_registry()) == 70
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1096,6 +1097,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE).name == "shopify_company_contact_roles"
         assert router.route(Capability.SHOPIFY_UPSERT_METAOBJECT).name == "shopify_metaobjects_upsert"
         assert router.route(Capability.SHOPIFY_BULK_DELETE_METAOBJECTS).name == "shopify_metaobjects_upsert"
+        assert router.route(Capability.SHOPIFY_LIST_APP_SUBSCRIPTIONS).name == "shopify_app_subscriptions"
+        assert router.route(Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION).name == "shopify_app_subscriptions"
+        assert router.route(Capability.SHOPIFY_CANCEL_APP_SUBSCRIPTION).name == "shopify_app_subscriptions"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -18338,4 +18342,318 @@ class TestShopifyMetaobjectsUpsertAdapter:
         )
         assert ShopifyMetaobjectsUpsertAdapter._normalise_metaobject({}) == {}
         assert ShopifyMetaobjectsUpsertAdapter._normalise_metaobject(None) == {}
+
+
+# ── ShopifyAppSubscriptionsAdapter ────────────────────────
+
+
+class TestShopifyAppSubscriptionsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter()
+        assert a.name == "shopify_app_subscriptions"
+        for cap in (
+            Capability.SHOPIFY_LIST_APP_SUBSCRIPTIONS,
+            Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION,
+            Capability.SHOPIFY_CANCEL_APP_SUBSCRIPTION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "currentAppInstallation": {
+                "activeSubscriptions": [{
+                    "id": "gid://shopify/AppSubscription/sub1",
+                    "name": "ShopAI Pro",
+                    "status": "ACTIVE",
+                    "test": False,
+                    "trialDays": 14,
+                    "currentPeriodEnd": "2026-05-25T00:00:00Z",
+                    "lineItems": [{
+                        "id": "gid://shopify/AppSubscriptionLineItem/li1",
+                        "plan": {
+                            "pricingDetails": {
+                                "__typename": "AppRecurringPricing",
+                                "interval": "EVERY_30_DAYS",
+                                "price": {
+                                    "amount": "29.99",
+                                    "currencyCode": "USD",
+                                },
+                            },
+                        },
+                    }],
+                }],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_APP_SUBSCRIPTIONS, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        sub = result.data["subscriptions"][0]
+        assert sub["name"] == "ShopAI Pro"
+        assert sub["status"] == "ACTIVE"
+        assert sub["trial_days"] == 14
+        assert sub["line_items"][0]["kind"] == "AppRecurringPricing"
+        assert sub["line_items"][0]["price"] == "29.99"
+
+    def test_list_handles_no_installation(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "currentAppInstallation": None,
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_APP_SUBSCRIPTIONS, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 0
+        assert result.data["installation_found"] is False
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_name(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION, {
+            "return_url": "https://x.com/done",
+            "line_items": [{
+                "recurring": {"price": "10", "interval": "EVERY_30_DAYS"},
+            }],
+        })
+        assert not result.ok
+
+    def test_create_requires_return_url(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION, {
+            "name": "Plan",
+            "line_items": [{
+                "recurring": {"price": "10", "interval": "EVERY_30_DAYS"},
+            }],
+        })
+        assert not result.ok
+
+    def test_create_return_url_must_be_http(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION, {
+            "name": "Plan",
+            "return_url": "ftp://x.com/done",
+            "line_items": [{
+                "recurring": {"price": "10", "interval": "EVERY_30_DAYS"},
+            }],
+        })
+        assert not result.ok
+
+    def test_create_requires_line_items(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION, {
+            "name": "Plan", "return_url": "https://x.com/done",
+        })
+        assert not result.ok
+
+    def test_line_item_rejects_both_recurring_and_usage(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_line_item({
+                "recurring": {"price": "10"},
+                "usage": {"terms": "t", "capped_amount": "100"},
+            }, 0)
+
+    def test_recurring_invalid_interval_rejected(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_recurring(
+                {"price": "10", "interval": "WEEKLY"}, 0,
+            )
+
+    def test_recurring_full_shape(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        out = a._build_recurring({
+            "price": "29.99",
+            "interval": "every_30_days",
+            "discount": {
+                "duration_limit_in_intervals": 3,
+                "value": {"percentage": 0.5},
+            },
+        }, 0)
+        assert out["price"]["amount"] == 29.99
+        assert out["interval"] == "EVERY_30_DAYS"
+        assert out["discount"]["durationLimitInIntervals"] == 3
+        assert out["discount"]["value"]["percentage"] == 0.5
+
+    def test_usage_full_shape(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        out = a._build_usage({
+            "terms": "Per metaobject upsert",
+            "capped_amount": "100",
+        }, 0)
+        assert out["terms"] == "Per metaobject upsert"
+        assert out["cappedAmount"]["amount"] == 100.0
+        assert out["cappedAmount"]["currencyCode"] == "USD"
+
+    # ── Create — happy path ──────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"appSubscriptionCreate": {
+                "appSubscription": {
+                    "id": "gid://shopify/AppSubscription/new",
+                    "name": v["name"],
+                    "status": "PENDING",
+                    "test": v.get("test", False),
+                    "trialDays": v.get("trialDays", 0),
+                },
+                "confirmationUrl":
+                    "https://shopify-shop.myshopify.com/admin/charges/123/RECURRING_APPLICATION_CHARGE/123",
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION,
+                {
+                    "name": "ShopAI Pro",
+                    "return_url": "https://shopai.dev/billing/success",
+                    "test": True,
+                    "trial_days": 14,
+                    "line_items": [{
+                        "recurring": {
+                            "price": "29.99",
+                            "interval": "EVERY_30_DAYS",
+                        },
+                    }],
+                },
+            )
+        assert result.ok
+        assert captured["name"] == "ShopAI Pro"
+        assert captured["test"] is True
+        assert captured["trialDays"] == 14
+        assert (captured["lineItems"][0]["plan"]
+                ["appRecurringPricingDetails"]["interval"]
+                == "EVERY_30_DAYS")
+        assert "confirmation_url" in result.data
+        assert "/admin/charges/" in result.data["confirmation_url"]
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"appSubscriptionCreate": {
+            "appSubscription": None,
+            "confirmationUrl": None,
+            "userErrors": [{"field": ["lineItems"],
+                            "message": "Plan exceeds quota",
+                            "code": "INVALID"}],
+        }}):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION,
+                {
+                    "name": "Plan",
+                    "return_url": "https://x.com/done",
+                    "line_items": [{
+                        "recurring": {"price": "9999",
+                                      "interval": "EVERY_30_DAYS"},
+                    }],
+                },
+            )
+        assert not result.ok
+
+    # ── Cancel ───────────────────────────────────
+
+    def test_cancel_requires_id(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CANCEL_APP_SUBSCRIPTION, {},
+        )
+        assert not result.ok
+
+    def test_cancel_happy_path(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        a = ShopifyAppSubscriptionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"appSubscriptionCancel": {
+                "appSubscription": {
+                    "id": v["id"],
+                    "status": "CANCELLED",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CANCEL_APP_SUBSCRIPTION,
+                {
+                    "id": "gid://shopify/AppSubscription/sub1",
+                    "prorate": True,
+                },
+            )
+        assert result.ok
+        assert captured["prorate"] is True
+        assert result.data["status"] == "CANCELLED"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.app_subscriptions import (
+            ShopifyAppSubscriptionsAdapter,
+        )
+        assert ShopifyAppSubscriptionsAdapter._normalise_subscription(
+            {},
+        ) == {}
 
