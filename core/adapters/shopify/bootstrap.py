@@ -43,6 +43,7 @@ from .markets import ShopifyMarketsAdapter
 from .metafield import ShopifyMetafieldAdapter
 from .metaobjects import ShopifyMetaobjectsAdapter
 from .order_edits import ShopifyOrderEditsAdapter
+from .orders import ShopifyOrdersAdapter
 from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
 from .refunds import ShopifyRefundsAdapter
@@ -89,6 +90,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCartTransformsAdapter,
     ShopifyValidationsAdapter,
     ShopifyProductsAdapter,
+    ShopifyOrdersAdapter,
 )
 
 

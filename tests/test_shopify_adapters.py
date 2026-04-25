@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirty_adapters(self):
+    def test_register_all_adds_thirtyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 30
+        assert len(status) == 31
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -817,6 +817,7 @@ class TestShopifyBootstrap:
             "shopify_cart_transforms",
             "shopify_validations",
             "shopify_products",
+            "shopify_orders",
         }
 
     def test_register_all_idempotent(self):
@@ -824,7 +825,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 30
+        assert len(get_registry()) == 31
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -937,6 +938,12 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_DELETE_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_UPDATE_VARIANTS).name == "shopify_products"
+        assert router.route(Capability.SHOPIFY_LIST_ORDERS).name == "shopify_orders"
+        assert router.route(Capability.SHOPIFY_GET_ORDER).name == "shopify_orders"
+        assert router.route(Capability.SHOPIFY_UPDATE_ORDER).name == "shopify_orders"
+        assert router.route(Capability.SHOPIFY_TAG_ORDER).name == "shopify_orders"
+        assert router.route(Capability.SHOPIFY_UNTAG_ORDER).name == "shopify_orders"
+        assert router.route(Capability.SHOPIFY_CLOSE_ORDER).name == "shopify_orders"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -8873,3 +8880,309 @@ class TestShopifyProductsAdapter:
     def test_normalise_variant_handles_non_dict(self):
         from core.adapters.shopify.products import ShopifyProductsAdapter
         assert ShopifyProductsAdapter._normalise_variant(None) == {}
+
+
+# ── ShopifyOrdersAdapter ──────────────────────────────────
+
+
+class TestShopifyOrdersAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter()
+        assert a.name == "shopify_orders"
+        for cap in (
+            Capability.SHOPIFY_LIST_ORDERS,
+            Capability.SHOPIFY_GET_ORDER,
+            Capability.SHOPIFY_UPDATE_ORDER,
+            Capability.SHOPIFY_TAG_ORDER,
+            Capability.SHOPIFY_UNTAG_ORDER,
+            Capability.SHOPIFY_CLOSE_ORDER,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orders": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Order/1",
+                        "name": "#1001",
+                        "email": "x@y.com",
+                        "tags": ["vip"],
+                        "displayFinancialStatus": "PAID",
+                        "displayFulfillmentStatus": "UNFULFILLED",
+                        "currencyCode": "USD",
+                        "totalPriceSet": {
+                            "shopMoney": {"amount": "99.00", "currencyCode": "USD"},
+                        },
+                        "subtotalPriceSet": {
+                            "shopMoney": {"amount": "90.00", "currencyCode": "USD"},
+                        },
+                        "customer": {
+                            "id": "gid://shopify/Customer/c1",
+                            "email": "x@y.com",
+                            "firstName": "X",
+                            "lastName": "Y",
+                            "numberOfOrders": 5,
+                        },
+                    }}
+                ],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_ORDERS, {})
+        assert result.ok
+        assert result.data["count"] == 1
+        o = result.data["orders"][0]
+        assert o["name"] == "#1001"
+        assert o["financial_status"] == "PAID"
+        assert o["total_price"] == "99.00"
+        assert o["customer_id"] == "gid://shopify/Customer/c1"
+        assert o["customer_orders_count"] == 5
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"orders": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_ORDERS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_ORDERS, {"sort_key": "BAD"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_passes_query_filter(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"orders": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_ORDERS, {
+                "query": "financial_status:paid",
+                "sort_key": "PROCESSED_AT",
+                "reverse": True,
+            })
+        assert captured["query"] == "financial_status:paid"
+        assert captured["sortKey"] == "PROCESSED_AT"
+        assert captured["reverse"] is True
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_ORDER, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_get_happy_path_with_line_items(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "name": "#1001",
+                "tags": [],
+                "totalPriceSet": {
+                    "shopMoney": {"amount": "10.00", "currencyCode": "USD"},
+                },
+                "lineItems": {
+                    "edges": [{"node": {
+                        "id": "gid://shopify/LineItem/li1",
+                        "title": "Lantern",
+                        "quantity": 2,
+                        "sku": "LANT-1",
+                        "variant": {"id": "gid://shopify/ProductVariant/v1",
+                                    "title": "Default"},
+                        "product": {"id": "gid://shopify/Product/p1",
+                                    "title": "Lantern"},
+                        "originalUnitPriceSet": {
+                            "shopMoney": {"amount": "5.00", "currencyCode": "USD"},
+                        },
+                    }}],
+                },
+                "shippingAddress": {
+                    "address1": "1 Main",
+                    "city": "MN",
+                    "country": "US",
+                    "zip": "12345",
+                    "name": "Test",
+                },
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_ORDER, {
+                "id": "gid://shopify/Order/1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        o = result.data["order"]
+        assert len(o["line_items"]) == 1
+        assert o["line_items"][0]["sku"] == "LANT-1"
+        assert o["line_items"][0]["quantity"] == 2
+        assert o["shipping_address"]["city"] == "MN"
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"order": None}):
+            result = a.execute(Capability.SHOPIFY_GET_ORDER, {
+                "id": "gid://shopify/Order/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Update ───────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_ORDER, {"note": "x"})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_no_fields_rejected(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_ORDER, {
+            "id": "gid://shopify/Order/1",
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"orderUpdate": {
+                "order": {"id": v["input"]["id"], "note": v["input"].get("note")},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_ORDER, {
+                "id": "gid://shopify/Order/1",
+                "note": "AI: high-fraud-risk",
+                "tags": "fraud, review",
+                "custom_attributes": [{"key": "ai_score", "value": 0.9}],
+            })
+        assert result.ok
+        inp = captured["input"]
+        assert inp["id"] == "gid://shopify/Order/1"
+        assert inp["note"] == "AI: high-fraud-risk"
+        assert inp["tags"] == ["fraud", "review"]
+        assert inp["customAttributes"] == [{"key": "ai_score", "value": "0.9"}]
+
+    # ── Tag / Untag ──────────────────────────────
+
+    def test_tag_requires_tags(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_TAG_ORDER, {
+            "id": "gid://shopify/Order/1",
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_tag_happy_path(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"tagsAdd": {
+                "node": {"id": v["id"], "tags": v["tags"]},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_TAG_ORDER, {
+                "id": "gid://shopify/Order/1",
+                "tags": ["vip", "ai-flagged"],
+            })
+        assert result.ok
+        assert captured["tags"] == ["vip", "ai-flagged"]
+        assert result.data["tags"] == ["vip", "ai-flagged"]
+
+    def test_untag_happy_path(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"tagsRemove": {
+            "node": {"id": "gid://shopify/Order/1", "tags": []},
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_UNTAG_ORDER, {
+                "id": "gid://shopify/Order/1",
+                "tags": "vip,ai-flagged",
+            })
+        assert result.ok
+        assert result.data["tags"] == []
+
+    # ── Close ────────────────────────────────────
+
+    def test_close_requires_id(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CLOSE_ORDER, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_close_happy_path(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"orderClose": {
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "closed": True,
+                "closedAt": "2026-04-25T10:00:00Z",
+            },
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CLOSE_ORDER, {
+                "id": "gid://shopify/Order/1",
+            })
+        assert result.ok
+        assert result.data["closed"] is True
+        assert result.data["closed_at"] == "2026-04-25T10:00:00Z"
+
+    # ── Normaliser ───────────────────────────────
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        assert ShopifyOrdersAdapter._normalise_order({}) == {}
+        assert ShopifyOrdersAdapter._normalise_line_item(None) == {}

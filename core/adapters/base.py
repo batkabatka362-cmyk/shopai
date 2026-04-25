@@ -187,6 +187,12 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_PRODUCT = "shopify_update_product"
     SHOPIFY_DELETE_PRODUCT = "shopify_delete_product"
     SHOPIFY_UPDATE_VARIANTS = "shopify_update_variants"
+    SHOPIFY_LIST_ORDERS = "shopify_list_orders"
+    SHOPIFY_GET_ORDER = "shopify_get_order"
+    SHOPIFY_UPDATE_ORDER = "shopify_update_order"
+    SHOPIFY_TAG_ORDER = "shopify_tag_order"
+    SHOPIFY_UNTAG_ORDER = "shopify_untag_order"
+    SHOPIFY_CLOSE_ORDER = "shopify_close_order"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
