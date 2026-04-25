@@ -223,6 +223,9 @@ class Capability(str, Enum):
     SHOPIFY_STAGE_UPLOAD = "shopify_stage_upload"
     SHOPIFY_LIST_DISPUTES = "shopify_list_disputes"
     SHOPIFY_GET_DISPUTE = "shopify_get_dispute"
+    SHOPIFY_LIST_DELIVERY_PROFILES = "shopify_list_delivery_profiles"
+    SHOPIFY_GET_DELIVERY_PROFILE = "shopify_get_delivery_profile"
+    SHOPIFY_GET_DELIVERY_SETTINGS = "shopify_get_delivery_settings"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

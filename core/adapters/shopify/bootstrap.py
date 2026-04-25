@@ -30,6 +30,7 @@ from .cart_transforms import ShopifyCartTransformsAdapter
 from .channels import ShopifyChannelsAdapter
 from .companies import ShopifyCompaniesAdapter
 from .customers import ShopifyCustomersAdapter
+from .delivery_profiles import ShopifyDeliveryProfilesAdapter
 from .customizations import (
     ShopifyDeliveryCustomizationsAdapter,
     ShopifyPaymentCustomizationsAdapter,
@@ -107,6 +108,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyArticlesAdapter,
     ShopifyBulkMutationsAdapter,
     ShopifyDisputesAdapter,
+    ShopifyDeliveryProfilesAdapter,
 )
 
 

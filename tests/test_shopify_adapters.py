@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtynine_adapters(self):
+    def test_register_all_adds_forty_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 39
+        assert len(status) == 40
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -826,6 +826,7 @@ class TestShopifyBootstrap:
             "shopify_articles",
             "shopify_bulk_mutations",
             "shopify_disputes",
+            "shopify_delivery_profiles",
         }
 
     def test_register_all_idempotent(self):
@@ -833,7 +834,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 39
+        assert len(get_registry()) == 40
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -984,6 +985,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_RUN_BULK_MUTATION).name == "shopify_bulk_mutations"
         assert router.route(Capability.SHOPIFY_LIST_DISPUTES).name == "shopify_disputes"
         assert router.route(Capability.SHOPIFY_GET_DISPUTE).name == "shopify_disputes"
+        assert router.route(Capability.SHOPIFY_LIST_DELIVERY_PROFILES).name == "shopify_delivery_profiles"
+        assert router.route(Capability.SHOPIFY_GET_DELIVERY_PROFILE).name == "shopify_delivery_profiles"
+        assert router.route(Capability.SHOPIFY_GET_DELIVERY_SETTINGS).name == "shopify_delivery_profiles"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -10940,3 +10944,245 @@ class TestShopifyDisputesAdapter:
         from core.adapters.shopify.disputes import ShopifyDisputesAdapter
         assert ShopifyDisputesAdapter._normalise_dispute({}) == {}
         assert ShopifyDisputesAdapter._normalise_dispute(None) == {}
+
+
+# ── ShopifyDeliveryProfilesAdapter ────────────────────────
+
+
+class TestShopifyDeliveryProfilesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter()
+        assert a.name == "shopify_delivery_profiles"
+        for cap in (
+            Capability.SHOPIFY_LIST_DELIVERY_PROFILES,
+            Capability.SHOPIFY_GET_DELIVERY_PROFILE,
+            Capability.SHOPIFY_GET_DELIVERY_SETTINGS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter(shop_url="s", access_token="t")
+        zone_node = {
+            "zone": {
+                "id": "gid://shopify/DeliveryZone/1",
+                "name": "Domestic",
+                "countries": [{
+                    "id": "gid://shopify/DeliveryCountry/1",
+                    "code": {"countryCode": "US"},
+                    "provinces": [{"id": "p1", "code": "CA"}],
+                }],
+            },
+            "methodDefinitionCounts": {
+                "rateDefinitionsCount": 2,
+                "participantDefinitionsCount": 0,
+            },
+        }
+        location_node = {
+            "id": "gid://shopify/Location/1",
+            "name": "Shop location",
+        }
+        profile_node = {
+            "id": "gid://shopify/DeliveryProfile/1",
+            "name": "General Profile",
+            "default": True,
+            "legacyMode": False,
+            "profileLocationGroups": [{
+                "locationGroup": {
+                    "id": "gid://shopify/DeliveryLocationGroup/1",
+                    "locations": {"edges": [{"node": location_node}]},
+                },
+                "locationGroupZones": {
+                    "edges": [{"node": zone_node}],
+                },
+            }],
+        }
+        with patch.object(a, "_gql", return_value={
+            "deliveryProfiles": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": profile_node}],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_DELIVERY_PROFILES, {})
+        assert result.ok
+        assert result.data["count"] == 1
+        p = result.data["profiles"][0]
+        assert p["name"] == "General Profile"
+        assert p["default"] is True
+        lg = p["location_groups"][0]
+        assert lg["locations"][0]["name"] == "Shop location"
+        zone = lg["zones"][0]
+        assert zone["zone_name"] == "Domestic"
+        assert zone["countries"][0]["country_code"] == "US"
+        assert zone["rate_count"] == 2
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"deliveryProfiles": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_DELIVERY_PROFILES, {"limit": 9999})
+        assert captured["first"] == 100  # max for this connection
+
+    # ── Get single profile (with rates) ──────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_DELIVERY_PROFILE, {})
+        assert not result.ok
+
+    def test_get_happy_path_with_flat_rate_method(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter(shop_url="s", access_token="t")
+        method_node = {
+            "id": "gid://shopify/DeliveryMethodDefinition/m1",
+            "name": "Standard",
+            "active": True,
+            "description": "5-7 days",
+            "rateProvider": {
+                "__typename": "DeliveryRateDefinition",
+                "id": "gid://shopify/DeliveryRateDefinition/r1",
+                "price": {"amount": "5.99", "currencyCode": "USD"},
+            },
+        }
+        zone_node = {
+            "zone": {"id": "z1", "name": "US", "countries": []},
+            "methodDefinitions": {"edges": [{"node": method_node}]},
+        }
+        profile = {
+            "id": "gid://shopify/DeliveryProfile/1",
+            "name": "Default",
+            "default": True,
+            "legacyMode": False,
+            "profileLocationGroups": [{
+                "locationGroup": {
+                    "id": "gid://shopify/DeliveryLocationGroup/1",
+                    "locations": {"edges": []},
+                },
+                "locationGroupZones": {"edges": [{"node": zone_node}]},
+            }],
+        }
+        with patch.object(a, "_gql", return_value={"deliveryProfile": profile}):
+            result = a.execute(Capability.SHOPIFY_GET_DELIVERY_PROFILE, {
+                "id": "gid://shopify/DeliveryProfile/1",
+            })
+        assert result.ok
+        zone = result.data["profile"]["location_groups"][0]["zones"][0]
+        method = zone["methods"][0]
+        assert method["name"] == "Standard"
+        assert method["kind"] == "DeliveryRateDefinition"
+        assert method["price"] == "5.99"
+        assert method["currency_code"] == "USD"
+
+    def test_get_happy_path_with_carrier_participant(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter(shop_url="s", access_token="t")
+        method_node = {
+            "id": "m1", "name": "UPS Ground",
+            "active": True, "description": "",
+            "rateProvider": {
+                "__typename": "DeliveryParticipant",
+                "id": "part1",
+                "carrierService": {"id": "cs1", "name": "UPS"},
+                "fixedFee": {"amount": "2.00", "currencyCode": "USD"},
+                "percentageOfRateFee": "0.10",
+            },
+        }
+        zone_node = {
+            "zone": {"id": "z1", "name": "US", "countries": []},
+            "methodDefinitions": {"edges": [{"node": method_node}]},
+        }
+        profile = {
+            "id": "p1", "name": "x", "default": False, "legacyMode": False,
+            "profileLocationGroups": [{
+                "locationGroup": {"id": "lg1", "locations": {"edges": []}},
+                "locationGroupZones": {"edges": [{"node": zone_node}]},
+            }],
+        }
+        with patch.object(a, "_gql", return_value={"deliveryProfile": profile}):
+            result = a.execute(Capability.SHOPIFY_GET_DELIVERY_PROFILE, {
+                "id": "gid://shopify/DeliveryProfile/p1",
+            })
+        method = result.data["profile"]["location_groups"][0]["zones"][0]["methods"][0]
+        assert method["kind"] == "DeliveryParticipant"
+        assert method["carrier_name"] == "UPS"
+        assert method["fixed_fee"] == "2.00"
+        assert method["percentage_fee"] == 0.10
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"deliveryProfile": None}):
+            result = a.execute(Capability.SHOPIFY_GET_DELIVERY_PROFILE, {
+                "id": "gid://shopify/DeliveryProfile/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Settings ─────────────────────────────────
+
+    def test_get_settings_happy_path(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        a = ShopifyDeliveryProfilesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"deliverySettings": {
+            "legacyModeBlocked": {
+                "blocked": True,
+                "reasons": ["LEGACY_MODE_PROFILES_NOT_ALLOWED"],
+            },
+            "legacyModeProfiles": False,
+        }}):
+            result = a.execute(Capability.SHOPIFY_GET_DELIVERY_SETTINGS, {})
+        assert result.ok
+        assert result.data["legacy_mode_blocked"] is True
+        assert result.data["legacy_blocked_reasons"] == [
+            "LEGACY_MODE_PROFILES_NOT_ALLOWED",
+        ]
+        assert result.data["legacy_mode_profiles"] is False
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.delivery_profiles import (
+            ShopifyDeliveryProfilesAdapter,
+        )
+        assert ShopifyDeliveryProfilesAdapter._normalise_profile(
+            {}, with_rates=True,
+        ) == {}
+        assert ShopifyDeliveryProfilesAdapter._normalise_zone(
+            {}, with_rates=True,
+        )["zone_id"] == ""
