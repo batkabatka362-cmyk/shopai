@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixteen_adapters(self):
+    def test_register_all_adds_seventeen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 16
+        assert len(status) == 17
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -803,6 +803,7 @@ class TestShopifyBootstrap:
             "shopify_publications", "shopify_order_edits",
             "shopify_themes", "shopify_analytics",
             "shopify_translations", "shopify_customer_segments",
+            "shopify_refunds",
         }
 
     def test_register_all_idempotent(self):
@@ -810,7 +811,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 16
+        assert len(get_registry()) == 17
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -876,6 +877,386 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_QUERY_SEGMENT).name == "shopify_customer_segments"
         assert router.route(Capability.SHOPIFY_GET_SEGMENT_MEMBERS).name == "shopify_customer_segments"
         assert router.route(Capability.SHOPIFY_CREATE_SEGMENT).name == "shopify_customer_segments"
+        assert router.route(Capability.SHOPIFY_CREATE_REFUND).name == "shopify_refunds"
+        assert router.route(Capability.SHOPIFY_LIST_ORDER_REFUNDS).name == "shopify_refunds"
+        assert router.route(Capability.SHOPIFY_GET_REFUND).name == "shopify_refunds"
+
+
+# ── ShopifyRefundsAdapter ─────────────────────────────────
+
+
+class TestShopifyRefundsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter()
+        assert a.name == "shopify_refunds"
+        for cap in (
+            Capability.SHOPIFY_CREATE_REFUND,
+            Capability.SHOPIFY_LIST_ORDER_REFUNDS,
+            Capability.SHOPIFY_GET_REFUND,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Build refund input validation ────────────────
+
+    def test_build_refund_input_requires_order_id(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "transactions": [{"parent_id": "x", "amount": 5}],
+            })
+
+    def test_build_refund_input_requires_some_money_movement(self):
+        """A refund with no transactions / line items / shipping is a
+        no-op and Shopify rejects it. Fail fast."""
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://shopify/Order/1",
+                "note": "just a note",
+            })
+        assert "transactions" in str(exc.value) or "line_items" in str(exc.value)
+
+    def test_build_refund_input_passes_optional_fields(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        out = ShopifyRefundsAdapter._build_refund_input({
+            "order_id": "gid://shopify/Order/1",
+            "note": "Damaged",
+            "notify": True,
+            "currency": "usd",
+            "transactions": [
+                {"parent_id": "gid://shopify/OrderTransaction/X",
+                 "amount": "25.50", "gateway": "manual"},
+            ],
+        })
+        assert out["orderId"] == "gid://shopify/Order/1"
+        assert out["note"] == "Damaged"
+        assert out["notify"] is True
+        # Currency normalised to upper-case.
+        assert out["currency"] == "USD"
+        # Amount coerced to 2-decimal string.
+        assert out["transactions"][0]["amount"] == "25.50"
+        # Default kind = REFUND.
+        assert out["transactions"][0]["kind"] == "REFUND"
+
+    def test_build_refund_input_transactions_validation(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        # Missing parent_id
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://x",
+                "transactions": [{"amount": 5, "gateway": "manual"}],
+            })
+        # Non-numeric amount
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://x",
+                "transactions": [{"parent_id": "y", "amount": "much"}],
+            })
+        # Zero amount
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://x",
+                "transactions": [{"parent_id": "y", "amount": 0}],
+            })
+        # Bad kind
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://x",
+                "transactions": [{"parent_id": "y", "amount": 5,
+                                  "kind": "WHATEVER"}],
+            })
+
+    def test_build_refund_input_refund_line_items_validation(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        # Happy
+        out = ShopifyRefundsAdapter._build_refund_input({
+            "order_id": "gid://x",
+            "refund_line_items": [
+                {"line_item_id": "gid://l/1", "quantity": 2,
+                 "restock_type": "no_restock"},
+            ],
+        })
+        assert out["refundLineItems"][0]["lineItemId"] == "gid://l/1"
+        assert out["refundLineItems"][0]["quantity"] == 2
+        # Alias resolves.
+        assert out["refundLineItems"][0]["restockType"] == "NO_RESTOCK"
+
+        # Missing line_item_id
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://x",
+                "refund_line_items": [{"quantity": 1}],
+            })
+        # Non-positive quantity
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://x",
+                "refund_line_items": [
+                    {"line_item_id": "gid://l/1", "quantity": 0},
+                ],
+            })
+        # Bad restock_type
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://x",
+                "refund_line_items": [
+                    {"line_item_id": "gid://l/1", "quantity": 1,
+                     "restock_type": "throw_in_trash"},
+                ],
+            })
+
+    def test_build_refund_input_shipping_full_refund(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        out = ShopifyRefundsAdapter._build_refund_input({
+            "order_id": "gid://x",
+            "shipping": {"full_refund": True},
+        })
+        assert out["shipping"] == {"fullRefund": True}
+
+    def test_build_refund_input_shipping_amount(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        out = ShopifyRefundsAdapter._build_refund_input({
+            "order_id": "gid://x",
+            "shipping": {"amount": 10},
+        })
+        assert out["shipping"]["amount"] == "10.00"
+
+    def test_build_refund_input_shipping_neither_rejected(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyRefundsAdapter._build_refund_input({
+                "order_id": "gid://x",
+                "shipping": {},
+            })
+
+    # ── Create — happy path ─────────────────────────
+
+    def test_create_refund_happy_path(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "refundCreate": {
+                "refund": {
+                    "id": "gid://shopify/Refund/77",
+                    "note": "Damaged",
+                    "totalRefundedSet": {
+                        "presentmentMoney": {"amount": "25.50",
+                                             "currencyCode": "USD"},
+                    },
+                    "order": {"id": "gid://shopify/Order/100",
+                              "name": "#1001"},
+                    "refundLineItems": {"edges": []},
+                    "transactions": {"edges": [
+                        {"node": {
+                            "id": "gid://shopify/OrderTransaction/T",
+                            "kind": "REFUND",
+                            "status": "SUCCESS",
+                            "gateway": "manual",
+                            "amountSet": {
+                                "presentmentMoney": {
+                                    "amount": "25.50",
+                                    "currencyCode": "USD",
+                                },
+                            },
+                        }},
+                    ]},
+                    "createdAt": "2026-04-25T12:00:00Z",
+                    "updatedAt": "2026-04-25T12:00:00Z",
+                },
+                "order": {
+                    "id": "gid://shopify/Order/100",
+                    "name": "#1001",
+                    "displayFinancialStatus": "REFUNDED",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_REFUND, {
+                "order_id": "gid://shopify/Order/100",
+                "note": "Damaged",
+                "transactions": [
+                    {"parent_id": "gid://shopify/OrderTransaction/Y",
+                     "amount": "25.50", "gateway": "manual"},
+                ],
+            })
+        assert result.ok
+        assert result.data["order_financial_status"] == "REFUNDED"
+        r = result.data["refund"]
+        assert r["total"] == 25.50
+        assert r["currency"] == "USD"
+        assert len(r["transactions"]) == 1
+        assert r["transactions"][0]["amount"] == 25.50
+
+    def test_create_refund_user_errors_propagate(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "refundCreate": {
+                "refund": None,
+                "order": None,
+                "userErrors": [{
+                    "field": ["input", "transactions", "0", "amount"],
+                    "message": "Refund amount exceeds order total",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_REFUND, {
+                "order_id": "gid://x",
+                "transactions": [
+                    {"parent_id": "gid://t/1", "amount": 9999},
+                ],
+            })
+        assert not result.ok
+
+    # ── List order refunds ──────────────────────────
+
+    def test_list_order_refunds_requires_order_id(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_LIST_ORDER_REFUNDS, {})
+        assert not result.ok
+
+    def test_list_order_refunds_happy_path(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "order": {
+                "id": "gid://shopify/Order/100",
+                "name": "#1001",
+                "refunds": [
+                    {
+                        "id": "gid://shopify/Refund/1",
+                        "note": "Damaged",
+                        "totalRefundedSet": {
+                            "presentmentMoney": {"amount": "25.50",
+                                                 "currencyCode": "USD"},
+                        },
+                        "order": {"id": "gid://shopify/Order/100",
+                                  "name": "#1001"},
+                        "refundLineItems": {"edges": []},
+                        "transactions": {"edges": []},
+                    },
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_ORDER_REFUNDS, {
+                "order_id": "gid://shopify/Order/100",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["count"] == 1
+        assert result.data["refunds"][0]["total"] == 25.50
+
+    def test_list_order_refunds_not_found(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"order": None}):
+            result = a.execute(Capability.SHOPIFY_LIST_ORDER_REFUNDS, {
+                "order_id": "gid://shopify/Order/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["count"] == 0
+
+    # ── Get refund ──────────────────────────────────
+
+    def test_get_refund_requires_id(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_REFUND, {})
+        assert not result.ok
+
+    def test_get_refund_happy_path(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "refund": {
+                "id": "gid://shopify/Refund/1",
+                "note": "",
+                "totalRefundedSet": {
+                    "presentmentMoney": {"amount": "10.00",
+                                         "currencyCode": "USD"},
+                },
+                "order": {"id": "gid://shopify/Order/1", "name": "#1"},
+                "refundLineItems": {"edges": []},
+                "transactions": {"edges": []},
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_REFUND, {
+                "id": "gid://shopify/Refund/1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["refund"]["total"] == 10.0
+
+    def test_get_refund_not_found(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        a = ShopifyRefundsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"refund": None}):
+            result = a.execute(Capability.SHOPIFY_GET_REFUND, {
+                "id": "gid://shopify/Refund/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Normalisation ──────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        assert ShopifyRefundsAdapter._normalise_refund(None) == {}  # type: ignore[arg-type]
+
+    def test_normalise_lifts_line_items_and_transactions(self):
+        from core.adapters.shopify.refunds import ShopifyRefundsAdapter
+        out = ShopifyRefundsAdapter._normalise_refund({
+            "id": "gid://r/1", "note": "n",
+            "totalRefundedSet": {
+                "presentmentMoney": {"amount": "5.00",
+                                     "currencyCode": "USD"},
+            },
+            "refundLineItems": {"edges": [
+                {"node": {
+                    "id": "gid://rli/1", "quantity": 2,
+                    "restockType": "RETURN",
+                    "lineItem": {
+                        "id": "gid://l/1", "title": "Cool Mug",
+                        "sku": "MUG-001",
+                    },
+                    "subtotalSet": {
+                        "presentmentMoney": {
+                            "amount": "5.00", "currencyCode": "USD",
+                        },
+                    },
+                }},
+            ]},
+            "transactions": {"edges": [
+                {"node": {
+                    "id": "gid://t/1", "kind": "REFUND",
+                    "status": "SUCCESS", "gateway": "stripe",
+                    "amountSet": {
+                        "presentmentMoney": {
+                            "amount": "5.00", "currencyCode": "USD",
+                        },
+                    },
+                }},
+            ]},
+        })
+        assert out["total"] == 5.0
+        assert len(out["line_items"]) == 1
+        assert out["line_items"][0]["product_title"] == "Cool Mug"
+        assert out["line_items"][0]["sku"] == "MUG-001"
+        assert out["line_items"][0]["restock_type"] == "RETURN"
+        assert len(out["transactions"]) == 1
+        assert out["transactions"][0]["gateway"] == "stripe"
 
 
 # ── ShopifyCustomerSegmentsAdapter ────────────────────────

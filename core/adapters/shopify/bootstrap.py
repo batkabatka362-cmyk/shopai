@@ -33,6 +33,7 @@ from .metafield import ShopifyMetafieldAdapter
 from .metaobjects import ShopifyMetaobjectsAdapter
 from .order_edits import ShopifyOrderEditsAdapter
 from .publications import ShopifyPublicationsAdapter
+from .refunds import ShopifyRefundsAdapter
 from .returns import ShopifyReturnsAdapter
 from .risk import ShopifyRiskAdapter
 from .segments import ShopifyCustomerSegmentsAdapter
@@ -59,6 +60,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyAnalyticsAdapter,
     ShopifyTranslationsAdapter,
     ShopifyCustomerSegmentsAdapter,
+    ShopifyRefundsAdapter,
 )
 
 
