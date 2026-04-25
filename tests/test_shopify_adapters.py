@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentyfive_adapters(self):
+    def test_register_all_adds_twentysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 25
+        assert len(status) == 26
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -812,6 +812,7 @@ class TestShopifyBootstrap:
             "shopify_web_pixels",
             "shopify_companies",
             "shopify_locations",
+            "shopify_inventory_shipments",
         }
 
     def test_register_all_idempotent(self):
@@ -819,7 +820,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 25
+        assert len(get_registry()) == 26
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -916,6 +917,382 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_LOCATION).name == "shopify_locations"
         assert router.route(Capability.SHOPIFY_CREATE_LOCATION).name == "shopify_locations"
         assert router.route(Capability.SHOPIFY_UPDATE_LOCATION).name == "shopify_locations"
+        assert router.route(Capability.SHOPIFY_LIST_INVENTORY_SHIPMENTS).name == "shopify_inventory_shipments"
+        assert router.route(Capability.SHOPIFY_GET_INVENTORY_SHIPMENT).name == "shopify_inventory_shipments"
+        assert router.route(Capability.SHOPIFY_CREATE_INVENTORY_SHIPMENT).name == "shopify_inventory_shipments"
+
+
+# ── ShopifyInventoryShipmentsAdapter ────────────────────
+
+
+class TestShopifyInventoryShipmentsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter()
+        assert a.name == "shopify_inventory_shipments"
+        for cap in (
+            Capability.SHOPIFY_LIST_INVENTORY_SHIPMENTS,
+            Capability.SHOPIFY_GET_INVENTORY_SHIPMENT,
+            Capability.SHOPIFY_CREATE_INVENTORY_SHIPMENT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_create_input validation ─────────────
+
+    def test_build_input_requires_origin_and_destination(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        # Missing origin
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                "destination_id": "gid://shopify/Location/B",
+                "line_items": [{"inventory_item_id": "gid://x", "quantity": 1}],
+            })
+        # Missing destination
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                "origin_id": "gid://shopify/Location/A",
+                "line_items": [{"inventory_item_id": "gid://x", "quantity": 1}],
+            })
+
+    def test_build_input_rejects_self_shipment(self):
+        """Shopify rejects shipments where origin == destination —
+        fail fast at the adapter rather than paying for the
+        userErrors round-trip."""
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                "origin_id": "gid://shopify/Location/A",
+                "destination_id": "gid://shopify/Location/A",
+                "line_items": [{"inventory_item_id": "gid://x", "quantity": 1}],
+            })
+        assert "differ" in str(exc.value) or "self-shipment" in str(exc.value).lower()
+
+    def test_build_input_requires_line_items(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                "origin_id": "gid://shopify/Location/A",
+                "destination_id": "gid://shopify/Location/B",
+            })
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                "origin_id": "gid://shopify/Location/A",
+                "destination_id": "gid://shopify/Location/B",
+                "line_items": [],
+            })
+
+    def test_build_input_line_item_validation(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        base = {
+            "origin_id": "gid://shopify/Location/A",
+            "destination_id": "gid://shopify/Location/B",
+        }
+        # Missing inventory_item_id
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                **base, "line_items": [{"quantity": 1}],
+            })
+        # Quantity must be positive int
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                **base,
+                "line_items": [{"inventory_item_id": "gid://x", "quantity": 0}],
+            })
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                **base,
+                "line_items": [{"inventory_item_id": "gid://x",
+                                "quantity": "many"}],
+            })
+        # Non-dict line item
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                **base, "line_items": ["not a dict"],
+            })
+
+    def test_build_input_caps_at_250_line_items(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        too_many = [
+            {"inventory_item_id": f"gid://i/{i}", "quantity": 1}
+            for i in range(251)
+        ]
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                "origin_id": "gid://shopify/Location/A",
+                "destination_id": "gid://shopify/Location/B",
+                "line_items": too_many,
+            })
+        assert "250" in str(exc.value)
+
+    def test_build_input_optional_fields_pass_through(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        out = ShopifyInventoryShipmentsAdapter._build_create_input({
+            "origin_id": "gid://shopify/Location/A",
+            "destination_id": "gid://shopify/Location/B",
+            "tracking_number": "1Z999AA10123456784",
+            "tracking_url": "https://carrier/track/1Z999",
+            "note": "Replenish from DC",
+            "arrival_date": "2026-05-15",
+            "line_items": [
+                {"inventory_item_id": "gid://i/1", "quantity": 50},
+            ],
+        })
+        assert out["trackingNumber"] == "1Z999AA10123456784"
+        assert out["trackingUrl"].startswith("https://carrier/")
+        assert out["note"] == "Replenish from DC"
+        assert out["arrivalDate"] == "2026-05-15"
+        # Wire-side ids use the schema's camelCase form.
+        assert out["originLocationId"] == "gid://shopify/Location/A"
+        assert out["destinationLocationId"] == "gid://shopify/Location/B"
+        assert out["lineItems"][0] == {
+            "inventoryItemId": "gid://i/1", "quantity": 50,
+        }
+
+    def test_build_input_optional_field_non_string_rejected(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyInventoryShipmentsAdapter._build_create_input({
+                "origin_id": "gid://shopify/Location/A",
+                "destination_id": "gid://shopify/Location/B",
+                "tracking_number": 12345,   # must be string
+                "line_items": [
+                    {"inventory_item_id": "gid://i/1", "quantity": 1},
+                ],
+            })
+
+    # ── List ────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventoryShipments": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/InventoryShipment/1",
+                        "name": "#IS1",
+                        "status": "IN_TRANSIT",
+                        "trackingNumber": "1Z999",
+                        "trackingUrl": "https://t/1Z999",
+                        "arrivalDate": "2026-05-15",
+                        "origin": {"id": "gid://shopify/Location/A",
+                                   "name": "DC West"},
+                        "destination": {"id": "gid://shopify/Location/B",
+                                        "name": "Brooklyn"},
+                        "lineItems": {"edges": [
+                            {"node": {
+                                "id": "gid://shopify/InvShipLine/L",
+                                "quantity": 50,
+                                "receivedQuantity": 0,
+                                "inventoryItem": {
+                                    "id": "gid://shopify/InventoryItem/X",
+                                    "sku": "MUG-BLU-12",
+                                },
+                            }},
+                        ]},
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_INVENTORY_SHIPMENTS, {"limit": 10},
+            )
+        assert result.ok
+        s = result.data["shipments"][0]
+        assert s["status"] == "IN_TRANSIT"
+        assert s["origin_name"] == "DC West"
+        assert s["destination_name"] == "Brooklyn"
+        assert s["line_items_count"] == 1
+        assert s["line_items"][0]["sku"] == "MUG-BLU-12"
+        assert s["line_items"][0]["received_quantity"] == 0
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"inventoryShipments": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_INVENTORY_SHIPMENTS, {
+                "limit": 9999,
+            })
+        assert captured["first"] == 250
+
+    def test_list_passes_query_and_sort(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v["query"]
+            captured["sortKey"] = v["sortKey"]
+            return {"inventoryShipments": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_INVENTORY_SHIPMENTS, {
+                "query": "status:IN_TRANSIT",
+                "sort_key": "created_at",
+            })
+        assert captured["query"] == "status:IN_TRANSIT"
+        assert captured["sortKey"] == "CREATED_AT"
+
+    # ── Get ─────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_GET_INVENTORY_SHIPMENT, {},
+            )
+        assert not result.ok
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventoryShipment": {
+                "id": "gid://shopify/InventoryShipment/9",
+                "name": "#IS9",
+                "status": "OPEN",
+                "lineItems": {"edges": []},
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_INVENTORY_SHIPMENT, {
+                "id": "gid://shopify/InventoryShipment/9",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["shipment"]["status"] == "OPEN"
+
+    def test_get_not_found(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventoryShipment": None,
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_INVENTORY_SHIPMENT, {
+                "id": "gid://shopify/InventoryShipment/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Create — happy path ────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["input"] = v["input"]
+            return {"inventoryShipmentCreate": {
+                "inventoryShipment": {
+                    "id": "gid://shopify/InventoryShipment/new",
+                    "name": "#IS-new",
+                    "status": "OPEN",
+                    "origin": {"id": v["input"]["originLocationId"],
+                               "name": "DC"},
+                    "destination": {"id": v["input"]["destinationLocationId"],
+                                    "name": "Store"},
+                    "lineItems": {"edges": []},
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_INVENTORY_SHIPMENT,
+                {
+                    "origin_id": "gid://shopify/Location/A",
+                    "destination_id": "gid://shopify/Location/B",
+                    "line_items": [
+                        {"inventory_item_id": "gid://i/1", "quantity": 50},
+                    ],
+                },
+            )
+        assert result.ok
+        assert result.data["shipment"]["id"].endswith("/new")
+        # Wire payload uses the camelCase form.
+        assert "originLocationId" in captured["input"]
+        assert captured["input"]["lineItems"][0]["inventoryItemId"] == "gid://i/1"
+
+    def test_create_user_errors_propagate(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        a = ShopifyInventoryShipmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "inventoryShipmentCreate": {
+                "inventoryShipment": None,
+                "userErrors": [{
+                    "field": ["input", "originLocationId"],
+                    "message": "Origin location does not exist",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_INVENTORY_SHIPMENT,
+                {
+                    "origin_id": "gid://shopify/Location/missing",
+                    "destination_id": "gid://shopify/Location/B",
+                    "line_items": [
+                        {"inventory_item_id": "gid://i/1", "quantity": 1},
+                    ],
+                },
+            )
+        assert not result.ok
+
+    # ── Normaliser ─────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.inventory_shipments import (
+            ShopifyInventoryShipmentsAdapter,
+        )
+        assert ShopifyInventoryShipmentsAdapter._normalise_shipment(None) == {}  # type: ignore[arg-type]
 
 
 # ── ShopifyLocationsAdapter ────────────────────────────

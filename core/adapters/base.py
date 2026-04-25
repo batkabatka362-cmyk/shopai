@@ -171,6 +171,9 @@ class Capability(str, Enum):
     SHOPIFY_GET_LOCATION = "shopify_get_location"
     SHOPIFY_CREATE_LOCATION = "shopify_create_location"
     SHOPIFY_UPDATE_LOCATION = "shopify_update_location"
+    SHOPIFY_LIST_INVENTORY_SHIPMENTS = "shopify_list_inventory_shipments"
+    SHOPIFY_GET_INVENTORY_SHIPMENT = "shopify_get_inventory_shipment"
+    SHOPIFY_CREATE_INVENTORY_SHIPMENT = "shopify_create_inventory_shipment"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
