@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirteen_adapters(self):
+    def test_register_all_adds_fourteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 13
+        assert len(status) == 14
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -801,7 +801,7 @@ class TestShopifyBootstrap:
             "shopify_draft_orders", "shopify_marketing_events",
             "shopify_returns", "shopify_metaobjects",
             "shopify_publications", "shopify_order_edits",
-            "shopify_themes",
+            "shopify_themes", "shopify_analytics",
         }
 
     def test_register_all_idempotent(self):
@@ -809,7 +809,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 13
+        assert len(get_registry()) == 14
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -868,6 +868,213 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_THEMES).name == "shopify_themes"
         assert router.route(Capability.SHOPIFY_LIST_THEME_FILES).name == "shopify_themes"
         assert router.route(Capability.SHOPIFY_UPSERT_THEME_FILES).name == "shopify_themes"
+        assert router.route(Capability.SHOPIFY_RUN_ANALYTICS_QUERY).name == "shopify_analytics"
+
+
+# ── ShopifyAnalyticsAdapter ────────────────────────────────
+
+
+class TestShopifyAnalyticsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        a = ShopifyAnalyticsAdapter()
+        assert a.name == "shopify_analytics"
+        assert Capability.SHOPIFY_RUN_ANALYTICS_QUERY in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        a = ShopifyAnalyticsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_requires_query_string(self):
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        a = ShopifyAnalyticsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_RUN_ANALYTICS_QUERY, {})
+        assert not result.ok
+        with patch.object(a, "_gql"):
+            r2 = a.execute(Capability.SHOPIFY_RUN_ANALYTICS_QUERY, {
+                "query": "",
+            })
+        assert not r2.ok
+
+    def test_query_alias_shopifyql_accepted(self):
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        a = ShopifyAnalyticsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v["query"]
+            return {"shopifyqlQuery": {
+                "__typename": "TableResponse",
+                "tableData": {"columns": [], "rowData": []},
+                "parseErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_RUN_ANALYTICS_QUERY, {
+                "shopifyql": "FROM products SHOW total_sales",
+            })
+        assert captured["query"] == "FROM products SHOW total_sales"
+
+    def test_run_query_happy_path_with_numeric_coercion(self):
+        """ShopifyQL returns numeric column values as decimal-formatted
+        strings. Engines do arithmetic on revenue / count fields, so
+        the adapter coerces numeric columns to native float/int based
+        on the GraphQL dataType so callers don't have to re-cast."""
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        a = ShopifyAnalyticsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyqlQuery": {
+                "tableData": {
+                    "columns": [
+                        {"name": "date", "dataType": "STRING",
+                         "displayName": "Date"},
+                        {"name": "orders", "dataType": "COUNT",
+                         "displayName": "Orders"},
+                        {"name": "revenue", "dataType": "DECIMAL",
+                         "displayName": "Revenue"},
+                    ],
+                    "rows": [
+                        ["2026-04-19", "12", "980.50"],
+                        ["2026-04-20", "8.0", "612.40"],
+                    ],
+                },
+                "parseErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_RUN_ANALYTICS_QUERY, {
+                "query": "FROM orders SINCE -7d GROUP BY date",
+            })
+        assert result.ok
+        assert result.data["row_count"] == 2
+        first = result.data["rows"][0]
+        assert first == {"date": "2026-04-19",
+                         "orders": 12,
+                         "revenue": 980.50}
+        # Decimal-formatted COUNT ("8.0") still becomes int.
+        assert result.data["rows"][1]["orders"] == 8
+        # Column metadata preserved with snake_case keys, including
+        # the human-readable displayName.
+        assert result.data["columns"][2] == {
+            "name": "revenue", "data_type": "DECIMAL",
+            "display_name": "Revenue",
+        }
+
+    def test_run_query_falls_back_to_legacy_rowData_field(self):
+        """Older API versions exposed ``rowData`` instead of ``rows``;
+        the adapter tolerates both so it doesn't break on a schema
+        flip mid-rollout."""
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        a = ShopifyAnalyticsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyqlQuery": {
+                "tableData": {
+                    "columns": [
+                        {"name": "x", "dataType": "STRING"},
+                    ],
+                    "rowData": [["A"]],   # legacy field name
+                },
+                "parseErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_RUN_ANALYTICS_QUERY, {
+                "query": "FROM x SHOW x",
+            })
+        assert result.ok
+        assert result.data["rows"] == [{"x": "A"}]
+
+    def test_run_query_parse_errors_become_validation_failure(self):
+        """ShopifyQL parse errors are caller bugs (bad DSL syntax),
+        not vendor outages — surface them as AdapterValidationError so
+        the router doesn't fall back to a different adapter."""
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        a = ShopifyAnalyticsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyqlQuery": {
+                "tableData": None,
+                "parseErrors": [
+                    {"code": "SYNTAX_ERROR",
+                     "message": "Unexpected token 'FROOM'"},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_RUN_ANALYTICS_QUERY, {
+                "query": "FROOM orders",
+            })
+        assert not result.ok
+
+    def test_run_query_handles_empty_result(self):
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        a = ShopifyAnalyticsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyqlQuery": {
+                "tableData": {
+                    "columns": [{"name": "date", "dataType": "STRING"}],
+                    "rows": [],
+                },
+                "parseErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_RUN_ANALYTICS_QUERY, {
+                "query": "FROM orders SINCE -1d",
+            })
+        assert result.ok
+        assert result.data["row_count"] == 0
+        assert result.data["columns"][0]["name"] == "date"
+
+    def test_rows_to_dicts_skips_non_list_rows(self):
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        out = ShopifyAnalyticsAdapter._rows_to_dicts(
+            [{"name": "x", "data_type": "STRING"}],
+            [["A"], "not a list", ["B"]],
+        )
+        assert out == [{"x": "A"}, {"x": "B"}]
+
+    def test_rows_to_dicts_truncates_overlong_rows(self):
+        """If a row has more columns than the schema declares (Shopify
+        sometimes does this for joined queries), the extra cells are
+        silently dropped rather than crashing the parse."""
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        out = ShopifyAnalyticsAdapter._rows_to_dicts(
+            [{"name": "x", "data_type": "STRING"}],
+            [["A", "extra1", "extra2"]],
+        )
+        assert out == [{"x": "A"}]
+
+    def test_normalise_columns_skips_non_dict_entries(self):
+        from core.adapters.shopify.analytics import ShopifyAnalyticsAdapter
+        out = ShopifyAnalyticsAdapter._normalise_columns([
+            {"name": "ok", "dataType": "STRING"},
+            "garbage",
+            {"name": "also_ok", "dataType": "DECIMAL"},
+        ])
+        assert len(out) == 2
+        assert out[0]["name"] == "ok"
+        assert out[1]["data_type"] == "DECIMAL"
+
+    def test_coerce_value_handles_all_branches(self):
+        from core.adapters.shopify.analytics import _coerce_value
+        # Numeric coercion
+        assert _coerce_value("12.5", "decimal") == 12.5
+        assert _coerce_value("100", "currency") == 100.0
+        assert _coerce_value("42", "int") == 42
+        # Decimal-formatted int tolerated
+        assert _coerce_value("8.0", "count") == 8
+        # Non-numeric strings in numeric columns left alone
+        assert _coerce_value("not a number", "decimal") == "not a number"
+        # JSON columns parsed
+        assert _coerce_value('{"a": 1}', "json") == {"a": 1}
+        # Malformed JSON in a JSON column passes through as the string
+        # rather than raising — engines may want to log and continue.
+        assert _coerce_value("not json", "json") == "not json"
+        # None passes through
+        assert _coerce_value(None, "decimal") is None
+        # Plain strings in plain string columns untouched (callers may
+        # be doing exact-match on order ids that look numeric).
+        assert _coerce_value("12345", "string") == "12345"
 
 
 # ── ShopifyThemesAdapter ───────────────────────────────────

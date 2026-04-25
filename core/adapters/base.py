@@ -135,6 +135,7 @@ class Capability(str, Enum):
     SHOPIFY_LIST_THEMES = "shopify_list_themes"
     SHOPIFY_LIST_THEME_FILES = "shopify_list_theme_files"
     SHOPIFY_UPSERT_THEME_FILES = "shopify_upsert_theme_files"
+    SHOPIFY_RUN_ANALYTICS_QUERY = "shopify_run_analytics_query"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

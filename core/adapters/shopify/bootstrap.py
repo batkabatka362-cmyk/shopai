@@ -22,6 +22,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .analytics import ShopifyAnalyticsAdapter
 from .discounts import ShopifyDiscountAdapter
 from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
@@ -53,6 +54,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyPublicationsAdapter,
     ShopifyOrderEditsAdapter,
     ShopifyThemesAdapter,
+    ShopifyAnalyticsAdapter,
 )
 
 
