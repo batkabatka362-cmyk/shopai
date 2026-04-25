@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_nineteen_adapters(self):
+    def test_register_all_adds_twenty_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 19
+        assert len(status) == 20
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -806,6 +806,7 @@ class TestShopifyBootstrap:
             "shopify_refunds",
             "shopify_payment_customizations",
             "shopify_delivery_customizations",
+            "shopify_gift_cards",
         }
 
     def test_register_all_idempotent(self):
@@ -813,7 +814,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 19
+        assert len(get_registry()) == 20
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -888,6 +889,330 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_DELIVERY_CUSTOMIZATION).name == "shopify_delivery_customizations"
         assert router.route(Capability.SHOPIFY_LIST_DELIVERY_CUSTOMIZATIONS).name == "shopify_delivery_customizations"
         assert router.route(Capability.SHOPIFY_DELETE_DELIVERY_CUSTOMIZATION).name == "shopify_delivery_customizations"
+        assert router.route(Capability.SHOPIFY_CREATE_GIFT_CARD).name == "shopify_gift_cards"
+        assert router.route(Capability.SHOPIFY_LIST_GIFT_CARDS).name == "shopify_gift_cards"
+        assert router.route(Capability.SHOPIFY_GET_GIFT_CARD).name == "shopify_gift_cards"
+        assert router.route(Capability.SHOPIFY_DEACTIVATE_GIFT_CARD).name == "shopify_gift_cards"
+
+
+# ── ShopifyGiftCardsAdapter ───────────────────────────────
+
+
+class TestShopifyGiftCardsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter()
+        assert a.name == "shopify_gift_cards"
+        for cap in (
+            Capability.SHOPIFY_CREATE_GIFT_CARD,
+            Capability.SHOPIFY_LIST_GIFT_CARDS,
+            Capability.SHOPIFY_GET_GIFT_CARD,
+            Capability.SHOPIFY_DEACTIVATE_GIFT_CARD,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Build create input validation ───────────────
+
+    def test_build_create_input_requires_initial_value(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyGiftCardsAdapter._build_create_input({})
+
+    def test_build_create_input_initial_value_must_be_positive(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyGiftCardsAdapter._build_create_input({"initial_value": 0})
+        with pytest.raises(AdapterValidationError):
+            ShopifyGiftCardsAdapter._build_create_input({"initial_value": -10})
+        with pytest.raises(AdapterValidationError):
+            ShopifyGiftCardsAdapter._build_create_input({"initial_value": "free"})
+
+    def test_build_create_input_initial_value_coerced_to_decimal(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        out = ShopifyGiftCardsAdapter._build_create_input({"initial_value": 25})
+        # Decimal scalar — Shopify wants a 2-decimal string.
+        assert out["initialValue"] == "25.00"
+
+    def test_build_create_input_currency_silently_dropped(self):
+        """``GiftCardCreateInput`` does NOT accept a currencyCode field
+        (caught live as 'Field is not defined on GiftCardCreateInput').
+        Gift card currency is inherited from the shop's primary
+        currency. The friendly call shape accepts ``currency`` for
+        forward compatibility / caller intent but the adapter drops
+        it on the wire."""
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        out = ShopifyGiftCardsAdapter._build_create_input({
+            "initial_value": 10, "currency": "usd",
+        })
+        assert "currencyCode" not in out
+        assert "currency" not in out
+
+    def test_build_create_input_currency_non_string_rejected(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyGiftCardsAdapter._build_create_input({
+                "initial_value": 10, "currency": 123,
+            })
+
+    def test_build_create_input_optional_fields_pass_through(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        out = ShopifyGiftCardsAdapter._build_create_input({
+            "initial_value": 50,
+            "code": "WELCOME50",
+            "customer_id": "gid://shopify/Customer/X",
+            "expires_on": "2026-12-31",
+            "note": "Goodwill",
+            "template_suffix": "default",
+            "recipient_email": "ada@example.com",
+            "recipient_name": "Ada Lovelace",
+        })
+        assert out["code"] == "WELCOME50"
+        assert out["customerId"] == "gid://shopify/Customer/X"
+        assert out["expiresOn"] == "2026-12-31"
+        assert out["note"] == "Goodwill"
+        assert out["templateSuffix"] == "default"
+        assert out["recipientAttributes"] == {
+            "email": "ada@example.com", "name": "Ada Lovelace",
+        }
+
+    def test_build_create_input_invalid_email_rejected(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyGiftCardsAdapter._build_create_input({
+                "initial_value": 10,
+                "recipient_email": "not-an-email",
+            })
+
+    def test_build_create_input_empty_code_rejected(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyGiftCardsAdapter._build_create_input({
+                "initial_value": 10, "code": "",
+            })
+
+    # ── Create — happy path ─────────────────────────
+
+    def test_create_gift_card_happy_path(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "giftCardCreate": {
+                "giftCard": {
+                    "id": "gid://shopify/GiftCard/1",
+                    "maskedCode": "•••• •••• •••• 1234",
+                    "lastCharacters": "1234",
+                    "balance": {"amount": "25.00",
+                                "currencyCode": "USD"},
+                    "initialValue": {"amount": "25.00",
+                                     "currencyCode": "USD"},
+                    "enabled": True,
+                    "expiresOn": None,
+                    "note": "Goodwill",
+                    "customer": None,
+                },
+                "giftCardCode": "ABCD1234EFGH5678",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_GIFT_CARD, {
+                "initial_value": 25, "note": "Goodwill",
+            })
+        assert result.ok
+        gc = result.data["gift_card"]
+        assert gc["id"].endswith("/1")
+        assert gc["balance"] == 25.0
+        assert gc["initial_value"] == 25.0
+        assert gc["currency"] == "USD"
+        assert gc["enabled"] is True
+        # Plaintext code surfaced ONLY at creation — engines that
+        # want to email it must capture from this response.
+        assert result.data["code"] == "ABCD1234EFGH5678"
+
+    def test_create_gift_card_user_errors_propagate(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "giftCardCreate": {
+                "giftCard": None,
+                "giftCardCode": None,
+                "userErrors": [{
+                    "field": ["input", "code"],
+                    "message": "Code already in use",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_GIFT_CARD, {
+                "initial_value": 10, "code": "TAKEN",
+            })
+        assert not result.ok
+
+    # ── Get ─────────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_GIFT_CARD, {})
+        assert not result.ok
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "giftCard": {
+                "id": "gid://shopify/GiftCard/9",
+                "maskedCode": "•••• •••• •••• 9999",
+                "lastCharacters": "9999",
+                "balance": {"amount": "10.00",
+                            "currencyCode": "USD"},
+                "initialValue": {"amount": "25.00",
+                                 "currencyCode": "USD"},
+                "enabled": True,
+                "customer": {"id": "gid://shopify/Customer/X",
+                             "email": "ada@example.com",
+                             "displayName": "Ada"},
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_GIFT_CARD, {
+                "id": "gid://shopify/GiftCard/9",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        gc = result.data["gift_card"]
+        # Partial spend reflected — balance < initial_value.
+        assert gc["balance"] == 10.0
+        assert gc["initial_value"] == 25.0
+        assert gc["customer_email"] == "ada@example.com"
+
+    def test_get_not_found(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"giftCard": None}):
+            result = a.execute(Capability.SHOPIFY_GET_GIFT_CARD, {
+                "id": "gid://shopify/GiftCard/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── List ────────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "giftCards": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/GiftCard/1",
+                        "maskedCode": "•••• 1234",
+                        "lastCharacters": "1234",
+                        "balance": {"amount": "25.00",
+                                    "currencyCode": "USD"},
+                        "initialValue": {"amount": "25.00",
+                                         "currencyCode": "USD"},
+                        "enabled": True,
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_GIFT_CARDS, {})
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["gift_cards"][0]["balance"] == 25.0
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"giftCards": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_GIFT_CARDS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_passes_query_filter(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v["query"]
+            captured["sortKey"] = v["sortKey"]
+            return {"giftCards": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_GIFT_CARDS, {
+                "query": "status:enabled",
+                "sort_key": "amount_spent",
+            })
+        assert captured["query"] == "status:enabled"
+        assert captured["sortKey"] == "AMOUNT_SPENT"
+
+    # ── Deactivate ─────────────────────────────────
+
+    def test_deactivate_requires_id(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_DEACTIVATE_GIFT_CARD, {})
+        assert not result.ok
+
+    def test_deactivate_happy_path(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "giftCardDeactivate": {
+                "giftCard": {
+                    "id": "gid://shopify/GiftCard/1",
+                    "maskedCode": "•••• 1234",
+                    "lastCharacters": "1234",
+                    "balance": {"amount": "0.00",
+                                "currencyCode": "USD"},
+                    "initialValue": {"amount": "25.00",
+                                     "currencyCode": "USD"},
+                    "enabled": False,
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DEACTIVATE_GIFT_CARD, {
+                "id": "gid://shopify/GiftCard/1",
+            })
+        assert result.ok
+        # enabled flipped to False post-deactivate.
+        assert result.data["gift_card"]["enabled"] is False
+
+    def test_deactivate_user_errors_propagate(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        a = ShopifyGiftCardsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "giftCardDeactivate": {
+                "giftCard": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Gift card already deactivated",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DEACTIVATE_GIFT_CARD, {
+                "id": "gid://shopify/GiftCard/already-dead",
+            })
+        assert not result.ok
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.gift_cards import ShopifyGiftCardsAdapter
+        assert ShopifyGiftCardsAdapter._normalise_gift_card(None) == {}  # type: ignore[arg-type]
 
 
 # ── ShopifyPayment / DeliveryCustomizationsAdapter ─────────

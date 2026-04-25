@@ -149,6 +149,10 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_DELIVERY_CUSTOMIZATION = "shopify_create_delivery_customization"
     SHOPIFY_LIST_DELIVERY_CUSTOMIZATIONS = "shopify_list_delivery_customizations"
     SHOPIFY_DELETE_DELIVERY_CUSTOMIZATION = "shopify_delete_delivery_customization"
+    SHOPIFY_CREATE_GIFT_CARD = "shopify_create_gift_card"
+    SHOPIFY_LIST_GIFT_CARDS = "shopify_list_gift_cards"
+    SHOPIFY_GET_GIFT_CARD = "shopify_get_gift_card"
+    SHOPIFY_DEACTIVATE_GIFT_CARD = "shopify_deactivate_gift_card"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

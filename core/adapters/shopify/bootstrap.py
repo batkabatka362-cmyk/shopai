@@ -31,6 +31,7 @@ from .discounts import ShopifyDiscountAdapter
 from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
+from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
 from .marketing_events import ShopifyMarketingEventsAdapter
 from .metafield import ShopifyMetafieldAdapter
@@ -67,6 +68,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyRefundsAdapter,
     ShopifyPaymentCustomizationsAdapter,
     ShopifyDeliveryCustomizationsAdapter,
+    ShopifyGiftCardsAdapter,
 )
 
 
