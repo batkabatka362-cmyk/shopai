@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftytwo_adapters(self):
+    def test_register_all_adds_fiftythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 52
+        assert len(status) == 53
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -839,6 +839,7 @@ class TestShopifyBootstrap:
             "shopify_fulfillment_services",
             "shopify_discount_automatic",
             "shopify_metaobject_definitions",
+            "shopify_script_tags",
         }
 
     def test_register_all_idempotent(self):
@@ -846,7 +847,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 52
+        assert len(get_registry()) == 53
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1037,6 +1038,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_METAOBJECT_DEFINITION).name == "shopify_metaobject_definitions"
         assert router.route(Capability.SHOPIFY_CREATE_METAOBJECT_DEFINITION).name == "shopify_metaobject_definitions"
         assert router.route(Capability.SHOPIFY_DELETE_METAOBJECT_DEFINITION).name == "shopify_metaobject_definitions"
+        assert router.route(Capability.SHOPIFY_LIST_SCRIPT_TAGS).name == "shopify_script_tags"
+        assert router.route(Capability.SHOPIFY_CREATE_SCRIPT_TAG).name == "shopify_script_tags"
+        assert router.route(Capability.SHOPIFY_UPDATE_SCRIPT_TAG).name == "shopify_script_tags"
+        assert router.route(Capability.SHOPIFY_DELETE_SCRIPT_TAG).name == "shopify_script_tags"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -14419,3 +14424,215 @@ class TestShopifyMetaobjectDefinitionsAdapter:
             ShopifyMetaobjectDefinitionsAdapter,
         )
         assert ShopifyMetaobjectDefinitionsAdapter._normalise_definition({}) == {}
+
+
+# ── ShopifyScriptTagsAdapter ──────────────────────────────
+
+
+class TestShopifyScriptTagsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter()
+        assert a.name == "shopify_script_tags"
+        for cap in (
+            Capability.SHOPIFY_LIST_SCRIPT_TAGS,
+            Capability.SHOPIFY_CREATE_SCRIPT_TAG,
+            Capability.SHOPIFY_UPDATE_SCRIPT_TAG,
+            Capability.SHOPIFY_DELETE_SCRIPT_TAG,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_src(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input({}, for_update=False)
+
+    def test_create_src_must_be_https(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input(
+                {"src": "http://insecure.example/x.js"}, for_update=False,
+            )
+
+    def test_create_invalid_display_scope_rejected(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input(
+                {"src": "https://x.com/a.js", "display_scope": "ADMIN"},
+                for_update=False,
+            )
+
+    def test_create_full_shape(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        out = a._build_input({
+            "src": "https://cdn.shopai.dev/exit-intent.js",
+            "display_scope": "online_store",
+            "cache": True,
+        }, for_update=False)
+        assert out["src"] == "https://cdn.shopai.dev/exit-intent.js"
+        assert out["displayScope"] == "ONLINE_STORE"
+        assert out["cache"] is True
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "scriptTags": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/ScriptTag/1",
+                    "src": "https://cdn.shopai.dev/x.js",
+                    "displayScope": "ONLINE_STORE",
+                    "cache": True,
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_SCRIPT_TAGS, {})
+        assert result.ok
+        t = result.data["script_tags"][0]
+        assert t["src"] == "https://cdn.shopai.dev/x.js"
+        assert t["display_scope"] == "ONLINE_STORE"
+        assert t["cache"] is True
+
+    def test_list_passes_src_filter(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"scriptTags": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_SCRIPT_TAGS, {
+                "src": "https://cdn.shopai.dev/x.js",
+            })
+        assert captured["src"] == "https://cdn.shopai.dev/x.js"
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"scriptTagCreate": {
+                "scriptTag": {
+                    "id": "gid://shopify/ScriptTag/new",
+                    "src": v["input"]["src"],
+                    "displayScope": v["input"].get("displayScope", "ONLINE_STORE"),
+                    "cache": v["input"].get("cache", False),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_SCRIPT_TAG, {
+                "src": "https://cdn.shopai.dev/x.js",
+                "display_scope": "ALL",
+            })
+        assert result.ok
+        assert captured["input"]["displayScope"] == "ALL"
+        assert result.data["script_tag"]["src"] == \
+            "https://cdn.shopai.dev/x.js"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"scriptTagCreate": {
+            "scriptTag": None,
+            "userErrors": [{"field": ["src"], "message": "is taken"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_SCRIPT_TAG, {
+                "src": "https://cdn.shopai.dev/x.js",
+            })
+        assert not result.ok
+
+    # ── Update ───────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_SCRIPT_TAG, {
+            "src": "https://x.com/a.js",
+        })
+        assert not result.ok
+
+    def test_update_no_fields_rejected(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_SCRIPT_TAG, {
+            "id": "gid://shopify/ScriptTag/1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"scriptTagUpdate": {
+                "scriptTag": {
+                    "id": v["id"],
+                    "src": v["input"].get("src", "old"),
+                    "displayScope": v["input"].get("displayScope", "ONLINE_STORE"),
+                    "cache": False,
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_SCRIPT_TAG, {
+                "id": "gid://shopify/ScriptTag/1",
+                "src": "https://cdn.shopai.dev/v2.js",
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/ScriptTag/1"
+        assert captured["input"]["src"] == "https://cdn.shopai.dev/v2.js"
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_SCRIPT_TAG, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        a = ShopifyScriptTagsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"scriptTagDelete": {
+            "deletedScriptTagId": "gid://shopify/ScriptTag/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_SCRIPT_TAG, {
+                "id": "gid://shopify/ScriptTag/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/ScriptTag/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
+        assert ShopifyScriptTagsAdapter._normalise_tag({}) == {}

@@ -67,6 +67,7 @@ from .publications import ShopifyPublicationsAdapter
 from .refunds import ShopifyRefundsAdapter
 from .returns import ShopifyReturnsAdapter
 from .risk import ShopifyRiskAdapter
+from .script_tags import ShopifyScriptTagsAdapter
 from .segments import ShopifyCustomerSegmentsAdapter
 from .selling_plan_groups import ShopifySellingPlanGroupsAdapter
 from .shop import ShopifyShopAdapter
@@ -133,6 +134,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyFulfillmentServicesAdapter,
     ShopifyDiscountAutomaticAdapter,
     ShopifyMetaobjectDefinitionsAdapter,
+    ShopifyScriptTagsAdapter,
 )
 
 

@@ -263,6 +263,10 @@ class Capability(str, Enum):
     SHOPIFY_GET_METAOBJECT_DEFINITION = "shopify_get_metaobject_definition"
     SHOPIFY_CREATE_METAOBJECT_DEFINITION = "shopify_create_metaobject_definition"
     SHOPIFY_DELETE_METAOBJECT_DEFINITION = "shopify_delete_metaobject_definition"
+    SHOPIFY_LIST_SCRIPT_TAGS = "shopify_list_script_tags"
+    SHOPIFY_CREATE_SCRIPT_TAG = "shopify_create_script_tag"
+    SHOPIFY_UPDATE_SCRIPT_TAG = "shopify_update_script_tag"
+    SHOPIFY_DELETE_SCRIPT_TAG = "shopify_delete_script_tag"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
