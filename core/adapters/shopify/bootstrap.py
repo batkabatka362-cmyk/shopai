@@ -80,6 +80,7 @@ from .script_tags import ShopifyScriptTagsAdapter
 from .segments import ShopifyCustomerSegmentsAdapter
 from .selling_plan_groups import ShopifySellingPlanGroupsAdapter
 from .shop import ShopifyShopAdapter
+from .subscription_draft import ShopifySubscriptionDraftAdapter
 from .subscriptions import ShopifySubscriptionContractsAdapter
 from .themes import ShopifyThemesAdapter
 from .translations import ShopifyTranslationsAdapter
@@ -153,6 +154,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCustomerConsentAdapter,
     ShopifyInventoryActivationAdapter,
     ShopifyDiscountCodeBxgyAdapter,
+    ShopifySubscriptionDraftAdapter,
 )
 
 

@@ -289,6 +289,9 @@ class Capability(str, Enum):
     SHOPIFY_ADJUST_INVENTORY_QUANTITIES = "shopify_adjust_inventory_quantities"
     SHOPIFY_CREATE_DISCOUNT_BXGY = "shopify_create_discount_bxgy"
     SHOPIFY_DELETE_DISCOUNT_BXGY = "shopify_delete_discount_bxgy"
+    SHOPIFY_CREATE_SUBSCRIPTION_DRAFT = "shopify_create_subscription_draft"
+    SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT = "shopify_update_subscription_draft"
+    SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT = "shopify_commit_subscription_draft"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

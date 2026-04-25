@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtytwo_adapters(self):
+    def test_register_all_adds_sixtythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 62
+        assert len(status) == 63
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -849,6 +849,7 @@ class TestShopifyBootstrap:
             "shopify_customer_consent",
             "shopify_inventory_activation",
             "shopify_discount_code_bxgy",
+            "shopify_subscription_draft",
         }
 
     def test_register_all_idempotent(self):
@@ -856,7 +857,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 62
+        assert len(get_registry()) == 63
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1073,6 +1074,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_ADJUST_INVENTORY_QUANTITIES).name == "shopify_inventory_activation"
         assert router.route(Capability.SHOPIFY_CREATE_DISCOUNT_BXGY).name == "shopify_discount_code_bxgy"
         assert router.route(Capability.SHOPIFY_DELETE_DISCOUNT_BXGY).name == "shopify_discount_code_bxgy"
+        assert router.route(Capability.SHOPIFY_CREATE_SUBSCRIPTION_DRAFT).name == "shopify_subscription_draft"
+        assert router.route(Capability.SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT).name == "shopify_subscription_draft"
+        assert router.route(Capability.SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT).name == "shopify_subscription_draft"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -16917,4 +16921,211 @@ class TestShopifyDiscountCodeBxgyAdapter:
         assert result.ok
         assert result.data["deleted_id"] == \
             "gid://shopify/DiscountCodeNode/1"
+
+
+# ── ShopifySubscriptionDraftAdapter ───────────────────────
+
+
+class TestShopifySubscriptionDraftAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter()
+        assert a.name == "shopify_subscription_draft"
+        for cap in (
+            Capability.SHOPIFY_CREATE_SUBSCRIPTION_DRAFT,
+            Capability.SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT,
+            Capability.SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_requires_contract_id(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREATE_SUBSCRIPTION_DRAFT, {})
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"subscriptionContractUpdate": {
+                "draft": {
+                    "id": "gid://shopify/SubscriptionDraft/d1",
+                    "status": "DRAFT",
+                    "nextBillingDate": "2026-05-26T00:00:00Z",
+                    "note": "",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_SUBSCRIPTION_DRAFT,
+                {"contract_id":
+                 "gid://shopify/SubscriptionContract/c1"},
+            )
+        assert result.ok
+        # Pattern A: contractId at field level.
+        assert captured["contractId"] == \
+            "gid://shopify/SubscriptionContract/c1"
+        assert result.data["draft_id"] == \
+            "gid://shopify/SubscriptionDraft/d1"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionContractUpdate": {
+                "draft": None,
+                "userErrors": [{"field": ["contractId"],
+                                "message": "Contract is cancelled",
+                                "code": "INVALID"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_SUBSCRIPTION_DRAFT,
+                {"contract_id":
+                 "gid://shopify/SubscriptionContract/cancelled"},
+            )
+        assert not result.ok
+
+    # ── Update ───────────────────────────────────
+
+    def test_update_requires_draft_id(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT,
+            {"next_billing_date": "2026-06-01T00:00:00Z"},
+        )
+        assert not result.ok
+
+    def test_update_no_fields_rejected(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT,
+            {"draft_id": "gid://shopify/SubscriptionDraft/d1"},
+        )
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"subscriptionDraftUpdate": {
+                "draft": {
+                    "id": v["draftId"],
+                    "status": "DRAFT",
+                    "nextBillingDate": v["input"].get("nextBillingDate", ""),
+                    "note": v["input"].get("note", ""),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT,
+                {
+                    "draft_id": "gid://shopify/SubscriptionDraft/d1",
+                    "next_billing_date": "2026-06-01T00:00:00Z",
+                    "note": "Customer requested 8-week cadence",
+                    "payment_method_id": (
+                        "gid://shopify/CustomerPaymentMethod/m1"
+                    ),
+                },
+            )
+        assert result.ok
+        assert captured["draftId"] == "gid://shopify/SubscriptionDraft/d1"
+        inp = captured["input"]
+        assert inp["nextBillingDate"] == "2026-06-01T00:00:00Z"
+        assert inp["note"] == "Customer requested 8-week cadence"
+        assert inp["paymentMethodId"] == \
+            "gid://shopify/CustomerPaymentMethod/m1"
+
+    # ── Commit ───────────────────────────────────
+
+    def test_commit_requires_draft_id(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT, {})
+        assert not result.ok
+
+    def test_commit_happy_path(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionDraftCommit": {
+                "contract": {
+                    "id": "gid://shopify/SubscriptionContract/c1",
+                    "status": "ACTIVE",
+                    "nextBillingDate": "2026-06-01T00:00:00Z",
+                },
+                "userErrors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT,
+                {"draft_id": "gid://shopify/SubscriptionDraft/d1"},
+            )
+        assert result.ok
+        assert result.data["contract_id"] == \
+            "gid://shopify/SubscriptionContract/c1"
+        assert result.data["status"] == "ACTIVE"
+        assert result.data["next_billing_date"] == \
+            "2026-06-01T00:00:00Z"
+
+    def test_commit_user_errors_fail_fast(self):
+        from core.adapters.shopify.subscription_draft import (
+            ShopifySubscriptionDraftAdapter,
+        )
+        a = ShopifySubscriptionDraftAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionDraftCommit": {
+                "contract": None,
+                "userErrors": [{"field": ["draftId"],
+                                "message": "Draft already committed",
+                                "code": "ALREADY_COMMITTED"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT,
+                {"draft_id": "gid://shopify/SubscriptionDraft/committed"},
+            )
+        assert not result.ok
 
