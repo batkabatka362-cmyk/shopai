@@ -256,6 +256,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_FULFILLMENT_SERVICE = "shopify_create_fulfillment_service"
     SHOPIFY_UPDATE_FULFILLMENT_SERVICE = "shopify_update_fulfillment_service"
     SHOPIFY_DELETE_FULFILLMENT_SERVICE = "shopify_delete_fulfillment_service"
+    SHOPIFY_CREATE_AUTOMATIC_DISCOUNT = "shopify_create_automatic_discount"
+    SHOPIFY_LIST_AUTOMATIC_DISCOUNTS = "shopify_list_automatic_discounts"
+    SHOPIFY_DELETE_AUTOMATIC_DISCOUNT = "shopify_delete_automatic_discount"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

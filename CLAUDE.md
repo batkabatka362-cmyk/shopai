@@ -284,6 +284,11 @@ tolerate both forms when the cost is low:
 - `priceLists` connection does NOT accept a `query` filter argument
   (unlike most connections). Pagination only — same restriction as
   `disputes`. Adapter silently drops the param.
+- `AutomaticDiscountSortKeys` is a NARROW enum — only `CREATED_AT`
+  and `ID`. The broader keys that other connections accept (TITLE,
+  STARTS_AT, RELEVANCE, ...) all reject. The much wider
+  `CodeDiscountSortKeys` for the code-based discount connection is
+  unrelated.
 
 ### Pattern E: schema-gated fields
 

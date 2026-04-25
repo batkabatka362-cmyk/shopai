@@ -40,6 +40,7 @@ from .customizations import (
     ShopifyDeliveryCustomizationsAdapter,
     ShopifyPaymentCustomizationsAdapter,
 )
+from .discount_automatic import ShopifyDiscountAutomaticAdapter
 from .discounts import ShopifyDiscountAdapter
 from .disputes import ShopifyDisputesAdapter
 from .draft_order_calculate import ShopifyDraftOrderCalculateAdapter
@@ -129,6 +130,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyPriceListAdapter,
     ShopifyCarrierServicesAdapter,
     ShopifyFulfillmentServicesAdapter,
+    ShopifyDiscountAutomaticAdapter,
 )
 
 

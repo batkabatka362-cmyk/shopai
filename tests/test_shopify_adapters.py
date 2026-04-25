@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fifty_adapters(self):
+    def test_register_all_adds_fiftyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 50
+        assert len(status) == 51
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -837,6 +837,7 @@ class TestShopifyBootstrap:
             "shopify_price_lists",
             "shopify_carrier_services",
             "shopify_fulfillment_services",
+            "shopify_discount_automatic",
         }
 
     def test_register_all_idempotent(self):
@@ -844,7 +845,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 50
+        assert len(get_registry()) == 51
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1028,6 +1029,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_FULFILLMENT_SERVICE).name == "shopify_fulfillment_services"
         assert router.route(Capability.SHOPIFY_UPDATE_FULFILLMENT_SERVICE).name == "shopify_fulfillment_services"
         assert router.route(Capability.SHOPIFY_DELETE_FULFILLMENT_SERVICE).name == "shopify_fulfillment_services"
+        assert router.route(Capability.SHOPIFY_LIST_AUTOMATIC_DISCOUNTS).name == "shopify_discount_automatic"
+        assert router.route(Capability.SHOPIFY_CREATE_AUTOMATIC_DISCOUNT).name == "shopify_discount_automatic"
+        assert router.route(Capability.SHOPIFY_DELETE_AUTOMATIC_DISCOUNT).name == "shopify_discount_automatic"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -13779,3 +13783,354 @@ class TestShopifyFulfillmentServicesAdapter:
             ShopifyFulfillmentServicesAdapter,
         )
         assert ShopifyFulfillmentServicesAdapter._normalise_service({}) == {}
+
+
+# ── ShopifyDiscountAutomaticAdapter ───────────────────────
+
+
+class TestShopifyDiscountAutomaticAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter()
+        assert a.name == "shopify_discount_automatic"
+        for cap in (
+            Capability.SHOPIFY_LIST_AUTOMATIC_DISCOUNTS,
+            Capability.SHOPIFY_CREATE_AUTOMATIC_DISCOUNT,
+            Capability.SHOPIFY_DELETE_AUTOMATIC_DISCOUNT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_basic_input({
+                "starts_at": "2026-04-26T00:00:00Z",
+                "percentage": 15,
+            })
+
+    def test_create_requires_starts_at(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_basic_input({"title": "x", "percentage": 15})
+
+    def test_create_requires_percentage_or_amount(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_basic_input({
+                "title": "x", "starts_at": "2026-04-26T00:00:00Z",
+            })
+
+    def test_create_percentage_range_enforced(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_basic_input({
+                "title": "x", "starts_at": "2026-04-26T00:00:00Z",
+                "percentage": 150,
+            })
+
+    def test_create_percentage_converted_to_fraction(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        out = a._build_basic_input({
+            "title": "Site-wide 15%",
+            "starts_at": "2026-04-26T00:00:00Z",
+            "percentage": 15,
+        })
+        # ShopAI takes 0-100, Shopify wants 0-1.
+        assert out["customerGets"]["value"]["percentage"] == 0.15
+        assert out["customerGets"]["items"]["all"] is True
+
+    def test_create_amount_off(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        out = a._build_basic_input({
+            "title": "$10 off",
+            "starts_at": "2026-04-26T00:00:00Z",
+            "amount_off": 10,
+        })
+        amount = out["customerGets"]["value"]["discountAmount"]
+        assert amount["amount"] == 10.0
+        assert amount["appliesOnEachItem"] is False
+
+    def test_create_amount_must_be_positive(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_basic_input({
+                "title": "x", "starts_at": "2026-04-26T00:00:00Z",
+                "amount_off": 0,
+            })
+
+    def test_create_minimum_subtotal_passed(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        out = a._build_basic_input({
+            "title": "x", "starts_at": "2026-04-26T00:00:00Z",
+            "percentage": 10,
+            "minimum_subtotal": 50,
+        })
+        sub = out["minimumRequirement"]["subtotal"]
+        assert sub["greaterThanOrEqualToSubtotal"] == 50.0
+
+    def test_create_minimum_quantity_passed(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        out = a._build_basic_input({
+            "title": "x", "starts_at": "2026-04-26T00:00:00Z",
+            "percentage": 10,
+            "minimum_quantity": 3,
+        })
+        # Shopify wants the quantity as a STRING — coerced.
+        qty = out["minimumRequirement"]["quantity"]
+        assert qty["greaterThanOrEqualToQuantity"] == "3"
+
+    def test_create_both_minimums_rejected(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_basic_input({
+                "title": "x", "starts_at": "2026-04-26T00:00:00Z",
+                "percentage": 10,
+                "minimum_subtotal": 50, "minimum_quantity": 3,
+            })
+
+    def test_create_invalid_applies_to_rejected(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_basic_input({
+                "title": "x", "starts_at": "2026-04-26T00:00:00Z",
+                "percentage": 10, "applies_to": "PRODUCTS",
+            })
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path_basic(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "automaticDiscountNodes": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/DiscountAutomaticNode/1",
+                    "automaticDiscount": {
+                        "__typename": "DiscountAutomaticBasic",
+                        "title": "15% off everything",
+                        "summary": "15% off",
+                        "status": "ACTIVE",
+                        "startsAt": "2026-04-26T00:00:00Z",
+                        "endsAt": "2026-04-30T23:59:59Z",
+                        "asyncUsageCount": 42,
+                        "minimumRequirement": {
+                            "__typename": "DiscountMinimumSubtotal",
+                            "greaterThanOrEqualToSubtotal": {
+                                "amount": "50.00",
+                                "currencyCode": "USD",
+                            },
+                        },
+                        "customerGets": {
+                            "value": {
+                                "__typename": "DiscountPercentage",
+                                "percentage": 0.15,
+                            },
+                            "items": {
+                                "__typename": "AllDiscountItems",
+                                "allItems": True,
+                            },
+                        },
+                    },
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_AUTOMATIC_DISCOUNTS, {},
+            )
+        assert result.ok
+        d = result.data["discounts"][0]
+        assert d["kind"] == "DiscountAutomaticBasic"
+        assert d["title"] == "15% off everything"
+        assert d["status"] == "ACTIVE"
+        assert d["percentage"] == 15.0
+        assert d["minimum_subtotal"] == "50.00"
+        assert d["usage_count"] == 42
+
+    def test_list_handles_bxgy_kind(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "automaticDiscountNodes": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/DiscountAutomaticNode/2",
+                    "automaticDiscount": {
+                        "__typename": "DiscountAutomaticBxgy",
+                        "title": "Buy 3 get 1 free",
+                        "status": "ACTIVE",
+                        "startsAt": "2026-04-26T00:00:00Z",
+                    },
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_AUTOMATIC_DISCOUNTS, {},
+            )
+        assert result.ok
+        d = result.data["discounts"][0]
+        assert d["kind"] == "DiscountAutomaticBxgy"
+        # Bxgy doesn't carry a flat percentage / amount; the keys
+        # default to absent.
+        assert "percentage" not in d
+        assert "amount_off" not in d
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_AUTOMATIC_DISCOUNTS, {"sort_key": "BAD"},
+        )
+        assert not result.ok
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"discountAutomaticBasicCreate": {
+                "automaticDiscountNode": {
+                    "id": "gid://shopify/DiscountAutomaticNode/new",
+                    "automaticDiscount": {
+                        "__typename": "DiscountAutomaticBasic",
+                        "title": v["automaticBasicDiscount"]["title"],
+                        "status": "ACTIVE",
+                        "startsAt": v["automaticBasicDiscount"]["startsAt"],
+                    },
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_AUTOMATIC_DISCOUNT,
+                {
+                    "title": "Site-wide 15%",
+                    "starts_at": "2026-04-26T00:00:00Z",
+                    "ends_at": "2026-04-30T23:59:59Z",
+                    "percentage": 15,
+                    "minimum_subtotal": 50,
+                },
+            )
+        assert result.ok
+        # Pattern A: variable name "automaticBasicDiscount" matches input type.
+        inp = captured["automaticBasicDiscount"]
+        assert inp["title"] == "Site-wide 15%"
+        assert inp["startsAt"] == "2026-04-26T00:00:00Z"
+        assert inp["customerGets"]["value"]["percentage"] == 0.15
+        assert result.data["discount"]["id"].endswith("/new")
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountAutomaticBasicCreate": {
+                "automaticDiscountNode": None,
+                "userErrors": [{"field": ["title"], "message": "is taken",
+                                "code": "TAKEN"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_AUTOMATIC_DISCOUNT,
+                {"title": "dup", "starts_at": "2026-04-26T00:00:00Z",
+                 "percentage": 10},
+            )
+        assert not result.ok
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_AUTOMATIC_DISCOUNT, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        a = ShopifyDiscountAutomaticAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountAutomaticDelete": {
+                "deletedAutomaticDiscountId": (
+                    "gid://shopify/DiscountAutomaticNode/1"
+                ),
+                "userErrors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_AUTOMATIC_DISCOUNT,
+                {"id": "gid://shopify/DiscountAutomaticNode/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/DiscountAutomaticNode/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.discount_automatic import (
+            ShopifyDiscountAutomaticAdapter,
+        )
+        assert ShopifyDiscountAutomaticAdapter._normalise_discount({}) == {}
+        assert ShopifyDiscountAutomaticAdapter._normalise_discount(None) == {}
