@@ -35,6 +35,7 @@ from .order_edits import ShopifyOrderEditsAdapter
 from .publications import ShopifyPublicationsAdapter
 from .returns import ShopifyReturnsAdapter
 from .risk import ShopifyRiskAdapter
+from .segments import ShopifyCustomerSegmentsAdapter
 from .themes import ShopifyThemesAdapter
 from .translations import ShopifyTranslationsAdapter
 
@@ -57,6 +58,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyThemesAdapter,
     ShopifyAnalyticsAdapter,
     ShopifyTranslationsAdapter,
+    ShopifyCustomerSegmentsAdapter,
 )
 
 

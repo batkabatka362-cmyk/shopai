@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fifteen_adapters(self):
+    def test_register_all_adds_sixteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 15
+        assert len(status) == 16
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -802,7 +802,7 @@ class TestShopifyBootstrap:
             "shopify_returns", "shopify_metaobjects",
             "shopify_publications", "shopify_order_edits",
             "shopify_themes", "shopify_analytics",
-            "shopify_translations",
+            "shopify_translations", "shopify_customer_segments",
         }
 
     def test_register_all_idempotent(self):
@@ -810,7 +810,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 15
+        assert len(get_registry()) == 16
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -873,6 +873,263 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_TRANSLATABLE_RESOURCE).name == "shopify_translations"
         assert router.route(Capability.SHOPIFY_REGISTER_TRANSLATIONS).name == "shopify_translations"
         assert router.route(Capability.SHOPIFY_REMOVE_TRANSLATIONS).name == "shopify_translations"
+        assert router.route(Capability.SHOPIFY_QUERY_SEGMENT).name == "shopify_customer_segments"
+        assert router.route(Capability.SHOPIFY_GET_SEGMENT_MEMBERS).name == "shopify_customer_segments"
+        assert router.route(Capability.SHOPIFY_CREATE_SEGMENT).name == "shopify_customer_segments"
+
+
+# ── ShopifyCustomerSegmentsAdapter ────────────────────────
+
+
+class TestShopifyCustomerSegmentsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter()
+        assert a.name == "shopify_customer_segments"
+        for cap in (
+            Capability.SHOPIFY_QUERY_SEGMENT,
+            Capability.SHOPIFY_GET_SEGMENT_MEMBERS,
+            Capability.SHOPIFY_CREATE_SEGMENT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Query segments ───────────────────────────────
+
+    def test_query_segments_happy_path(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "segments": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Segment/1",
+                        "name": "VIPs",
+                        "query": "amount_spent > 500",
+                        "creationDate": "2026-01-01T00:00:00Z",
+                        "lastEditDate": "2026-04-01T00:00:00Z",
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_QUERY_SEGMENT, {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 1
+        seg = result.data["segments"][0]
+        assert seg["name"] == "VIPs"
+        assert seg["query"] == "amount_spent > 500"
+
+    def test_query_segments_clamps_limit(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"segments": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_QUERY_SEGMENT, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_query_segments_passes_filter_and_sort(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v["query"]
+            captured["sortKey"] = v["sortKey"]
+            captured["reverse"] = v["reverse"]
+            return {"segments": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_QUERY_SEGMENT, {
+                "query": "name:VIP",
+                "sort_key": "creation_date",
+                "reverse": True,
+            })
+        assert captured["query"] == "name:VIP"
+        assert captured["sortKey"] == "CREATION_DATE"
+        assert captured["reverse"] is True
+
+    def test_query_segments_handles_empty(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "segments": {"pageInfo": {}, "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_QUERY_SEGMENT, {})
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Get segment members ─────────────────────────
+
+    def test_get_members_requires_segment_id(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_SEGMENT_MEMBERS, {})
+        assert not result.ok
+
+    def test_get_members_happy_path(self):
+        """SegmentStatistics has no totalCount in the current schema
+        (caught live). The adapter relies on pageInfo as the
+        has-more signal; engines that need an exact total scan the
+        connection."""
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customerSegmentMembers": {
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur"},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Customer/1",
+                        "firstName": "Ada",
+                        "lastName": "Lovelace",
+                        "displayName": "Ada Lovelace",
+                        "defaultEmailAddress": {"emailAddress": "ada@example.com"},
+                        "defaultPhoneNumber": {"phoneNumber": "+15551234"},
+                        "amountSpent": {"amount": "1234.50",
+                                        "currencyCode": "USD"},
+                        "numberOfOrders": 5,
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_SEGMENT_MEMBERS, {
+                "segment_id": "gid://shopify/Segment/1",
+                "limit": 10,
+            })
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["has_next_page"] is True
+        m = result.data["members"][0]
+        assert m["first_name"] == "Ada"
+        assert m["email"] == "ada@example.com"
+        assert m["amount_spent"] == 1234.50
+        assert m["currency"] == "USD"
+        assert m["orders_count"] == 5
+
+    def test_get_members_clamps_limit(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"customerSegmentMembers": {
+                "pageInfo": {}, "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_GET_SEGMENT_MEMBERS, {
+                "segment_id": "gid://x", "limit": 9999,
+            })
+        assert captured["first"] == 250
+
+    def test_get_members_handles_missing_optional_fields(self):
+        """Customer.defaultEmailAddress / defaultPhoneNumber can be
+        null when the customer hasn't given those details. The
+        normaliser must surface empty strings rather than crash."""
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customerSegmentMembers": {
+                "pageInfo": {},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Customer/x",
+                        "firstName": "", "lastName": "",
+                        "displayName": "Anonymous",
+                        "defaultEmailAddress": None,
+                        "defaultPhoneNumber": None,
+                        "amountSpent": {"amount": "0",
+                                        "currencyCode": "USD"},
+                        "numberOfOrders": 0,
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_SEGMENT_MEMBERS, {
+                "segment_id": "gid://shopify/Segment/1",
+            })
+        assert result.ok
+        assert result.data["members"][0]["email"] == ""
+        assert result.data["members"][0]["phone"] == ""
+
+    # ── Create segment ───────────────────────────────
+
+    def test_create_segment_requires_name(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_SEGMENT, {
+                "query": "amount_spent > 500",
+            })
+        assert not result.ok
+
+    def test_create_segment_requires_query(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_SEGMENT, {
+                "name": "VIPs",
+            })
+        assert not result.ok
+
+    def test_create_segment_happy_path(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"segmentCreate": {
+                "segment": {
+                    "id": "gid://shopify/Segment/99",
+                    "name": v["name"],
+                    "query": v["query"],
+                    "creationDate": "2026-04-25T12:00:00Z",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_SEGMENT, {
+                "name": "At-risk customers",
+                "query": "last_order_date < -60d AND amount_spent > 200",
+            })
+        assert result.ok
+        assert result.data["segment"]["id"] == "gid://shopify/Segment/99"
+        assert result.data["segment"]["name"] == "At-risk customers"
+        assert captured["name"] == "At-risk customers"
+        assert "amount_spent" in captured["query"]
+
+    def test_create_segment_user_errors_propagate(self):
+        from core.adapters.shopify.segments import ShopifyCustomerSegmentsAdapter
+        a = ShopifyCustomerSegmentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "segmentCreate": {
+                "segment": None,
+                "userErrors": [{
+                    "field": ["query"],
+                    "message": "Invalid segment query syntax",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_SEGMENT, {
+                "name": "Bad",
+                "query": "this is not valid",
+            })
+        assert not result.ok
 
 
 # ── ShopifyTranslationsAdapter ────────────────────────────

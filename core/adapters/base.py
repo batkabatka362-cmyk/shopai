@@ -139,6 +139,8 @@ class Capability(str, Enum):
     SHOPIFY_GET_TRANSLATABLE_RESOURCE = "shopify_get_translatable_resource"
     SHOPIFY_REGISTER_TRANSLATIONS = "shopify_register_translations"
     SHOPIFY_REMOVE_TRANSLATIONS = "shopify_remove_translations"
+    SHOPIFY_GET_SEGMENT_MEMBERS = "shopify_get_segment_members"
+    SHOPIFY_CREATE_SEGMENT = "shopify_create_segment"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
