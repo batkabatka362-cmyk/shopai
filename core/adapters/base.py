@@ -241,6 +241,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_COLLECTION = "shopify_create_collection"
     SHOPIFY_UPDATE_COLLECTION = "shopify_update_collection"
     SHOPIFY_DELETE_COLLECTION = "shopify_delete_collection"
+    SHOPIFY_LIST_METAFIELD_DEFINITIONS = "shopify_list_metafield_definitions"
+    SHOPIFY_CREATE_METAFIELD_DEFINITION = "shopify_create_metafield_definition"
+    SHOPIFY_DELETE_METAFIELD_DEFINITION = "shopify_delete_metafield_definition"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

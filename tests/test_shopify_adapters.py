@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortysix_adapters(self):
+    def test_register_all_adds_fortyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 46
+        assert len(status) == 47
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -833,6 +833,7 @@ class TestShopifyBootstrap:
             "shopify_apps",
             "shopify_abandoned_checkouts",
             "shopify_collections",
+            "shopify_metafield_definitions",
         }
 
     def test_register_all_idempotent(self):
@@ -840,7 +841,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 46
+        assert len(get_registry()) == 47
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1009,6 +1010,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_COLLECTION).name == "shopify_collections"
         assert router.route(Capability.SHOPIFY_UPDATE_COLLECTION).name == "shopify_collections"
         assert router.route(Capability.SHOPIFY_DELETE_COLLECTION).name == "shopify_collections"
+        assert router.route(Capability.SHOPIFY_LIST_METAFIELD_DEFINITIONS).name == "shopify_metafield_definitions"
+        assert router.route(Capability.SHOPIFY_CREATE_METAFIELD_DEFINITION).name == "shopify_metafield_definitions"
+        assert router.route(Capability.SHOPIFY_DELETE_METAFIELD_DEFINITION).name == "shopify_metafield_definitions"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -12658,3 +12662,325 @@ class TestShopifyCollectionsAdapter:
         from core.adapters.shopify.collections import ShopifyCollectionsAdapter
         assert ShopifyCollectionsAdapter._normalise_collection({}) == {}
         assert ShopifyCollectionsAdapter._normalise_rule_set(None) == {}
+
+
+# ── ShopifyMetafieldDefinitionsAdapter ────────────────────
+
+
+class TestShopifyMetafieldDefinitionsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter()
+        assert a.name == "shopify_metafield_definitions"
+        for cap in (
+            Capability.SHOPIFY_LIST_METAFIELD_DEFINITIONS,
+            Capability.SHOPIFY_CREATE_METAFIELD_DEFINITION,
+            Capability.SHOPIFY_DELETE_METAFIELD_DEFINITION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_namespace(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_definition_input({"key": "x", "type": "json",
+                                       "owner_type": "PRODUCT"})
+
+    def test_create_requires_key(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_definition_input({"namespace": "shopai", "type": "json",
+                                       "owner_type": "PRODUCT"})
+
+    def test_create_requires_type(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_definition_input({"namespace": "shopai", "key": "x",
+                                       "owner_type": "PRODUCT"})
+
+    def test_create_invalid_owner_type_rejected(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_definition_input({
+                "namespace": "shopai", "key": "x", "type": "json",
+                "owner_type": "WIDGET",
+            })
+
+    def test_create_owner_type_normalised_uppercase(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        out = a._build_definition_input({
+            "namespace": "shopai", "key": "x", "type": "json",
+            "owner_type": "product",
+        })
+        assert out["ownerType"] == "PRODUCT"
+
+    def test_create_full_shape(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        out = a._build_definition_input({
+            "namespace": "shopai",
+            "key": "fraud_score",
+            "type": "number_decimal",
+            "name": "AI Fraud Score",
+            "description": "0-1 risk",
+            "owner_type": "ORDER",
+            "pin": True,
+            "validations": [
+                {"name": "min", "value": 0},
+                {"name": "max", "value": "1.0"},
+            ],
+        })
+        assert out["namespace"] == "shopai"
+        assert out["key"] == "fraud_score"
+        assert out["type"] == "number_decimal"
+        assert out["name"] == "AI Fraud Score"
+        assert out["ownerType"] == "ORDER"
+        assert out["pin"] is True
+        assert len(out["validations"]) == 2
+        assert out["validations"][0]["value"] == "0"
+
+    def test_validation_missing_value_rejected(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_definition_input({
+                "namespace": "shopai", "key": "x", "type": "json",
+                "owner_type": "PRODUCT",
+                "validations": [{"name": "min"}],
+            })
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_requires_owner_type(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_LIST_METAFIELD_DEFINITIONS, {})
+        assert not result.ok
+
+    def test_list_invalid_owner_type_rejected(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_METAFIELD_DEFINITIONS,
+            {"owner_type": "INVALID"},
+        )
+        assert not result.ok
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metafieldDefinitions": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/MetafieldDefinition/1",
+                    "namespace": "shopai",
+                    "key": "fraud_score",
+                    "name": "AI Fraud Score",
+                    "type": {"name": "number_decimal", "category": "NUMBER"},
+                    "ownerType": "ORDER",
+                    "pinnedPosition": 1,
+                    "metafieldsCount": {"count": 42},
+                    "validations": [
+                        {"name": "max", "type": "number_decimal", "value": "1.0"},
+                    ],
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_METAFIELD_DEFINITIONS,
+                {"owner_type": "ORDER"},
+            )
+        assert result.ok
+        d = result.data["definitions"][0]
+        assert d["namespace"] == "shopai"
+        assert d["key"] == "fraud_score"
+        assert d["type"] == "number_decimal"
+        assert d["type_category"] == "NUMBER"
+        assert d["owner_type"] == "ORDER"
+        assert d["is_pinned"] is True
+        assert d["metafields_count"] == 42
+        assert d["validations"][0]["value"] == "1.0"
+
+    def test_list_passes_namespace_filter(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metafieldDefinitions": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_METAFIELD_DEFINITIONS, {
+                "owner_type": "PRODUCT",
+                "namespace": "shopai",
+            })
+        assert captured["ownerType"] == "PRODUCT"
+        assert captured["namespace"] == "shopai"
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metafieldDefinitionCreate": {
+                "createdDefinition": {
+                    "id": "gid://shopify/MetafieldDefinition/new",
+                    "namespace": v["definition"]["namespace"],
+                    "key": v["definition"]["key"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_METAFIELD_DEFINITION,
+                {
+                    "namespace": "shopai",
+                    "key": "fraud_score",
+                    "type": "number_decimal",
+                    "owner_type": "ORDER",
+                    "name": "AI Fraud Score",
+                    "pin": True,
+                },
+            )
+        assert result.ok
+        # Pattern A: variable name matches the input type ("definition").
+        assert captured["definition"]["namespace"] == "shopai"
+        assert captured["definition"]["pin"] is True
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metafieldDefinitionCreate": {
+                "createdDefinition": None,
+                "userErrors": [{"field": ["key"], "message": "is taken",
+                                "code": "TAKEN"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_METAFIELD_DEFINITION,
+                {"namespace": "shopai", "key": "dup", "type": "json",
+                 "owner_type": "PRODUCT"},
+            )
+        assert not result.ok
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_METAFIELD_DEFINITION, {},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path_keeps_metafields_by_default(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metafieldDefinitionDelete": {
+                "deletedDefinitionId": (
+                    "gid://shopify/MetafieldDefinition/1"
+                ),
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_METAFIELD_DEFINITION,
+                {"id": "gid://shopify/MetafieldDefinition/1"},
+            )
+        assert result.ok
+        # Default is False — values survive the schema deletion.
+        assert captured["deleteAllAssociatedMetafields"] is False
+
+    def test_delete_with_value_purge(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        a = ShopifyMetafieldDefinitionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metafieldDefinitionDelete": {
+                "deletedDefinitionId": "gid://shopify/MetafieldDefinition/1",
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_DELETE_METAFIELD_DEFINITION,
+                {
+                    "id": "gid://shopify/MetafieldDefinition/1",
+                    "delete_all_associated_metafields": True,
+                },
+            )
+        assert captured["deleteAllAssociatedMetafields"] is True
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.metafield_definitions import (
+            ShopifyMetafieldDefinitionsAdapter,
+        )
+        assert ShopifyMetafieldDefinitionsAdapter._normalise_definition({}) == {}
+        assert ShopifyMetafieldDefinitionsAdapter._normalise_definition(None) == {}
