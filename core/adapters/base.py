@@ -202,6 +202,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_WEBHOOK = "shopify_create_webhook"
     SHOPIFY_UPDATE_WEBHOOK = "shopify_update_webhook"
     SHOPIFY_DELETE_WEBHOOK = "shopify_delete_webhook"
+    SHOPIFY_RUN_BULK_QUERY = "shopify_run_bulk_query"
+    SHOPIFY_GET_BULK_OPERATION = "shopify_get_bulk_operation"
+    SHOPIFY_CANCEL_BULK_OPERATION = "shopify_cancel_bulk_operation"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

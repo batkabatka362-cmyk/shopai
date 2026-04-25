@@ -23,6 +23,7 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .analytics import ShopifyAnalyticsAdapter
+from .bulk import ShopifyBulkOperationsAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
 from .channels import ShopifyChannelsAdapter
 from .companies import ShopifyCompaniesAdapter
@@ -95,6 +96,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyOrdersAdapter,
     ShopifyCustomersAdapter,
     ShopifyWebhooksAdapter,
+    ShopifyBulkOperationsAdapter,
 )
 
 

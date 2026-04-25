@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtythree_adapters(self):
+    def test_register_all_adds_thirtyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 33
+        assert len(status) == 34
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -820,6 +820,7 @@ class TestShopifyBootstrap:
             "shopify_orders",
             "shopify_customers",
             "shopify_webhooks",
+            "shopify_bulk",
         }
 
     def test_register_all_idempotent(self):
@@ -827,7 +828,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 33
+        assert len(get_registry()) == 34
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -957,6 +958,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_WEBHOOK).name == "shopify_webhooks"
         assert router.route(Capability.SHOPIFY_UPDATE_WEBHOOK).name == "shopify_webhooks"
         assert router.route(Capability.SHOPIFY_DELETE_WEBHOOK).name == "shopify_webhooks"
+        assert router.route(Capability.SHOPIFY_RUN_BULK_QUERY).name == "shopify_bulk"
+        assert router.route(Capability.SHOPIFY_GET_BULK_OPERATION).name == "shopify_bulk"
+        assert router.route(Capability.SHOPIFY_CANCEL_BULK_OPERATION).name == "shopify_bulk"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -9739,3 +9743,158 @@ class TestShopifyWebhooksAdapter:
     def test_normalise_handles_empty(self):
         from core.adapters.shopify.webhooks import ShopifyWebhooksAdapter
         assert ShopifyWebhooksAdapter._normalise_webhook({}) == {}
+
+
+# ── ShopifyBulkOperationsAdapter ──────────────────────────
+
+
+class TestShopifyBulkOperationsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter()
+        assert a.name == "shopify_bulk"
+        for cap in (
+            Capability.SHOPIFY_RUN_BULK_QUERY,
+            Capability.SHOPIFY_GET_BULK_OPERATION,
+            Capability.SHOPIFY_CANCEL_BULK_OPERATION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Run query ────────────────────────────────
+
+    def test_run_query_requires_query(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_RUN_BULK_QUERY, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_run_query_happy_path(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"bulkOperationRunQuery": {
+                "bulkOperation": {
+                    "id": "gid://shopify/BulkOperation/b1",
+                    "status": "CREATED",
+                    "type": "QUERY",
+                    "query": v["query"],
+                    "objectCount": "0",
+                    "fileSize": "0",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_RUN_BULK_QUERY, {
+                "query": "{ products { edges { node { id } } } }",
+            })
+        assert result.ok
+        op = result.data["bulk_operation"]
+        assert op["id"] == "gid://shopify/BulkOperation/b1"
+        assert op["status"] == "CREATED"
+        assert op["object_count"] == 0
+        assert captured["query"].startswith("{ products")
+
+    def test_run_query_user_errors_fail_fast(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"bulkOperationRunQuery": {
+            "bulkOperation": None,
+            "userErrors": [
+                {"field": ["query"],
+                 "message": "A bulk query operation for this app and "
+                            "shop is already in progress."},
+            ],
+        }}):
+            result = a.execute(Capability.SHOPIFY_RUN_BULK_QUERY, {
+                "query": "{ products { edges { node { id } } } }",
+            })
+        assert not result.ok
+
+    # ── Get current ──────────────────────────────
+
+    def test_get_current_when_none_exists(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"currentBulkOperation": None}):
+            result = a.execute(Capability.SHOPIFY_GET_BULK_OPERATION, {})
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["bulk_operation"] == {}
+        assert result.data["is_terminal"] is False
+
+    def test_get_current_completed_is_terminal(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"currentBulkOperation": {
+            "id": "gid://shopify/BulkOperation/b1",
+            "status": "COMPLETED",
+            "type": "QUERY",
+            "objectCount": "100",
+            "fileSize": "5000",
+            "url": "https://storage.googleapis.com/shopify-tiers/.../out.jsonl",
+        }}):
+            result = a.execute(Capability.SHOPIFY_GET_BULK_OPERATION, {})
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["is_terminal"] is True
+        op = result.data["bulk_operation"]
+        assert op["status"] == "COMPLETED"
+        assert op["object_count"] == 100
+        assert op["file_size"] == 5000
+        assert op["url"].endswith(".jsonl")
+
+    def test_get_current_running_is_not_terminal(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"currentBulkOperation": {
+            "id": "gid://shopify/BulkOperation/b1",
+            "status": "RUNNING",
+            "type": "QUERY",
+        }}):
+            result = a.execute(Capability.SHOPIFY_GET_BULK_OPERATION, {})
+        assert result.ok
+        assert result.data["is_terminal"] is False
+
+    # ── Cancel ───────────────────────────────────
+
+    def test_cancel_requires_id(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CANCEL_BULK_OPERATION, {})
+        assert not result.ok
+
+    def test_cancel_happy_path(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        a = ShopifyBulkOperationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"bulkOperationCancel": {
+            "bulkOperation": {
+                "id": "gid://shopify/BulkOperation/b1",
+                "status": "CANCELING",
+                "type": "QUERY",
+            },
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CANCEL_BULK_OPERATION, {
+                "id": "gid://shopify/BulkOperation/b1",
+            })
+        assert result.ok
+        assert result.data["bulk_operation"]["status"] == "CANCELING"
+
+    # ── Normaliser ───────────────────────────────
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.bulk import ShopifyBulkOperationsAdapter
+        assert ShopifyBulkOperationsAdapter._normalise_op({}) == {}
+        assert ShopifyBulkOperationsAdapter._normalise_op(None) == {}
