@@ -27,6 +27,7 @@ from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
 from .inventory import ShopifyInventoryAdapter
+from .marketing_events import ShopifyMarketingEventsAdapter
 from .metafield import ShopifyMetafieldAdapter
 from .risk import ShopifyRiskAdapter
 
@@ -41,6 +42,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDiscountAdapter,
     ShopifyFilesAdapter,
     ShopifyDraftOrdersAdapter,
+    ShopifyMarketingEventsAdapter,
 )
 
 

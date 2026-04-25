@@ -790,15 +790,15 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seven_adapters(self):
+    def test_register_all_adds_eight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 7
+        assert len(status) == 8
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
             "shopify_discount", "shopify_files",
-            "shopify_draft_orders",
+            "shopify_draft_orders", "shopify_marketing_events",
         }
 
     def test_register_all_idempotent(self):
@@ -806,7 +806,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 7
+        assert len(get_registry()) == 8
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -846,6 +846,560 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_DRAFT_ORDER).name == "shopify_draft_orders"
         assert router.route(Capability.SHOPIFY_COMPLETE_DRAFT_ORDER).name == "shopify_draft_orders"
         assert router.route(Capability.SHOPIFY_LIST_DRAFT_ORDERS).name == "shopify_draft_orders"
+        assert router.route(Capability.SHOPIFY_CREATE_MARKETING_ACTIVITY).name == "shopify_marketing_events"
+        assert router.route(Capability.SHOPIFY_UPDATE_MARKETING_ACTIVITY).name == "shopify_marketing_events"
+        assert router.route(Capability.SHOPIFY_ADD_MARKETING_ENGAGEMENT).name == "shopify_marketing_events"
+        assert router.route(Capability.SHOPIFY_LIST_MARKETING_ACTIVITIES).name == "shopify_marketing_events"
+
+
+# ── ShopifyMarketingEventsAdapter ──────────────────────────
+
+
+class TestShopifyMarketingEventsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter()
+        assert a.name == "shopify_marketing_events"
+        for cap in (
+            Capability.SHOPIFY_CREATE_MARKETING_ACTIVITY,
+            Capability.SHOPIFY_UPDATE_MARKETING_ACTIVITY,
+            Capability.SHOPIFY_ADD_MARKETING_ENGAGEMENT,
+            Capability.SHOPIFY_LIST_MARKETING_ACTIVITIES,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_create_input validation ─────────────────────
+
+    def test_create_input_requires_title(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMarketingEventsAdapter._build_create_input({"channel": "social"})
+
+    def test_create_input_requires_channel(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMarketingEventsAdapter._build_create_input({"title": "Camp"})
+
+    @staticmethod
+    def _min_valid_create_params(**overrides) -> dict:
+        """Minimal valid input for ``_build_create_input``.
+
+        Three fields are functionally required by Shopify's external
+        activity surface (caught live during smoke testing):
+        ``utm`` (so sales can be attributed), ``remote_url`` (for
+        click-through to the source), and ``ad_spend``-or-``budget``
+        (to satisfy the non-null Budget validation). The helper
+        encodes that contract so individual tests only override the
+        fields they care about.
+        """
+        base = {
+            "title": "Smoke Title",
+            "channel": "social",
+            "utm": {"source": "fb", "medium": "cpc", "campaign": "c"},
+            "remote_url": "https://example.com/dashboard",
+            "ad_spend": {"amount": 100, "currency": "USD"},
+        }
+        base.update(overrides)
+        return base
+
+    def test_create_input_channel_aliases_resolve(self):
+        """Engines pass vendor names ('facebook', 'tiktok', 'google');
+        Shopify wants the canonical SOCIAL/SEARCH/etc. enum. Aliases
+        must collapse cleanly at the boundary."""
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        cases = [
+            ("facebook", "SOCIAL"),
+            ("Instagram", "SOCIAL"),
+            ("TIKTOK", "SOCIAL"),
+            ("google", "SEARCH"),
+            ("google_ads", "SEARCH"),
+            ("display", "DISPLAY"),
+            ("email", "EMAIL"),
+        ]
+        for raw, expected in cases:
+            out = ShopifyMarketingEventsAdapter._build_create_input(
+                self._min_valid_create_params(channel=raw)
+            )
+            assert out["marketingChannelType"] == expected, raw
+
+    def test_create_input_unknown_channel_rejected(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMarketingEventsAdapter._build_create_input(
+                self._min_valid_create_params(channel="carrier-pigeon")
+            )
+
+    def test_create_input_tactic_defaults_to_ad(self):
+        """Shopify rejects MarketingActivityCreateExternalInput with
+        a null tactic (caught live during smoke test). The adapter
+        defaults to AD because that's 95% of ShopAI's launches."""
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        out = ShopifyMarketingEventsAdapter._build_create_input(
+            self._min_valid_create_params()
+        )
+        assert out["tactic"] == "AD"
+
+    def test_create_input_tactic_aliases_resolve(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        cases = [
+            ("ad", "AD"),
+            ("paid", "AD"),
+            ("post", "POST"),
+            ("abandoned_cart", "ABANDONED_CART"),
+            ("cart_recovery", "ABANDONED_CART"),
+            ("retargeting", "RETARGETING"),
+            ("seo", "SEO"),
+        ]
+        for raw, expected in cases:
+            out = ShopifyMarketingEventsAdapter._build_create_input(
+                self._min_valid_create_params(tactic=raw)
+            )
+            assert out["tactic"] == expected, raw
+
+    def test_create_input_unknown_tactic_rejected(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMarketingEventsAdapter._build_create_input(
+                self._min_valid_create_params(tactic="telepathy")
+            )
+
+    def test_create_input_status_alias_resolves_and_defaults_active(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        out = ShopifyMarketingEventsAdapter._build_create_input(
+            self._min_valid_create_params()
+        )
+        assert out["status"] == "ACTIVE"
+        out2 = ShopifyMarketingEventsAdapter._build_create_input(
+            self._min_valid_create_params(status="paused")
+        )
+        assert out2["status"] == "PAUSED"
+
+    def test_create_input_utm_required_subfields(self):
+        """Shopify cannot attribute sales without source/medium/campaign;
+        rejecting upfront prevents an opaque userErrors envelope."""
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        for missing in ("source", "medium", "campaign"):
+            utm = {"source": "x", "medium": "y", "campaign": "z"}
+            del utm[missing]
+            with pytest.raises(AdapterValidationError) as exc:
+                ShopifyMarketingEventsAdapter._build_create_input(
+                    self._min_valid_create_params(utm=utm)
+                )
+            assert missing in str(exc.value)
+
+    def test_create_input_utm_passes_optional_fields(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        out = ShopifyMarketingEventsAdapter._build_create_input(
+            self._min_valid_create_params(utm={
+                "source": "fb", "medium": "cpc", "campaign": "c25",
+                "content": "hero", "term": "summer",
+            })
+        )
+        assert out["utm"] == {
+            "source": "fb", "medium": "cpc", "campaign": "c25",
+            "content": "hero", "term": "summer",
+        }
+
+    def test_create_input_remote_url_required(self):
+        """Shopify rejects activities with a null remoteUrl (caught
+        live during smoke test); the merchant uses it to click through
+        to the source platform."""
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        params = self._min_valid_create_params()
+        del params["remote_url"]
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyMarketingEventsAdapter._build_create_input(params)
+        assert "remote_url" in str(exc.value)
+
+    def test_create_input_remote_id_url_preview_pass_through(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        out = ShopifyMarketingEventsAdapter._build_create_input(
+            self._min_valid_create_params(
+                remote_id="fb-camp-123",
+                remote_url="https://business.facebook.com/...",
+                remote_preview_image_url="https://cdn/preview.jpg",
+            )
+        )
+        assert out["remoteId"] == "fb-camp-123"
+        assert out["remoteUrl"].startswith("https://business")
+        assert out["remotePreviewImageUrl"].endswith("preview.jpg")
+
+    def test_create_input_ad_spend_money_input_normalised(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        out = ShopifyMarketingEventsAdapter._build_create_input(
+            self._min_valid_create_params(
+                ad_spend={"amount": 250, "currency": "usd"},
+            )
+        )
+        assert out["adSpend"] == {"amount": "250.00", "currencyCode": "USD"}
+
+    def test_create_input_ad_spend_bare_number_defaults_usd(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        out = ShopifyMarketingEventsAdapter._build_create_input(
+            self._min_valid_create_params(ad_spend=99.5)
+        )
+        assert out["adSpend"] == {"amount": "99.50", "currencyCode": "USD"}
+
+    def test_create_input_ad_spend_negative_rejected(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMarketingEventsAdapter._build_create_input(
+                self._min_valid_create_params(
+                    ad_spend={"amount": -10, "currency": "USD"},
+                )
+            )
+
+    def test_create_input_budget_validation(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        params = self._min_valid_create_params(
+            budget={"total": 5000, "type": "DAILY"},
+        )
+        # Helper sets ad_spend by default; this test cares about
+        # explicit budget shaping, so drop ad_spend to isolate.
+        del params["ad_spend"]
+        out = ShopifyMarketingEventsAdapter._build_create_input(params)
+        assert out["budget"]["budgetType"] == "DAILY"
+        assert out["budget"]["total"]["amount"] == "5000.00"
+
+        bad_no_total = self._min_valid_create_params(
+            budget={"type": "DAILY"},  # missing total
+        )
+        del bad_no_total["ad_spend"]
+        with pytest.raises(AdapterValidationError):
+            ShopifyMarketingEventsAdapter._build_create_input(bad_no_total)
+
+        bad_type = self._min_valid_create_params(
+            budget={"total": 5000, "type": "WHENEVER"},
+        )
+        del bad_type["ad_spend"]
+        with pytest.raises(AdapterValidationError):
+            ShopifyMarketingEventsAdapter._build_create_input(bad_type)
+
+    def test_create_input_budget_required_or_inferred_from_ad_spend(self):
+        """Shopify rejects external activities with a null budget
+        (caught live during smoke test). When the caller gives
+        ad_spend but no explicit budget, default budget = ad_spend
+        as LIFETIME — most ShopAI engines already know the spend and
+        don't care about a separate 'planned budget' field."""
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        # No budget AND no ad_spend → fail fast.
+        params = self._min_valid_create_params()
+        del params["ad_spend"]
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyMarketingEventsAdapter._build_create_input(params)
+        assert "budget" in str(exc.value).lower()
+
+        # ad_spend only → budget inferred as LIFETIME.
+        out = ShopifyMarketingEventsAdapter._build_create_input(
+            self._min_valid_create_params(
+                ad_spend={"amount": 100, "currency": "USD"},
+            )
+        )
+        assert out["budget"]["budgetType"] == "LIFETIME"
+        assert out["budget"]["total"] == {"amount": "100.00",
+                                          "currencyCode": "USD"}
+
+    # ── Create — happy path ───────────────────────────────
+
+    def test_create_activity_happy_path(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "marketingActivityCreateExternal": {
+                "marketingActivity": {
+                    "id": "gid://shopify/MarketingActivity/123",
+                    "title": "Summer Sale FB",
+                    "status": "ACTIVE",
+                    "marketingChannelType": "SOCIAL",
+                    "sourceAndMedium": "facebook / cpc",
+                    "adSpend": {"amount": "250.00", "currencyCode": "USD"},
+                    "utmParameters": {
+                        "source": "facebook", "medium": "cpc",
+                        "campaign": "summer25", "content": "", "term": "",
+                    },
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_MARKETING_ACTIVITY,
+                self._min_valid_create_params(
+                    title="Summer Sale FB", channel="facebook",
+                    utm={"source": "facebook", "medium": "cpc",
+                         "campaign": "summer25"},
+                    ad_spend={"amount": 250, "currency": "USD"},
+                    remote_id="fb-1",
+                    remote_url="https://business.facebook.com/...",
+                ),
+            )
+        assert result.ok
+        act = result.data["activity"]
+        assert act["id"] == "gid://shopify/MarketingActivity/123"
+        assert act["channel"] == "SOCIAL"
+        assert act["status"] == "ACTIVE"
+        assert act["ad_spend"] == 250.0
+        assert act["currency"] == "USD"
+        assert act["utm"]["source"] == "facebook"
+        assert act["utm"]["campaign"] == "summer25"
+
+    def test_create_activity_user_errors_propagate(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "marketingActivityCreateExternal": {
+                "marketingActivity": None,
+                "userErrors": [{
+                    "field": ["input", "utm", "source"],
+                    "message": "UTM source is required",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_MARKETING_ACTIVITY,
+                self._min_valid_create_params(),
+            )
+        assert not result.ok
+
+    # ── Update activity ──────────────────────────────────
+
+    def test_update_activity_requires_id(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_MARKETING_ACTIVITY,
+                {"status": "paused"},
+            )
+        assert not result.ok
+
+    def test_update_activity_needs_at_least_one_field(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_MARKETING_ACTIVITY,
+                {"id": "gid://shopify/MarketingActivity/1"},
+            )
+        assert not result.ok
+
+    def test_update_activity_status_alias_resolves(self):
+        """Schema places ``marketingActivityId`` at the GraphQL field
+        level, NOT inside MarketingActivityUpdateExternalInput — caught
+        live during smoke test ('Field is not defined on
+        MarketingActivityUpdateExternalInput' for both ``id`` and
+        ``marketingActivityId`' inside input). The adapter splits the
+        identifier out as a top-level variable."""
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"marketingActivityUpdateExternal": {
+                "marketingActivity": {"id": v["marketingActivityId"]},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_UPDATE_MARKETING_ACTIVITY, {
+                "id": "gid://shopify/MarketingActivity/1",
+                "status": "paused",
+            })
+        # Identifier sits OUTSIDE input, only update fields go inside.
+        assert captured["marketingActivityId"] == "gid://shopify/MarketingActivity/1"
+        assert captured["input"]["status"] == "PAUSED"
+        assert "id" not in captured["input"]
+        assert "marketingActivityId" not in captured["input"]
+
+    # ── Engagement ───────────────────────────────────────
+
+    def test_engagement_requires_activity_id_or_remote_id(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_ADD_MARKETING_ENGAGEMENT,
+                {"occurred_on": "2026-04-25", "impressions": 100},
+            )
+        assert not result.ok
+
+    def test_engagement_input_requires_at_least_one_metric(self):
+        """Shopify rejects engagements with no measurable activity."""
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyMarketingEventsAdapter._build_engagement_input({
+                "occurred_on": "2026-04-25",
+            })
+        assert "metric" in str(exc.value)
+
+    def test_engagement_input_translates_friendly_metrics(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        out = ShopifyMarketingEventsAdapter._build_engagement_input({
+            "occurred_on": "2026-04-25",
+            "impressions": 12345, "clicks": 230, "sessions": 800,
+            "spend": {"amount": 25.50, "currency": "USD"},
+            "sales": 200,
+        })
+        assert out["occurredOn"] == "2026-04-25"
+        assert out["impressionsCount"] == 12345
+        assert out["clicksCount"] == 230
+        assert out["sessionsCount"] == 800
+        assert out["adSpend"]["amount"] == "25.50"
+        assert out["sales"]["amount"] == "200.00"
+        assert out["isCumulative"] is False
+        # utcOffset is required on MarketingEngagementInput (caught
+        # live as "Expected value to not be null"). Default is UTC.
+        assert out["utcOffset"] == "+00:00"
+        # conversionsCount is not on MarketingEngagement in the current
+        # schema — caught live during smoke test; the adapter drops the
+        # field rather than ship a request Shopify will reject.
+        assert "conversionsCount" not in out
+
+    def test_engagement_input_utc_offset_overridable(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        out = ShopifyMarketingEventsAdapter._build_engagement_input({
+            "occurred_on": "2026-04-25", "impressions": 100,
+            "utc_offset": "-05:00",
+        })
+        assert out["utcOffset"] == "-05:00"
+
+    def test_engagement_input_negative_metrics_rejected(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyMarketingEventsAdapter._build_engagement_input({
+                "occurred_on": "2026-04-25", "impressions": -5,
+            })
+
+    def test_add_engagement_happy_path(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"marketingEngagementCreate": {
+                "marketingEngagement": {
+                    "occurredOn": "2026-04-25",
+                    "impressionsCount": 10000,
+                    "clicksCount": 250,
+                    "sessionsCount": 850,
+                    "adSpend": {"amount": "50.00", "currencyCode": "USD"},
+                    "sales": {"amount": "300.00", "currencyCode": "USD"},
+                    "isCumulative": False,
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ADD_MARKETING_ENGAGEMENT,
+                {
+                    "activity_id": "gid://shopify/MarketingActivity/1",
+                    "occurred_on": "2026-04-25",
+                    "impressions": 10000, "clicks": 250, "sessions": 850,
+                    "spend": {"amount": 50, "currency": "USD"},
+                    "sales": {"amount": 300, "currency": "USD"},
+                },
+            )
+        assert result.ok
+        eng = result.data["engagement"]
+        assert eng["impressions"] == 10000
+        assert eng["clicks"] == 250
+        assert eng["sessions"] == 850
+        assert eng["spend"] == 50.0
+        assert eng["sales"] == 300.0
+        assert captured["marketingActivityId"] == "gid://shopify/MarketingActivity/1"
+        # Schema variable name is marketingEngagement, not engagement —
+        # caught live during smoke test as a "missing required argument".
+        assert "marketingEngagement" in captured
+
+    def test_add_engagement_remote_id_path(self):
+        """Schema accepts marketingActivityId OR remoteId — there is
+        NO marketingChannelType arg on this mutation. Channel-name
+        fallback was removed after a live smoke test rejected it as
+        'argument not accepted'."""
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"marketingEngagementCreate": {
+                "marketingEngagement": {"occurredOn": "2026-04-25",
+                                        "impressionsCount": 10},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_ADD_MARKETING_ENGAGEMENT, {
+                "remote_id": "fb-camp-123",
+                "occurred_on": "2026-04-25", "impressions": 10,
+            })
+        assert captured["remoteId"] == "fb-camp-123"
+        assert "marketingActivityId" not in captured
+        assert "marketingChannelType" not in captured
+
+    # ── List ────────────────────────────────────────────
+
+    def test_list_activities_happy_path(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "marketingActivities": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/MarketingActivity/1",
+                        "title": "Summer Sale FB",
+                        "status": "ACTIVE",
+                        "marketingChannelType": "SOCIAL",
+                        "adSpend": {"amount": "250.00",
+                                    "currencyCode": "USD"},
+                        "utmParameters": {
+                            "source": "facebook", "medium": "cpc",
+                            "campaign": "summer25",
+                        },
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_MARKETING_ACTIVITIES,
+                               {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["activities"][0]["channel"] == "SOCIAL"
+
+    def test_list_activities_clamps_limit(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"marketingActivities": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_MARKETING_ACTIVITIES,
+                      {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_activities_empty_page(self):
+        from core.adapters.shopify.marketing_events import ShopifyMarketingEventsAdapter
+        a = ShopifyMarketingEventsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "marketingActivities": {"pageInfo": {}, "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_MARKETING_ACTIVITIES, {})
+        assert result.ok
+        assert result.data["count"] == 0
+        assert result.data["has_next_page"] is False
 
 
 # ── ShopifyDraftOrdersAdapter ──────────────────────────────

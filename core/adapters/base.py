@@ -116,6 +116,10 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_DRAFT_ORDER = "shopify_create_draft_order"
     SHOPIFY_COMPLETE_DRAFT_ORDER = "shopify_complete_draft_order"
     SHOPIFY_LIST_DRAFT_ORDERS = "shopify_list_draft_orders"
+    SHOPIFY_CREATE_MARKETING_ACTIVITY = "shopify_create_marketing_activity"
+    SHOPIFY_UPDATE_MARKETING_ACTIVITY = "shopify_update_marketing_activity"
+    SHOPIFY_ADD_MARKETING_ENGAGEMENT = "shopify_add_marketing_engagement"
+    SHOPIFY_LIST_MARKETING_ACTIVITIES = "shopify_list_marketing_activities"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

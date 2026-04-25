@@ -1,0 +1,235 @@
+# CLAUDE.md — Working Notes for the ShopAI Shopify Integration
+
+This file describes how to operate inside this codebase as a senior software
+engineer. It is written for *me* — the assistant working on the Shopify
+adapter layer — so that future sessions pick up the same standards
+without rediscovery.
+
+## Who I am, what I'm building
+
+I'm a senior software engineer extending **ShopAI's Shopify adapter
+layer** under `core/adapters/shopify/`. ShopAI is an autonomous
+Shopify operator: engines (pricing, ROAS guardrails, creative,
+fulfillment, analytics, …) decide what to do, the adapter layer
+translates those decisions into vendor-specific API calls. Every
+adapter I add unlocks a class of engine action that previously had to
+be done manually.
+
+The architecture has four layers:
+
+```
+engines/*  →  Capability enum  →  AdapterRouter  →  Shopify*Adapter  →  Shopify GraphQL
+                                                       (this is me)
+```
+
+The router resolves an abstract `Capability` to whichever adapter
+declares support for it. Adding a capability without an adapter is
+dead weight; adding an adapter without a capability is unreachable.
+
+## How I work
+
+### 1. Audit before code
+
+Before adding anything I:
+- Read at least one similar adapter (`metafield.py`, `risk.py`,
+  `inventory.py`) to match the prevailing pattern.
+- Grep for the capability name in the enum to see if it already exists
+  (`grep "SHOPIFY_" core/adapters/base.py`).
+- Skim the relevant Shopify GraphQL doc page to see whether the
+  operation is one mutation or a multi-step dance (e.g. fulfillment is
+  two-step, files can be one-step URL or three-step staged).
+
+### 2. One adapter per commit
+
+Each Phase 1/2/3 deliverable lands as a single commit on the feature
+branch. Commits bundle: enum entry → adapter → bootstrap registration
+→ tests → router-test extension → bootstrap-count bump. Live
+verification goes in the commit message under "Live verification".
+This makes review and rollback simple.
+
+### 3. Friendly shapes hide GraphQL
+
+Engines speak in business terms ("create a 10% recovery discount valid
+for 7 days"); Shopify speaks in `DiscountCodeBasicInput.customerGets.
+value.percentage = 0.10`. The adapter is the translator. Callers must
+NEVER have to write GraphQL or know that `percentage` is a 0-1 fraction
+on Shopify's side. Convention:
+
+| ShopAI input                       | Shopify GraphQL              |
+| ---                                | ---                          |
+| snake_case keys                    | camelCase keys               |
+| 0-100 percentages                  | 0-1 fractions                |
+| `2026-06-01T00:00:00Z` ISO strings | `DateTime` scalars           |
+| `gid://shopify/X/123`              | same (always pass GIDs raw)  |
+
+### 4. Validate at the boundary
+
+A bad input should raise `AdapterValidationError` BEFORE the GraphQL
+call. The reasoning:
+
+- Network round-trip is slow; validation is free.
+- Shopify's `userErrors` envelope often comes back with
+  `"Generic error"` for malformed inputs — useless for debugging.
+- The router falls back on `AdapterError` (vendor failure) but NOT on
+  `AdapterValidationError` (caller bug). Fail-fast keeps falls
+  honest.
+
+Validation lives in a `_build_X_input` static method or inline in
+`_execute`. Required-field checks raise immediately; optional fields
+default silently. Numeric strings are coerced (`int("2") == 2`); types
+that can't be coerced (`"many"`) raise.
+
+### 5. No silent mock fallbacks
+
+If credentials are missing or the live API fails, return an empty
+list (reads) or `{"status": "error", ...}` (writes) — NEVER fabricate
+data. This matches the policy enforced in
+`core/bridge/shopify_bridge.py` (the `ShopifyBridgeUnavailable`
+exception was added specifically because pre-cleanup mock fallbacks
+let broken creds masquerade as "successful empty reads" and quietly
+corrupted engine decisions).
+
+### 6. Live verify before declaring done
+
+A test pass is necessary but not sufficient. Every adapter goes through
+a `python -c "..."` smoke test against the dev store
+(`ts0efe-ih.myshopify.com`) before I claim it's done. The smoke test:
+
+- Hits a list/read first (cheap, no side effects, validates auth).
+- Hits a create/write second (proves the wire format is right and the
+  scopes cover it).
+- Verifies the response shape matches what the adapter normalised.
+
+The output of the smoke test goes into the commit message under "Live
+verification" so reviewers see proof, not a promise.
+
+### 7. Test conventions
+
+Patch `_gql` at the adapter boundary, not the underlying HTTP. Cover:
+
+- **Metadata** — name, capabilities set.
+- **Every validation branch** — one test per failure mode.
+- **Happy path** — full GraphQL response, including nested money
+  sets and edge/node envelopes.
+- **userErrors propagation** — `result.ok is False` (not raise — the
+  base class catches and returns failure).
+- **Response edge cases** — empty pages, null fulfillment_status, list
+  vs string tags, missing variants, etc.
+
+For each new adapter: bump `TestShopifyBootstrap.test_register_all_adds_N_adapters`
+to N+1 with the new name in the expected set, and extend
+`TestShopifyBootstrap.test_router_picks_shopify_for_each_capability`
+with assertions for the new capabilities.
+
+## How I think and decide
+
+### Pick the path that maps to actual engines
+
+When two paths exist (e.g. URL upload vs staged upload, full GraphQL
+vs REST), pick the one that matches what ShopAI's engines actually
+output today. Files: creative pipeline emits URLs → URL upload wins.
+Discounts: pricing engine wants code-based, time-bounded → that's
+`discountCodeBasicCreate`, not `discountAutomaticBasicCreate`.
+
+Speculative paths get deferred to a Phase 2/3 plan, not built. The
+codebase is already 4000+ test cases; adding stubs without consumers
+is debt.
+
+### Trade-off analysis is part of the commit message
+
+Every non-obvious decision goes in the "Why" section of the commit
+message:
+- "Local-file uploads (staged) are out of scope; every consumer has a
+  URL because the upstream generators are HTTP services."
+- "client_credentials only available for apps in the same org as the
+  store; OAuth authorization_code flow is the fallback when managed
+  install fails."
+- "alt is truncated to 512 chars rather than failing the whole batch
+  on one long caption."
+
+Future-me reads commit messages, not Slack threads.
+
+### Capability enum is the contract
+
+Adding `SHOPIFY_X` to the enum is a public commitment that the
+adapter layer will eventually support it. I add the enum entry only
+when I'm about to implement it (or in the same commit as the adapter).
+I do NOT pre-populate the enum with capabilities I might build later.
+
+### Phase work, don't sprawl
+
+Tier 1 = adapters that match an existing engine. Tier 2 = nice-to-have
+where the engine doesn't exist yet but the surface area is well-known
+(Marketing Events, Returns, Metaobjects). Tier 3 = long tail (Themes,
+Translations, Publications, Order Edits, Payment/Delivery
+Customizations) — only built when an engine demands them.
+
+I finish Tier 1 entirely before starting Tier 2.
+
+## Workflow checklist
+
+For each new adapter:
+
+- [ ] Confirm or add `Capability` enum entry in `core/adapters/base.py`.
+- [ ] Create `core/adapters/shopify/<name>.py` extending `ShopifyBaseAdapter`.
+- [ ] Implement `_execute(capability, params)` with per-capability dispatch.
+- [ ] Friendly call shape with `_build_<noun>_input` static helper if non-trivial.
+- [ ] `_normalise_<noun>` helper that flattens nested response shapes.
+- [ ] Register class in `core/adapters/shopify/bootstrap.py`.
+- [ ] Add test class `TestShopify<Name>Adapter` in `tests/test_shopify_adapters.py`.
+- [ ] Bump `test_register_all_adds_N_adapters` count + expected set.
+- [ ] Extend `test_router_picks_shopify_for_each_capability`.
+- [ ] `python -m pytest tests/test_shopify_adapters.py` — all green.
+- [ ] Live smoke test against dev store; capture output.
+- [ ] Commit with structured message (Why / What changed / Tests /
+      Live verification).
+- [ ] Push to feature branch.
+- [ ] Update todo list.
+
+## What I don't do
+
+- **Don't bundle adapters in one commit.** Review and revert get hard
+  fast.
+- **Don't paper over Shopify rejections.** Surface them as
+  `AdapterValidationError` (caller bug) or `AdapterError` (vendor
+  failure) — never log-and-return-fake-success.
+- **Don't pre-build capabilities for hypothetical engines.** Tier 3
+  features wait until something asks for them.
+- **Don't bypass `ShopifyBaseAdapter`.** The base does auth, GraphQL,
+  error mapping, and result assembly. Re-implementing those at the
+  leaf is duplication waiting to drift.
+- **Don't write multi-paragraph code comments.** One terse line max,
+  and only when the WHY is non-obvious.
+- **Don't claim "done" without live verification.** Smoke test or it
+  doesn't ship.
+
+## Current branch state
+
+Branch: `claude/shopify-api-integration-oQzce` → PR #22.
+
+Phase 1 (Tier 1) — **complete, all live-verified**:
+- `774ecaf` ShopifyDiscountAdapter
+- `a106efb` ShopifyFilesAdapter
+- `f2511f8` ShopifyDraftOrdersAdapter
+
+Phase 2 (Tier 2) — **next**:
+- ShopifyMarketingEventsAdapter — ads launch tracking, campaign metrics
+- ShopifyReturnsAdapter — refund analytics, churn engine input
+- ShopifyMetaobjectsAdapter — custom storefront content (extends
+  metafield with definitions + objects)
+
+Phase 3 (Tier 3) — **deferred until engines demand**:
+- Themes, Translations, Publications, Order Edits, Payment
+  Customizations, Delivery Customizations, Analytics Reports.
+
+## Reading order for a fresh session
+
+1. This file.
+2. `ARCHITECTURE.md` (top-level layered design).
+3. `core/adapters/shopify/_base.py` (the parent every adapter extends).
+4. `core/adapters/shopify/metafield.py` (the cleanest existing
+   example to copy from).
+5. `tests/test_shopify_adapters.py` (test conventions).
+6. The enum at `core/adapters/base.py:102-115`.
+7. Whatever specific Shopify doc page covers the GraphQL operation
+   I'm about to wrap.
