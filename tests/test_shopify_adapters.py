@@ -790,17 +790,17 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eleven_adapters(self):
+    def test_register_all_adds_twelve_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 11
+        assert len(status) == 12
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
             "shopify_discount", "shopify_files",
             "shopify_draft_orders", "shopify_marketing_events",
             "shopify_returns", "shopify_metaobjects",
-            "shopify_publications",
+            "shopify_publications", "shopify_order_edits",
         }
 
     def test_register_all_idempotent(self):
@@ -808,7 +808,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 11
+        assert len(get_registry()) == 12
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -863,6 +863,420 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_PUBLICATIONS).name == "shopify_publications"
         assert router.route(Capability.SHOPIFY_PUBLISH_RESOURCE).name == "shopify_publications"
         assert router.route(Capability.SHOPIFY_UNPUBLISH_RESOURCE).name == "shopify_publications"
+        assert router.route(Capability.SHOPIFY_EDIT_ORDER).name == "shopify_order_edits"
+
+
+# ── ShopifyOrderEditsAdapter ───────────────────────────────
+
+
+class TestShopifyOrderEditsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter()
+        assert a.name == "shopify_order_edits"
+        assert Capability.SHOPIFY_EDIT_ORDER in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Top-level validation ──────────────────────────────
+
+    def test_requires_order_id(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "changes": [{"op": "add_variant",
+                             "variant_id": "gid://x", "quantity": 1}],
+            })
+        assert not result.ok
+
+    def test_requires_changes_list(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "order_id": "gid://shopify/Order/1",
+            })
+        assert not result.ok
+
+    def test_rejects_empty_changes_list(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "order_id": "gid://shopify/Order/1", "changes": [],
+            })
+        assert not result.ok
+
+    def test_rejects_unknown_op(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        with pytest.raises(AdapterValidationError) as exc:
+            ShopifyOrderEditsAdapter._build_change(
+                {"op": "fly_to_moon"}, 0,
+            )
+        assert "fly_to_moon" in str(exc.value)
+
+    def test_rejects_non_dict_change(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change("not a dict", 0)
+
+    # ── _build_change validation per op ───────────────────
+
+    def test_build_add_variant_validates(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        # Happy path
+        out = ShopifyOrderEditsAdapter._build_change({
+            "op": "add_variant",
+            "variant_id": "gid://shopify/ProductVariant/1",
+            "quantity": 3,
+        }, 0)
+        assert out["mutation_name"] == "orderEditAddVariant"
+        assert out["variables"]["variantId"].endswith("/1")
+        assert out["variables"]["quantity"] == 3
+
+        # Missing variant_id
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "add_variant", "quantity": 1,
+            }, 0)
+        # Quantity < 1 rejected (add_variant must add at least one)
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "add_variant", "variant_id": "gid://x", "quantity": 0,
+            }, 0)
+        # Non-numeric quantity rejected
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "add_variant", "variant_id": "gid://x",
+                "quantity": "many",
+            }, 0)
+
+    def test_build_add_custom_item_validates(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        out = ShopifyOrderEditsAdapter._build_change({
+            "op": "add_custom_item", "title": "Make-good",
+            "price": 0, "quantity": 1, "taxable": False,
+            "requires_shipping": False,
+        }, 0)
+        assert out["mutation_name"] == "orderEditAddCustomItem"
+        assert out["variables"]["title"] == "Make-good"
+        assert out["variables"]["price"] == {
+            "amount": "0.00", "currencyCode": "USD",
+        }
+        assert out["variables"]["taxable"] is False
+        assert out["variables"]["requiresShipping"] is False
+
+        # Missing title
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "add_custom_item", "price": 5, "quantity": 1,
+            }, 0)
+        # Missing price
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "add_custom_item", "title": "x", "quantity": 1,
+            }, 0)
+
+    def test_build_set_quantity_validates(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        # quantity=0 is the canonical "remove the line item" form,
+        # which is why set_quantity allows 0 but add_variant doesn't.
+        out = ShopifyOrderEditsAdapter._build_change({
+            "op": "set_quantity",
+            "line_item_id": "gid://shopify/CalculatedLineItem/1",
+            "quantity": 0,
+        }, 0)
+        assert out["variables"]["quantity"] == 0
+        assert out["variables"]["restock"] is True   # default-True
+
+        # quantity negative rejected
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "set_quantity",
+                "line_item_id": "gid://x", "quantity": -1,
+            }, 0)
+        # Missing line_item_id
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "set_quantity", "quantity": 1,
+            }, 0)
+        # Missing quantity (None != 0)
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "set_quantity", "line_item_id": "gid://x",
+            }, 0)
+
+    def test_build_add_line_item_discount_validates(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        out = ShopifyOrderEditsAdapter._build_change({
+            "op": "add_line_item_discount",
+            "line_item_id": "gid://x",
+            "value_type": "PERCENTAGE", "value": 15,
+            "description": "Sorry",
+        }, 0)
+        assert out["variables"]["discount"]["value"] == 15.0
+        assert out["variables"]["discount"]["valueType"] == "PERCENTAGE"
+        assert out["variables"]["discount"]["description"] == "Sorry"
+
+        # Default value_type is PERCENTAGE
+        out2 = ShopifyOrderEditsAdapter._build_change({
+            "op": "add_line_item_discount",
+            "line_item_id": "gid://x", "value": 5,
+        }, 0)
+        assert out2["variables"]["discount"]["valueType"] == "PERCENTAGE"
+
+        # PERCENTAGE > 100 rejected
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "add_line_item_discount",
+                "line_item_id": "gid://x",
+                "value_type": "PERCENTAGE", "value": 150,
+            }, 0)
+        # FIXED_AMOUNT > 100 OK
+        out3 = ShopifyOrderEditsAdapter._build_change({
+            "op": "add_line_item_discount",
+            "line_item_id": "gid://x",
+            "value_type": "FIXED_AMOUNT", "value": 250,
+        }, 0)
+        assert out3["variables"]["discount"]["value"] == 250.0
+
+        # Bad value_type
+        with pytest.raises(AdapterValidationError):
+            ShopifyOrderEditsAdapter._build_change({
+                "op": "add_line_item_discount",
+                "line_item_id": "gid://x",
+                "value_type": "FREE_LUNCH", "value": 5,
+            }, 0)
+
+    # ── Full flow happy path ──────────────────────────────
+
+    def test_edit_order_runs_begin_apply_commit(self):
+        """The adapter folds Shopify's stateful 3-stage edit flow
+        (begin → mutations → commit) into a single call. Each call
+        must be made in order and the calculated_order_id must be
+        passed through every mutation."""
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        calls: list[str] = []
+
+        def fake_gql(q, v):
+            # Detect which mutation by name in the GraphQL document.
+            if "orderEditBegin" in q:
+                calls.append("begin")
+                return {"orderEditBegin": {
+                    "calculatedOrder": {"id": "gid://shopify/CalculatedOrder/CC"},
+                    "userErrors": [],
+                }}
+            if "orderEditAddVariant" in q:
+                calls.append("add_variant")
+                # Variable id MUST be the calculated order, not the
+                # original order id.
+                assert v["id"] == "gid://shopify/CalculatedOrder/CC"
+                return {"orderEditAddVariant": {
+                    "calculatedOrder": {"id": v["id"]}, "userErrors": [],
+                }}
+            if "orderEditSetQuantity" in q:
+                calls.append("set_quantity")
+                assert v["id"] == "gid://shopify/CalculatedOrder/CC"
+                return {"orderEditSetQuantity": {
+                    "calculatedOrder": {"id": v["id"]}, "userErrors": [],
+                }}
+            if "orderEditCommit" in q:
+                calls.append("commit")
+                assert v["id"] == "gid://shopify/CalculatedOrder/CC"
+                return {"orderEditCommit": {
+                    "order": {
+                        "id": "gid://shopify/Order/777",
+                        "name": "#1001",
+                        "totalPriceSet": {
+                            "presentmentMoney": {
+                                "amount": "120.00", "currencyCode": "USD",
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                }}
+            raise AssertionError(f"unexpected mutation: {q}")
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "order_id": "gid://shopify/Order/777",
+                "changes": [
+                    {"op": "add_variant",
+                     "variant_id": "gid://shopify/ProductVariant/X",
+                     "quantity": 1},
+                    {"op": "set_quantity",
+                     "line_item_id": "gid://shopify/CalculatedLineItem/Y",
+                     "quantity": 0},
+                ],
+                "notify_customer": True,
+                "staff_note": "Customer requested swap.",
+            })
+        assert result.ok
+        # Sequence: begin first, mutations in caller-supplied order,
+        # commit last. The adapter MUST NOT commit until every change
+        # succeeded.
+        assert calls == ["begin", "add_variant", "set_quantity", "commit"]
+        assert result.data["order_id"] == "gid://shopify/Order/777"
+        assert result.data["calculated_order_id"] == "gid://shopify/CalculatedOrder/CC"
+        assert result.data["change_count"] == 2
+        assert result.data["new_total"] == 120.0
+        assert result.data["currency"] == "USD"
+        assert result.data["notified_customer"] is True
+
+    def test_edit_order_skips_commit_on_intermediate_failure(self):
+        """If any change fails the adapter must surface the error
+        WITHOUT committing — Shopify discards the calculated order
+        on session end so there's no half-applied state to clean up.
+        Pre-commit failure with no visible side effects is the
+        contract callers rely on."""
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        calls: list[str] = []
+
+        def fake_gql(q, v):
+            if "orderEditBegin" in q:
+                calls.append("begin")
+                return {"orderEditBegin": {
+                    "calculatedOrder": {"id": "gid://shopify/CalculatedOrder/CC"},
+                    "userErrors": [],
+                }}
+            if "orderEditAddVariant" in q:
+                calls.append("add_variant")
+                # First mutation fails with a userError.
+                return {"orderEditAddVariant": {
+                    "calculatedOrder": None,
+                    "userErrors": [{
+                        "field": ["variantId"],
+                        "message": "Variant not found",
+                    }],
+                }}
+            if "orderEditCommit" in q:
+                calls.append("commit")  # MUST NOT happen
+                return {"orderEditCommit": {
+                    "order": None, "userErrors": [],
+                }}
+            raise AssertionError(f"unexpected mutation: {q}")
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "order_id": "gid://shopify/Order/777",
+                "changes": [
+                    {"op": "add_variant",
+                     "variant_id": "gid://shopify/ProductVariant/missing",
+                     "quantity": 1},
+                ],
+            })
+        assert not result.ok
+        # commit was not called — the contract that prevents
+        # half-applied edits.
+        assert "commit" not in calls
+
+    def test_edit_order_begin_failure_short_circuits(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        calls: list[str] = []
+
+        def fake_gql(q, v):
+            if "orderEditBegin" in q:
+                calls.append("begin")
+                return {"orderEditBegin": {
+                    "calculatedOrder": None,
+                    "userErrors": [{
+                        "field": ["id"], "message": "Order not found",
+                    }],
+                }}
+            calls.append("other")
+            raise AssertionError("nothing should run after begin failed")
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "order_id": "gid://shopify/Order/missing",
+                "changes": [
+                    {"op": "add_variant",
+                     "variant_id": "gid://x", "quantity": 1},
+                ],
+            })
+        assert not result.ok
+        assert calls == ["begin"]
+
+    def test_edit_order_validates_all_changes_before_calling_begin(self):
+        """If a later change is malformed we must reject BEFORE
+        calling begin — otherwise the begin side-effect happens for
+        nothing. (The calculated order is auto-discarded but it's
+        still a wasted GraphQL hop and a real audit-log entry.)"""
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        calls: list[str] = []
+
+        def fake_gql(q, v):
+            calls.append(q[:30])
+            return {}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "order_id": "gid://shopify/Order/1",
+                "changes": [
+                    {"op": "add_variant",
+                     "variant_id": "gid://x", "quantity": 1},
+                    {"op": "set_quantity"},  # malformed (no line_item_id)
+                ],
+            })
+        assert not result.ok
+        assert calls == []  # begin was NOT called
+
+    def test_edit_order_passes_staff_note_only_when_set(self):
+        from core.adapters.shopify.order_edits import ShopifyOrderEditsAdapter
+        a = ShopifyOrderEditsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            if "orderEditBegin" in q:
+                return {"orderEditBegin": {
+                    "calculatedOrder": {"id": "gid://shopify/CalculatedOrder/CC"},
+                    "userErrors": [],
+                }}
+            if "orderEditAddVariant" in q:
+                return {"orderEditAddVariant": {
+                    "calculatedOrder": {"id": v["id"]}, "userErrors": [],
+                }}
+            if "orderEditCommit" in q:
+                captured.update(v)
+                return {"orderEditCommit": {
+                    "order": {"id": "gid://shopify/Order/1", "name": "#1"},
+                    "userErrors": [],
+                }}
+            return {}
+
+        # No staff_note → key absent from commit variables.
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "order_id": "gid://shopify/Order/1",
+                "changes": [
+                    {"op": "add_variant",
+                     "variant_id": "gid://x", "quantity": 1},
+                ],
+            })
+        assert "staffNote" not in captured
+
+        # With staff_note → key present.
+        captured.clear()
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_EDIT_ORDER, {
+                "order_id": "gid://shopify/Order/1",
+                "changes": [
+                    {"op": "add_variant",
+                     "variant_id": "gid://x", "quantity": 1},
+                ],
+                "staff_note": "Goodwill discount",
+            })
+        assert captured["staffNote"] == "Goodwill discount"
 
 
 # ── ShopifyPublicationsAdapter ─────────────────────────────
