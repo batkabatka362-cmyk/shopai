@@ -454,5 +454,74 @@ class TestStoreManagerCaching:
         assert stores[0]["has_credentials"] is True
 
 
+class TestRequestTokenWireFormat:
+    """The 2026 Shopify Dev Dashboard token endpoint expects:
+        Content-Type: application/x-www-form-urlencoded
+        body: client_id=...&client_secret=...&grant_type=client_credentials
+
+    The pre-fix implementation sent ``Content-Type: application/json``
+    with a JSON body and no ``grant_type`` field — Shopify rejected
+    that with HTTP 400. These tests pin the wire format so a future
+    refactor cannot silently regress it.
+    """
+
+    def _fake_response(self, payload: dict):
+        class _R:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def read(self_inner):
+                return json.dumps(payload).encode()
+        return _R()
+
+    def test_request_token_sends_form_encoded_grant_type(self):
+        from core.auth import shopify_auth as sa
+        auth = sa.ShopifyAuth("wire.myshopify.com", "the_cid", "the_secret")
+
+        captured: dict = {}
+
+        def _capture(req, timeout):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["content_type"] = req.headers.get("Content-type", "")
+            captured["body"] = req.data.decode("utf-8") if req.data else ""
+            return self._fake_response({"access_token": "tok", "expires_in": 86400})
+
+        with patch.object(sa.urllib.request, "urlopen", side_effect=_capture):
+            data = auth._request_token()
+
+        assert data["access_token"] == "tok"
+        assert captured["method"] == "POST"
+        assert captured["url"] == "https://wire.myshopify.com/admin/oauth/access_token"
+        assert captured["content_type"] == "application/x-www-form-urlencoded"
+
+        body_params = dict(p.split("=", 1) for p in captured["body"].split("&"))
+        assert body_params["client_id"] == "the_cid"
+        assert body_params["client_secret"] == "the_secret"
+        assert body_params["grant_type"] == "client_credentials"
+
+    def test_exchange_code_sends_form_encoded_authorization_code(self):
+        from core.auth import shopify_auth as sa
+        auth = sa.ShopifyAuth("wire.myshopify.com", "cid", "secret")
+
+        captured: dict = {}
+
+        def _capture(req, timeout):
+            captured["content_type"] = req.headers.get("Content-type", "")
+            captured["body"] = req.data.decode("utf-8") if req.data else ""
+            return self._fake_response({"access_token": "exch", "expires_in": 1800})
+
+        with patch.object(sa.urllib.request, "urlopen", side_effect=_capture), \
+             patch.object(auth, "_save_cached_token"):
+            tok = auth.exchange_code("THE_CODE")
+
+        assert tok == "exch"
+        assert captured["content_type"] == "application/x-www-form-urlencoded"
+        params = dict(p.split("=", 1) for p in captured["body"].split("&"))
+        assert params["grant_type"] == "authorization_code"
+        assert params["code"] == "THE_CODE"
+        assert params["client_id"] == "cid"
+        assert params["client_secret"] == "secret"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

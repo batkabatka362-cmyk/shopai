@@ -23,7 +23,12 @@ import platforms.shopify as shopify_mod
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for var in ("SHOPAI_SHOPIFY_URL", "SHOPAI_SHOPIFY_KEY"):
+    for var in (
+        "SHOPAI_SHOPIFY_URL",
+        "SHOPAI_SHOPIFY_KEY",
+        "SHOPAI_SHOPIFY_CLIENT_ID",
+        "SHOPAI_SHOPIFY_CLIENT_SECRET",
+    ):
         monkeypatch.delenv(var, raising=False)
     # Reset module-level singleton between tests
     shopify_mod._instance = None
@@ -328,3 +333,87 @@ class TestSingleton:
         b = get_shopify()
         assert a is b
         assert isinstance(a, ShopifyAdapter)
+
+
+# ── Client-credentials integration (2026 Dev Dashboard flow) ─────────
+
+
+class TestClientCredentialsAuth:
+    """When client_id + client_secret are provided (instead of, or in
+    addition to, a static ``shpat_`` token), the adapter must mint a
+    rotating token via ``core.auth.shopify_auth.ShopifyAuth`` and pass
+    it to the underlying ``ShopifyAPI`` / ``ProductUpdater``.
+    """
+
+    def test_is_configured_with_client_credentials_alone(self):
+        a = ShopifyAdapter("shop.myshopify.com", client_id="cid", client_secret="cs")
+        assert a.is_configured is True
+
+    def test_is_configured_picks_up_env_client_credentials(self, monkeypatch):
+        monkeypatch.setenv("SHOPAI_SHOPIFY_URL", "envshop.myshopify.com")
+        monkeypatch.setenv("SHOPAI_SHOPIFY_CLIENT_ID", "envcid")
+        monkeypatch.setenv("SHOPAI_SHOPIFY_CLIENT_SECRET", "envcs")
+        a = ShopifyAdapter()
+        assert a.is_configured is True
+
+    def test_static_token_wins_over_client_credentials(self):
+        a = ShopifyAdapter(
+            "shop.myshopify.com",
+            access_token="shpat_static",
+            client_id="cid",
+            client_secret="cs",
+        )
+        # _resolve_token must NOT instantiate ShopifyAuth when a static
+        # token is present — pin that with a patched constructor that
+        # would explode if called.
+        with patch("core.auth.shopify_auth.ShopifyAuth", side_effect=AssertionError("must not be called")):
+            assert a._resolve_token() == "shpat_static"
+
+    def test_resolve_token_uses_shopify_auth_when_only_client_credentials(self):
+        a = ShopifyAdapter("shop.myshopify.com", client_id="cid", client_secret="cs")
+        with patch("core.auth.shopify_auth.ShopifyAuth") as MockAuth:
+            MockAuth.return_value.get_token.return_value = "rotating_token_xyz"
+            assert a._resolve_token() == "rotating_token_xyz"
+            # ShopifyAuth must be constructed with the same shop URL +
+            # credentials we configured the adapter with.
+            MockAuth.assert_called_once_with("shop.myshopify.com", "cid", "cs")
+
+    def test_resolve_token_returns_empty_when_unconfigured(self):
+        assert ShopifyAdapter()._resolve_token() == ""
+
+    def test_resolve_token_swallows_refresh_errors(self):
+        a = ShopifyAdapter("shop.myshopify.com", client_id="cid", client_secret="cs")
+        with patch("core.auth.shopify_auth.ShopifyAuth") as MockAuth:
+            MockAuth.return_value.get_token.side_effect = RuntimeError("boom")
+            # Must not raise; reads/writes downstream rely on getting "".
+            assert a._resolve_token() == ""
+
+    def test_get_products_passes_rotating_token_to_shopify_api(self):
+        a = ShopifyAdapter("shop.myshopify.com", client_id="cid", client_secret="cs")
+        with patch("core.auth.shopify_auth.ShopifyAuth") as MockAuth, \
+             patch("data_pipeline.ingestion.api.shopify_api.ShopifyAPI") as MockAPI:
+            MockAuth.return_value.get_token.return_value = "tok_minted"
+            MockAPI.return_value.fetch_products.return_value = {"products": []}
+            a.get_products()
+            MockAPI.assert_called_once_with("shop.myshopify.com", "tok_minted")
+            MockAPI.return_value.fetch_products.assert_called_once_with(
+                "shop.myshopify.com", "tok_minted"
+            )
+
+    def test_writes_pass_rotating_token_to_updater(self):
+        a = ShopifyAdapter("shop.myshopify.com", client_id="cid", client_secret="cs")
+        with patch("core.auth.shopify_auth.ShopifyAuth") as MockAuth, \
+             patch("execution.shopify.product_updater.ProductUpdater") as MockUp:
+            MockAuth.return_value.get_token.return_value = "tok_v2"
+            MockUp.return_value.update_price.return_value = {"status": "updated"}
+            a.update_price("p1", "v1", 9.99)
+            MockUp.return_value.update_price.assert_called_once_with(
+                "shop.myshopify.com", "tok_v2", "p1", "v1", 9.99
+            )
+
+    def test_writes_error_when_token_refresh_fails(self):
+        a = ShopifyAdapter("shop.myshopify.com", client_id="cid", client_secret="cs")
+        with patch("core.auth.shopify_auth.ShopifyAuth") as MockAuth:
+            MockAuth.return_value.get_token.side_effect = RuntimeError("boom")
+            out = a.update_product("p1", {"title": "X"})
+            assert out == {"status": "error", "error": "token_unavailable"}

@@ -45,32 +45,96 @@ def _normalize_shop_url(raw: str) -> str:
 
 
 class ShopifyAdapter:
-    """Shopify Admin REST API adapter (2024-01)."""
+    """Shopify Admin REST API adapter (2024-01).
 
-    def __init__(self, shop_url: str = "", access_token: str = "") -> None:
+    Authentication can come from either:
+
+      * **Static token** (legacy custom-app, ``shpat_...``) — pass
+        ``access_token`` or set ``SHOPAI_SHOPIFY_KEY``.
+      * **OAuth client credentials** (Dev Dashboard apps, 2026+) —
+        pass ``client_id`` + ``client_secret`` or set
+        ``SHOPAI_SHOPIFY_CLIENT_ID`` + ``SHOPAI_SHOPIFY_CLIENT_SECRET``.
+        The adapter will lazily mint a 24h token via
+        ``core.auth.shopify_auth.ShopifyAuth`` and refresh on its own.
+
+    If both are provided, the static token wins (so callers can pin a
+    specific token for a single run without disabling rotation
+    elsewhere in the process).
+    """
+
+    def __init__(
+        self,
+        shop_url: str = "",
+        access_token: str = "",
+        client_id: str = "",
+        client_secret: str = "",
+    ) -> None:
         self._shop_url = _normalize_shop_url(shop_url) or _normalize_shop_url(
             os.environ.get("SHOPAI_SHOPIFY_URL", "")
         )
-        self._token = access_token or os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+        self._static_token = access_token or os.environ.get("SHOPAI_SHOPIFY_KEY", "")
+        self._client_id = client_id or os.environ.get("SHOPAI_SHOPIFY_CLIENT_ID", "")
+        self._client_secret = (
+            client_secret or os.environ.get("SHOPAI_SHOPIFY_CLIENT_SECRET", "")
+        )
+        self._auth = None  # lazily-built ShopifyAuth
 
-    def configure(self, shop_url: str, access_token: str) -> None:
+    def configure(
+        self,
+        shop_url: str,
+        access_token: str = "",
+        client_id: str = "",
+        client_secret: str = "",
+    ) -> None:
         self._shop_url = _normalize_shop_url(shop_url)
-        self._token = access_token if isinstance(access_token, str) else ""
+        self._static_token = access_token if isinstance(access_token, str) else ""
+        self._client_id = client_id if isinstance(client_id, str) else ""
+        self._client_secret = client_secret if isinstance(client_secret, str) else ""
+        self._auth = None
 
     @property
     def is_configured(self) -> bool:
-        return bool(self._shop_url and self._token)
+        if not self._shop_url:
+            return False
+        if self._static_token:
+            return True
+        return bool(self._client_id and self._client_secret)
+
+    def _resolve_token(self) -> str:
+        """Return a usable Admin API access token, or ``""`` if none.
+
+        Priority: static token > client_credentials grant via ShopifyAuth.
+        Token-refresh failures are swallowed and the cached token (which
+        may be empty) is returned so the read paths return ``[]`` instead
+        of crashing.
+        """
+        if self._static_token:
+            return self._static_token
+        if not (self._client_id and self._client_secret and self._shop_url):
+            return ""
+        if self._auth is None:
+            try:
+                from core.auth.shopify_auth import ShopifyAuth
+            except Exception as exc:  # noqa: BLE001
+                logger.error("ShopifyAuth import failed: %s", exc)
+                return ""
+            self._auth = ShopifyAuth(self._shop_url, self._client_id, self._client_secret)
+        try:
+            return self._auth.get_token()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Shopify token refresh failed: %s", exc)
+            return ""
 
     # ------------------------------------------------------------------ #
     # Reads                                                               #
     # ------------------------------------------------------------------ #
 
     def get_products(self, limit: int = 50) -> list[dict]:
-        api = self._api()
-        if api is None:
+        api, token = self._api()
+        if api is None or not token:
             return []
         try:
-            result = api.fetch_products(self._shop_url, self._token)
+            result = api.fetch_products(self._shop_url, token)
         except Exception as exc:  # noqa: BLE001
             logger.error("Shopify get_products failed: %s", exc)
             return []
@@ -78,11 +142,11 @@ class ShopifyAdapter:
         return [self._normalize_product(p) for p in records[: max(0, int(limit))]]
 
     def get_orders(self, limit: int = 50, days_back: int = 30) -> list[dict]:
-        api = self._api()
-        if api is None:
+        api, token = self._api()
+        if api is None or not token:
             return []
         try:
-            result = api.fetch_orders(self._shop_url, self._token, days_back=days_back)
+            result = api.fetch_orders(self._shop_url, token, days_back=days_back)
         except Exception as exc:  # noqa: BLE001
             logger.error("Shopify get_orders failed: %s", exc)
             return []
@@ -90,11 +154,11 @@ class ShopifyAdapter:
         return [self._normalize_order(o) for o in records[: max(0, int(limit))]]
 
     def get_customers(self, limit: int = 50) -> list[dict]:
-        api = self._api()
-        if api is None:
+        api, token = self._api()
+        if api is None or not token:
             return []
         try:
-            result = api.fetch_customers(self._shop_url, self._token)
+            result = api.fetch_customers(self._shop_url, token)
         except Exception as exc:  # noqa: BLE001
             logger.error("Shopify get_customers failed: %s", exc)
             return []
@@ -108,19 +172,25 @@ class ShopifyAdapter:
     def update_product(self, product_id: str, fields: dict) -> dict:
         if not self.is_configured:
             return {"status": "error", "error": "shopify_not_configured"}
+        token = self._resolve_token()
+        if not token:
+            return {"status": "error", "error": "token_unavailable"}
         updater = self._updater()
         if updater is None:
             return {"status": "error", "error": "updater_unavailable"}
-        return updater.update_product(self._shop_url, self._token, product_id, fields)
+        return updater.update_product(self._shop_url, token, product_id, fields)
 
     def update_price(self, product_id: str, variant_id: str, new_price: float) -> dict:
         if not self.is_configured:
             return {"status": "error", "error": "shopify_not_configured"}
+        token = self._resolve_token()
+        if not token:
+            return {"status": "error", "error": "token_unavailable"}
         updater = self._updater()
         if updater is None:
             return {"status": "error", "error": "updater_unavailable"}
         return updater.update_price(
-            self._shop_url, self._token, product_id, variant_id, new_price
+            self._shop_url, token, product_id, variant_id, new_price
         )
 
     def update_inventory(
@@ -128,11 +198,14 @@ class ShopifyAdapter:
     ) -> dict:
         if not self.is_configured:
             return {"status": "error", "error": "shopify_not_configured"}
+        token = self._resolve_token()
+        if not token:
+            return {"status": "error", "error": "token_unavailable"}
         updater = self._updater()
         if updater is None:
             return {"status": "error", "error": "updater_unavailable"}
         return updater.update_inventory(
-            self._shop_url, self._token, inventory_item_id, location_id, quantity
+            self._shop_url, token, inventory_item_id, location_id, quantity
         )
 
     def get_stats(self) -> dict:
@@ -147,14 +220,19 @@ class ShopifyAdapter:
     # ------------------------------------------------------------------ #
 
     def _api(self):
+        """Return ``(ShopifyAPI, token)`` or ``(None, "")`` if either
+        instantiation fails or no token is available right now."""
         if not self.is_configured:
-            return None
+            return None, ""
+        token = self._resolve_token()
+        if not token:
+            return None, ""
         try:
             from data_pipeline.ingestion.api.shopify_api import ShopifyAPI
         except Exception as exc:  # noqa: BLE001
             logger.error("ShopifyAPI import failed: %s", exc)
-            return None
-        return ShopifyAPI(self._shop_url, self._token)
+            return None, ""
+        return ShopifyAPI(self._shop_url, token), token
 
     def _updater(self):
         try:
