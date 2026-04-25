@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortynine_adapters(self):
+    def test_register_all_adds_fifty_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 49
+        assert len(status) == 50
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -836,6 +836,7 @@ class TestShopifyBootstrap:
             "shopify_metafield_definitions",
             "shopify_price_lists",
             "shopify_carrier_services",
+            "shopify_fulfillment_services",
         }
 
     def test_register_all_idempotent(self):
@@ -843,7 +844,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 49
+        assert len(get_registry()) == 50
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1023,6 +1024,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_CARRIER_SERVICE).name == "shopify_carrier_services"
         assert router.route(Capability.SHOPIFY_UPDATE_CARRIER_SERVICE).name == "shopify_carrier_services"
         assert router.route(Capability.SHOPIFY_DELETE_CARRIER_SERVICE).name == "shopify_carrier_services"
+        assert router.route(Capability.SHOPIFY_LIST_FULFILLMENT_SERVICES).name == "shopify_fulfillment_services"
+        assert router.route(Capability.SHOPIFY_CREATE_FULFILLMENT_SERVICE).name == "shopify_fulfillment_services"
+        assert router.route(Capability.SHOPIFY_UPDATE_FULFILLMENT_SERVICE).name == "shopify_fulfillment_services"
+        assert router.route(Capability.SHOPIFY_DELETE_FULFILLMENT_SERVICE).name == "shopify_fulfillment_services"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -13483,3 +13488,294 @@ class TestShopifyCarrierServicesAdapter:
             ShopifyCarrierServicesAdapter,
         )
         assert ShopifyCarrierServicesAdapter._normalise_service({}) == {}
+
+
+# ── ShopifyFulfillmentServicesAdapter ─────────────────────
+
+
+class TestShopifyFulfillmentServicesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter()
+        assert a.name == "shopify_fulfillment_services"
+        for cap in (
+            Capability.SHOPIFY_LIST_FULFILLMENT_SERVICES,
+            Capability.SHOPIFY_CREATE_FULFILLMENT_SERVICE,
+            Capability.SHOPIFY_UPDATE_FULFILLMENT_SERVICE,
+            Capability.SHOPIFY_DELETE_FULFILLMENT_SERVICE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_name(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_variables({"callback_url": "https://x.com/q"})
+
+    def test_create_requires_callback_url(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_variables({"name": "ShopAI"})
+
+    def test_callback_url_must_be_http(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_variables({
+                "name": "ShopAI", "callback_url": "ftp://x.com/q",
+            })
+
+    def test_create_defaults_fulfillment_orders_opt_in_true(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        out = a._build_create_variables({
+            "name": "ShopAI", "callback_url": "https://x.com/q",
+        })
+        assert out["fulfillmentOrdersOptIn"] is True
+
+    def test_create_full_shape(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        out = a._build_create_variables({
+            "name": "ShopAI Routing",
+            "callback_url": "https://fulfill.shopai.dev/cb",
+            "tracks_inventory": True,
+            "permits_sku_sharing": True,
+            "tracking_support": True,
+            "fulfillment_orders_opt_in": True,
+        })
+        assert out["name"] == "ShopAI Routing"
+        assert out["callbackUrl"] == "https://fulfill.shopai.dev/cb"
+        assert out["inventoryManagement"] is True
+        assert out["permitsSkuSharing"] is True
+        assert out["trackingSupport"] is True
+        assert out["fulfillmentOrdersOptIn"] is True
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shop": {
+                "fulfillmentServices": [
+                    {
+                        "id": "gid://shopify/FulfillmentService/1",
+                        "serviceName": "Manual",
+                        "callbackUrl": "",
+                        "inventoryManagement": False,
+                        "permitsSkuSharing": False,
+                        "trackingSupport": False,
+                        "type": "MANUAL",
+                        "fulfillmentOrdersOptIn": True,
+                        "location": {
+                            "id": "gid://shopify/Location/100",
+                            "name": "Shop location",
+                        },
+                    },
+                    {
+                        "id": "gid://shopify/FulfillmentService/2",
+                        "serviceName": "ShopAI Routing",
+                        "callbackUrl": "https://fulfill.shopai.dev/cb",
+                        "inventoryManagement": True,
+                        "permitsSkuSharing": True,
+                        "trackingSupport": True,
+                        "type": "THIRD_PARTY",
+                        "fulfillmentOrdersOptIn": True,
+                        "location": None,
+                    },
+                ],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_FULFILLMENT_SERVICES, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 2
+        names = {s["name"] for s in result.data["fulfillment_services"]}
+        assert names == {"Manual", "ShopAI Routing"}
+        third_party = [
+            s for s in result.data["fulfillment_services"]
+            if s["type"] == "THIRD_PARTY"
+        ][0]
+        assert third_party["inventory_management"] is True
+
+    def test_list_handles_missing_shop(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"shop": None}):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_FULFILLMENT_SERVICES, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"fulfillmentServiceCreate": {
+                "fulfillmentService": {
+                    "id": "gid://shopify/FulfillmentService/new",
+                    "serviceName": v["name"],
+                    "callbackUrl": v["callbackUrl"],
+                    "fulfillmentOrdersOptIn": v["fulfillmentOrdersOptIn"],
+                    "type": "THIRD_PARTY",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT_SERVICE,
+                {
+                    "name": "ShopAI",
+                    "callback_url": "https://fulfill.shopai.dev/cb",
+                    "tracks_inventory": True,
+                },
+            )
+        assert result.ok
+        assert captured["name"] == "ShopAI"
+        assert captured["fulfillmentOrdersOptIn"] is True
+        assert captured["inventoryManagement"] is True
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "fulfillmentServiceCreate": {
+                "fulfillmentService": None,
+                "userErrors": [{"field": ["name"],
+                                "message": "is taken"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_FULFILLMENT_SERVICE,
+                {"name": "dup", "callback_url": "https://x.com/q"},
+            )
+        assert not result.ok
+
+    # ── Update ───────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_FULFILLMENT_SERVICE, {
+            "name": "x",
+        })
+        assert not result.ok
+
+    def test_update_no_fields_rejected(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_FULFILLMENT_SERVICE, {
+            "id": "gid://shopify/FulfillmentService/1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"fulfillmentServiceUpdate": {
+                "fulfillmentService": {
+                    "id": v["id"],
+                    "serviceName": v.get("name", "old"),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_FULFILLMENT_SERVICE,
+                {
+                    "id": "gid://shopify/FulfillmentService/1",
+                    "name": "Renamed",
+                    "tracking_support": True,
+                },
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/FulfillmentService/1"
+        assert captured["name"] == "Renamed"
+        assert captured["trackingSupport"] is True
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_FULFILLMENT_SERVICE, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        a = ShopifyFulfillmentServicesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "fulfillmentServiceDelete": {
+                "deletedId": "gid://shopify/FulfillmentService/1",
+                "userErrors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_FULFILLMENT_SERVICE,
+                {"id": "gid://shopify/FulfillmentService/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/FulfillmentService/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.fulfillment_services import (
+            ShopifyFulfillmentServicesAdapter,
+        )
+        assert ShopifyFulfillmentServicesAdapter._normalise_service({}) == {}

@@ -46,6 +46,7 @@ from .draft_order_calculate import ShopifyDraftOrderCalculateAdapter
 from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
+from .fulfillment_services import ShopifyFulfillmentServicesAdapter
 from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
 from .inventory_shipments import ShopifyInventoryShipmentsAdapter
@@ -127,6 +128,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMetafieldDefinitionsAdapter,
     ShopifyPriceListAdapter,
     ShopifyCarrierServicesAdapter,
+    ShopifyFulfillmentServicesAdapter,
 )
 
 

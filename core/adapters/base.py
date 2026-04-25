@@ -252,6 +252,10 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_CARRIER_SERVICE = "shopify_create_carrier_service"
     SHOPIFY_UPDATE_CARRIER_SERVICE = "shopify_update_carrier_service"
     SHOPIFY_DELETE_CARRIER_SERVICE = "shopify_delete_carrier_service"
+    SHOPIFY_LIST_FULFILLMENT_SERVICES = "shopify_list_fulfillment_services"
+    SHOPIFY_CREATE_FULFILLMENT_SERVICE = "shopify_create_fulfillment_service"
+    SHOPIFY_UPDATE_FULFILLMENT_SERVICE = "shopify_update_fulfillment_service"
+    SHOPIFY_DELETE_FULFILLMENT_SERVICE = "shopify_delete_fulfillment_service"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
