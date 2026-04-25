@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftythree_adapters(self):
+    def test_register_all_adds_fiftyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 53
+        assert len(status) == 54
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -840,6 +840,7 @@ class TestShopifyBootstrap:
             "shopify_discount_automatic",
             "shopify_metaobject_definitions",
             "shopify_script_tags",
+            "shopify_order_transactions",
         }
 
     def test_register_all_idempotent(self):
@@ -847,7 +848,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 53
+        assert len(get_registry()) == 54
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1042,6 +1043,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_SCRIPT_TAG).name == "shopify_script_tags"
         assert router.route(Capability.SHOPIFY_UPDATE_SCRIPT_TAG).name == "shopify_script_tags"
         assert router.route(Capability.SHOPIFY_DELETE_SCRIPT_TAG).name == "shopify_script_tags"
+        assert router.route(Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS).name == "shopify_order_transactions"
+        assert router.route(Capability.SHOPIFY_GET_TRANSACTION).name == "shopify_order_transactions"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -14636,3 +14639,225 @@ class TestShopifyScriptTagsAdapter:
     def test_normalise_handles_empty(self):
         from core.adapters.shopify.script_tags import ShopifyScriptTagsAdapter
         assert ShopifyScriptTagsAdapter._normalise_tag({}) == {}
+
+
+# ── ShopifyOrderTransactionsAdapter ───────────────────────
+
+
+class TestShopifyOrderTransactionsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter()
+        assert a.name == "shopify_order_transactions"
+        for cap in (
+            Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS,
+            Capability.SHOPIFY_GET_TRANSACTION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_requires_order_id(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS, {},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "order": {
+                "id": "gid://shopify/Order/1",
+                "name": "#1001",
+                "transactions": [
+                    {
+                        "id": "gid://shopify/OrderTransaction/t1",
+                        "kind": "AUTHORIZATION",
+                        "status": "SUCCESS",
+                        "gateway": "stripe",
+                        "test": False,
+                        "authorizationCode": "auth-abc-123",
+                        "processedAt": "2026-04-25T10:00:00Z",
+                        "amountSet": {
+                            "shopMoney": {"amount": "100.00",
+                                           "currencyCode": "USD"},
+                        },
+                        "fees": [],
+                    },
+                    {
+                        "id": "gid://shopify/OrderTransaction/t2",
+                        "kind": "CAPTURE",
+                        "status": "SUCCESS",
+                        "gateway": "stripe",
+                        "parentTransaction": {
+                            "id": "gid://shopify/OrderTransaction/t1",
+                        },
+                        "amountSet": {
+                            "shopMoney": {"amount": "100.00",
+                                           "currencyCode": "USD"},
+                        },
+                        "fees": [{
+                            "type": "PROCESSING",
+                            "amount": {"amount": "3.20",
+                                       "currencyCode": "USD"},
+                            "rate": "0.029",
+                            "rateName": "stripe-online",
+                            "flatFee": {"amount": "0.30",
+                                        "currencyCode": "USD"},
+                            "flatFeeName": "stripe-flat",
+                        }],
+                    },
+                ],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS,
+                {"order_id": "gid://shopify/Order/1"},
+            )
+        assert result.ok
+        assert result.data["count"] == 2
+        kinds = [t["kind"] for t in result.data["transactions"]]
+        assert kinds == ["AUTHORIZATION", "CAPTURE"]
+        capture = result.data["transactions"][1]
+        assert capture["amount"] == "100.00"
+        assert capture["currency_code"] == "USD"
+        assert capture["parent_transaction_id"] == \
+            "gid://shopify/OrderTransaction/t1"
+        assert len(capture["fees"]) == 1
+        assert capture["fees"][0]["amount"] == "3.20"
+        assert capture["fees"][0]["rate"] == 0.029
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"order": None}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS,
+                {"order_id": "gid://shopify/Order/1", "limit": 9999},
+            )
+        assert captured["first"] == 250
+
+    def test_list_passes_capturable_filter(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"order": None}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "capturable": True,
+                },
+            )
+        assert captured["capturable"] is True
+
+    def test_list_handles_missing_order(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"order": None}):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS,
+                {"order_id": "gid://shopify/Order/missing"},
+            )
+        assert result.ok
+        assert result.data["order_found"] is False
+        assert result.data["count"] == 0
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_TRANSACTION, {})
+        assert not result.ok
+
+    def test_get_happy_path_with_receipt(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "node": {
+                "id": "gid://shopify/OrderTransaction/t1",
+                "kind": "REFUND",
+                "status": "SUCCESS",
+                "gateway": "stripe",
+                "amountSet": {
+                    "shopMoney": {"amount": "20.00",
+                                   "currencyCode": "USD"},
+                },
+                "receiptJson": '{"id":"re_xyz","object":"refund"}',
+                "fees": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_TRANSACTION,
+                {"id": "gid://shopify/OrderTransaction/t1"},
+            )
+        assert result.ok
+        t = result.data["transaction"]
+        assert t["kind"] == "REFUND"
+        assert t["amount"] == "20.00"
+        # receipt_json passed through verbatim — analytics consumers
+        # parse it themselves rather than the adapter making schema calls.
+        assert t["receipt_json"] == '{"id":"re_xyz","object":"refund"}'
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        a = ShopifyOrderTransactionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"node": None}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_TRANSACTION,
+                {"id": "gid://shopify/OrderTransaction/999"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.order_transactions import (
+            ShopifyOrderTransactionsAdapter,
+        )
+        assert ShopifyOrderTransactionsAdapter._normalise_transaction(
+            {},
+        ) == {}
+        assert ShopifyOrderTransactionsAdapter._normalise_fee(None) == {}

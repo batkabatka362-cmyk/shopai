@@ -59,6 +59,7 @@ from .metafield_definitions import ShopifyMetafieldDefinitionsAdapter
 from .metaobject_definitions import ShopifyMetaobjectDefinitionsAdapter
 from .metaobjects import ShopifyMetaobjectsAdapter
 from .order_edits import ShopifyOrderEditsAdapter
+from .order_transactions import ShopifyOrderTransactionsAdapter
 from .orders import ShopifyOrdersAdapter
 from .pages import ShopifyPagesAdapter
 from .price_lists import ShopifyPriceListAdapter
@@ -135,6 +136,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDiscountAutomaticAdapter,
     ShopifyMetaobjectDefinitionsAdapter,
     ShopifyScriptTagsAdapter,
+    ShopifyOrderTransactionsAdapter,
 )
 
 
