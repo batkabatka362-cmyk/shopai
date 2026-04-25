@@ -29,6 +29,7 @@ from .fulfillment import ShopifyFulfillmentAdapter
 from .inventory import ShopifyInventoryAdapter
 from .marketing_events import ShopifyMarketingEventsAdapter
 from .metafield import ShopifyMetafieldAdapter
+from .returns import ShopifyReturnsAdapter
 from .risk import ShopifyRiskAdapter
 
 logger = get_logger("adapters.shopify.bootstrap")
@@ -43,6 +44,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyFilesAdapter,
     ShopifyDraftOrdersAdapter,
     ShopifyMarketingEventsAdapter,
+    ShopifyReturnsAdapter,
 )
 
 

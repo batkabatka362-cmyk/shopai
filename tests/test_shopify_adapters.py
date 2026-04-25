@@ -790,15 +790,16 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eight_adapters(self):
+    def test_register_all_adds_nine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 8
+        assert len(status) == 9
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
             "shopify_discount", "shopify_files",
             "shopify_draft_orders", "shopify_marketing_events",
+            "shopify_returns",
         }
 
     def test_register_all_idempotent(self):
@@ -806,7 +807,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 8
+        assert len(get_registry()) == 9
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -850,6 +851,360 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_MARKETING_ACTIVITY).name == "shopify_marketing_events"
         assert router.route(Capability.SHOPIFY_ADD_MARKETING_ENGAGEMENT).name == "shopify_marketing_events"
         assert router.route(Capability.SHOPIFY_LIST_MARKETING_ACTIVITIES).name == "shopify_marketing_events"
+        assert router.route(Capability.SHOPIFY_LIST_RETURNS).name == "shopify_returns"
+        assert router.route(Capability.SHOPIFY_GET_RETURN).name == "shopify_returns"
+        assert router.route(Capability.SHOPIFY_APPROVE_RETURN).name == "shopify_returns"
+        assert router.route(Capability.SHOPIFY_DECLINE_RETURN).name == "shopify_returns"
+
+
+# ── ShopifyReturnsAdapter ──────────────────────────────────
+
+
+class TestShopifyReturnsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter()
+        assert a.name == "shopify_returns"
+        for cap in (
+            Capability.SHOPIFY_LIST_RETURNS,
+            Capability.SHOPIFY_GET_RETURN,
+            Capability.SHOPIFY_APPROVE_RETURN,
+            Capability.SHOPIFY_DECLINE_RETURN,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────────────
+
+    def test_list_returns_happy_path_traverses_orders(self):
+        """Schema has no top-level ``returns`` connection (caught live
+        as 'Field returns doesn't exist on QueryRoot'). The adapter
+        paginates ORDERS filtered by return status and flattens the
+        per-order returns into a single list. Callers see a flat
+        list, but the wire shape is orders → returns → edges → node."""
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orders": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "returns": {"edges": [
+                            {"node": {
+                                "id": "gid://shopify/Return/1",
+                                "name": "#R1",
+                                "status": "OPEN",
+                                "totalQuantity": 2,
+                                "order": {"id": "gid://shopify/Order/100",
+                                          "name": "#1001"},
+                                "returnLineItems": {"edges": [
+                                    {"node": {
+                                        "id": "gid://shopify/ReturnLineItem/x",
+                                        "quantity": 2,
+                                        "returnReason": "DEFECTIVE",
+                                        "returnReasonNote": "Stitching loose",
+                                        "fulfillmentLineItem": {
+                                            "lineItem": {
+                                                "id": "gid://l/1",
+                                                "title": "Cool Mug",
+                                                "variantTitle": "Blue / 12oz",
+                                                "sku": "MUG-BLU-12",
+                                            },
+                                        },
+                                    }},
+                                ]},
+                            }},
+                        ]},
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_RETURNS, {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 1
+        ret = result.data["returns"][0]
+        assert ret["status"] == "OPEN"
+        assert ret["order_name"] == "#1001"
+        assert ret["total_quantity"] == 2
+        li = ret["line_items"][0]
+        assert li["product_title"] == "Cool Mug"
+        assert li["sku"] == "MUG-BLU-12"
+        assert li["reason"] == "DEFECTIVE"
+
+    def test_list_returns_default_query_filters_by_return_status(self):
+        """Without a default order-side filter we'd page through every
+        order in the shop to find the few with returns. The adapter
+        inserts a sensible default unless the caller overrides."""
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v["query"]
+            return {"orders": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_RETURNS, {})
+        assert "return_status" in captured["query"]
+
+    def test_list_returns_clamps_limit(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"orders": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_RETURNS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_returns_caller_query_overrides_default(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v["query"]
+            return {"orders": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_RETURNS, {
+                "query": "name:#1234",
+            })
+        assert captured["query"] == "name:#1234"
+
+    def test_list_returns_handles_empty_page(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orders": {"pageInfo": {"hasNextPage": False,
+                                    "endCursor": None}, "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_RETURNS, {})
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Get ─────────────────────────────────────────────
+
+    def test_get_return_requires_id(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_RETURN, {})
+        assert not result.ok
+
+    def test_get_return_happy_path(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "return": {
+                "id": "gid://shopify/Return/9",
+                "name": "#R9",
+                "status": "OPEN",
+                "totalQuantity": 1,
+                "order": {"id": "gid://shopify/Order/100", "name": "#1001"},
+                "returnLineItems": {"edges": []},
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_RETURN, {
+                "id": "gid://shopify/Return/9",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["return"]["id"].endswith("/9")
+
+    def test_get_return_not_found_yields_found_false(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"return": None}):
+            result = a.execute(Capability.SHOPIFY_GET_RETURN, {
+                "id": "gid://shopify/Return/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["return"] is None
+
+    # ── Approve ─────────────────────────────────────────
+
+    def test_approve_return_happy_path(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["input"] = v["input"]
+            return {"returnApproveRequest": {
+                "return": {"id": v["input"]["id"], "status": "OPEN"},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_APPROVE_RETURN, {
+                "id": "gid://shopify/Return/1",
+            })
+        assert result.ok
+        assert result.data["status"] == "OPEN"
+        # notifyCustomer defaults to True (the friendly default —
+        # auto-approval should email the customer their return is in
+        # progress).
+        assert captured["input"]["notifyCustomer"] is True
+
+    def test_approve_return_notify_can_be_silenced(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["input"] = v["input"]
+            return {"returnApproveRequest": {
+                "return": {"id": v["input"]["id"]}, "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_APPROVE_RETURN, {
+                "id": "gid://shopify/Return/1",
+                "notify_customer": False,
+            })
+        assert captured["input"]["notifyCustomer"] is False
+
+    def test_approve_return_requires_id(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_APPROVE_RETURN, {})
+        assert not result.ok
+
+    def test_approve_return_user_errors_propagate(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "returnApproveRequest": {
+                "return": None,
+                "userErrors": [{
+                    "field": ["input", "id"],
+                    "message": "Return cannot be approved in current state",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_APPROVE_RETURN, {
+                "id": "gid://shopify/Return/closed",
+            })
+        assert not result.ok
+
+    # ── Decline ─────────────────────────────────────────
+
+    def test_decline_return_happy_path(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["input"] = v["input"]
+            return {"returnDeclineRequest": {
+                "return": {
+                    "id": v["input"]["id"],
+                    "status": "DECLINED",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_DECLINE_RETURN, {
+                "id": "gid://shopify/Return/1",
+                "decline_reason": "final_sale",
+            })
+        assert result.ok
+        assert result.data["status"] == "DECLINED"
+        # The schema doesn't surface declineReason on the return
+        # object, but the adapter echoes the canonical value the
+        # caller's mutation actually sent so callers don't have to
+        # re-derive it.
+        assert result.data["decline_reason"] == "FINAL_SALE"
+        assert captured["input"]["declineReason"] == "FINAL_SALE"
+
+    def test_decline_return_aliases_resolve(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["reason"] = v["input"]["declineReason"]
+            return {"returnDeclineRequest": {
+                "return": {"id": v["input"]["id"]}, "userErrors": [],
+            }}
+
+        for friendly, expected in (
+            ("expired", "RETURN_PERIOD_ENDED"),
+            ("return_period_ended", "RETURN_PERIOD_ENDED"),
+            ("FINAL_SALE", "FINAL_SALE"),
+            ("other", "OTHER"),
+        ):
+            captured.clear()
+            with patch.object(a, "_gql", side_effect=fake_gql):
+                a.execute(Capability.SHOPIFY_DECLINE_RETURN, {
+                    "id": "gid://shopify/Return/1",
+                    "decline_reason": friendly,
+                })
+            assert captured["reason"] == expected, friendly
+
+    def test_decline_return_unknown_reason_rejected(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_DECLINE_RETURN, {
+                "id": "gid://shopify/Return/1",
+                "decline_reason": "vibes",
+            })
+        assert not result.ok
+
+    def test_decline_return_defaults_to_other(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        a = ShopifyReturnsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["reason"] = v["input"]["declineReason"]
+            return {"returnDeclineRequest": {
+                "return": {"id": v["input"]["id"]}, "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_DECLINE_RETURN, {
+                "id": "gid://shopify/Return/1",
+            })
+        assert captured["reason"] == "OTHER"
+
+    # ── _normalise_return ───────────────────────────────
+
+    def test_normalise_handles_missing_fulfillment_line_item(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        out = ShopifyReturnsAdapter._normalise_return({
+            "id": "gid://shopify/Return/1",
+            "returnLineItems": {"edges": [
+                {"node": {
+                    "id": "gid://x", "quantity": 1,
+                    "returnReason": "WRONG_ITEM",
+                    # No fulfillmentLineItem at all — the schema
+                    # allows this when the line was removed.
+                }},
+            ]},
+        })
+        assert out["line_items"][0]["product_title"] == ""
+        assert out["line_items"][0]["sku"] == ""
+        assert out["line_items"][0]["reason"] == "WRONG_ITEM"
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.returns import ShopifyReturnsAdapter
+        assert ShopifyReturnsAdapter._normalise_return(None) == {}  # type: ignore[arg-type]
+        assert ShopifyReturnsAdapter._normalise_return("foo") == {}  # type: ignore[arg-type]
 
 
 # ── ShopifyMarketingEventsAdapter ──────────────────────────

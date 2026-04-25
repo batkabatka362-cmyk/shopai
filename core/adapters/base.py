@@ -120,6 +120,10 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_MARKETING_ACTIVITY = "shopify_update_marketing_activity"
     SHOPIFY_ADD_MARKETING_ENGAGEMENT = "shopify_add_marketing_engagement"
     SHOPIFY_LIST_MARKETING_ACTIVITIES = "shopify_list_marketing_activities"
+    SHOPIFY_LIST_RETURNS = "shopify_list_returns"
+    SHOPIFY_GET_RETURN = "shopify_get_return"
+    SHOPIFY_APPROVE_RETURN = "shopify_approve_return"
+    SHOPIFY_DECLINE_RETURN = "shopify_decline_return"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
