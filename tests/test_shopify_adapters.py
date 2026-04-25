@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twenty_adapters(self):
+    def test_register_all_adds_twentyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 20
+        assert len(status) == 21
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -807,6 +807,7 @@ class TestShopifyBootstrap:
             "shopify_payment_customizations",
             "shopify_delivery_customizations",
             "shopify_gift_cards",
+            "shopify_subscription_contracts",
         }
 
     def test_register_all_idempotent(self):
@@ -814,7 +815,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 20
+        assert len(get_registry()) == 21
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -893,6 +894,319 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_GIFT_CARDS).name == "shopify_gift_cards"
         assert router.route(Capability.SHOPIFY_GET_GIFT_CARD).name == "shopify_gift_cards"
         assert router.route(Capability.SHOPIFY_DEACTIVATE_GIFT_CARD).name == "shopify_gift_cards"
+        assert router.route(Capability.SHOPIFY_LIST_SUBSCRIPTION_CONTRACTS).name == "shopify_subscription_contracts"
+        assert router.route(Capability.SHOPIFY_GET_SUBSCRIPTION_CONTRACT).name == "shopify_subscription_contracts"
+        assert router.route(Capability.SHOPIFY_PAUSE_SUBSCRIPTION_CONTRACT).name == "shopify_subscription_contracts"
+        assert router.route(Capability.SHOPIFY_RESUME_SUBSCRIPTION_CONTRACT).name == "shopify_subscription_contracts"
+        assert router.route(Capability.SHOPIFY_CANCEL_SUBSCRIPTION_CONTRACT).name == "shopify_subscription_contracts"
+
+
+# ── ShopifySubscriptionContractsAdapter ───────────────────
+
+
+class TestShopifySubscriptionContractsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter()
+        assert a.name == "shopify_subscription_contracts"
+        for cap in (
+            Capability.SHOPIFY_LIST_SUBSCRIPTION_CONTRACTS,
+            Capability.SHOPIFY_GET_SUBSCRIPTION_CONTRACT,
+            Capability.SHOPIFY_PAUSE_SUBSCRIPTION_CONTRACT,
+            Capability.SHOPIFY_RESUME_SUBSCRIPTION_CONTRACT,
+            Capability.SHOPIFY_CANCEL_SUBSCRIPTION_CONTRACT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ───────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionContracts": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/SubscriptionContract/1",
+                        "status": "ACTIVE",
+                        "currencyCode": "USD",
+                        "nextBillingDate": "2026-05-01T00:00:00Z",
+                        "customer": {
+                            "id": "gid://shopify/Customer/X",
+                            "email": "ada@example.com",
+                            "displayName": "Ada Lovelace",
+                        },
+                        "lines": {"edges": [
+                            {"node": {
+                                "id": "gid://shopify/SubscriptionLine/L",
+                                "title": "Monthly Coffee",
+                                "variantTitle": "12oz",
+                                "sku": "COFFEE-12",
+                                "quantity": 1,
+                                "currentPrice": {"amount": "29.99",
+                                                 "currencyCode": "USD"},
+                            }},
+                        ]},
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_SUBSCRIPTION_CONTRACTS, {"limit": 10},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        c = result.data["contracts"][0]
+        assert c["status"] == "ACTIVE"
+        assert c["customer_email"] == "ada@example.com"
+        assert c["lines"][0]["current_price"] == 29.99
+        assert c["lines"][0]["quantity"] == 1
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"subscriptionContracts": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_SUBSCRIPTION_CONTRACTS,
+                {"limit": 9999},
+            )
+        assert captured["first"] == 250
+
+    def test_list_passes_sort_key_uppercased(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["sortKey"] = v["sortKey"]
+            captured["reverse"] = v["reverse"]
+            return {"subscriptionContracts": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_SUBSCRIPTION_CONTRACTS, {
+                "sort_key": "created_at", "reverse": True,
+            })
+        assert captured["sortKey"] == "CREATED_AT"
+        assert captured["reverse"] is True
+
+    def test_list_empty(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionContracts": {"pageInfo": {}, "edges": []},
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_SUBSCRIPTION_CONTRACTS, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_GET_SUBSCRIPTION_CONTRACT, {},
+            )
+        assert not result.ok
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionContract": {
+                "id": "gid://shopify/SubscriptionContract/9",
+                "status": "PAUSED",
+                "lines": {"edges": []},
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_SUBSCRIPTION_CONTRACT, {
+                "id": "gid://shopify/SubscriptionContract/9",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["contract"]["status"] == "PAUSED"
+
+    def test_get_not_found(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionContract": None,
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_SUBSCRIPTION_CONTRACT, {
+                "id": "gid://shopify/SubscriptionContract/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Lifecycle (pause / resume / cancel) ─────
+
+    def test_pause_requires_id(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_PAUSE_SUBSCRIPTION_CONTRACT, {},
+            )
+        assert not result.ok
+
+    def test_pause_happy_path(self):
+        """Pause uses ``subscriptionContractPause`` with id at the
+        field level (Pattern A — identifier outside the input)."""
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = q
+            captured["id"] = v["id"]
+            return {"subscriptionContractPause": {
+                "contract": {"id": v["id"], "status": "PAUSED"},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_PAUSE_SUBSCRIPTION_CONTRACT,
+                {"id": "gid://shopify/SubscriptionContract/1"},
+            )
+        assert result.ok
+        assert result.data["status"] == "PAUSED"
+        assert "subscriptionContractPause" in captured["query"]
+
+    def test_pause_user_errors_propagate(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionContractPause": {
+                "contract": None,
+                "userErrors": [{
+                    "field": ["subscriptionContractId"],
+                    "message": "Contract already paused",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_PAUSE_SUBSCRIPTION_CONTRACT,
+                {"id": "gid://shopify/SubscriptionContract/1"},
+            )
+        assert not result.ok
+
+    def test_resume_uses_activate_mutation(self):
+        """Capability is named ``RESUME`` because that's what engines
+        actually do — but Shopify's mutation is ``...Activate``. The
+        adapter normalises across the name mismatch."""
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = q
+            return {"subscriptionContractActivate": {
+                "contract": {"id": v["id"], "status": "ACTIVE"},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_RESUME_SUBSCRIPTION_CONTRACT,
+                {"id": "gid://shopify/SubscriptionContract/1"},
+            )
+        assert result.ok
+        assert result.data["status"] == "ACTIVE"
+        # Wire-side mutation is Activate even though our cap is RESUME.
+        assert "subscriptionContractActivate" in captured["query"]
+
+    def test_cancel_happy_path(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionContractCancel": {
+                "contract": {
+                    "id": "gid://shopify/SubscriptionContract/1",
+                    "status": "CANCELLED",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CANCEL_SUBSCRIPTION_CONTRACT,
+                {"id": "gid://shopify/SubscriptionContract/1"},
+            )
+        assert result.ok
+        assert result.data["status"] == "CANCELLED"
+
+    def test_cancel_user_errors_propagate(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        a = ShopifySubscriptionContractsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "subscriptionContractCancel": {
+                "contract": None,
+                "userErrors": [{
+                    "field": ["subscriptionContractId"],
+                    "message": "Contract already cancelled",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CANCEL_SUBSCRIPTION_CONTRACT,
+                {"id": "gid://shopify/SubscriptionContract/cancelled"},
+            )
+        assert not result.ok
+
+    # ── Normaliser ─────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.subscriptions import (
+            ShopifySubscriptionContractsAdapter,
+        )
+        assert ShopifySubscriptionContractsAdapter._normalise_contract(None) == {}  # type: ignore[arg-type]
 
 
 # ── ShopifyGiftCardsAdapter ───────────────────────────────

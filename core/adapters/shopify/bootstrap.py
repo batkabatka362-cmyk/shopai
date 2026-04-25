@@ -42,6 +42,7 @@ from .refunds import ShopifyRefundsAdapter
 from .returns import ShopifyReturnsAdapter
 from .risk import ShopifyRiskAdapter
 from .segments import ShopifyCustomerSegmentsAdapter
+from .subscriptions import ShopifySubscriptionContractsAdapter
 from .themes import ShopifyThemesAdapter
 from .translations import ShopifyTranslationsAdapter
 
@@ -69,6 +70,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyPaymentCustomizationsAdapter,
     ShopifyDeliveryCustomizationsAdapter,
     ShopifyGiftCardsAdapter,
+    ShopifySubscriptionContractsAdapter,
 )
 
 

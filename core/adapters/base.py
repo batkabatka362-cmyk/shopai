@@ -153,6 +153,11 @@ class Capability(str, Enum):
     SHOPIFY_LIST_GIFT_CARDS = "shopify_list_gift_cards"
     SHOPIFY_GET_GIFT_CARD = "shopify_get_gift_card"
     SHOPIFY_DEACTIVATE_GIFT_CARD = "shopify_deactivate_gift_card"
+    SHOPIFY_LIST_SUBSCRIPTION_CONTRACTS = "shopify_list_subscription_contracts"
+    SHOPIFY_GET_SUBSCRIPTION_CONTRACT = "shopify_get_subscription_contract"
+    SHOPIFY_PAUSE_SUBSCRIPTION_CONTRACT = "shopify_pause_subscription_contract"
+    SHOPIFY_RESUME_SUBSCRIPTION_CONTRACT = "shopify_resume_subscription_contract"
+    SHOPIFY_CANCEL_SUBSCRIPTION_CONTRACT = "shopify_cancel_subscription_contract"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
