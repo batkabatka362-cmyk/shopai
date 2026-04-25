@@ -35,6 +35,7 @@ from .customizations import (
     ShopifyPaymentCustomizationsAdapter,
 )
 from .discounts import ShopifyDiscountAdapter
+from .disputes import ShopifyDisputesAdapter
 from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
@@ -105,6 +106,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyPagesAdapter,
     ShopifyArticlesAdapter,
     ShopifyBulkMutationsAdapter,
+    ShopifyDisputesAdapter,
 )
 
 

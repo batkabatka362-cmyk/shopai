@@ -272,6 +272,12 @@ tolerate both forms when the cost is low:
 - `Article.authorV2 { name email }` was renamed to a simpler
   `author { name }` in 2024-01. The legacy selection no longer
   compiles; query `author.name` and there's no email sub-field.
+- `shopifyPaymentsAccount.disputes` does NOT accept
+  `sortKey`/`query`/`reverse` arguments (unlike most connections).
+  Pagination only — engines that need ordering / filtering have to
+  do it client-side after fetch. Also: `ShopifyPaymentsDisputeSortKeys`
+  enum is not defined at all, so a query that declares it as an
+  unused variable still fails at validation.
 
 ### Pattern E: schema-gated fields
 

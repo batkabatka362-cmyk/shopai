@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtyeight_adapters(self):
+    def test_register_all_adds_thirtynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 38
+        assert len(status) == 39
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -825,6 +825,7 @@ class TestShopifyBootstrap:
             "shopify_pages",
             "shopify_articles",
             "shopify_bulk_mutations",
+            "shopify_disputes",
         }
 
     def test_register_all_idempotent(self):
@@ -832,7 +833,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 38
+        assert len(get_registry()) == 39
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -981,6 +982,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_ARTICLE).name == "shopify_articles"
         assert router.route(Capability.SHOPIFY_STAGE_UPLOAD).name == "shopify_bulk_mutations"
         assert router.route(Capability.SHOPIFY_RUN_BULK_MUTATION).name == "shopify_bulk_mutations"
+        assert router.route(Capability.SHOPIFY_LIST_DISPUTES).name == "shopify_disputes"
+        assert router.route(Capability.SHOPIFY_GET_DISPUTE).name == "shopify_disputes"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -10782,3 +10785,158 @@ class TestShopifyBulkMutationsAdapter:
             ShopifyBulkMutationsAdapter,
         )
         assert ShopifyBulkMutationsAdapter._normalise_op({}) == {}
+
+
+# ── ShopifyDisputesAdapter ────────────────────────────────
+
+
+class TestShopifyDisputesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter()
+        assert a.name == "shopify_disputes"
+        for cap in (
+            Capability.SHOPIFY_LIST_DISPUTES,
+            Capability.SHOPIFY_GET_DISPUTE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path_with_payments(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyPaymentsAccount": {
+                "disputes": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "edges": [{"node": {
+                        "id": "gid://shopify/ShopifyPaymentsDispute/d1",
+                        "status": "NEEDS_RESPONSE",
+                        "type": "CHARGEBACK",
+                        "reasonDetails": {
+                            "reason": "FRAUDULENT",
+                            "networkReasonCode": "10.4",
+                        },
+                        "amount": {"amount": "150.00", "currencyCode": "USD"},
+                        "initiatedAt": "2026-04-01T10:00:00Z",
+                        "evidenceDueBy": "2026-04-15T10:00:00Z",
+                        "order": {
+                            "id": "gid://shopify/Order/100",
+                            "name": "#1100",
+                        },
+                    }}],
+                },
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_DISPUTES, {})
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["shop_uses_shopify_payments"] is True
+        d = result.data["disputes"][0]
+        assert d["status"] == "NEEDS_RESPONSE"
+        assert d["reason"] == "FRAUDULENT"
+        assert d["network_reason_code"] == "10.4"
+        assert d["amount"] == "150.00"
+        assert d["order_name"] == "#1100"
+
+    def test_list_handles_no_shopify_payments(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "shopifyPaymentsAccount": None,
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_DISPUTES, {})
+        assert result.ok
+        assert result.data["count"] == 0
+        assert result.data["shop_uses_shopify_payments"] is False
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"shopifyPaymentsAccount": None}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_DISPUTES, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_ignores_sort_key_and_query(self):
+        # Pattern D: the disputes connection rejects sortKey/query/reverse
+        # (unlike most other connections). The adapter silently drops
+        # them rather than failing — engines that pass these for
+        # consistency with other list calls don't get spurious errors.
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"shopifyPaymentsAccount": None}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_DISPUTES, {
+                "query": "status:NEEDS_RESPONSE",
+                "sort_key": "INITIATED_AT",
+                "reverse": True,
+            })
+        assert "query" not in captured
+        assert "sortKey" not in captured
+        assert "reverse" not in captured
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_DISPUTE, {})
+        assert not result.ok
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"node": {
+            "id": "gid://shopify/ShopifyPaymentsDispute/d1",
+            "status": "WON",
+            "type": "INQUIRY",
+            "reasonDetails": {
+                "reason": "PRODUCT_NOT_RECEIVED",
+                "networkReasonCode": "30",
+            },
+            "amount": {"amount": "75.00", "currencyCode": "USD"},
+            "order": {"id": "gid://shopify/Order/2", "name": "#2002"},
+        }}):
+            result = a.execute(Capability.SHOPIFY_GET_DISPUTE, {
+                "id": "gid://shopify/ShopifyPaymentsDispute/d1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        d = result.data["dispute"]
+        assert d["status"] == "WON"
+        assert d["type"] == "INQUIRY"
+        assert d["amount"] == "75.00"
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        a = ShopifyDisputesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"node": None}):
+            result = a.execute(Capability.SHOPIFY_GET_DISPUTE, {
+                "id": "gid://shopify/ShopifyPaymentsDispute/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.disputes import ShopifyDisputesAdapter
+        assert ShopifyDisputesAdapter._normalise_dispute({}) == {}
+        assert ShopifyDisputesAdapter._normalise_dispute(None) == {}
