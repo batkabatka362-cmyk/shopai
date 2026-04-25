@@ -30,6 +30,7 @@ from .bulk import ShopifyBulkOperationsAdapter
 from .bulk_mutations import ShopifyBulkMutationsAdapter
 from .carrier_services import ShopifyCarrierServicesAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
+from .catalogs import ShopifyCatalogsAdapter
 from .channels import ShopifyChannelsAdapter
 from .collections import ShopifyCollectionsAdapter
 from .companies import ShopifyCompaniesAdapter
@@ -155,6 +156,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyInventoryActivationAdapter,
     ShopifyDiscountCodeBxgyAdapter,
     ShopifySubscriptionDraftAdapter,
+    ShopifyCatalogsAdapter,
 )
 
 

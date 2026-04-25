@@ -292,6 +292,8 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_SUBSCRIPTION_DRAFT = "shopify_create_subscription_draft"
     SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT = "shopify_update_subscription_draft"
     SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT = "shopify_commit_subscription_draft"
+    SHOPIFY_LIST_CATALOGS = "shopify_list_catalogs"
+    SHOPIFY_GET_CATALOG = "shopify_get_catalog"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

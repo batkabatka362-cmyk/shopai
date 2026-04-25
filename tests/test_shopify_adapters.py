@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtythree_adapters(self):
+    def test_register_all_adds_sixtyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 63
+        assert len(status) == 64
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -850,6 +850,7 @@ class TestShopifyBootstrap:
             "shopify_inventory_activation",
             "shopify_discount_code_bxgy",
             "shopify_subscription_draft",
+            "shopify_catalogs",
         }
 
     def test_register_all_idempotent(self):
@@ -857,7 +858,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 63
+        assert len(get_registry()) == 64
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1077,6 +1078,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_SUBSCRIPTION_DRAFT).name == "shopify_subscription_draft"
         assert router.route(Capability.SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT).name == "shopify_subscription_draft"
         assert router.route(Capability.SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT).name == "shopify_subscription_draft"
+        assert router.route(Capability.SHOPIFY_LIST_CATALOGS).name == "shopify_catalogs"
+        assert router.route(Capability.SHOPIFY_GET_CATALOG).name == "shopify_catalogs"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -17128,4 +17131,143 @@ class TestShopifySubscriptionDraftAdapter:
                 {"draft_id": "gid://shopify/SubscriptionDraft/committed"},
             )
         assert not result.ok
+
+
+# ── ShopifyCatalogsAdapter ────────────────────────────────
+
+
+class TestShopifyCatalogsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter()
+        assert a.name == "shopify_catalogs"
+        for cap in (
+            Capability.SHOPIFY_LIST_CATALOGS,
+            Capability.SHOPIFY_GET_CATALOG,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path_company_location(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "catalogs": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "__typename": "CompanyLocationCatalog",
+                    "id": "gid://shopify/CompanyLocationCatalog/1",
+                    "title": "B2B Tier 1",
+                    "status": "ACTIVE",
+                    "priceList": {
+                        "id": "gid://shopify/PriceList/p1",
+                        "name": "Wholesale Tier 1",
+                        "currency": "USD",
+                    },
+                    "publication": {
+                        "id": "gid://shopify/Publication/pub1",
+                        "catalog": {"id": "gid://shopify/CompanyLocationCatalog/1"},
+                    },
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_CATALOGS, {})
+        assert result.ok
+        c = result.data["catalogs"][0]
+        assert c["type"] == "COMPANY_LOCATION"
+        assert c["price_list_name"] == "Wholesale Tier 1"
+        assert c["currency_code"] == "USD"
+        assert c["title"] == "B2B Tier 1"
+
+    def test_list_market_catalog_type_mapping(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "catalogs": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "__typename": "MarketCatalog",
+                    "id": "gid://shopify/MarketCatalog/m1",
+                    "title": "France EUR",
+                    "status": "ACTIVE",
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_CATALOGS, {})
+        assert result.data["catalogs"][0]["type"] == "MARKET"
+
+    def test_list_invalid_type_rejected(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_LIST_CATALOGS, {
+            "type": "BAD",
+        })
+        assert not result.ok
+
+    def test_list_passes_type_and_query_filter(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"catalogs": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_CATALOGS, {
+                "type": "company_location",
+                "query": "title:Wholesale",
+            })
+        assert captured["type"] == "COMPANY_LOCATION"
+        assert captured["query"] == "title:Wholesale"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"catalogs": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_CATALOGS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_CATALOG, {})
+        assert not result.ok
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        a = ShopifyCatalogsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"catalog": None}):
+            result = a.execute(Capability.SHOPIFY_GET_CATALOG, {
+                "id": "gid://shopify/CompanyLocationCatalog/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
+        assert ShopifyCatalogsAdapter._normalise_catalog({}) == {}
+        assert ShopifyCatalogsAdapter._normalise_catalog(None) == {}
 
