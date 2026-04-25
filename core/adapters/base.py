@@ -208,6 +208,11 @@ class Capability(str, Enum):
     SHOPIFY_GET_SHOP = "shopify_get_shop"
     SHOPIFY_GET_SHOP_POLICIES = "shopify_get_shop_policies"
     SHOPIFY_LIST_CURRENCIES = "shopify_list_currencies"
+    SHOPIFY_LIST_PAGES = "shopify_list_pages"
+    SHOPIFY_GET_PAGE = "shopify_get_page"
+    SHOPIFY_CREATE_PAGE = "shopify_create_page"
+    SHOPIFY_UPDATE_PAGE = "shopify_update_page"
+    SHOPIFY_DELETE_PAGE = "shopify_delete_page"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtyfive_adapters(self):
+    def test_register_all_adds_thirtysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 35
+        assert len(status) == 36
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -822,6 +822,7 @@ class TestShopifyBootstrap:
             "shopify_webhooks",
             "shopify_bulk",
             "shopify_shop",
+            "shopify_pages",
         }
 
     def test_register_all_idempotent(self):
@@ -829,7 +830,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 35
+        assert len(get_registry()) == 36
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -965,6 +966,11 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_SHOP).name == "shopify_shop"
         assert router.route(Capability.SHOPIFY_GET_SHOP_POLICIES).name == "shopify_shop"
         assert router.route(Capability.SHOPIFY_LIST_CURRENCIES).name == "shopify_shop"
+        assert router.route(Capability.SHOPIFY_LIST_PAGES).name == "shopify_pages"
+        assert router.route(Capability.SHOPIFY_GET_PAGE).name == "shopify_pages"
+        assert router.route(Capability.SHOPIFY_CREATE_PAGE).name == "shopify_pages"
+        assert router.route(Capability.SHOPIFY_UPDATE_PAGE).name == "shopify_pages"
+        assert router.route(Capability.SHOPIFY_DELETE_PAGE).name == "shopify_pages"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -10036,3 +10042,222 @@ class TestShopifyShopAdapter:
         from core.adapters.shopify.shop import ShopifyShopAdapter
         assert ShopifyShopAdapter._normalise_shop({}) == {}
         assert ShopifyShopAdapter._normalise_shop(None) == {}
+
+
+# ── ShopifyPagesAdapter ───────────────────────────────────
+
+
+class TestShopifyPagesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter()
+        assert a.name == "shopify_pages"
+        for cap in (
+            Capability.SHOPIFY_LIST_PAGES,
+            Capability.SHOPIFY_GET_PAGE,
+            Capability.SHOPIFY_CREATE_PAGE,
+            Capability.SHOPIFY_UPDATE_PAGE,
+            Capability.SHOPIFY_DELETE_PAGE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_page_input({}, for_update=False)
+
+    def test_create_input_body_html_alias(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        out = a._build_page_input(
+            {"title": "x", "body_html": "<p>hi</p>"}, for_update=False,
+        )
+        assert out["body"] == "<p>hi</p>"
+
+    def test_input_is_published_default_unset(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        out = a._build_page_input({"title": "x"}, for_update=False)
+        assert "isPublished" not in out
+
+    def test_input_is_published_true(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        out = a._build_page_input(
+            {"title": "x", "is_published": True}, for_update=False,
+        )
+        assert out["isPublished"] is True
+
+    def test_input_template_suffix_camelcased(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        out = a._build_page_input(
+            {"title": "x", "template_suffix": "contact"}, for_update=False,
+        )
+        assert out["templateSuffix"] == "contact"
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "pages": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/Page/1",
+                    "title": "About Us",
+                    "handle": "about-us",
+                    "body": "<p>About</p>",
+                    "isPublished": True,
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_PAGES, {})
+        assert result.ok
+        p = result.data["pages"][0]
+        assert p["title"] == "About Us"
+        assert p["handle"] == "about-us"
+        assert p["body_html"] == "<p>About</p>"
+        assert p["is_published"] is True
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_PAGES, {"sort_key": "BAD"},
+        )
+        assert not result.ok
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_PAGE, {})
+        assert not result.ok
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"page": None}):
+            result = a.execute(Capability.SHOPIFY_GET_PAGE, {
+                "id": "gid://shopify/Page/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Create / Update ──────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"pageCreate": {
+                "page": {
+                    "id": "gid://shopify/Page/new",
+                    "title": v["page"]["title"],
+                    "handle": v["page"].get("handle", ""),
+                    "body": v["page"].get("body", ""),
+                    "isPublished": v["page"].get("isPublished", False),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_PAGE, {
+                "title": "Holiday Returns",
+                "body_html": "<p>Extended through Jan 31.</p>",
+                "handle": "holiday-returns",
+                "is_published": True,
+            })
+        assert result.ok
+        assert captured["page"]["title"] == "Holiday Returns"
+        assert captured["page"]["body"] == "<p>Extended through Jan 31.</p>"
+        assert captured["page"]["isPublished"] is True
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"pageCreate": {
+            "page": None,
+            "userErrors": [{"field": ["handle"],
+                            "message": "is taken", "code": "TAKEN"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_PAGE, {
+                "title": "Dup", "handle": "duplicate-page",
+            })
+        assert not result.ok
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_PAGE, {"title": "x"})
+        assert not result.ok
+
+    def test_update_no_fields_rejected(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_PAGE, {
+            "id": "gid://shopify/Page/1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"pageUpdate": {
+                "page": {"id": v["id"], "title": v["page"].get("title", "old")},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_PAGE, {
+                "id": "gid://shopify/Page/1",
+                "title": "Renamed",
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/Page/1"
+        assert captured["page"]["title"] == "Renamed"
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_PAGE, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        a = ShopifyPagesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"pageDelete": {
+            "deletedPageId": "gid://shopify/Page/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_PAGE, {
+                "id": "gid://shopify/Page/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/Page/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.pages import ShopifyPagesAdapter
+        assert ShopifyPagesAdapter._normalise_page({}) == {}
