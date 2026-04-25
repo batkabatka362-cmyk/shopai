@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_thirtysix_adapters(self):
+    def test_register_all_adds_thirtyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 36
+        assert len(status) == 37
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -823,6 +823,7 @@ class TestShopifyBootstrap:
             "shopify_bulk",
             "shopify_shop",
             "shopify_pages",
+            "shopify_articles",
         }
 
     def test_register_all_idempotent(self):
@@ -830,7 +831,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 36
+        assert len(get_registry()) == 37
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -971,6 +972,12 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_PAGE).name == "shopify_pages"
         assert router.route(Capability.SHOPIFY_UPDATE_PAGE).name == "shopify_pages"
         assert router.route(Capability.SHOPIFY_DELETE_PAGE).name == "shopify_pages"
+        assert router.route(Capability.SHOPIFY_LIST_BLOGS).name == "shopify_articles"
+        assert router.route(Capability.SHOPIFY_LIST_ARTICLES).name == "shopify_articles"
+        assert router.route(Capability.SHOPIFY_GET_ARTICLE).name == "shopify_articles"
+        assert router.route(Capability.SHOPIFY_CREATE_ARTICLE).name == "shopify_articles"
+        assert router.route(Capability.SHOPIFY_UPDATE_ARTICLE).name == "shopify_articles"
+        assert router.route(Capability.SHOPIFY_DELETE_ARTICLE).name == "shopify_articles"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -10261,3 +10268,278 @@ class TestShopifyPagesAdapter:
     def test_normalise_handles_empty(self):
         from core.adapters.shopify.pages import ShopifyPagesAdapter
         assert ShopifyPagesAdapter._normalise_page({}) == {}
+
+
+# ── ShopifyArticlesAdapter ────────────────────────────────
+
+
+class TestShopifyArticlesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter()
+        assert a.name == "shopify_articles"
+        for cap in (
+            Capability.SHOPIFY_LIST_BLOGS,
+            Capability.SHOPIFY_LIST_ARTICLES,
+            Capability.SHOPIFY_GET_ARTICLE,
+            Capability.SHOPIFY_CREATE_ARTICLE,
+            Capability.SHOPIFY_UPDATE_ARTICLE,
+            Capability.SHOPIFY_DELETE_ARTICLE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_blog_id(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_article_input(
+                {"title": "x", "body_html": "<p>hi</p>"},
+                for_update=False,
+            )
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_article_input(
+                {"blog_id": "gid://shopify/Blog/1"}, for_update=False,
+            )
+
+    def test_create_input_body_html_alias(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        out = a._build_article_input({
+            "blog_id": "gid://shopify/Blog/1",
+            "title": "x",
+            "body_html": "<p>hi</p>",
+        }, for_update=False)
+        assert out["blogId"] == "gid://shopify/Blog/1"
+        assert out["body"] == "<p>hi</p>"
+
+    def test_input_author_name_wrapped(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        out = a._build_article_input({
+            "blog_id": "gid://shopify/Blog/1",
+            "title": "x",
+            "author_name": "ShopAI Editorial",
+        }, for_update=False)
+        assert out["author"] == {"name": "ShopAI Editorial"}
+
+    def test_input_image_url_wrapped(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        out = a._build_article_input({
+            "blog_id": "gid://shopify/Blog/1",
+            "title": "x",
+            "image_url": "https://cdn/img.jpg",
+            "image_alt": "Hero shot",
+        }, for_update=False)
+        assert out["image"] == {
+            "src": "https://cdn/img.jpg",
+            "altText": "Hero shot",
+        }
+
+    def test_input_tags_string_split(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        out = a._build_article_input({
+            "blog_id": "gid://shopify/Blog/1",
+            "title": "x",
+            "tags": "seo, launch ,product",
+        }, for_update=False)
+        assert out["tags"] == ["seo", "launch", "product"]
+
+    # ── List blogs ───────────────────────────────
+
+    def test_list_blogs_happy_path(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "blogs": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/Blog/1",
+                    "title": "News",
+                    "handle": "news",
+                    "commentPolicy": "MODERATED",
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_BLOGS, {})
+        assert result.ok
+        b = result.data["blogs"][0]
+        assert b["title"] == "News"
+        assert b["comment_policy"] == "MODERATED"
+
+    def test_list_blogs_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_BLOGS, {"sort_key": "BAD"},
+        )
+        assert not result.ok
+
+    # ── List articles ────────────────────────────
+
+    def test_list_articles_happy_path(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "articles": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/Article/1",
+                    "title": "Top 10 levitation hacks",
+                    "handle": "top-10",
+                    "body": "<p>...</p>",
+                    "tags": ["seo"],
+                    "author": {"name": "ShopAI"},
+                    "image": {"url": "https://cdn/img.jpg",
+                              "altText": "Hero"},
+                    "blog": {"id": "gid://shopify/Blog/1",
+                             "title": "News", "handle": "news"},
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_ARTICLES, {})
+        assert result.ok
+        ar = result.data["articles"][0]
+        assert ar["title"] == "Top 10 levitation hacks"
+        assert ar["author_name"] == "ShopAI"
+        assert ar["image_url"] == "https://cdn/img.jpg"
+        assert ar["blog_handle"] == "news"
+
+    def test_list_articles_blog_id_filter_emits_query(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"articles": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_ARTICLES, {
+                "blog_id": "gid://shopify/Blog/1",
+            })
+        assert "blog_id:gid://shopify/Blog/1" in captured["query"]
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_ARTICLE, {})
+        assert not result.ok
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"article": None}):
+            result = a.execute(Capability.SHOPIFY_GET_ARTICLE, {
+                "id": "gid://shopify/Article/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Create / Update / Delete ─────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"articleCreate": {
+                "article": {
+                    "id": "gid://shopify/Article/new",
+                    "title": v["article"]["title"],
+                    "blog": {"id": v["article"]["blogId"]},
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_ARTICLE, {
+                "blog_id": "gid://shopify/Blog/1",
+                "title": "Why Levitation Matters",
+                "body_html": "<p>...</p>",
+                "is_published": True,
+                "tags": ["seo"],
+            })
+        assert result.ok
+        assert captured["article"]["blogId"] == "gid://shopify/Blog/1"
+        assert captured["article"]["isPublished"] is True
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_ARTICLE, {"title": "x"})
+        assert not result.ok
+
+    def test_update_no_fields_rejected(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_ARTICLE, {
+            "id": "gid://shopify/Article/1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"articleUpdate": {
+                "article": {"id": v["id"]},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_ARTICLE, {
+                "id": "gid://shopify/Article/1",
+                "title": "Renamed",
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/Article/1"
+        assert captured["article"]["title"] == "Renamed"
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_ARTICLE, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        a = ShopifyArticlesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"articleDelete": {
+            "deletedArticleId": "gid://shopify/Article/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_ARTICLE, {
+                "id": "gid://shopify/Article/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/Article/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.articles import ShopifyArticlesAdapter
+        assert ShopifyArticlesAdapter._normalise_blog({}) == {}
+        assert ShopifyArticlesAdapter._normalise_article({}) == {}

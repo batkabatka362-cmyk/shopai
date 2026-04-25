@@ -269,6 +269,9 @@ tolerate both forms when the cost is low:
   internationalDomains/internationalPriceOverrides/
   internationalPriceRules/legacySubscriptionGatewayEnabled/
   reports/sellsSubscriptions/showMetrics/storefront.
+- `Article.authorV2 { name email }` was renamed to a simpler
+  `author { name }` in 2024-01. The legacy selection no longer
+  compiles; query `author.name` and there's no email sub-field.
 
 ### Pattern E: schema-gated fields
 

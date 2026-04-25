@@ -213,6 +213,12 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_PAGE = "shopify_create_page"
     SHOPIFY_UPDATE_PAGE = "shopify_update_page"
     SHOPIFY_DELETE_PAGE = "shopify_delete_page"
+    SHOPIFY_LIST_BLOGS = "shopify_list_blogs"
+    SHOPIFY_LIST_ARTICLES = "shopify_list_articles"
+    SHOPIFY_GET_ARTICLE = "shopify_get_article"
+    SHOPIFY_CREATE_ARTICLE = "shopify_create_article"
+    SHOPIFY_UPDATE_ARTICLE = "shopify_update_article"
+    SHOPIFY_DELETE_ARTICLE = "shopify_delete_article"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
