@@ -181,6 +181,12 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_VALIDATION = "shopify_create_validation"
     SHOPIFY_LIST_VALIDATIONS = "shopify_list_validations"
     SHOPIFY_DELETE_VALIDATION = "shopify_delete_validation"
+    SHOPIFY_LIST_PRODUCTS = "shopify_list_products"
+    SHOPIFY_GET_PRODUCT = "shopify_get_product"
+    SHOPIFY_CREATE_PRODUCT = "shopify_create_product"
+    SHOPIFY_UPDATE_PRODUCT = "shopify_update_product"
+    SHOPIFY_DELETE_PRODUCT = "shopify_delete_product"
+    SHOPIFY_UPDATE_VARIANTS = "shopify_update_variants"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

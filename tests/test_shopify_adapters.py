@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentynine_adapters(self):
+    def test_register_all_adds_thirty_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 29
+        assert len(status) == 30
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -816,6 +816,7 @@ class TestShopifyBootstrap:
             "shopify_channels",
             "shopify_cart_transforms",
             "shopify_validations",
+            "shopify_products",
         }
 
     def test_register_all_idempotent(self):
@@ -823,7 +824,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 29
+        assert len(get_registry()) == 30
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -930,6 +931,12 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_VALIDATION).name == "shopify_validations"
         assert router.route(Capability.SHOPIFY_LIST_VALIDATIONS).name == "shopify_validations"
         assert router.route(Capability.SHOPIFY_DELETE_VALIDATION).name == "shopify_validations"
+        assert router.route(Capability.SHOPIFY_LIST_PRODUCTS).name == "shopify_products"
+        assert router.route(Capability.SHOPIFY_GET_PRODUCT).name == "shopify_products"
+        assert router.route(Capability.SHOPIFY_CREATE_PRODUCT).name == "shopify_products"
+        assert router.route(Capability.SHOPIFY_UPDATE_PRODUCT).name == "shopify_products"
+        assert router.route(Capability.SHOPIFY_DELETE_PRODUCT).name == "shopify_products"
+        assert router.route(Capability.SHOPIFY_UPDATE_VARIANTS).name == "shopify_products"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -8431,3 +8438,438 @@ class TestShopifyDiscountAdapter:
         assert result.data["count"] == 0
         assert result.data["has_next_page"] is False
         assert result.data["end_cursor"] == ""
+
+
+# ── ShopifyProductsAdapter ────────────────────────────────
+
+
+class TestShopifyProductsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter()
+        assert a.name == "shopify_products"
+        for cap in (
+            Capability.SHOPIFY_LIST_PRODUCTS,
+            Capability.SHOPIFY_GET_PRODUCT,
+            Capability.SHOPIFY_CREATE_PRODUCT,
+            Capability.SHOPIFY_UPDATE_PRODUCT,
+            Capability.SHOPIFY_DELETE_PRODUCT,
+            Capability.SHOPIFY_UPDATE_VARIANTS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_product_input ─────────────────────
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_product_input({}, for_update=False)
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_product_input({"title": "x"}, for_update=True)
+
+    def test_create_input_status_validated(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_product_input(
+                {"title": "x", "status": "INVALID"}, for_update=False,
+            )
+
+    def test_create_input_status_normalised_uppercase(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        out = a._build_product_input(
+            {"title": "x", "status": "active"}, for_update=False,
+        )
+        assert out["status"] == "ACTIVE"
+
+    def test_create_input_tags_string_split(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        out = a._build_product_input(
+            {"title": "x", "tags": "a, b ,c"}, for_update=False,
+        )
+        assert out["tags"] == ["a", "b", "c"]
+
+    def test_create_input_tags_list_pass_through(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        out = a._build_product_input(
+            {"title": "x", "tags": ["a", "b"]}, for_update=False,
+        )
+        assert out["tags"] == ["a", "b"]
+
+    def test_create_input_description_maps_to_html(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        out = a._build_product_input(
+            {"title": "x", "description": "<p>hi</p>"},
+            for_update=False,
+        )
+        assert out["descriptionHtml"] == "<p>hi</p>"
+
+    def test_create_input_product_type_camelcased(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        out = a._build_product_input(
+            {"title": "x", "product_type": "Lighting"}, for_update=False,
+        )
+        assert out["productType"] == "Lighting"
+
+    # ── _build_variant_input ─────────────────────
+
+    def test_variant_requires_id(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_variant_input({"price": "9.99"}, 0)
+
+    def test_variant_price_coerced_to_string(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        out = a._build_variant_input(
+            {"id": "gid://shopify/ProductVariant/1", "price": 19.99}, 0,
+        )
+        assert out["price"] == "19.99"
+
+    def test_variant_compare_at_price_camelcased(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        out = a._build_variant_input(
+            {"id": "gid://shopify/ProductVariant/1",
+             "compare_at_price": "29.99"}, 0,
+        )
+        assert out["compareAtPrice"] == "29.99"
+
+    def test_variant_price_non_numeric_string_rejected(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_variant_input(
+                {"id": "gid://shopify/ProductVariant/1",
+                 "price": "expensive"}, 0,
+            )
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "products": {
+                "pageInfo": {"hasNextPage": True, "endCursor": "abc"},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Product/1",
+                        "title": "Lantern",
+                        "handle": "lantern",
+                        "status": "ACTIVE",
+                        "vendor": "ShopAI",
+                        "productType": "Lighting",
+                        "tags": ["camping"],
+                        "totalInventory": 42,
+                        "priceRangeV2": {
+                            "minVariantPrice": {
+                                "amount": "9.99", "currencyCode": "USD",
+                            },
+                            "maxVariantPrice": {
+                                "amount": "19.99", "currencyCode": "USD",
+                            },
+                        },
+                    }}
+                ],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_PRODUCTS, {})
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["has_next_page"] is True
+        assert result.data["end_cursor"] == "abc"
+        p = result.data["products"][0]
+        assert p["title"] == "Lantern"
+        assert p["price_min"] == "9.99"
+        assert p["currency_code"] == "USD"
+
+    def test_list_clamps_limit_to_max(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"products": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_PRODUCTS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_PRODUCTS, {"sort_key": "BAD"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_passes_query_filter(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"products": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_PRODUCTS, {
+                "query": "tag:camping", "sort_key": "TITLE", "reverse": True,
+            })
+        assert captured["query"] == "tag:camping"
+        assert captured["sortKey"] == "TITLE"
+        assert captured["reverse"] is True
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_PRODUCT, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_get_happy_path_with_variants_and_images(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "product": {
+                "id": "gid://shopify/Product/1",
+                "title": "Lantern",
+                "handle": "lantern",
+                "status": "ACTIVE",
+                "tags": [],
+                "totalInventory": 5,
+                "priceRangeV2": {
+                    "minVariantPrice": {"amount": "9.99", "currencyCode": "USD"},
+                    "maxVariantPrice": {"amount": "9.99", "currencyCode": "USD"},
+                },
+                "variants": {
+                    "edges": [{"node": {
+                        "id": "gid://shopify/ProductVariant/v1",
+                        "title": "Default",
+                        "sku": "LANT-1",
+                        "price": "9.99",
+                        "compareAtPrice": "14.99",
+                        "inventoryQuantity": 5,
+                        "inventoryPolicy": "DENY",
+                    }}],
+                },
+                "images": {
+                    "edges": [{"node": {
+                        "id": "gid://shopify/MediaImage/i1",
+                        "url": "https://cdn.shopify.com/lantern.jpg",
+                        "altText": "Lantern photo",
+                    }}],
+                },
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        p = result.data["product"]
+        assert len(p["variants"]) == 1
+        assert p["variants"][0]["sku"] == "LANT-1"
+        assert len(p["images"]) == 1
+        assert p["images"][0]["alt_text"] == "Lantern photo"
+
+    def test_get_missing_product_returns_empty(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"product": None}):
+            result = a.execute(Capability.SHOPIFY_GET_PRODUCT, {
+                "id": "gid://shopify/Product/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["product"] == {}
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"productCreate": {
+                "product": {
+                    "id": "gid://shopify/Product/new",
+                    "title": v["input"]["title"],
+                    "handle": "new",
+                    "status": v["input"].get("status", "ACTIVE"),
+                    "tags": v["input"].get("tags", []),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_PRODUCT, {
+                "title": "Lantern",
+                "status": "draft",
+                "tags": ["camping"],
+            })
+        assert result.ok
+        assert result.data["product"]["id"] == "gid://shopify/Product/new"
+        assert captured["input"]["status"] == "DRAFT"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"productCreate": {
+            "product": None,
+            "userErrors": [
+                {"field": ["title"], "message": "is taken", "code": "TAKEN"},
+            ],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_PRODUCT, {
+                "title": "Lantern",
+            })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    # ── Update ───────────────────────────────────
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"productUpdate": {
+                "product": {
+                    "id": v["input"]["id"],
+                    "title": v["input"].get("title", "old"),
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "title": "Renamed",
+            })
+        assert result.ok
+        assert result.data["product"]["title"] == "Renamed"
+        assert captured["input"]["id"] == "gid://shopify/Product/1"
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_PRODUCT, {})
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"productDelete": {
+            "deletedProductId": "gid://shopify/Product/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/Product/1"
+
+    # ── Variants bulk update ─────────────────────
+
+    def test_variants_update_requires_product_id(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_VARIANTS, {
+            "variants": [{"id": "v1", "price": "1"}],
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_variants_update_requires_non_empty_list(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_VARIANTS, {
+            "product_id": "gid://shopify/Product/1",
+            "variants": [],
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_variants_update_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"productVariantsBulkUpdate": {
+                "productVariants": [
+                    {"id": "gid://shopify/ProductVariant/v1",
+                     "title": "Default",
+                     "sku": "LANT-1",
+                     "price": "19.99",
+                     "compareAtPrice": "29.99",
+                     "inventoryQuantity": 5},
+                ],
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_VARIANTS, {
+                "product_id": "gid://shopify/Product/1",
+                "variants": [
+                    {"id": "gid://shopify/ProductVariant/v1",
+                     "price": 19.99,
+                     "compare_at_price": "29.99"},
+                ],
+            })
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["variants"][0]["price"] == "19.99"
+        # Pattern A — productId at field level, not inside an input dict.
+        assert captured["productId"] == "gid://shopify/Product/1"
+        assert captured["variants"][0]["price"] == "19.99"
+        assert captured["variants"][0]["compareAtPrice"] == "29.99"
+
+    # ── Normaliser edge cases ────────────────────
+
+    def test_normalise_handles_empty_node(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        assert ShopifyProductsAdapter._normalise_product({}) == {}
+        assert ShopifyProductsAdapter._normalise_product(None) == {}
+
+    def test_normalise_variant_handles_non_dict(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        assert ShopifyProductsAdapter._normalise_variant(None) == {}
