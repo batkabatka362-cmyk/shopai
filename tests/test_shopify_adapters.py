@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortyseven_adapters(self):
+    def test_register_all_adds_fortyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 47
+        assert len(status) == 48
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -834,6 +834,7 @@ class TestShopifyBootstrap:
             "shopify_abandoned_checkouts",
             "shopify_collections",
             "shopify_metafield_definitions",
+            "shopify_price_lists",
         }
 
     def test_register_all_idempotent(self):
@@ -841,7 +842,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 47
+        assert len(get_registry()) == 48
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1013,6 +1014,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_METAFIELD_DEFINITIONS).name == "shopify_metafield_definitions"
         assert router.route(Capability.SHOPIFY_CREATE_METAFIELD_DEFINITION).name == "shopify_metafield_definitions"
         assert router.route(Capability.SHOPIFY_DELETE_METAFIELD_DEFINITION).name == "shopify_metafield_definitions"
+        assert router.route(Capability.SHOPIFY_LIST_PRICE_LISTS).name == "shopify_price_lists"
+        assert router.route(Capability.SHOPIFY_GET_PRICE_LIST).name == "shopify_price_lists"
+        assert router.route(Capability.SHOPIFY_CREATE_PRICE_LIST).name == "shopify_price_lists"
+        assert router.route(Capability.SHOPIFY_DELETE_PRICE_LIST).name == "shopify_price_lists"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -12984,3 +12989,250 @@ class TestShopifyMetafieldDefinitionsAdapter:
         )
         assert ShopifyMetafieldDefinitionsAdapter._normalise_definition({}) == {}
         assert ShopifyMetafieldDefinitionsAdapter._normalise_definition(None) == {}
+
+
+# ── ShopifyPriceListAdapter ───────────────────────────────
+
+
+class TestShopifyPriceListAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter()
+        assert a.name == "shopify_price_lists"
+        for cap in (
+            Capability.SHOPIFY_LIST_PRICE_LISTS,
+            Capability.SHOPIFY_GET_PRICE_LIST,
+            Capability.SHOPIFY_CREATE_PRICE_LIST,
+            Capability.SHOPIFY_DELETE_PRICE_LIST,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ────────────────────────────
+
+    def test_create_requires_name(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({
+                "currency_code": "USD",
+                "parent": {"adjustment": {"type": "PERCENTAGE_DECREASE",
+                                          "value": 10}},
+            })
+
+    def test_create_requires_currency(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({
+                "name": "Wholesale",
+                "parent": {"adjustment": {"type": "PERCENTAGE_DECREASE",
+                                          "value": 10}},
+            })
+
+    def test_create_requires_parent(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({
+                "name": "Wholesale", "currency_code": "USD",
+            })
+
+    def test_create_invalid_adjustment_type_rejected(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({
+                "name": "Wholesale", "currency_code": "USD",
+                "parent": {"adjustment": {"type": "FLAT", "value": 10}},
+            })
+
+    def test_create_adjustment_value_non_numeric_rejected(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_input({
+                "name": "Wholesale", "currency_code": "USD",
+                "parent": {"adjustment": {"type": "PERCENTAGE_DECREASE",
+                                          "value": "ten"}},
+            })
+
+    def test_create_currency_uppercased(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        out = a._build_create_input({
+            "name": "Wholesale", "currency_code": "usd",
+            "parent": {"adjustment": {"type": "percentage_decrease",
+                                      "value": 10}},
+        })
+        assert out["currency"] == "USD"
+        assert out["parent"]["adjustment"]["type"] == "PERCENTAGE_DECREASE"
+        assert out["parent"]["adjustment"]["value"] == 10.0
+
+    def test_create_with_settings_and_catalog(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        out = a._build_create_input({
+            "name": "Wholesale Tier 1",
+            "currency_code": "USD",
+            "catalog_id": "gid://shopify/CompanyLocationCatalog/1",
+            "parent": {
+                "adjustment": {"type": "PERCENTAGE_DECREASE",
+                               "value": 30.5},
+                "settings": {"compare_at_mode": "ADJUSTED"},
+            },
+        })
+        assert out["catalogId"] == "gid://shopify/CompanyLocationCatalog/1"
+        assert out["parent"]["settings"]["compareAtMode"] == "ADJUSTED"
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "priceLists": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/PriceList/1",
+                    "name": "Wholesale Tier 1",
+                    "currency": "USD",
+                    "parent": {
+                        "adjustment": {
+                            "type": "PERCENTAGE_DECREASE",
+                            "value": 30,
+                        },
+                        "settings": {"compareAtMode": "ADJUSTED"},
+                    },
+                    "catalog": {
+                        "id": "gid://shopify/CompanyLocationCatalog/100",
+                        "title": "B2B Tier 1 Catalog",
+                        "status": "ACTIVE",
+                    },
+                    "fixedPricesCount": {"count": 42},
+                }}],
+            }
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_PRICE_LISTS, {})
+        assert result.ok
+        p = result.data["price_lists"][0]
+        assert p["name"] == "Wholesale Tier 1"
+        assert p["currency_code"] == "USD"
+        assert p["adjustment_type"] == "PERCENTAGE_DECREASE"
+        assert p["adjustment_value"] == 30.0
+        assert p["compare_at_mode"] == "ADJUSTED"
+        assert p["catalog_title"] == "B2B Tier 1 Catalog"
+        assert p["fixed_prices_count"] == 42
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"priceLists": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_PRICE_LISTS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    # ── Get ──────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_PRICE_LIST, {})
+        assert not result.ok
+
+    def test_get_missing_returns_not_found(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"priceList": None}):
+            result = a.execute(Capability.SHOPIFY_GET_PRICE_LIST, {
+                "id": "gid://shopify/PriceList/999",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Create ───────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"priceListCreate": {
+                "priceList": {
+                    "id": "gid://shopify/PriceList/new",
+                    "name": v["input"]["name"],
+                    "currency": v["input"]["currency"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_PRICE_LIST, {
+                "name": "Wholesale Tier 1",
+                "currency_code": "USD",
+                "parent": {
+                    "adjustment": {"type": "PERCENTAGE_DECREASE",
+                                   "value": 30},
+                },
+            })
+        assert result.ok
+        assert captured["input"]["name"] == "Wholesale Tier 1"
+        assert captured["input"]["parent"]["adjustment"]["value"] == 30.0
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"priceListCreate": {
+            "priceList": None,
+            "userErrors": [{"field": ["name"], "message": "is taken",
+                            "code": "TAKEN"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_CREATE_PRICE_LIST, {
+                "name": "dup", "currency_code": "USD",
+                "parent": {
+                    "adjustment": {"type": "PERCENTAGE_DECREASE",
+                                   "value": 10},
+                },
+            })
+        assert not result.ok
+
+    # ── Delete ───────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_PRICE_LIST, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        a = ShopifyPriceListAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"priceListDelete": {
+            "deletedId": "gid://shopify/PriceList/1",
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_DELETE_PRICE_LIST, {
+                "id": "gid://shopify/PriceList/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == "gid://shopify/PriceList/1"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.price_lists import ShopifyPriceListAdapter
+        assert ShopifyPriceListAdapter._normalise_price_list({}) == {}

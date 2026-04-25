@@ -244,6 +244,10 @@ class Capability(str, Enum):
     SHOPIFY_LIST_METAFIELD_DEFINITIONS = "shopify_list_metafield_definitions"
     SHOPIFY_CREATE_METAFIELD_DEFINITION = "shopify_create_metafield_definition"
     SHOPIFY_DELETE_METAFIELD_DEFINITION = "shopify_delete_metafield_definition"
+    SHOPIFY_LIST_PRICE_LISTS = "shopify_list_price_lists"
+    SHOPIFY_GET_PRICE_LIST = "shopify_get_price_list"
+    SHOPIFY_CREATE_PRICE_LIST = "shopify_create_price_list"
+    SHOPIFY_DELETE_PRICE_LIST = "shopify_delete_price_list"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

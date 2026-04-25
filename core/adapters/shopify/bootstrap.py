@@ -57,6 +57,7 @@ from .metaobjects import ShopifyMetaobjectsAdapter
 from .order_edits import ShopifyOrderEditsAdapter
 from .orders import ShopifyOrdersAdapter
 from .pages import ShopifyPagesAdapter
+from .price_lists import ShopifyPriceListAdapter
 from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
 from .refunds import ShopifyRefundsAdapter
@@ -123,6 +124,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyAbandonedCheckoutsAdapter,
     ShopifyCollectionsAdapter,
     ShopifyMetafieldDefinitionsAdapter,
+    ShopifyPriceListAdapter,
 )
 
 

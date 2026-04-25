@@ -281,6 +281,9 @@ tolerate both forms when the cost is low:
 - `Collection.productsCount` returns a `Count` wrapper
   (`{ count: N }`) in 2024-01+, not a scalar. Same shape as
   `Company.ordersCount`. Tolerate both forms in normalisation.
+- `priceLists` connection does NOT accept a `query` filter argument
+  (unlike most connections). Pagination only — same restriction as
+  `disputes`. Adapter silently drops the param.
 
 ### Pattern E: schema-gated fields
 
