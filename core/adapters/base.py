@@ -303,6 +303,8 @@ class Capability(str, Enum):
     SHOPIFY_LIST_COMPANY_CONTACT_ROLES = "shopify_list_company_contact_roles"
     SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE = "shopify_assign_company_contact_role"
     SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE = "shopify_revoke_company_contact_role"
+    SHOPIFY_UPSERT_METAOBJECT = "shopify_upsert_metaobject"
+    SHOPIFY_BULK_DELETE_METAOBJECTS = "shopify_bulk_delete_metaobjects"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

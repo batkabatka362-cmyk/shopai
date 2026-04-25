@@ -68,6 +68,7 @@ from .metafield import ShopifyMetafieldAdapter
 from .metafield_definitions import ShopifyMetafieldDefinitionsAdapter
 from .metaobject_definitions import ShopifyMetaobjectDefinitionsAdapter
 from .metaobjects import ShopifyMetaobjectsAdapter
+from .metaobjects_upsert import ShopifyMetaobjectsUpsertAdapter
 from .order_edits import ShopifyOrderEditsAdapter
 from .order_invoice import ShopifyOrderInvoiceSendAdapter
 from .order_transactions import ShopifyOrderTransactionsAdapter
@@ -165,6 +166,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyPaymentsPayoutsAdapter,
     ShopifyOrderInvoiceSendAdapter,
     ShopifyCompanyContactRolesAdapter,
+    ShopifyMetaobjectsUpsertAdapter,
 )
 
 

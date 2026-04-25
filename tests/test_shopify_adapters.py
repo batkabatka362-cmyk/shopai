@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtyeight_adapters(self):
+    def test_register_all_adds_sixtynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 68
+        assert len(status) == 69
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -855,6 +855,7 @@ class TestShopifyBootstrap:
             "shopify_payments_payouts",
             "shopify_order_invoice",
             "shopify_company_contact_roles",
+            "shopify_metaobjects_upsert",
         }
 
     def test_register_all_idempotent(self):
@@ -862,7 +863,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 68
+        assert len(get_registry()) == 69
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1093,6 +1094,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_COMPANY_CONTACT_ROLES).name == "shopify_company_contact_roles"
         assert router.route(Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE).name == "shopify_company_contact_roles"
         assert router.route(Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE).name == "shopify_company_contact_roles"
+        assert router.route(Capability.SHOPIFY_UPSERT_METAOBJECT).name == "shopify_metaobjects_upsert"
+        assert router.route(Capability.SHOPIFY_BULK_DELETE_METAOBJECTS).name == "shopify_metaobjects_upsert"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -18138,4 +18141,201 @@ class TestShopifyCompanyContactRolesAdapter:
         assert "gid://shopify/CompanyContactRoleAssignment/ra1" in (
             result.data["revoked_assignment_ids"]
         )
+
+
+# ── ShopifyMetaobjectsUpsertAdapter ───────────────────────
+
+
+class TestShopifyMetaobjectsUpsertAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter()
+        assert a.name == "shopify_metaobjects_upsert"
+        for cap in (
+            Capability.SHOPIFY_UPSERT_METAOBJECT,
+            Capability.SHOPIFY_BULK_DELETE_METAOBJECTS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Upsert ───────────────────────────────────
+
+    def test_upsert_requires_type(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPSERT_METAOBJECT, {
+            "handle": "x",
+            "fields": [{"key": "title", "value": "x"}],
+        })
+        assert not result.ok
+
+    def test_upsert_requires_handle(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPSERT_METAOBJECT, {
+            "type": "recipe",
+            "fields": [{"key": "title", "value": "x"}],
+        })
+        assert not result.ok
+
+    def test_upsert_requires_non_empty_fields(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPSERT_METAOBJECT, {
+            "type": "recipe", "handle": "x", "fields": [],
+        })
+        assert not result.ok
+
+    def test_upsert_field_requires_key(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPSERT_METAOBJECT, {
+            "type": "recipe", "handle": "x",
+            "fields": [{"value": "x"}],
+        })
+        assert not result.ok
+
+    def test_upsert_field_value_coerced_to_string(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metaobjectUpsert": {
+                "metaobject": {
+                    "id": "gid://shopify/Metaobject/m1",
+                    "type": v["handle"]["type"],
+                    "handle": v["handle"]["handle"],
+                    "fields": v["metaobject"]["fields"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPSERT_METAOBJECT, {
+                "type": "recipe",
+                "handle": "cookies",
+                "fields": [
+                    {"key": "title", "value": "Cookies"},
+                    # Numeric value gets coerced to string per
+                    # metafield convention.
+                    {"key": "cook_time_minutes", "value": 12},
+                ],
+            })
+        assert result.ok
+        # Pattern A: handle lookup + metaobject input as separate args.
+        assert captured["handle"]["type"] == "recipe"
+        assert captured["handle"]["handle"] == "cookies"
+        assert captured["metaobject"]["fields"][1]["value"] == "12"
+        m = result.data["metaobject"]
+        assert m["type"] == "recipe"
+        assert m["handle"] == "cookies"
+        assert m["field_map"]["title"] == "Cookies"
+
+    def test_upsert_user_errors_fail_fast(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"metaobjectUpsert": {
+            "metaobject": None,
+            "userErrors": [{"field": ["handle"],
+                            "message": "Type not found",
+                            "code": "INVALID"}],
+        }}):
+            result = a.execute(Capability.SHOPIFY_UPSERT_METAOBJECT, {
+                "type": "missing", "handle": "x",
+                "fields": [{"key": "title", "value": "x"}],
+            })
+        assert not result.ok
+
+    # ── Bulk delete ──────────────────────────────
+
+    def test_bulk_delete_requires_ids(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_BULK_DELETE_METAOBJECTS, {},
+        )
+        assert not result.ok
+
+    def test_bulk_delete_accepts_string_id(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"metaobjectBulkDelete": {
+                "job": {
+                    "id": "gid://shopify/Job/j1",
+                    "done": False,
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_METAOBJECTS,
+                {"ids": "gid://shopify/Metaobject/m1"},
+            )
+        assert result.ok
+        assert captured["where"]["ids"] == ["gid://shopify/Metaobject/m1"]
+
+    def test_bulk_delete_happy_path(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        a = ShopifyMetaobjectsUpsertAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "metaobjectBulkDelete": {
+                "job": {
+                    "id": "gid://shopify/Job/j1",
+                    "done": False,
+                },
+                "userErrors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_METAOBJECTS,
+                {"ids": [
+                    "gid://shopify/Metaobject/m1",
+                    "gid://shopify/Metaobject/m2",
+                ]},
+            )
+        assert result.ok
+        assert result.data["job_id"] == "gid://shopify/Job/j1"
+        assert result.data["queued_count"] == 2
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.metaobjects_upsert import (
+            ShopifyMetaobjectsUpsertAdapter,
+        )
+        assert ShopifyMetaobjectsUpsertAdapter._normalise_metaobject({}) == {}
+        assert ShopifyMetaobjectsUpsertAdapter._normalise_metaobject(None) == {}
 
