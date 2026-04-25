@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentythree_adapters(self):
+    def test_register_all_adds_twentyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 23
+        assert len(status) == 24
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -810,6 +810,7 @@ class TestShopifyBootstrap:
             "shopify_subscription_contracts",
             "shopify_markets",
             "shopify_web_pixels",
+            "shopify_companies",
         }
 
     def test_register_all_idempotent(self):
@@ -817,7 +818,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 23
+        assert len(get_registry()) == 24
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -907,6 +908,325 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_WEB_PIXEL).name == "shopify_web_pixels"
         assert router.route(Capability.SHOPIFY_UPDATE_WEB_PIXEL).name == "shopify_web_pixels"
         assert router.route(Capability.SHOPIFY_DELETE_WEB_PIXEL).name == "shopify_web_pixels"
+        assert router.route(Capability.SHOPIFY_LIST_COMPANIES).name == "shopify_companies"
+        assert router.route(Capability.SHOPIFY_GET_COMPANY).name == "shopify_companies"
+        assert router.route(Capability.SHOPIFY_CREATE_COMPANY).name == "shopify_companies"
+
+
+# ── ShopifyCompaniesAdapter ──────────────────────────────
+
+
+class TestShopifyCompaniesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter()
+        assert a.name == "shopify_companies"
+        for cap in (
+            Capability.SHOPIFY_LIST_COMPANIES,
+            Capability.SHOPIFY_GET_COMPANY,
+            Capability.SHOPIFY_CREATE_COMPANY,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_create_input validation ────────────
+
+    def test_build_create_input_requires_name(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyCompaniesAdapter._build_create_input({})
+        with pytest.raises(AdapterValidationError):
+            ShopifyCompaniesAdapter._build_create_input({"name": "  "})
+
+    def test_build_create_input_minimal(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        out = ShopifyCompaniesAdapter._build_create_input({"name": "Acme"})
+        assert out == {"company": {"name": "Acme"}}
+
+    def test_build_create_input_with_external_id_and_note(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        out = ShopifyCompaniesAdapter._build_create_input({
+            "name": "Acme",
+            "external_id": "hubspot-12345",
+            "note": "Imported from HubSpot",
+        })
+        assert out["company"]["externalId"] == "hubspot-12345"
+        assert out["company"]["note"] == "Imported from HubSpot"
+
+    def test_build_create_input_with_customer_seed(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        out = ShopifyCompaniesAdapter._build_create_input({
+            "name": "Acme",
+            "customer_id": "gid://shopify/Customer/X",
+        })
+        assert out["companyContact"]["customerId"] == "gid://shopify/Customer/X"
+
+    def test_build_create_input_with_location_seed(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        out = ShopifyCompaniesAdapter._build_create_input({
+            "name": "Acme",
+            "location": {
+                "name": "HQ",
+                "address": {
+                    "address1": "123 Main",
+                    "city": "Springfield",
+                    "country": "United States",
+                    "zip": "62704",
+                },
+            },
+        })
+        loc = out["companyLocation"]
+        assert loc["name"] == "HQ"
+        # snake_case → camelCase translation for AddressInput.
+        assert loc["shippingAddress"]["address1"] == "123 Main"
+        assert loc["shippingAddress"]["city"] == "Springfield"
+
+    def test_build_create_input_location_requires_name(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyCompaniesAdapter._build_create_input({
+                "name": "Acme",
+                "location": {"address": {"address1": "X"}},  # no location name
+            })
+
+    def test_build_create_input_location_must_be_dict(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyCompaniesAdapter._build_create_input({
+                "name": "Acme",
+                "location": "not a dict",
+            })
+
+    def test_build_create_input_address_field_must_be_string(self):
+        """If a caller passes a non-string in an address field
+        (typo: city as int) the adapter rejects up-front rather
+        than letting Shopify barf on a generic 'invalid input'."""
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyCompaniesAdapter._build_create_input({
+                "name": "Acme",
+                "location": {
+                    "name": "HQ",
+                    "address": {"city": 12345},
+                },
+            })
+
+    def test_build_create_input_invalid_external_id_type_rejected(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyCompaniesAdapter._build_create_input({
+                "name": "Acme", "external_id": 12345,
+            })
+
+    # ── List ──────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "companies": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Company/1",
+                        "name": "Acme",
+                        "note": "VIP",
+                        "externalId": "ext-1",
+                        "ordersCount": {"count": 12},
+                        "totalSpent": {
+                            "amount": "5000.00",
+                            "currencyCode": "USD",
+                        },
+                        "mainContact": {
+                            "id": "gid://shopify/CompanyContact/X",
+                            "customer": {
+                                "id": "gid://shopify/Customer/Y",
+                                "email": "buyer@acme.com",
+                                "displayName": "Wile E. Buyer",
+                            },
+                        },
+                        "locations": {"edges": [
+                            {"node": {
+                                "id": "gid://shopify/CompanyLocation/Z",
+                                "name": "HQ",
+                                "shippingAddress": {
+                                    "address1": "123 Main",
+                                    "city": "Springfield",
+                                    "country": "United States",
+                                    "zip": "62704",
+                                },
+                            }},
+                        ]},
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_COMPANIES, {"limit": 10})
+        assert result.ok
+        c = result.data["companies"][0]
+        assert c["name"] == "Acme"
+        assert c["external_id"] == "ext-1"
+        assert c["orders_count"] == 12
+        assert c["total_spent"] == 5000.0
+        assert c["main_contact_email"] == "buyer@acme.com"
+        assert c["locations"][0]["city"] == "Springfield"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"companies": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_COMPANIES, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_passes_query_and_sort(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["query"] = v["query"]
+            captured["sortKey"] = v["sortKey"]
+            return {"companies": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_COMPANIES, {
+                "query": "name:Acme",
+                "sort_key": "created_at",
+            })
+        assert captured["query"] == "name:Acme"
+        assert captured["sortKey"] == "CREATED_AT"
+
+    def test_list_handles_empty_page(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "companies": {"pageInfo": {}, "edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_COMPANIES, {})
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Get ───────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_GET_COMPANY, {})
+        assert not result.ok
+
+    def test_get_happy_path(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "company": {
+                "id": "gid://shopify/Company/9",
+                "name": "Acme",
+                "note": "",
+                "externalId": "",
+                "ordersCount": {"count": 0},
+                "totalSpent": {"amount": "0", "currencyCode": "USD"},
+                "mainContact": None,
+                "locations": {"edges": []},
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_GET_COMPANY, {
+                "id": "gid://shopify/Company/9",
+            })
+        assert result.ok
+        assert result.data["found"] is True
+        assert result.data["company"]["name"] == "Acme"
+
+    def test_get_not_found(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"company": None}):
+            result = a.execute(Capability.SHOPIFY_GET_COMPANY, {
+                "id": "gid://shopify/Company/missing",
+            })
+        assert result.ok
+        assert result.data["found"] is False
+
+    # ── Create — happy path ──────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["input"] = v["input"]
+            return {"companyCreate": {
+                "company": {
+                    "id": "gid://shopify/Company/new",
+                    "name": v["input"]["company"]["name"],
+                    "note": v["input"]["company"].get("note", ""),
+                    "externalId": v["input"]["company"].get("externalId", ""),
+                    "ordersCount": {"count": 0},
+                    "totalSpent": {"amount": "0", "currencyCode": "USD"},
+                    "mainContact": None,
+                    "locations": {"edges": []},
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_COMPANY, {
+                "name": "Acme Corp",
+                "external_id": "hubspot-99",
+            })
+        assert result.ok
+        assert result.data["company"]["name"] == "Acme Corp"
+        assert result.data["company"]["external_id"] == "hubspot-99"
+        assert captured["input"]["company"]["externalId"] == "hubspot-99"
+
+    def test_create_user_errors_propagate(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        a = ShopifyCompaniesAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "companyCreate": {
+                "company": None,
+                "userErrors": [{
+                    "field": ["input", "company", "name"],
+                    "message": "Name has already been taken",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_COMPANY, {
+                "name": "Acme",
+            })
+        assert not result.ok
+
+    # ── Normaliser ───────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        assert ShopifyCompaniesAdapter._normalise_company(None) == {}  # type: ignore[arg-type]
+
+    def test_normalise_handles_missing_main_contact(self):
+        from core.adapters.shopify.companies import ShopifyCompaniesAdapter
+        out = ShopifyCompaniesAdapter._normalise_company({
+            "id": "gid://c/1", "name": "C", "note": "",
+            "ordersCount": 0,
+            "totalSpent": {"amount": "0", "currencyCode": "USD"},
+            "mainContact": None,
+            "locations": {"edges": []},
+        })
+        assert out["main_contact_id"] == ""
+        assert out["main_contact_email"] == ""
+        assert out["main_contact_name"] == ""
 
 
 # ── ShopifyWebPixelsAdapter ──────────────────────────────

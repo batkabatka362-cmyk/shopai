@@ -164,6 +164,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_WEB_PIXEL = "shopify_create_web_pixel"
     SHOPIFY_UPDATE_WEB_PIXEL = "shopify_update_web_pixel"
     SHOPIFY_DELETE_WEB_PIXEL = "shopify_delete_web_pixel"
+    SHOPIFY_LIST_COMPANIES = "shopify_list_companies"
+    SHOPIFY_GET_COMPANY = "shopify_get_company"
+    SHOPIFY_CREATE_COMPANY = "shopify_create_company"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
