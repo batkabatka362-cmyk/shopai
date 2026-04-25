@@ -294,6 +294,8 @@ class Capability(str, Enum):
     SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT = "shopify_commit_subscription_draft"
     SHOPIFY_LIST_CATALOGS = "shopify_list_catalogs"
     SHOPIFY_GET_CATALOG = "shopify_get_catalog"
+    SHOPIFY_HOLD_FULFILLMENT_ORDER = "shopify_hold_fulfillment_order"
+    SHOPIFY_RELEASE_FULFILLMENT_ORDER_HOLD = "shopify_release_fulfillment_order_hold"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

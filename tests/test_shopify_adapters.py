@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_sixtyfour_adapters(self):
+    def test_register_all_adds_sixtyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 64
+        assert len(status) == 65
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -851,6 +851,7 @@ class TestShopifyBootstrap:
             "shopify_discount_code_bxgy",
             "shopify_subscription_draft",
             "shopify_catalogs",
+            "shopify_fulfillment_hold",
         }
 
     def test_register_all_idempotent(self):
@@ -858,7 +859,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 64
+        assert len(get_registry()) == 65
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1080,6 +1081,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT).name == "shopify_subscription_draft"
         assert router.route(Capability.SHOPIFY_LIST_CATALOGS).name == "shopify_catalogs"
         assert router.route(Capability.SHOPIFY_GET_CATALOG).name == "shopify_catalogs"
+        assert router.route(Capability.SHOPIFY_HOLD_FULFILLMENT_ORDER).name == "shopify_fulfillment_hold"
+        assert router.route(Capability.SHOPIFY_RELEASE_FULFILLMENT_ORDER_HOLD).name == "shopify_fulfillment_hold"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -17270,4 +17273,223 @@ class TestShopifyCatalogsAdapter:
         from core.adapters.shopify.catalogs import ShopifyCatalogsAdapter
         assert ShopifyCatalogsAdapter._normalise_catalog({}) == {}
         assert ShopifyCatalogsAdapter._normalise_catalog(None) == {}
+
+
+# ── ShopifyFulfillmentHoldAdapter ─────────────────────────
+
+
+class TestShopifyFulfillmentHoldAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter()
+        assert a.name == "shopify_fulfillment_hold"
+        for cap in (
+            Capability.SHOPIFY_HOLD_FULFILLMENT_ORDER,
+            Capability.SHOPIFY_RELEASE_FULFILLMENT_ORDER_HOLD,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Hold input ───────────────────────────────
+
+    def test_hold_requires_fulfillment_order_id(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_HOLD_FULFILLMENT_ORDER, {
+            "reason": "OTHER",
+        })
+        assert not result.ok
+
+    def test_hold_requires_reason(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_hold_input({})
+
+    def test_hold_invalid_reason_rejected(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_hold_input({"reason": "VIBES"})
+
+    def test_hold_full_shape(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        out = a._build_hold_input({
+            "reason": "high_risk_of_fraud",
+            "reason_notes": "AI fraud score 0.92",
+            "notify_merchant": True,
+            "external_id": "shopai-hold-001",
+        })
+        assert out["reason"] == "HIGH_RISK_OF_FRAUD"
+        assert out["reasonNotes"] == "AI fraud score 0.92"
+        assert out["notifyMerchant"] is True
+        assert out["externalId"] == "shopai-hold-001"
+
+    # ── Hold ─────────────────────────────────────
+
+    def test_hold_happy_path(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"fulfillmentOrderHold": {
+                "fulfillmentOrder": {
+                    "id": v["id"],
+                    "status": "ON_HOLD",
+                    "requestStatus": "UNSUBMITTED",
+                    "fulfillmentHolds": [{
+                        "id": "gid://shopify/FulfillmentHold/h1",
+                        "reason": (
+                            v["fulfillmentHold"]["reason"]
+                        ),
+                        "reasonNotes": (
+                            v["fulfillmentHold"].get("reasonNotes", "")
+                        ),
+                        "heldByApp": {"id": "gid://shopify/App/100"},
+                    }],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_HOLD_FULFILLMENT_ORDER,
+                {
+                    "fulfillment_order_id":
+                        "gid://shopify/FulfillmentOrder/1",
+                    "reason": "HIGH_RISK_OF_FRAUD",
+                    "reason_notes": "AI score 0.92",
+                    "notify_merchant": True,
+                },
+            )
+        assert result.ok
+        # Pattern A: id at field level, hold input as $fulfillmentHold.
+        assert captured["id"] == "gid://shopify/FulfillmentOrder/1"
+        assert captured["fulfillmentHold"]["reason"] == "HIGH_RISK_OF_FRAUD"
+        fo = result.data["fulfillment_order"]
+        assert fo["status"] == "ON_HOLD"
+        assert fo["is_held"] is True
+        assert fo["holds"][0]["reason"] == "HIGH_RISK_OF_FRAUD"
+
+    def test_hold_user_errors_fail_fast(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "fulfillmentOrderHold": {
+                "fulfillmentOrder": None,
+                "userErrors": [{"field": ["id"],
+                                "message": "Already shipped",
+                                "code": "INVALID"}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_HOLD_FULFILLMENT_ORDER,
+                {
+                    "fulfillment_order_id":
+                        "gid://shopify/FulfillmentOrder/shipped",
+                    "reason": "OTHER",
+                },
+            )
+        assert not result.ok
+
+    # ── Release ──────────────────────────────────
+
+    def test_release_requires_id(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_RELEASE_FULFILLMENT_ORDER_HOLD, {},
+        )
+        assert not result.ok
+
+    def test_release_happy_path_with_external_id(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"fulfillmentOrderReleaseHold": {
+                "fulfillmentOrder": {
+                    "id": v["id"],
+                    "status": "OPEN",
+                    "fulfillmentHolds": [],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_RELEASE_FULFILLMENT_ORDER_HOLD,
+                {
+                    "fulfillment_order_id":
+                        "gid://shopify/FulfillmentOrder/1",
+                    "external_id": "shopai-hold-001",
+                },
+            )
+        assert result.ok
+        assert captured["externalId"] == "shopai-hold-001"
+        assert result.data["fulfillment_order"]["is_held"] is False
+
+    def test_release_works_without_external_id(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        a = ShopifyFulfillmentHoldAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"fulfillmentOrderReleaseHold": {
+                "fulfillmentOrder": {
+                    "id": v["id"],
+                    "status": "OPEN",
+                    "fulfillmentHolds": [],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_RELEASE_FULFILLMENT_ORDER_HOLD,
+                {"fulfillment_order_id": "gid://shopify/FulfillmentOrder/1"},
+            )
+        assert "externalId" not in captured
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.fulfillment_hold import (
+            ShopifyFulfillmentHoldAdapter,
+        )
+        assert ShopifyFulfillmentHoldAdapter._normalise_fulfillment_order(
+            {},
+        ) == {}
 
