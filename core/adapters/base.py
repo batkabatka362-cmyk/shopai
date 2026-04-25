@@ -128,6 +128,9 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_METAOBJECT = "shopify_update_metaobject"
     SHOPIFY_GET_METAOBJECT = "shopify_get_metaobject"
     SHOPIFY_LIST_METAOBJECTS = "shopify_list_metaobjects"
+    SHOPIFY_LIST_PUBLICATIONS = "shopify_list_publications"
+    SHOPIFY_PUBLISH_RESOURCE = "shopify_publish_resource"
+    SHOPIFY_UNPUBLISH_RESOURCE = "shopify_unpublish_resource"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

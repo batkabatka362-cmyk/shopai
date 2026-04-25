@@ -30,6 +30,7 @@ from .inventory import ShopifyInventoryAdapter
 from .marketing_events import ShopifyMarketingEventsAdapter
 from .metafield import ShopifyMetafieldAdapter
 from .metaobjects import ShopifyMetaobjectsAdapter
+from .publications import ShopifyPublicationsAdapter
 from .returns import ShopifyReturnsAdapter
 from .risk import ShopifyRiskAdapter
 
@@ -47,6 +48,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMarketingEventsAdapter,
     ShopifyReturnsAdapter,
     ShopifyMetaobjectsAdapter,
+    ShopifyPublicationsAdapter,
 )
 
 

@@ -790,16 +790,17 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ten_adapters(self):
+    def test_register_all_adds_eleven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 10
+        assert len(status) == 11
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
             "shopify_discount", "shopify_files",
             "shopify_draft_orders", "shopify_marketing_events",
             "shopify_returns", "shopify_metaobjects",
+            "shopify_publications",
         }
 
     def test_register_all_idempotent(self):
@@ -807,7 +808,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 10
+        assert len(get_registry()) == 11
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -859,6 +860,289 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_METAOBJECT).name == "shopify_metaobjects"
         assert router.route(Capability.SHOPIFY_GET_METAOBJECT).name == "shopify_metaobjects"
         assert router.route(Capability.SHOPIFY_LIST_METAOBJECTS).name == "shopify_metaobjects"
+        assert router.route(Capability.SHOPIFY_LIST_PUBLICATIONS).name == "shopify_publications"
+        assert router.route(Capability.SHOPIFY_PUBLISH_RESOURCE).name == "shopify_publications"
+        assert router.route(Capability.SHOPIFY_UNPUBLISH_RESOURCE).name == "shopify_publications"
+
+
+# ── ShopifyPublicationsAdapter ─────────────────────────────
+
+
+class TestShopifyPublicationsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter()
+        assert a.name == "shopify_publications"
+        for cap in (
+            Capability.SHOPIFY_LIST_PUBLICATIONS,
+            Capability.SHOPIFY_PUBLISH_RESOURCE,
+            Capability.SHOPIFY_UNPUBLISH_RESOURCE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ─────────────────────────────────────────────
+
+    def test_list_publications_happy_path(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "publications": {
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/Publication/1",
+                        "name": "Online Store",
+                        "supportsFuturePublishing": True,
+                    }},
+                    {"node": {
+                        "id": "gid://shopify/Publication/2",
+                        "name": "Shop Channel",
+                        "supportsFuturePublishing": False,
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_PUBLICATIONS,
+                               {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 2
+        names = {p["name"] for p in result.data["publications"]}
+        assert names == {"Online Store", "Shop Channel"}
+        # supports_future_publishing flag is preserved per-channel.
+        sfp = {p["name"]: p["supports_future_publishing"]
+               for p in result.data["publications"]}
+        assert sfp == {"Online Store": True, "Shop Channel": False}
+
+    def test_list_publications_clamps_limit(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"publications": {"edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_PUBLICATIONS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    def test_list_publications_default_limit(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"publications": {"edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_PUBLICATIONS, {})
+        assert captured["first"] == 50
+
+    def test_list_publications_handles_empty(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "publications": {"edges": []},
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_PUBLICATIONS, {})
+        assert result.ok
+        assert result.data["count"] == 0
+
+    # ── Publish — validation ─────────────────────────────
+
+    def test_publish_requires_resource_id(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_PUBLISH_RESOURCE, {
+                "publication_ids": ["gid://shopify/Publication/1"],
+            })
+        assert not result.ok
+
+    def test_publish_requires_publication_ids(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_PUBLISH_RESOURCE, {
+                "id": "gid://shopify/Product/1",
+            })
+        assert not result.ok
+
+    def test_publish_rejects_empty_publication_list(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_PUBLISH_RESOURCE, {
+                "id": "gid://shopify/Product/1",
+                "publication_ids": [],
+            })
+        assert not result.ok
+
+    def test_publish_rejects_non_string_publication_id(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_PUBLISH_RESOURCE, {
+                "id": "gid://shopify/Product/1",
+                "publication_ids": [12345],
+            })
+        assert not result.ok
+
+    def test_publish_accepts_singular_publication_id(self):
+        """Engines often want to push to ONE channel; the singular
+        form should auto-wrap into a list-of-one so callers don't have
+        to remember which form the API wants."""
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["input"] = v["input"]
+            captured["id"] = v["id"]
+            return {"publishablePublish": {
+                "publishable": {
+                    "__typename": "Product",
+                    "id": v["id"], "title": "Cool Mug",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_PUBLISH_RESOURCE, {
+                "id": "gid://shopify/Product/1",
+                "publication_id": "gid://shopify/Publication/x",
+            })
+        assert result.ok
+        assert len(captured["input"]) == 1
+        assert captured["input"][0] == {
+            "publicationId": "gid://shopify/Publication/x",
+        }
+
+    # ── Publish — happy path ─────────────────────────────
+
+    def test_publish_resource_to_multiple_channels(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["id"] = v["id"]
+            captured["input"] = v["input"]
+            return {"publishablePublish": {
+                "publishable": {
+                    "__typename": "Product",
+                    "id": v["id"],
+                    "title": "Winning Product",
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_PUBLISH_RESOURCE, {
+                "id": "gid://shopify/Product/1",
+                "publication_ids": [
+                    "gid://shopify/Publication/online",
+                    "gid://shopify/Publication/shop",
+                    "gid://shopify/Publication/fb",
+                ],
+            })
+        assert result.ok
+        assert result.data["id"] == "gid://shopify/Product/1"
+        assert result.data["title"] == "Winning Product"
+        assert result.data["kind"] == "product"
+        assert result.data["publication_count"] == 3
+        assert len(captured["input"]) == 3
+        assert captured["input"][0]["publicationId"] == "gid://shopify/Publication/online"
+
+    def test_publish_user_errors_propagate(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "publishablePublish": {
+                "publishable": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Resource not found",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_PUBLISH_RESOURCE, {
+                "id": "gid://shopify/Product/missing",
+                "publication_ids": ["gid://shopify/Publication/1"],
+            })
+        assert not result.ok
+
+    # ── Unpublish — happy path ────────────────────────────
+
+    def test_unpublish_resource_happy_path(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "publishableUnpublish": {
+                "publishable": {
+                    "__typename": "Product",
+                    "id": "gid://shopify/Product/1",
+                    "title": "Underperformer",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_UNPUBLISH_RESOURCE, {
+                "id": "gid://shopify/Product/1",
+                "publication_ids": ["gid://shopify/Publication/fb"],
+            })
+        assert result.ok
+        assert result.data["title"] == "Underperformer"
+        assert result.data["kind"] == "product"
+        assert result.data["publication_count"] == 1
+
+    def test_unpublish_collection_kind_collection(self):
+        """Publishable is a union over Product / Collection — the
+        normaliser must surface __typename so callers know which kind
+        they just operated on."""
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "publishableUnpublish": {
+                "publishable": {
+                    "__typename": "Collection",
+                    "id": "gid://shopify/Collection/1",
+                    "title": "Summer 2026",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_UNPUBLISH_RESOURCE, {
+                "id": "gid://shopify/Collection/1",
+                "publication_ids": ["gid://shopify/Publication/x"],
+            })
+        assert result.ok
+        assert result.data["kind"] == "collection"
+
+    def test_unpublish_user_errors_propagate(self):
+        from core.adapters.shopify.publications import ShopifyPublicationsAdapter
+        a = ShopifyPublicationsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "publishableUnpublish": {
+                "publishable": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Already unpublished",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_UNPUBLISH_RESOURCE, {
+                "id": "gid://shopify/Product/1",
+                "publication_ids": ["gid://shopify/Publication/fb"],
+            })
+        assert not result.ok
 
 
 # ── ShopifyMetaobjectsAdapter ──────────────────────────────
