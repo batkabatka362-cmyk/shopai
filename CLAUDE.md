@@ -294,6 +294,15 @@ tolerate both forms when the cost is low:
   Add a `{ locale name primary published }` selection or the query
   rejects with selectionMismatch. Adapter normaliser accepts both
   the dict (current) and string (legacy) forms.
+- `CustomerMergePreview` lost `resultingCustomer` entirely — the
+  post-merge customer is reachable only via a follow-up
+  `customer(id:)` query after the merge runs. Its `blockingFields`
+  /`alternateFields`/`defaultFields` are typed objects (each
+  per-conflict-class), and `customerMergeErrors` is a list of typed
+  CustomerMergeError nodes — no flat `fields: [String]` selection
+  works. Cheapest correct selection is `{ __typename }` on each so
+  engines get a presence/absence signal; detailed inspection comes
+  from the merge mutation's userErrors path.
 
 ### Pattern E: schema-gated fields
 

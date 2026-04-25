@@ -277,6 +277,9 @@ class Capability(str, Enum):
     SHOPIFY_GET_MARKET_WEB_PRESENCE = "shopify_get_market_web_presence"
     SHOPIFY_SEND_DRAFT_ORDER_INVOICE = "shopify_send_draft_order_invoice"
     SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE = "shopify_preview_draft_order_invoice"
+    SHOPIFY_PREVIEW_CUSTOMER_MERGE = "shopify_preview_customer_merge"
+    SHOPIFY_MERGE_CUSTOMERS = "shopify_merge_customers"
+    SHOPIFY_GET_CUSTOMER_MERGE_JOB = "shopify_get_customer_merge_job"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

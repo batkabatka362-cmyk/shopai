@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fiftyseven_adapters(self):
+    def test_register_all_adds_fiftyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 57
+        assert len(status) == 58
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -844,6 +844,7 @@ class TestShopifyBootstrap:
             "shopify_payment_terms",
             "shopify_market_web_presences",
             "shopify_draft_order_invoice",
+            "shopify_customer_merge",
         }
 
     def test_register_all_idempotent(self):
@@ -851,7 +852,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 57
+        assert len(get_registry()) == 58
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1056,6 +1057,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_MARKET_WEB_PRESENCE).name == "shopify_market_web_presences"
         assert router.route(Capability.SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE).name == "shopify_draft_order_invoice"
         assert router.route(Capability.SHOPIFY_SEND_DRAFT_ORDER_INVOICE).name == "shopify_draft_order_invoice"
+        assert router.route(Capability.SHOPIFY_PREVIEW_CUSTOMER_MERGE).name == "shopify_customer_merge"
+        assert router.route(Capability.SHOPIFY_MERGE_CUSTOMERS).name == "shopify_customer_merge"
+        assert router.route(Capability.SHOPIFY_GET_CUSTOMER_MERGE_JOB).name == "shopify_customer_merge"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -15557,3 +15561,292 @@ class TestShopifyDraftOrderInvoiceSendAdapter:
                 },
             )
         assert not result.ok
+
+
+# ── ShopifyCustomerMergeAdapter ───────────────────────────
+
+
+class TestShopifyCustomerMergeAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter()
+        assert a.name == "shopify_customer_merge"
+        for cap in (
+            Capability.SHOPIFY_PREVIEW_CUSTOMER_MERGE,
+            Capability.SHOPIFY_MERGE_CUSTOMERS,
+            Capability.SHOPIFY_GET_CUSTOMER_MERGE_JOB,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input ────────────────────────────────────
+
+    def test_preview_requires_both_customer_ids(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_PREVIEW_CUSTOMER_MERGE, {
+            "customer_one_id": "gid://shopify/Customer/c1",
+        })
+        assert not result.ok
+
+    def test_preview_rejects_same_customer_twice(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_PREVIEW_CUSTOMER_MERGE, {
+            "customer_one_id": "gid://shopify/Customer/c1",
+            "customer_two_id": "gid://shopify/Customer/c1",
+        })
+        assert not result.ok
+
+    def test_override_fields_must_be_dict(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_override_fields({"override_fields": "not-a-dict"})
+
+    def test_override_fields_camel_mapping(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        out = a._build_override_fields({"override_fields": {
+            "customer_id_of_default_address": "gid://shopify/Customer/c1",
+            "customer_id_of_email": "gid://shopify/Customer/c2",
+            "customer_id_of_first_name": "gid://shopify/Customer/c1",
+            "note": "Combined CRM dup",
+            "tags": "merged-2026-q2,vip",
+        }})
+        assert out["customerIdOfDefaultAddress"] == \
+            "gid://shopify/Customer/c1"
+        assert out["customerIdOfEmail"] == "gid://shopify/Customer/c2"
+        assert out["note"] == "Combined CRM dup"
+        assert out["tags"] == ["merged-2026-q2", "vip"]
+
+    def test_override_field_value_must_be_string(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_override_fields({"override_fields": {
+                "customer_id_of_email": 123,
+            }})
+
+    # ── Preview ──────────────────────────────────
+
+    def test_preview_happy_path_no_conflicts(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"customerMergePreview": {
+                "customerMergeErrors": [],
+                "blockingFields": None,
+                "alternateFields": None,
+                "defaultFields": None,
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_PREVIEW_CUSTOMER_MERGE,
+                {
+                    "customer_one_id": "gid://shopify/Customer/c1",
+                    "customer_two_id": "gid://shopify/Customer/c2",
+                },
+            )
+        assert result.ok
+        assert captured["customerOneId"] == "gid://shopify/Customer/c1"
+        assert captured["customerTwoId"] == "gid://shopify/Customer/c2"
+        assert result.data["is_blocked"] is False
+        assert result.data["has_merge_errors"] is False
+
+    def test_preview_blocking_fields_set_is_blocked(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customerMergePreview": {
+                "customerMergeErrors": [],
+                "blockingFields": {"__typename":
+                                   "CustomerMergePreviewBlockingFields"},
+                "alternateFields": None,
+                "defaultFields": None,
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_PREVIEW_CUSTOMER_MERGE,
+                {
+                    "customer_one_id": "gid://shopify/Customer/c1",
+                    "customer_two_id": "gid://shopify/Customer/c2",
+                },
+            )
+        assert result.ok
+        assert result.data["is_blocked"] is True
+        assert result.data["has_blocking_fields"] is True
+
+    def test_preview_merge_errors_set_is_blocked(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customerMergePreview": {
+                "customerMergeErrors": [
+                    {"__typename": "CustomerMergeError"},
+                ],
+                "blockingFields": None,
+                "alternateFields": None,
+                "defaultFields": None,
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_PREVIEW_CUSTOMER_MERGE,
+                {
+                    "customer_one_id": "gid://shopify/Customer/c1",
+                    "customer_two_id": "gid://shopify/Customer/c2",
+                },
+            )
+        assert result.ok
+        assert result.data["is_blocked"] is True
+        assert result.data["has_merge_errors"] is True
+        assert result.data["merge_error_count"] == 1
+
+    # ── Merge ────────────────────────────────────
+
+    def test_merge_happy_path(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"customerMerge": {
+                "job": {"id": "gid://shopify/Job/j1", "done": False},
+                "resultingCustomerId": "gid://shopify/Customer/c1",
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_MERGE_CUSTOMERS,
+                {
+                    "customer_one_id": "gid://shopify/Customer/c1",
+                    "customer_two_id": "gid://shopify/Customer/c2",
+                    "override_fields": {
+                        "customer_id_of_email": "gid://shopify/Customer/c1",
+                    },
+                },
+            )
+        assert result.ok
+        assert result.data["job_id"] == "gid://shopify/Job/j1"
+        assert result.data["job_done"] is False
+        assert result.data["resulting_customer_id"] == \
+            "gid://shopify/Customer/c1"
+        assert captured["overrideFields"]["customerIdOfEmail"] == \
+            "gid://shopify/Customer/c1"
+
+    def test_merge_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"customerMerge": {
+            "job": None,
+            "resultingCustomerId": None,
+            "userErrors": [{"field": ["customerOneId"],
+                            "message": "Customer not found",
+                            "code": "INVALID"}],
+        }}):
+            result = a.execute(
+                Capability.SHOPIFY_MERGE_CUSTOMERS,
+                {
+                    "customer_one_id": "gid://shopify/Customer/missing",
+                    "customer_two_id": "gid://shopify/Customer/c2",
+                },
+            )
+        assert not result.ok
+
+    # ── Get job ──────────────────────────────────
+
+    def test_get_job_requires_id(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_CUSTOMER_MERGE_JOB, {})
+        assert not result.ok
+
+    def test_get_job_completed_is_terminal(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customerMergeJobStatus": {
+                "job": {"id": "gid://shopify/Job/j1", "done": True},
+                "status": "COMPLETED",
+                "resultingCustomerId": "gid://shopify/Customer/c1",
+                "errors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_CUSTOMER_MERGE_JOB,
+                {"job_id": "gid://shopify/Job/j1"},
+            )
+        assert result.ok
+        assert result.data["status"] == "COMPLETED"
+        assert result.data["is_terminal"] is True
+        assert result.data["job_done"] is True
+        assert result.data["resulting_customer_id"] == \
+            "gid://shopify/Customer/c1"
+
+    def test_get_job_in_progress_not_terminal(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        a = ShopifyCustomerMergeAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "customerMergeJobStatus": {
+                "job": {"id": "gid://shopify/Job/j1", "done": False},
+                "status": "RUNNING",
+                "resultingCustomerId": None,
+                "errors": [],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_CUSTOMER_MERGE_JOB,
+                {"job_id": "gid://shopify/Job/j1"},
+            )
+        assert result.ok
+        assert result.data["status"] == "RUNNING"
+        assert result.data["is_terminal"] is False
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.customer_merge import (
+            ShopifyCustomerMergeAdapter,
+        )
+        assert ShopifyCustomerMergeAdapter._normalise_customer({}) == {}
+
