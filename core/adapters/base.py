@@ -232,6 +232,8 @@ class Capability(str, Enum):
     SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS = "shopify_list_customer_payment_methods"
     SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD = "shopify_get_customer_payment_method"
     SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD = "shopify_revoke_customer_payment_method"
+    SHOPIFY_GET_CURRENT_APP_INSTALLATION = "shopify_get_current_app_installation"
+    SHOPIFY_LIST_APP_INSTALLATIONS = "shopify_list_app_installations"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

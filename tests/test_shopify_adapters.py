@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_fortythree_adapters(self):
+    def test_register_all_adds_fortyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 43
+        assert len(status) == 44
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -830,6 +830,7 @@ class TestShopifyBootstrap:
             "shopify_draft_order_calculate",
             "shopify_selling_plan_groups",
             "shopify_customer_payment_methods",
+            "shopify_apps",
         }
 
     def test_register_all_idempotent(self):
@@ -837,7 +838,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 43
+        assert len(get_registry()) == 44
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -997,6 +998,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_CUSTOMER_PAYMENT_METHODS).name == "shopify_customer_payment_methods"
         assert router.route(Capability.SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD).name == "shopify_customer_payment_methods"
         assert router.route(Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD).name == "shopify_customer_payment_methods"
+        assert router.route(Capability.SHOPIFY_GET_CURRENT_APP_INSTALLATION).name == "shopify_apps"
+        assert router.route(Capability.SHOPIFY_LIST_APP_INSTALLATIONS).name == "shopify_apps"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -11986,3 +11989,164 @@ class TestShopifyCustomerPaymentMethodsAdapter:
         )
         assert ShopifyCustomerPaymentMethodsAdapter._normalise_method({}) == {}
         assert ShopifyCustomerPaymentMethodsAdapter._normalise_method(None) == {}
+
+
+# ── ShopifyAppsAdapter ────────────────────────────────────
+
+
+class TestShopifyAppsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter()
+        assert a.name == "shopify_apps"
+        for cap in (
+            Capability.SHOPIFY_GET_CURRENT_APP_INSTALLATION,
+            Capability.SHOPIFY_LIST_APP_INSTALLATIONS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Get current app installation ─────────────
+
+    def test_get_current_happy_path(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "currentAppInstallation": {
+                "id": "gid://shopify/AppInstallation/1",
+                "launchUrl": "https://shopai.dev/launch",
+                "uninstallUrl": "https://shopai.dev/uninstall",
+                "accessScopes": [
+                    {"handle": "read_products"},
+                    {"handle": "write_orders"},
+                    {"handle": "read_customers"},
+                ],
+                "app": {
+                    "id": "gid://shopify/App/100",
+                    "title": "ShopAI",
+                    "handle": "shopai",
+                    "apiKey": "abc123",
+                    "developerName": "ShopAI Inc",
+                    "embedded": True,
+                },
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_CURRENT_APP_INSTALLATION, {},
+            )
+        assert result.ok
+        assert result.data["found"] is True
+        inst = result.data["installation"]
+        assert inst["app_title"] == "ShopAI"
+        assert inst["embedded"] is True
+        assert "read_products" in inst["access_scopes"]
+        assert "write_orders" in inst["access_scopes"]
+
+    def test_get_current_missing_returns_not_found(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "currentAppInstallation": None,
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_CURRENT_APP_INSTALLATION, {},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["installation"] == {}
+
+    # ── List ─────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "appInstallations": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/AppInstallation/1",
+                    "accessScopes": [{"handle": "read_orders"}],
+                    "app": {
+                        "id": "gid://shopify/App/100",
+                        "title": "Klaviyo",
+                        "handle": "klaviyo",
+                        "developerName": "Klaviyo Inc",
+                    },
+                }}],
+            }
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_APP_INSTALLATIONS, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        i = result.data["installations"][0]
+        assert i["app_title"] == "Klaviyo"
+        assert i["developer_name"] == "Klaviyo Inc"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"appInstallations": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_LIST_APP_INSTALLATIONS, {"limit": 9999},
+            )
+        assert captured["first"] == 250
+
+    def test_list_invalid_category_rejected(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_APP_INSTALLATIONS,
+            {"category": "BAD"},
+        )
+        assert not result.ok
+
+    def test_list_invalid_privacy_rejected(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_APP_INSTALLATIONS,
+            {"privacy": "SECRET"},
+        )
+        assert not result.ok
+
+    def test_list_passes_filters(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        a = ShopifyAppsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"appInstallations": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_APP_INSTALLATIONS, {
+                "category": "CHANNEL",
+                "privacy": "PUBLIC",
+            })
+        assert captured["category"] == "CHANNEL"
+        assert captured["privacy"] == "PUBLIC"
+
+    def test_normalise_handles_empty(self):
+        from core.adapters.shopify.apps import ShopifyAppsAdapter
+        assert ShopifyAppsAdapter._normalise_installation({}) == {}
+        assert ShopifyAppsAdapter._normalise_installation(None) == {}
