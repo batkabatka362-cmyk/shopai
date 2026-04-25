@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentytwo_adapters(self):
+    def test_register_all_adds_twentythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 22
+        assert len(status) == 23
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -809,6 +809,7 @@ class TestShopifyBootstrap:
             "shopify_gift_cards",
             "shopify_subscription_contracts",
             "shopify_markets",
+            "shopify_web_pixels",
         }
 
     def test_register_all_idempotent(self):
@@ -816,7 +817,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 22
+        assert len(get_registry()) == 23
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -903,6 +904,233 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_MARKETS).name == "shopify_markets"
         assert router.route(Capability.SHOPIFY_GET_MARKET).name == "shopify_markets"
         assert router.route(Capability.SHOPIFY_LIST_SHOP_LOCALES).name == "shopify_markets"
+        assert router.route(Capability.SHOPIFY_CREATE_WEB_PIXEL).name == "shopify_web_pixels"
+        assert router.route(Capability.SHOPIFY_UPDATE_WEB_PIXEL).name == "shopify_web_pixels"
+        assert router.route(Capability.SHOPIFY_DELETE_WEB_PIXEL).name == "shopify_web_pixels"
+
+
+# ── ShopifyWebPixelsAdapter ──────────────────────────────
+
+
+class TestShopifyWebPixelsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter()
+        assert a.name == "shopify_web_pixels"
+        for cap in (
+            Capability.SHOPIFY_CREATE_WEB_PIXEL,
+            Capability.SHOPIFY_UPDATE_WEB_PIXEL,
+            Capability.SHOPIFY_DELETE_WEB_PIXEL,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── _build_settings ─────────────────────────────
+
+    def test_build_settings_dict_to_json_string(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        out = ShopifyWebPixelsAdapter._build_settings(
+            {"settings": {"meta_pixel_id": "1234", "events": ["x"]}},
+            where="t",
+        )
+        # Compact JSON encoding so the wire payload stays predictable.
+        assert out == '{"meta_pixel_id":"1234","events":["x"]}'
+
+    def test_build_settings_pre_serialised_string_passes_through(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        out = ShopifyWebPixelsAdapter._build_settings(
+            {"settings": '{"meta_pixel_id": "abc"}'},
+            where="t",
+        )
+        assert out == '{"meta_pixel_id": "abc"}'
+
+    def test_build_settings_invalid_json_string_rejected(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyWebPixelsAdapter._build_settings(
+                {"settings": "not valid json"}, where="t",
+            )
+
+    def test_build_settings_none_rejected(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyWebPixelsAdapter._build_settings({}, where="t")
+
+    def test_build_settings_unsupported_type_rejected(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        with pytest.raises(AdapterValidationError):
+            ShopifyWebPixelsAdapter._build_settings(
+                {"settings": 12345}, where="t",
+            )
+
+    # ── Create ──────────────────────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["webPixel"] = v["webPixel"]
+            return {"webPixelCreate": {
+                "webPixel": {
+                    "id": "gid://shopify/WebPixel/1",
+                    "settings": v["webPixel"]["settings"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_WEB_PIXEL, {
+                "settings": {
+                    "meta_pixel_id": "abc",
+                    "events": ["checkout_completed"],
+                },
+            })
+        assert result.ok
+        assert result.data["web_pixel"]["id"].endswith("/1")
+        # Returned settings parsed back into a dict for ergonomic
+        # caller access.
+        assert result.data["web_pixel"]["settings"] == {
+            "meta_pixel_id": "abc",
+            "events": ["checkout_completed"],
+        }
+        # Wire payload is the JSON string form.
+        assert isinstance(captured["webPixel"]["settings"], str)
+
+    def test_create_user_errors_propagate(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "webPixelCreate": {
+                "webPixel": None,
+                "userErrors": [{
+                    "field": ["webPixel", "settings"],
+                    "message": "Schema mismatch",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_WEB_PIXEL, {
+                "settings": {"x": "y"},
+            })
+        assert not result.ok
+
+    def test_create_settings_required(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_WEB_PIXEL, {})
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_UPDATE_WEB_PIXEL, {
+                "settings": {"x": "y"},
+            })
+        assert not result.ok
+
+    def test_update_requires_settings(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_UPDATE_WEB_PIXEL, {
+                "id": "gid://shopify/WebPixel/1",
+            })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["id"] = v["id"]
+            captured["webPixel"] = v["webPixel"]
+            return {"webPixelUpdate": {
+                "webPixel": {
+                    "id": v["id"],
+                    "settings": v["webPixel"]["settings"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_WEB_PIXEL, {
+                "id": "gid://shopify/WebPixel/1",
+                "settings": {"new_key": "new_value"},
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/WebPixel/1"
+        assert result.data["web_pixel"]["settings"] == {
+            "new_key": "new_value",
+        }
+
+    # ── Delete ──────────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_DELETE_WEB_PIXEL, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "webPixelDelete": {
+                "deletedWebPixelId": "gid://shopify/WebPixel/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DELETE_WEB_PIXEL, {
+                "id": "gid://shopify/WebPixel/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"].endswith("/1")
+
+    def test_delete_user_errors_propagate(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        a = ShopifyWebPixelsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "webPixelDelete": {
+                "deletedWebPixelId": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Web pixel not found",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DELETE_WEB_PIXEL, {
+                "id": "gid://shopify/WebPixel/missing",
+            })
+        assert not result.ok
+
+    # ── Normalisation ──────────────────────────────
+
+    def test_normalise_handles_non_dict(self):
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        assert ShopifyWebPixelsAdapter._normalise_pixel(None) == {}  # type: ignore[arg-type]
+
+    def test_normalise_malformed_settings_string_passes_through(self):
+        """If settings comes back as malformed JSON (shouldn't happen
+        from Shopify, but...), surface the raw string rather than
+        crashing the read path."""
+        from core.adapters.shopify.web_pixels import ShopifyWebPixelsAdapter
+        out = ShopifyWebPixelsAdapter._normalise_pixel({
+            "id": "gid://x", "settings": "not json",
+        })
+        assert out["settings"] == "not json"
 
 
 # ── ShopifyMarketsAdapter ──────────────────────────────

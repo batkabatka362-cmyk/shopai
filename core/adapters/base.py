@@ -161,6 +161,9 @@ class Capability(str, Enum):
     SHOPIFY_LIST_MARKETS = "shopify_list_markets"
     SHOPIFY_GET_MARKET = "shopify_get_market"
     SHOPIFY_LIST_SHOP_LOCALES = "shopify_list_shop_locales"
+    SHOPIFY_CREATE_WEB_PIXEL = "shopify_create_web_pixel"
+    SHOPIFY_UPDATE_WEB_PIXEL = "shopify_update_web_pixel"
+    SHOPIFY_DELETE_WEB_PIXEL = "shopify_delete_web_pixel"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
