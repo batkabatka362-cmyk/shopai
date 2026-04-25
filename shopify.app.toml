@@ -1,0 +1,52 @@
+# shopify.app.toml — declarative Shopify app config.
+#
+# AUTO-GENERATED from core.auth.shopify_scopes. Do not edit by
+# hand — re-run ``python scripts/generate_shopify_app_toml.py``
+# instead. Drift is caught by tests/test_shopify_app_toml.py.
+
+name = "ShopAI"
+client_id = "3092869f41a0f034aa3ecd3720a35c4e"
+application_url = "http://localhost:9000"
+embedded = false
+
+[access_scopes]
+# Auto-granted on install. Failure to grant any of these
+# breaks wave 1-5 features. 34 entries.
+scopes = "read_products,read_orders,read_all_orders,read_customers,read_inventory,read_locations,read_draft_orders,read_fulfillments,read_content,read_online_store_pages,read_files,read_themes,read_script_tags,read_price_rules,read_discounts,read_gift_cards,read_shipping,write_products,write_orders,write_customers,write_inventory,write_draft_orders,write_fulfillments,write_content,write_online_store_pages,write_files,write_themes,write_script_tags,write_price_rules,write_discounts,write_shop_policies,write_online_store_navigation,write_gift_cards,write_shipping"
+
+# Picker-list. Failure to grant degrades optional features
+# but doesn't block install. 18 entries.
+optional_scopes = [
+  "read_marketing_events",
+  "read_markets",
+  "read_locales",
+  "read_translations",
+  "read_metaobjects",
+  "read_pixels",
+  "read_publications",
+  "read_checkouts",
+  "read_analytics",
+  "read_reports",
+  "read_shopify_payments_payouts",
+  "read_shopify_payments_disputes",
+  "write_marketing_events",
+  "write_markets",
+  "write_locales",
+  "write_translations",
+  "write_metaobjects",
+  "write_pixels"
+]
+
+[auth]
+redirect_urls = [
+  "http://localhost:9000/callback"
+]
+
+[webhooks]
+api_version = "2025-01"
+
+[pos]
+embedded = false
+
+[build]
+include_config_on_deploy = true
