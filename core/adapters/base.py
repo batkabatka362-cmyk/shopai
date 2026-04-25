@@ -175,6 +175,9 @@ class Capability(str, Enum):
     SHOPIFY_GET_INVENTORY_SHIPMENT = "shopify_get_inventory_shipment"
     SHOPIFY_CREATE_INVENTORY_SHIPMENT = "shopify_create_inventory_shipment"
     SHOPIFY_LIST_CHANNELS = "shopify_list_channels"
+    SHOPIFY_CREATE_CART_TRANSFORM = "shopify_create_cart_transform"
+    SHOPIFY_LIST_CART_TRANSFORMS = "shopify_list_cart_transforms"
+    SHOPIFY_DELETE_CART_TRANSFORM = "shopify_delete_cart_transform"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

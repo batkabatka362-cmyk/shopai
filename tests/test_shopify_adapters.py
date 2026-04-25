@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_twentyseven_adapters(self):
+    def test_register_all_adds_twentyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 27
+        assert len(status) == 28
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -814,6 +814,7 @@ class TestShopifyBootstrap:
             "shopify_locations",
             "shopify_inventory_shipments",
             "shopify_channels",
+            "shopify_cart_transforms",
         }
 
     def test_register_all_idempotent(self):
@@ -821,7 +822,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 27
+        assert len(get_registry()) == 28
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -922,6 +923,269 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GET_INVENTORY_SHIPMENT).name == "shopify_inventory_shipments"
         assert router.route(Capability.SHOPIFY_CREATE_INVENTORY_SHIPMENT).name == "shopify_inventory_shipments"
         assert router.route(Capability.SHOPIFY_LIST_CHANNELS).name == "shopify_channels"
+        assert router.route(Capability.SHOPIFY_CREATE_CART_TRANSFORM).name == "shopify_cart_transforms"
+        assert router.route(Capability.SHOPIFY_LIST_CART_TRANSFORMS).name == "shopify_cart_transforms"
+        assert router.route(Capability.SHOPIFY_DELETE_CART_TRANSFORM).name == "shopify_cart_transforms"
+
+
+# ── ShopifyCartTransformsAdapter ────────────────────────
+
+
+class TestShopifyCartTransformsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter()
+        assert a.name == "shopify_cart_transforms"
+        for cap in (
+            Capability.SHOPIFY_CREATE_CART_TRANSFORM,
+            Capability.SHOPIFY_LIST_CART_TRANSFORMS,
+            Capability.SHOPIFY_DELETE_CART_TRANSFORM,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Create — validation ────────────────────────
+
+    def test_create_requires_function_id(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_CREATE_CART_TRANSFORM, {})
+        assert not result.ok
+
+    def test_create_block_on_failure_default_false(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"cartTransformCreate": {
+                "cartTransform": {
+                    "id": "gid://shopify/CartTransform/1",
+                    "functionId": v["functionId"],
+                    "blockOnFailure": v["blockOnFailure"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_CREATE_CART_TRANSFORM, {
+                "function_id": "fn-1",
+            })
+        assert captured["blockOnFailure"] is False
+
+    def test_create_block_on_failure_can_be_true(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"cartTransformCreate": {
+                "cartTransform": {
+                    "id": "gid://shopify/CartTransform/1",
+                    "functionId": v["functionId"],
+                    "blockOnFailure": v["blockOnFailure"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_CREATE_CART_TRANSFORM, {
+                "function_id": "fn-1",
+                "block_on_failure": True,
+            })
+        assert captured["blockOnFailure"] is True
+
+    # ── Metafields validation ─────────────────────
+
+    def test_build_metafields_dict_form(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        out = ShopifyCartTransformsAdapter._build_metafields([
+            {"namespace": "$app:bundle",
+             "key": "skus",
+             "type": "json",
+             "value": ["sku-1", "sku-2"]},
+            {"key": "count", "value": 4},
+        ])
+        # JSON-coerced complex value.
+        assert out[0]["value"] == '["sku-1", "sku-2"]'
+        # Numeric coerced to string per metafield convention.
+        assert out[1]["value"] == "4"
+        # Default namespace.
+        assert out[1]["namespace"] == "shopai"
+
+    def test_build_metafields_none_returns_empty_list(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        assert ShopifyCartTransformsAdapter._build_metafields(None) == []
+
+    def test_build_metafields_non_list_rejected(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyCartTransformsAdapter._build_metafields("not a list")
+
+    def test_build_metafields_missing_key_rejected(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyCartTransformsAdapter._build_metafields([
+                {"value": "v"},
+            ])
+
+    def test_build_metafields_missing_value_rejected(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        with pytest.raises(AdapterValidationError):
+            ShopifyCartTransformsAdapter._build_metafields([
+                {"key": "k"},
+            ])
+
+    # ── Create — happy path ─────────────────────
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"cartTransformCreate": {
+                "cartTransform": {
+                    "id": "gid://shopify/CartTransform/9",
+                    "functionId": v["functionId"],
+                    "blockOnFailure": v["blockOnFailure"],
+                },
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_CART_TRANSFORM, {
+                "function_id": "fn-bundle-expand",
+                "metafields": [
+                    {"key": "config",
+                     "value": {"expand_pattern": "BUNDLE-*"}},
+                ],
+            })
+        assert result.ok
+        assert result.data["id"].endswith("/9")
+        # Metafields wired through.
+        assert captured["metafields"][0]["key"] == "config"
+        # Complex value JSON-coerced.
+        assert "expand_pattern" in captured["metafields"][0]["value"]
+
+    def test_create_user_errors_propagate(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "cartTransformCreate": {
+                "cartTransform": None,
+                "userErrors": [{
+                    "field": ["functionId"],
+                    "message": "Function not found",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_CART_TRANSFORM, {
+                "function_id": "missing",
+            })
+        assert not result.ok
+
+    # ── List ────────────────────────────────────
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "cartTransforms": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [
+                    {"node": {
+                        "id": "gid://shopify/CartTransform/1",
+                        "functionId": "fn-1",
+                        "blockOnFailure": False,
+                    }},
+                ],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_LIST_CART_TRANSFORMS,
+                               {"limit": 10})
+        assert result.ok
+        assert result.data["count"] == 1
+        assert result.data["cart_transforms"][0]["function_id"] == "fn-1"
+
+    def test_list_clamps_limit(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured["first"] = v["first"]
+            return {"cartTransforms": {"pageInfo": {}, "edges": []}}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_LIST_CART_TRANSFORMS, {"limit": 9999})
+        assert captured["first"] == 250
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_DELETE_CART_TRANSFORM, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.cart_transforms import (
+            ShopifyCartTransformsAdapter,
+        )
+        a = ShopifyCartTransformsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "cartTransformDelete": {
+                "deletedId": "gid://shopify/CartTransform/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DELETE_CART_TRANSFORM, {
+                "id": "gid://shopify/CartTransform/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"].endswith("/1")
 
 
 # ── ShopifyChannelsAdapter ──────────────────────────────
