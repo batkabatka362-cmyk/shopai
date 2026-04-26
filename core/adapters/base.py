@@ -409,6 +409,9 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_CATALOG = "shopify_update_catalog"
     SHOPIFY_DELETE_CATALOG = "shopify_delete_catalog"
     SHOPIFY_UPDATE_CATALOG_CONTEXT = "shopify_update_catalog_context"
+    SHOPIFY_CREATE_BLOG = "shopify_create_blog"
+    SHOPIFY_UPDATE_BLOG = "shopify_update_blog"
+    SHOPIFY_DELETE_BLOG = "shopify_delete_blog"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

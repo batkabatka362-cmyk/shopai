@@ -28,6 +28,7 @@ from .app_billing import ShopifyAppBillingAdapter
 from .app_subscriptions import ShopifyAppSubscriptionsAdapter
 from .apps import ShopifyAppsAdapter
 from .articles import ShopifyArticlesAdapter
+from .blogs import ShopifyBlogsAdapter
 from .bulk import ShopifyBulkOperationsAdapter
 from .bulk_mutations import ShopifyBulkMutationsAdapter
 from .carrier_services import ShopifyCarrierServicesAdapter
@@ -255,6 +256,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMetaobjectDefinitionUpdateAdapter,
     ShopifyAppBillingAdapter,
     ShopifyCatalogWriteAdapter,
+    ShopifyBlogsAdapter,
 )
 
 

@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundrednine_adapters(self):
+    def test_register_all_adds_onehundredten_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 109
+        assert len(status) == 110
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -896,6 +896,7 @@ class TestShopifyBootstrap:
             "shopify_metaobject_definition_update",
             "shopify_app_billing",
             "shopify_catalog_write",
+            "shopify_blogs",
         }
 
     def test_register_all_idempotent(self):
@@ -903,7 +904,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 109
+        assert len(get_registry()) == 110
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1240,6 +1241,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_CATALOG).name == "shopify_catalog_write"
         assert router.route(Capability.SHOPIFY_DELETE_CATALOG).name == "shopify_catalog_write"
         assert router.route(Capability.SHOPIFY_UPDATE_CATALOG_CONTEXT).name == "shopify_catalog_write"
+        assert router.route(Capability.SHOPIFY_CREATE_BLOG).name == "shopify_blogs"
+        assert router.route(Capability.SHOPIFY_UPDATE_BLOG).name == "shopify_blogs"
+        assert router.route(Capability.SHOPIFY_DELETE_BLOG).name == "shopify_blogs"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -28704,5 +28708,213 @@ class TestShopifyCatalogWriteAdapter:
                         "market_ids": ["gid://shopify/Market/1"],
                     },
                 },
+            )
+        assert not result.ok
+
+
+# ── ShopifyBlogsAdapter ───────────────────────────────────
+
+
+class TestShopifyBlogsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter()
+        assert a.name == "shopify_blogs"
+        for cap in (
+            Capability.SHOPIFY_CREATE_BLOG,
+            Capability.SHOPIFY_UPDATE_BLOG,
+            Capability.SHOPIFY_DELETE_BLOG,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_BLOG,
+            {"handle": "stories"},
+        )
+        assert not result.ok
+
+    def test_create_invalid_comment_policy_rejected(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_BLOG,
+            {"title": "Stories", "comment_policy": "invite-only"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "blogCreate": {
+                    "blog": {
+                        "id": "gid://shopify/Blog/1",
+                        "handle": "customer-stories",
+                        "title": "Customer stories",
+                        "templateSuffix": "",
+                        "commentPolicy": "MODERATED",
+                        "createdAt": "2026-04-26T00:00:00Z",
+                        "updatedAt": "2026-04-26T00:00:00Z",
+                        "articlesCount": {"count": 0},
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_BLOG,
+                {
+                    "title": "Customer stories",
+                    "handle": "customer-stories",
+                    "comment_policy": "moderated",
+                },
+            )
+        assert result.ok
+        assert captured["blog"] == {
+            "title": "Customer stories",
+            "handle": "customer-stories",
+            "commentPolicy": "MODERATED",
+        }
+        assert result.data["blog"]["title"] == "Customer stories"
+        assert result.data["blog"]["comment_policy"] == "MODERATED"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "blogCreate": {
+                "blog": None,
+                "userErrors": [{
+                    "field": ["blog", "handle"],
+                    "message": "Handle has already been taken",
+                    "code": "TAKEN",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_BLOG,
+                {"title": "Dup", "handle": "stories"},
+            )
+        assert not result.ok
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_BLOG,
+            {"title": "rename"},
+        )
+        assert not result.ok
+
+    def test_update_rejects_empty_body(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_BLOG,
+            {"id": "gid://shopify/Blog/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_with_redirects(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "blogUpdate": {
+                    "blog": {
+                        "id": "gid://shopify/Blog/1",
+                        "handle": "renamed-stories",
+                        "title": "Renamed",
+                        "commentPolicy": "OPEN",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_BLOG,
+                {
+                    "id": "gid://shopify/Blog/1",
+                    "handle": "renamed-stories",
+                    "redirect_new_handle": True,
+                    "redirect_articles": False,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/Blog/1",
+            "blog": {
+                "handle": "renamed-stories",
+                "redirectNewHandle": True,
+                "redirectArticles": False,
+            },
+        }
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_BLOG, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "blogDelete": {
+                    "deletedBlogId": "gid://shopify/Blog/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_BLOG,
+                {"id": "gid://shopify/Blog/1"},
+            )
+        assert result.ok
+        assert captured == {"id": "gid://shopify/Blog/1"}
+        assert result.data["deleted_id"] == "gid://shopify/Blog/1"
+
+    def test_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.blogs import ShopifyBlogsAdapter
+        a = ShopifyBlogsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "blogDelete": {
+                "deletedBlogId": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Blog does not exist",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_BLOG,
+                {"id": "gid://shopify/Blog/9999999"},
             )
         assert not result.ok
