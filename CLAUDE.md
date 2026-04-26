@@ -359,6 +359,15 @@ tolerate both forms when the cost is low:
 - `productDelete` and `productDuplicate` userErrors are typed
   `UserError` (no `code`) — same Pattern F. Most product
   mutations DO use `UserErrors` (with code), so check per-mutation.
+- `orderCancel` returns `orderCancelUserErrors` (NOT the
+  standard `userErrors` key) of type `OrderCancelUserError`
+  (has `code`). The base `_check_user_errors` helper looks for
+  the literal key `userErrors`, so adapters using
+  `orderCancel` must pull `orderCancelUserErrors` manually
+  rather than relying on the helper.
+- `orderClose` / `orderOpen` / `orderMarkAsPaid` use the typed
+  `UserError` (no `code`) — Pattern F applies. Drop `code`
+  from those userErrors selections.
 
 ### Pattern D-prime: oneOf input objects
 

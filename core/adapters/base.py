@@ -337,6 +337,9 @@ class Capability(str, Enum):
     SHOPIFY_DEACTIVATE_AUTOMATIC_DISCOUNT = "shopify_deactivate_automatic_discount"
     SHOPIFY_ACTIVATE_CODE_DISCOUNT = "shopify_activate_code_discount"
     SHOPIFY_DEACTIVATE_CODE_DISCOUNT = "shopify_deactivate_code_discount"
+    SHOPIFY_CANCEL_ORDER = "shopify_cancel_order"
+    SHOPIFY_REOPEN_ORDER = "shopify_reopen_order"
+    SHOPIFY_MARK_ORDER_AS_PAID = "shopify_mark_order_as_paid"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

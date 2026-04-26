@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventynine_adapters(self):
+    def test_register_all_adds_eighty_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 79
+        assert len(status) == 80
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -866,6 +866,7 @@ class TestShopifyBootstrap:
             "shopify_company_contacts",
             "shopify_product_duplicate",
             "shopify_discount_activate",
+            "shopify_order_lifecycle",
         }
 
     def test_register_all_idempotent(self):
@@ -873,7 +874,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 79
+        assert len(get_registry()) == 80
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1138,6 +1139,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DEACTIVATE_AUTOMATIC_DISCOUNT).name == "shopify_discount_activate"
         assert router.route(Capability.SHOPIFY_ACTIVATE_CODE_DISCOUNT).name == "shopify_discount_activate"
         assert router.route(Capability.SHOPIFY_DEACTIVATE_CODE_DISCOUNT).name == "shopify_discount_activate"
+        assert router.route(Capability.SHOPIFY_CANCEL_ORDER).name == "shopify_order_lifecycle"
+        assert router.route(Capability.SHOPIFY_REOPEN_ORDER).name == "shopify_order_lifecycle"
+        assert router.route(Capability.SHOPIFY_MARK_ORDER_AS_PAID).name == "shopify_order_lifecycle"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -21104,4 +21108,202 @@ class TestShopifyDiscountActivateAdapter:
             )
         assert result.ok
         assert result.data["discount"]["status"] == "EXPIRED"
+
+
+# ── ShopifyOrderLifecycleAdapter ──────────────────────────
+
+
+class TestShopifyOrderLifecycleAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter()
+        assert a.name == "shopify_order_lifecycle"
+        for cap in (
+            Capability.SHOPIFY_CANCEL_ORDER,
+            Capability.SHOPIFY_REOPEN_ORDER,
+            Capability.SHOPIFY_MARK_ORDER_AS_PAID,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Cancel ──────────────────────────────────
+
+    def test_cancel_requires_id(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CANCEL_ORDER, {
+            "reason": "FRAUD", "restock": True,
+        })
+        assert not result.ok
+
+    def test_cancel_requires_reason(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CANCEL_ORDER, {
+            "id": "gid://shopify/Order/1", "restock": True,
+        })
+        assert not result.ok
+
+    def test_cancel_rejects_invalid_reason(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CANCEL_ORDER, {
+            "id": "gid://shopify/Order/1",
+            "reason": "BECAUSE",
+            "restock": False,
+        })
+        assert not result.ok
+
+    def test_cancel_requires_restock(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CANCEL_ORDER, {
+            "id": "gid://shopify/Order/1",
+            "reason": "FRAUD",
+        })
+        assert not result.ok
+
+    def test_cancel_happy_path(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "orderCancel": {
+                    "job": {
+                        "id": "gid://shopify/Job/77", "done": False,
+                    },
+                    "orderCancelUserErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CANCEL_ORDER, {
+                "id": "gid://shopify/Order/1",
+                "reason": "fraud",
+                "restock": True,
+                "notify_customer": False,
+                "staff_note": "blocked by risk engine",
+                "refund_method": {
+                    "original_payment_methods": True,
+                },
+            })
+        assert result.ok
+        assert captured["orderId"] == "gid://shopify/Order/1"
+        assert captured["reason"] == "FRAUD"
+        assert captured["restock"] is True
+        assert captured["notifyCustomer"] is False
+        assert captured["staffNote"] == "blocked by risk engine"
+        assert captured["refundMethod"]["originalPaymentMethodsRefund"] \
+            is True
+        assert result.data["job_id"] == "gid://shopify/Job/77"
+        assert result.data["job_done"] is False
+
+    def test_cancel_user_errors_fail_fast(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orderCancel": {
+                "job": None,
+                "orderCancelUserErrors": [{
+                    "field": ["orderId"],
+                    "message": "Order has already been cancelled",
+                    "code": "ALREADY_CANCELLED",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CANCEL_ORDER, {
+                "id": "gid://shopify/Order/1",
+                "reason": "STAFF",
+                "restock": False,
+            })
+        assert not result.ok
+
+    def test_cancel_refund_method_invalid_shape(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CANCEL_ORDER, {
+            "id": "gid://shopify/Order/1",
+            "reason": "STAFF",
+            "restock": False,
+            "refund_method": "not-a-dict",
+        })
+        assert not result.ok
+
+    # ── Open / Mark-as-paid ─────────────────────
+
+    def test_reopen_requires_id(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_REOPEN_ORDER, {})
+        assert not result.ok
+
+    def test_reopen_happy_path(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orderOpen": {
+                "order": {
+                    "id": "gid://shopify/Order/1",
+                    "closed": False,
+                    "closedAt": None,
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_REOPEN_ORDER, {
+                "id": "gid://shopify/Order/1",
+            })
+        assert result.ok
+        assert result.data["order"]["closed"] is False
+
+    def test_mark_as_paid_happy_path(self):
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orderMarkAsPaid": {
+                "order": {
+                    "id": "gid://shopify/Order/1",
+                    "displayFinancialStatus": "PAID",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_MARK_ORDER_AS_PAID, {
+                "id": "gid://shopify/Order/1",
+            })
+        assert result.ok
+        assert result.data["order"]["financial_status"] == "PAID"
 

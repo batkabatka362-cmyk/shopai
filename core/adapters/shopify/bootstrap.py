@@ -83,6 +83,7 @@ from .metaobjects_upsert import ShopifyMetaobjectsUpsertAdapter
 from .order_edits import ShopifyOrderEditsAdapter
 from .order_invoice import ShopifyOrderInvoiceSendAdapter
 from .order_transactions import ShopifyOrderTransactionsAdapter
+from .order_lifecycle import ShopifyOrderLifecycleAdapter
 from .orders import ShopifyOrdersAdapter
 from .pages import ShopifyPagesAdapter
 from .payment_terms import ShopifyPaymentTermsAdapter
@@ -189,6 +190,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCompanyContactsAdapter,
     ShopifyProductDuplicateAdapter,
     ShopifyDiscountActivateAdapter,
+    ShopifyOrderLifecycleAdapter,
 )
 
 
