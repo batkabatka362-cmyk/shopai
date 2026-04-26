@@ -365,6 +365,8 @@ class Capability(str, Enum):
     SHOPIFY_CANCEL_INVENTORY_TRANSFER = "shopify_cancel_inventory_transfer"
     SHOPIFY_DELETE_INVENTORY_TRANSFER = "shopify_delete_inventory_transfer"
     SHOPIFY_MARK_INVENTORY_TRANSFER_READY = "shopify_mark_inventory_transfer_ready"
+    SHOPIFY_ADD_TAGS = "shopify_add_tags"
+    SHOPIFY_REMOVE_TAGS = "shopify_remove_tags"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

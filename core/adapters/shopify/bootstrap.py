@@ -68,6 +68,7 @@ from .fulfillment_tracking import ShopifyFulfillmentTrackingAdapter
 from .fulfillment_events import ShopifyFulfillmentEventsAdapter
 from .fulfillment_hold import ShopifyFulfillmentHoldAdapter
 from .fulfillment_services import ShopifyFulfillmentServicesAdapter
+from .generic_tags import ShopifyGenericTagsAdapter
 from .gift_card_crud import ShopifyGiftCardCRUDAdapter
 from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
@@ -211,6 +212,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMetafieldDefinitionPinAdapter,
     ShopifyCompanyAuxiliaryAdapter,
     ShopifyInventoryTransferAdapter,
+    ShopifyGenericTagsAdapter,
 )
 
 

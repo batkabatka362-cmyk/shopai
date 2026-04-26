@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninety_adapters(self):
+    def test_register_all_adds_ninetyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 90
+        assert len(status) == 91
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -877,6 +877,7 @@ class TestShopifyBootstrap:
             "shopify_metafield_definition_pin",
             "shopify_company_auxiliary",
             "shopify_inventory_transfer",
+            "shopify_generic_tags",
         }
 
     def test_register_all_idempotent(self):
@@ -884,7 +885,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 90
+        assert len(get_registry()) == 91
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1177,6 +1178,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CANCEL_INVENTORY_TRANSFER).name == "shopify_inventory_transfer"
         assert router.route(Capability.SHOPIFY_DELETE_INVENTORY_TRANSFER).name == "shopify_inventory_transfer"
         assert router.route(Capability.SHOPIFY_MARK_INVENTORY_TRANSFER_READY).name == "shopify_inventory_transfer"
+        assert router.route(Capability.SHOPIFY_ADD_TAGS).name == "shopify_generic_tags"
+        assert router.route(Capability.SHOPIFY_REMOVE_TAGS).name == "shopify_generic_tags"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -23819,4 +23822,156 @@ class TestShopifyInventoryTransferAdapter:
             )
         assert result.ok
         assert result.data["transfer"]["status"] == "OPEN"
+
+
+# ── ShopifyGenericTagsAdapter ─────────────────────────────
+
+
+class TestShopifyGenericTagsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter()
+        assert a.name == "shopify_generic_tags"
+        for cap in (
+            Capability.SHOPIFY_ADD_TAGS,
+            Capability.SHOPIFY_REMOVE_TAGS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Tags builder ────────────────────────────
+
+    def test_tags_accepts_single_string(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        assert a._build_tags("vip") == ["vip"]
+
+    def test_tags_strips_whitespace(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        assert a._build_tags(["  vip  ", " gold "]) == ["vip", "gold"]
+
+    def test_tags_rejects_empty(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_tags([])
+
+    def test_tags_rejects_blanks_only(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_tags(["", "  "])
+
+    def test_tags_rejects_non_string_member(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_tags(["vip", 123])
+
+    # ── Add ─────────────────────────────────────
+
+    def test_add_requires_id(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_ADD_TAGS, {
+            "tags": ["vip"],
+        })
+        assert not result.ok
+
+    def test_add_happy_path(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "tagsAdd": {
+                    "node": {"id": "gid://shopify/Customer/1"},
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_ADD_TAGS, {
+                "id": "gid://shopify/Customer/1",
+                "tags": ["vip", "wholesale"],
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/Customer/1"
+        assert captured["tags"] == ["vip", "wholesale"]
+        assert result.data["tags"] == ["vip", "wholesale"]
+        assert result.data["count"] == 2
+
+    def test_add_user_errors_fail_fast(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "tagsAdd": {
+                "node": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Resource does not support tags",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_ADD_TAGS, {
+                "id": "gid://shopify/Shop/1",
+                "tags": ["vip"],
+            })
+        assert not result.ok
+
+    # ── Remove ──────────────────────────────────
+
+    def test_remove_happy_path(self):
+        from core.adapters.shopify.generic_tags import (
+            ShopifyGenericTagsAdapter,
+        )
+        a = ShopifyGenericTagsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "tagsRemove": {
+                    "node": {"id": "gid://shopify/Product/9"},
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_REMOVE_TAGS, {
+                "id": "gid://shopify/Product/9",
+                "tags": "stale",
+            })
+        assert result.ok
+        assert captured["tags"] == ["stale"]
+        assert result.data["count"] == 1
 
