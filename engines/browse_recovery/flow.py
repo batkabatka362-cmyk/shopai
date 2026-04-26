@@ -22,6 +22,7 @@ from typing import Any
 from .session_analyzer import analyze_sessions
 from .intent_scorer import score_intent
 from .offer_builder import build_offers
+from .discount_minter import mint_offer_codes
 from .sequence_planner import plan_sequences
 from .memory_reader import read_past_recoveries
 from .memory_writer import write_recovery_result
@@ -101,6 +102,20 @@ class BrowseRecoveryEngine:
                 time.monotonic() - start,
             )
         offers = offer_result.get("offers", [])
+
+        # ---- Stage 4.5: Mint Shopify discount codes (when adapter
+        # wired). For high/medium-intent abandoners, the calculated
+        # discount_pct becomes a real Shopify code via
+        # Capability.SHOPIFY_CREATE_DISCOUNT. Each offer is mutated
+        # in place to add code/discount_id/ends_at/minted fields.
+        # Low-intent offers + router-unavailable cases keep
+        # discount_pct + minted=False so downstream consumers can
+        # detect "no real code, send a generic come-back message".
+        offers = mint_offer_codes(
+            offers=offers,
+            intent_scores=intent_scores,
+            store=data.get("store"),
+        )
 
         # ---- Stage 5: Sequence Planner ----
         sequence_result = plan_sequences(
