@@ -101,6 +101,7 @@ from .price_list_fixed_prices import ShopifyPriceListFixedPricesAdapter
 from .price_lists import ShopifyPriceListAdapter
 from .product_duplicate import ShopifyProductDuplicateAdapter
 from .product_media import ShopifyProductMediaAdapter
+from .product_options import ShopifyProductOptionsAdapter
 from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
 from .refunds import ShopifyRefundsAdapter
@@ -213,6 +214,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCompanyAuxiliaryAdapter,
     ShopifyInventoryTransferAdapter,
     ShopifyGenericTagsAdapter,
+    ShopifyProductOptionsAdapter,
 )
 
 

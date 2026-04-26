@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetyone_adapters(self):
+    def test_register_all_adds_ninetytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 91
+        assert len(status) == 92
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -878,6 +878,7 @@ class TestShopifyBootstrap:
             "shopify_company_auxiliary",
             "shopify_inventory_transfer",
             "shopify_generic_tags",
+            "shopify_product_options",
         }
 
     def test_register_all_idempotent(self):
@@ -885,7 +886,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 91
+        assert len(get_registry()) == 92
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1180,6 +1181,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_MARK_INVENTORY_TRANSFER_READY).name == "shopify_inventory_transfer"
         assert router.route(Capability.SHOPIFY_ADD_TAGS).name == "shopify_generic_tags"
         assert router.route(Capability.SHOPIFY_REMOVE_TAGS).name == "shopify_generic_tags"
+        assert router.route(Capability.SHOPIFY_CREATE_PRODUCT_OPTIONS).name == "shopify_product_options"
+        assert router.route(Capability.SHOPIFY_DELETE_PRODUCT_OPTIONS).name == "shopify_product_options"
+        assert router.route(Capability.SHOPIFY_REORDER_PRODUCT_OPTIONS).name == "shopify_product_options"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -23974,4 +23978,313 @@ class TestShopifyGenericTagsAdapter:
         assert result.ok
         assert captured["tags"] == ["stale"]
         assert result.data["count"] == 1
+
+
+# ── ShopifyProductOptionsAdapter ──────────────────────────
+
+
+class TestShopifyProductOptionsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter()
+        assert a.name == "shopify_product_options"
+        for cap in (
+            Capability.SHOPIFY_CREATE_PRODUCT_OPTIONS,
+            Capability.SHOPIFY_DELETE_PRODUCT_OPTIONS,
+            Capability.SHOPIFY_REORDER_PRODUCT_OPTIONS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Create input ────────────────────────────
+
+    def test_create_options_accepts_string_values(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        out = a._build_create_options([{
+            "name": "Color",
+            "values": ["Red", "Blue"],
+        }])
+        assert out == [{
+            "name": "Color",
+            "values": [{"name": "Red"}, {"name": "Blue"}],
+        }]
+
+    def test_create_options_accepts_dict_values(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        out = a._build_create_options([{
+            "name": "Color",
+            "position": 1,
+            "values": [
+                {"name": "Red"},
+                {"name": "Blue", "linked_metafield_value": "blue-mf"},
+            ],
+        }])
+        assert out[0]["position"] == 1
+        assert out[0]["values"][1] == {
+            "name": "Blue",
+            "linkedMetafieldValue": "blue-mf",
+        }
+
+    def test_create_options_rejects_missing_name(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_create_options([{"values": ["Red"]}])
+
+    def test_create_requires_product_id(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_PRODUCT_OPTIONS,
+            {"options": [{"name": "Color", "values": ["Red"]}]},
+        )
+        assert not result.ok
+
+    def test_create_rejects_invalid_strategy(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_PRODUCT_OPTIONS,
+            {
+                "product_id": "gid://shopify/Product/1",
+                "options": [{"name": "Color", "values": ["Red"]}],
+                "variant_strategy": "WIPE",
+            },
+        )
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productOptionsCreate": {
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "title": "Tee",
+                        "handle": "tee",
+                        "options": [{
+                            "id": "gid://shopify/ProductOption/9",
+                            "name": "Color",
+                            "position": 1,
+                            "values": ["Red", "Blue"],
+                        }],
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_PRODUCT_OPTIONS,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "options": [{
+                        "name": "Color",
+                        "values": ["Red", "Blue"],
+                    }],
+                    "variant_strategy": "create",
+                },
+            )
+        assert result.ok
+        assert captured["productId"] == "gid://shopify/Product/1"
+        assert captured["variantStrategy"] == "CREATE"
+        assert captured["options"][0]["values"] == [
+            {"name": "Red"}, {"name": "Blue"},
+        ]
+        assert result.data["added_count"] == 1
+        assert result.data["product"]["options"][0]["name"] == "Color"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "productOptionsCreate": {
+                "product": None,
+                "userErrors": [{
+                    "field": ["options", "0", "name"],
+                    "message": "Option already exists",
+                    "code": "DUPLICATE",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_PRODUCT_OPTIONS,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "options": [{
+                        "name": "Color",
+                        "values": ["Red"],
+                    }],
+                },
+            )
+        assert not result.ok
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_requires_options(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_PRODUCT_OPTIONS,
+            {"product_id": "gid://shopify/Product/1"},
+        )
+        assert not result.ok
+
+    def test_delete_rejects_invalid_strategy(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_PRODUCT_OPTIONS,
+            {
+                "product_id": "gid://shopify/Product/1",
+                "options": ["gid://shopify/ProductOption/1"],
+                "strategy": "BURN",
+            },
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productOptionsDelete": {
+                    "deletedOptionsIds": [
+                        "gid://shopify/ProductOption/1",
+                    ],
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "title": "Tee",
+                        "handle": "tee",
+                        "options": [],
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_PRODUCT_OPTIONS,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "options": ["gid://shopify/ProductOption/1"],
+                    "strategy": "non_destructive",
+                },
+            )
+        assert result.ok
+        assert captured["productId"] == "gid://shopify/Product/1"
+        assert captured["options"] == [
+            "gid://shopify/ProductOption/1",
+        ]
+        assert captured["strategy"] == "NON_DESTRUCTIVE"
+        assert result.data["deleted_option_ids"] == [
+            "gid://shopify/ProductOption/1",
+        ]
+        assert result.data["deleted_count"] == 1
+
+    # ── Reorder ─────────────────────────────────
+
+    def test_reorder_accepts_bare_gid_strings(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        out = a._build_reorder_options([
+            "gid://shopify/ProductOption/1",
+            "gid://shopify/ProductOption/2",
+        ])
+        assert out == [
+            {"id": "gid://shopify/ProductOption/1"},
+            {"id": "gid://shopify/ProductOption/2"},
+        ]
+
+    def test_reorder_rejects_options_with_neither_id_nor_name(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_reorder_options([{}])
+
+    def test_reorder_happy_path(self):
+        from core.adapters.shopify.product_options import (
+            ShopifyProductOptionsAdapter,
+        )
+        a = ShopifyProductOptionsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productOptionsReorder": {
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "options": [
+                            {"id": "gid://shopify/ProductOption/2",
+                             "name": "Size", "position": 0,
+                             "values": ["S", "M"]},
+                            {"id": "gid://shopify/ProductOption/1",
+                             "name": "Color", "position": 1,
+                             "values": ["Red"]},
+                        ],
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_REORDER_PRODUCT_OPTIONS,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "options": [
+                        "gid://shopify/ProductOption/2",
+                        "gid://shopify/ProductOption/1",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["options"][0]["id"] == \
+            "gid://shopify/ProductOption/2"
+        assert result.data["reordered_count"] == 2
+        assert result.data["product"]["options"][0]["name"] == "Size"
 
