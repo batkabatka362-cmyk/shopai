@@ -501,8 +501,12 @@ class TestAutonomousControllerAdapter:
         assert ac._adapter_router is not None
         assert hasattr(ac, "_adapter_status")
 
-        # 7 LLM + 4 Shopify + 3 search + 2 shipping + 2 email = 18
-        assert len(ac._adapter_status) == 18
+        # Baseline: 7 LLM + 4 Shopify + 3 search + 2 shipping +
+        # 2 email = 18. The Shopify family has grown well past 4
+        # since this test was written, so the assertion is a loose
+        # lower bound — the per-family subset checks below verify
+        # the baseline adapters are still present.
+        assert len(ac._adapter_status) >= 18
         names = set(ac._adapter_status.keys())
         # Phase 1 LLM adapters
         assert {
@@ -524,9 +528,11 @@ class TestAutonomousControllerAdapter:
         assert ac._adapter_status["ddgs"] is True
 
     def test_initialize_degraded_mode_still_safe(self, monkeypatch):
-        """If the adapter bootstrap blows up entirely, the
-        controller must still finish initialising and the
-        adapter fields must be safely set to None / empty."""
+        """If a single adapter family's bootstrap blows up, the
+        controller must still finish initialising. Other families
+        register normally; the failed family contributes nothing to
+        status. The router is still populated as long as the core
+        ``core.adapters`` import works."""
         import tempfile
         from data_pipeline.store.db import ShopAIDatabase
         from data_pipeline.store.store_manager import StoreManager
@@ -536,7 +542,8 @@ class TestAutonomousControllerAdapter:
         sm = StoreManager(db)
         sm.add_store("t", "t.myshopify.com", "shpat_t")
 
-        # Force the bootstrap call to raise
+        # Force ONE family's bootstrap to raise — controller must
+        # log + skip that family but keep registering the others.
         import core.adapters.llm.bootstrap as bootstrap_mod
         original = bootstrap_mod.register_all
         def boom(*a, **k):
@@ -549,9 +556,13 @@ class TestAutonomousControllerAdapter:
         finally:
             monkeypatch.setattr(bootstrap_mod, "register_all", original)
 
-        # Adapter router should be None but the controller still
-        # finished initialising
-        assert ac._adapter_router is None
-        assert ac._adapter_status == {}
+        # Controller still finished initialising. Router populated
+        # via the surviving families.
+        assert ac._adapter_router is not None
+        # The failed LLM family contributes nothing to status, so
+        # none of the LLM adapter names should be present.
+        names = set(ac._adapter_status.keys())
+        assert "groq" not in names
+        assert "gemini" not in names
         # The non-adapter subsystems should still be present
         assert ac._unified_memory is not None
