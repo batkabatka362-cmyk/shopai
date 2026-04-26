@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightyeight_adapters(self):
+    def test_register_all_adds_eightynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 88
+        assert len(status) == 89
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -875,6 +875,7 @@ class TestShopifyBootstrap:
             "shopify_price_list_fixed_prices",
             "shopify_order_payment",
             "shopify_metafield_definition_pin",
+            "shopify_company_auxiliary",
         }
 
     def test_register_all_idempotent(self):
@@ -882,7 +883,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 88
+        assert len(get_registry()) == 89
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1167,6 +1168,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_VOID_TRANSACTION).name == "shopify_order_payment"
         assert router.route(Capability.SHOPIFY_PIN_METAFIELD_DEFINITION).name == "shopify_metafield_definition_pin"
         assert router.route(Capability.SHOPIFY_UNPIN_METAFIELD_DEFINITION).name == "shopify_metafield_definition_pin"
+        assert router.route(Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME).name == "shopify_company_auxiliary"
+        assert router.route(Capability.SHOPIFY_DELETE_COMPANY_ADDRESS).name == "shopify_company_auxiliary"
+        assert router.route(Capability.SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS).name == "shopify_company_auxiliary"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -23183,4 +23187,276 @@ class TestShopifyMetafieldDefinitionPinAdapter:
                 },
             )
         assert not result.ok
+
+
+# ── ShopifyCompanyAuxiliaryAdapter ────────────────────────
+
+
+class TestShopifyCompanyAuxiliaryAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter()
+        assert a.name == "shopify_company_auxiliary"
+        for cap in (
+            Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME,
+            Capability.SHOPIFY_DELETE_COMPANY_ADDRESS,
+            Capability.SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Welcome email ───────────────────────────
+
+    def test_send_welcome_requires_contact_id(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME, {},
+        )
+        assert not result.ok
+
+    def test_send_welcome_no_email_overrides(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyContactSendWelcomeEmail": {
+                    "companyContact": {
+                        "id": "gid://shopify/CompanyContact/1",
+                        "customer": {
+                            "id": "gid://shopify/Customer/1",
+                            "email": "ada@example.com",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME,
+                {"contact_id": "gid://shopify/CompanyContact/1"},
+            )
+        assert result.ok
+        assert captured["companyContactId"] == \
+            "gid://shopify/CompanyContact/1"
+        assert captured["email"] is None
+        assert result.data["customer_email"] == "ada@example.com"
+
+    def test_send_welcome_with_overrides(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyContactSendWelcomeEmail": {
+                    "companyContact": {
+                        "id": "gid://shopify/CompanyContact/1",
+                        "customer": {"email": "x@y.com"},
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME,
+                {
+                    "contact_id":
+                        "gid://shopify/CompanyContact/1",
+                    "email": {
+                        "subject": "Welcome to Acme!",
+                        "body": "Click to set your password.",
+                        "bcc": ["ops@acme.com"],
+                        "custom_message": "Cheers!",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["email"] == {
+            "subject": "Welcome to Acme!",
+            "body": "Click to set your password.",
+            "customMessage": "Cheers!",
+            "bcc": ["ops@acme.com"],
+        }
+
+    def test_send_welcome_user_errors_fail_fast(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "companyContactSendWelcomeEmail": {
+                "companyContact": None,
+                "userErrors": [{
+                    "field": ["companyContactId"],
+                    "message": "Contact not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME,
+                {"contact_id": "gid://shopify/CompanyContact/9999"},
+            )
+        assert not result.ok
+
+    # ── Delete address ──────────────────────────
+
+    def test_delete_address_requires_id(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_COMPANY_ADDRESS, {},
+        )
+        assert not result.ok
+
+    def test_delete_address_happy_path(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyAddressDelete": {
+                    "deletedAddressId":
+                        "gid://shopify/CompanyAddress/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_COMPANY_ADDRESS,
+                {"address_id": "gid://shopify/CompanyAddress/1"},
+            )
+        assert result.ok
+        assert captured["addressId"] == \
+            "gid://shopify/CompanyAddress/1"
+        assert result.data["deleted_id"] == \
+            "gid://shopify/CompanyAddress/1"
+
+    # ── Tax settings update ─────────────────────
+
+    def test_update_tax_settings_requires_location_id(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS,
+            {"tax_exempt": True},
+        )
+        assert not result.ok
+
+    def test_update_tax_settings_requires_at_least_one_change(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS,
+            {"company_location_id":
+             "gid://shopify/CompanyLocation/1"},
+        )
+        assert not result.ok
+
+    def test_update_tax_settings_happy_path(self):
+        from core.adapters.shopify.company_auxiliary import (
+            ShopifyCompanyAuxiliaryAdapter,
+        )
+        a = ShopifyCompanyAuxiliaryAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyLocationTaxSettingsUpdate": {
+                    "companyLocation": {
+                        "id": "gid://shopify/CompanyLocation/1",
+                        "name": "HQ",
+                        "taxSettings": {
+                            "taxRegistrationId": "TX-12345",
+                            "taxExempt": True,
+                            "taxExemptions": [
+                                "CA_RESELLER_EXEMPTION",
+                            ],
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS,
+                {
+                    "company_location_id":
+                        "gid://shopify/CompanyLocation/1",
+                    "tax_registration_id": "TX-12345",
+                    "tax_exempt": True,
+                    "exemptions_to_assign": [
+                        "ca_reseller_exemption",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["companyLocationId"] == \
+            "gid://shopify/CompanyLocation/1"
+        assert captured["taxRegistrationId"] == "TX-12345"
+        assert captured["taxExempt"] is True
+        assert captured["exemptionsToAssign"] == [
+            "CA_RESELLER_EXEMPTION",
+        ]
+        assert result.data["tax_registration_id"] == "TX-12345"
+        assert result.data["tax_exempt"] is True
+        assert result.data["tax_exemptions"] == [
+            "CA_RESELLER_EXEMPTION",
+        ]
 

@@ -37,6 +37,7 @@ from .collection_membership import ShopifyCollectionMembershipAdapter
 from .collections import ShopifyCollectionsAdapter
 from .companies import ShopifyCompaniesAdapter
 from .company_contact_roles import ShopifyCompanyContactRolesAdapter
+from .company_auxiliary import ShopifyCompanyAuxiliaryAdapter
 from .company_contacts import ShopifyCompanyContactsAdapter
 from .company_locations import ShopifyCompanyLocationsAdapter
 from .customer_consent import ShopifyCustomerConsentAdapter
@@ -207,6 +208,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyPriceListFixedPricesAdapter,
     ShopifyOrderPaymentAdapter,
     ShopifyMetafieldDefinitionPinAdapter,
+    ShopifyCompanyAuxiliaryAdapter,
 )
 
 

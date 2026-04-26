@@ -357,6 +357,9 @@ class Capability(str, Enum):
     SHOPIFY_VOID_TRANSACTION = "shopify_void_transaction"
     SHOPIFY_PIN_METAFIELD_DEFINITION = "shopify_pin_metafield_definition"
     SHOPIFY_UNPIN_METAFIELD_DEFINITION = "shopify_unpin_metafield_definition"
+    SHOPIFY_SEND_COMPANY_CONTACT_WELCOME = "shopify_send_company_contact_welcome"
+    SHOPIFY_DELETE_COMPANY_ADDRESS = "shopify_delete_company_address"
+    SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS = "shopify_update_company_location_tax_settings"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
