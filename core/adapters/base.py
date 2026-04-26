@@ -419,6 +419,9 @@ class Capability(str, Enum):
     SHOPIFY_MARK_COMMENT_NOT_SPAM = "shopify_mark_comment_not_spam"
     SHOPIFY_DELETE_COMMENT = "shopify_delete_comment"
     SHOPIFY_UPDATE_INVENTORY_ITEM = "shopify_update_inventory_item"
+    SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT = "shopify_update_customer_email_marketing_consent"
+    SHOPIFY_UPDATE_CUSTOMER_SMS_MARKETING_CONSENT = "shopify_update_customer_sms_marketing_consent"
+    SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE = "shopify_send_customer_account_invite"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

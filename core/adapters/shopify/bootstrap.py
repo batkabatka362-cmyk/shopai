@@ -45,6 +45,7 @@ from .company_auxiliary import ShopifyCompanyAuxiliaryAdapter
 from .company_contacts import ShopifyCompanyContactsAdapter
 from .company_locations import ShopifyCompanyLocationsAdapter
 from .customer_consent import ShopifyCustomerConsentAdapter
+from .customer_marketing import ShopifyCustomerMarketingAdapter
 from .customer_merge import ShopifyCustomerMergeAdapter
 from .customer_payment_methods import ShopifyCustomerPaymentMethodsAdapter
 from .customer_payment_method_ops import (
@@ -261,6 +262,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyBlogsAdapter,
     ShopifyCommentsAdapter,
     ShopifyInventoryItemAdapter,
+    ShopifyCustomerMarketingAdapter,
 )
 
 

@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwelve_adapters(self):
+    def test_register_all_adds_onehundredthirteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 112
+        assert len(status) == 113
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -899,6 +899,7 @@ class TestShopifyBootstrap:
             "shopify_blogs",
             "shopify_comments",
             "shopify_inventory_item",
+            "shopify_customer_marketing",
         }
 
     def test_register_all_idempotent(self):
@@ -906,7 +907,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 112
+        assert len(get_registry()) == 113
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1253,6 +1254,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_MARK_COMMENT_NOT_SPAM).name == "shopify_comments"
         assert router.route(Capability.SHOPIFY_DELETE_COMMENT).name == "shopify_comments"
         assert router.route(Capability.SHOPIFY_UPDATE_INVENTORY_ITEM).name == "shopify_inventory_item"
+        assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT).name == "shopify_customer_marketing"
+        assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER_SMS_MARKETING_CONSENT).name == "shopify_customer_marketing"
+        assert router.route(Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE).name == "shopify_customer_marketing"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -29387,6 +29391,388 @@ class TestShopifyInventoryItemAdapter:
                 {
                     "id": "gid://shopify/InventoryItem/1",
                     "harmonized_system_code": "invalid",
+                },
+            )
+        assert not result.ok
+
+
+# ── ShopifyCustomerMarketingAdapter ───────────────────────
+
+
+class TestShopifyCustomerMarketingAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter()
+        assert a.name == "shopify_customer_marketing"
+        for cap in (
+            Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT,
+            Capability.SHOPIFY_UPDATE_CUSTOMER_SMS_MARKETING_CONSENT,
+            Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Email consent ────────────────────────────────────────────
+
+    def test_email_consent_requires_customer_id(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT,
+            {"marketing_state": "subscribed"},
+        )
+        assert not result.ok
+
+    def test_email_consent_requires_state(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT,
+            {"customer_id": "gid://shopify/Customer/1"},
+        )
+        assert not result.ok
+
+    def test_email_consent_rejects_not_subscribed_input(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        # Pattern C: NOT_SUBSCRIBED is read-only on input.
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT,
+            {
+                "customer_id": "gid://shopify/Customer/1",
+                "marketing_state": "not_subscribed",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_email_consent_invalid_opt_in_level_rejected(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT,
+            {
+                "customer_id": "gid://shopify/Customer/1",
+                "marketing_state": "subscribed",
+                "marketing_opt_in_level": "DOUBLE_CHECK",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_email_consent_happy_path(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerEmailMarketingConsentUpdate": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "email": "ada@example.com",
+                        "displayName": "Ada Lovelace",
+                        "emailMarketingConsent": {
+                            "marketingState": "SUBSCRIBED",
+                            "marketingOptInLevel": "CONFIRMED_OPT_IN",
+                            "consentUpdatedAt":
+                                "2026-04-26T00:00:00Z",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT,
+                {
+                    "customer_id": "gid://shopify/Customer/1",
+                    "marketing_state": "subscribed",
+                    "marketing_opt_in_level": "confirmed_opt_in",
+                    "consent_updated_at": "2026-04-26T00:00:00Z",
+                    "source_location_id":
+                        "gid://shopify/Location/9",
+                },
+            )
+        assert result.ok
+        body = captured["input"]
+        assert body["customerId"] == "gid://shopify/Customer/1"
+        assert body["emailMarketingConsent"] == {
+            "marketingState": "SUBSCRIBED",
+            "marketingOptInLevel": "CONFIRMED_OPT_IN",
+            "consentUpdatedAt": "2026-04-26T00:00:00Z",
+            "sourceLocationId": "gid://shopify/Location/9",
+        }
+        c = result.data["customer"]
+        assert c["marketing_state"] == "SUBSCRIBED"
+        assert c["email"] == "ada@example.com"
+
+    def test_email_consent_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerEmailMarketingConsentUpdate": {
+                "customer": None,
+                "userErrors": [{
+                    "field": ["input", "customerId"],
+                    "message": "Customer not found",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT,
+                {
+                    "customer_id":
+                        "gid://shopify/Customer/missing",
+                    "marketing_state": "subscribed",
+                },
+            )
+        assert not result.ok
+
+    # ── SMS consent ──────────────────────────────────────────────
+
+    def test_sms_consent_rejects_invalid_state(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        # SMS state set has no INVALID — make sure it rejects.
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER_SMS_MARKETING_CONSENT,
+            {
+                "customer_id": "gid://shopify/Customer/1",
+                "marketing_state": "INVALID",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_sms_consent_happy_path(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerSmsMarketingConsentUpdate": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "phone": "+15555550001",
+                        "displayName": "Ada",
+                        "smsMarketingConsent": {
+                            "marketingState": "UNSUBSCRIBED",
+                            "marketingOptInLevel": "SINGLE_OPT_IN",
+                            "consentUpdatedAt":
+                                "2026-04-26T00:00:00Z",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CUSTOMER_SMS_MARKETING_CONSENT,
+                {
+                    "customer_id": "gid://shopify/Customer/1",
+                    "marketing_state": "unsubscribed",
+                    "marketing_opt_in_level": "single_opt_in",
+                },
+            )
+        assert result.ok
+        body = captured["input"]
+        assert body["smsMarketingConsent"]["marketingState"] == \
+            "UNSUBSCRIBED"
+        c = result.data["customer"]
+        assert c["phone"] == "+15555550001"
+        assert c["marketing_state"] == "UNSUBSCRIBED"
+
+    # ── Account invite ───────────────────────────────────────────
+
+    def test_invite_requires_customer_id(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE, {},
+        )
+        assert not result.ok
+
+    def test_invite_dict_email_missing_to_raises(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE,
+            {
+                "customer_id": "gid://shopify/Customer/1",
+                "email": {"subject": "Welcome"},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_invite_default_email(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerSendAccountInviteEmail": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "email": "ada@example.com",
+                        "displayName": "Ada",
+                        "state": "INVITED",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE,
+                {"customer_id": "gid://shopify/Customer/1"},
+            )
+        assert result.ok
+        assert captured == {
+            "customerId": "gid://shopify/Customer/1",
+            "email": None,
+        }
+        assert result.data["state"] == "INVITED"
+        assert result.data["email_override_address"] == ""
+
+    def test_invite_with_dict_override_with_subject_bcc(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerSendAccountInviteEmail": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "email": "ada@example.com",
+                        "displayName": "Ada",
+                        "state": "INVITED",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE,
+                {
+                    "customer_id": "gid://shopify/Customer/1",
+                    "email": {
+                        "to": "personal@example.com",
+                        "subject": "Welcome to ShopAI Store",
+                        "from": "merchant@example.com",
+                        "custom_message": "Click below to set your "
+                        "password.",
+                        "bcc": ["audit@example.com"],
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["email"] == {
+            "to": "personal@example.com",
+            "subject": "Welcome to ShopAI Store",
+            "from": "merchant@example.com",
+            "customMessage": (
+                "Click below to set your password."
+            ),
+            "bcc": ["audit@example.com"],
+        }
+        assert result.data["email_override_address"] == \
+            "personal@example.com"
+
+    def test_invite_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_marketing import (
+            ShopifyCustomerMarketingAdapter,
+        )
+        a = ShopifyCustomerMarketingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerSendAccountInviteEmail": {
+                "customer": None,
+                "userErrors": [{
+                    "field": ["customerId"],
+                    "message": "Customer can't be found",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE,
+                {
+                    "customer_id":
+                        "gid://shopify/Customer/missing",
                 },
             )
         assert not result.ok
