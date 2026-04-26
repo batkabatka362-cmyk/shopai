@@ -107,6 +107,7 @@ from .marketing_events import ShopifyMarketingEventsAdapter
 from .market_crud import ShopifyMarketCRUDAdapter
 from .markets import ShopifyMarketsAdapter
 from .metafield import ShopifyMetafieldAdapter
+from .mobile_platform_app import ShopifyMobilePlatformAppAdapter
 from .metafield_definition_pin import ShopifyMetafieldDefinitionPinAdapter
 from .metafields_delete import ShopifyMetafieldsDeleteAdapter
 from .metafield_definitions import ShopifyMetafieldDefinitionsAdapter
@@ -307,6 +308,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyOrderEditShippingAdapter,
     ShopifyUrlRedirectImportAdapter,
     ShopifyCompanyContactAssignmentAdapter,
+    ShopifyMobilePlatformAppAdapter,
 )
 
 

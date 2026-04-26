@@ -474,6 +474,11 @@ class Capability(str, Enum):
     SHOPIFY_COMPANY_ASSIGN_MAIN_CONTACT = "shopify_company_assign_main_contact"
     SHOPIFY_COMPANY_REVOKE_MAIN_CONTACT = "shopify_company_revoke_main_contact"
     SHOPIFY_COMPANY_REMOVE_CONTACT = "shopify_company_remove_contact"
+    SHOPIFY_LIST_MOBILE_PLATFORM_APPLICATIONS = "shopify_list_mobile_platform_applications"
+    SHOPIFY_GET_MOBILE_PLATFORM_APPLICATION = "shopify_get_mobile_platform_application"
+    SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION = "shopify_create_mobile_platform_application"
+    SHOPIFY_UPDATE_MOBILE_PLATFORM_APPLICATION = "shopify_update_mobile_platform_application"
+    SHOPIFY_DELETE_MOBILE_PLATFORM_APPLICATION = "shopify_delete_mobile_platform_application"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

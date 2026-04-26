@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentyeight_adapters(self):
+    def test_register_all_adds_onehundredtwentynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 128
+        assert len(status) == 129
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -915,6 +915,7 @@ class TestShopifyBootstrap:
             "shopify_order_edit_shipping",
             "shopify_url_redirect_import",
             "shopify_company_contact_assignment",
+            "shopify_mobile_platform_app",
         }
 
     def test_register_all_idempotent(self):
@@ -922,7 +923,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 128
+        assert len(get_registry()) == 129
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1324,6 +1325,11 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_COMPANY_ASSIGN_MAIN_CONTACT).name == "shopify_company_contact_assignment"
         assert router.route(Capability.SHOPIFY_COMPANY_REVOKE_MAIN_CONTACT).name == "shopify_company_contact_assignment"
         assert router.route(Capability.SHOPIFY_COMPANY_REMOVE_CONTACT).name == "shopify_company_contact_assignment"
+        assert router.route(Capability.SHOPIFY_LIST_MOBILE_PLATFORM_APPLICATIONS).name == "shopify_mobile_platform_app"
+        assert router.route(Capability.SHOPIFY_GET_MOBILE_PLATFORM_APPLICATION).name == "shopify_mobile_platform_app"
+        assert router.route(Capability.SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION).name == "shopify_mobile_platform_app"
+        assert router.route(Capability.SHOPIFY_UPDATE_MOBILE_PLATFORM_APPLICATION).name == "shopify_mobile_platform_app"
+        assert router.route(Capability.SHOPIFY_DELETE_MOBILE_PLATFORM_APPLICATION).name == "shopify_mobile_platform_app"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -34365,6 +34371,376 @@ class TestShopifyCompanyContactAssignmentAdapter:
                 {
                     "company_contact_id":
                         "gid://shopify/CompanyContact/main",
+                },
+            )
+        assert not result.ok
+
+
+# ── ShopifyMobilePlatformAppAdapter ───────────────────────
+
+
+class TestShopifyMobilePlatformAppAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter()
+        assert a.name == "shopify_mobile_platform_app"
+        for cap in (
+            Capability.SHOPIFY_LIST_MOBILE_PLATFORM_APPLICATIONS,
+            Capability.SHOPIFY_GET_MOBILE_PLATFORM_APPLICATION,
+            Capability.SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION,
+            Capability.SHOPIFY_UPDATE_MOBILE_PLATFORM_APPLICATION,
+            Capability.SHOPIFY_DELETE_MOBILE_PLATFORM_APPLICATION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_list_returns_mixed_platforms(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            return {
+                "mobilePlatformApplications": {
+                    "pageInfo": {
+                        "hasNextPage": False, "endCursor": None,
+                    },
+                    "edges": [
+                        {
+                            "node": {
+                                "__typename": "AndroidApplication",
+                                "id":
+                                    "gid://shopify/AndroidApplication/1",
+                                "applicationId": "com.example.app",
+                                "sha256CertFingerprints": [
+                                    "AB:CD:EF",
+                                ],
+                                "appLinksEnabled": True,
+                            },
+                        },
+                        {
+                            "node": {
+                                "__typename": "AppleApplication",
+                                "id":
+                                    "gid://shopify/AppleApplication/2",
+                                "appId": "TEAMID.com.example.app",
+                                "universalLinksEnabled": True,
+                                "sharedWebCredentialsEnabled": False,
+                                "appClipsEnabled": False,
+                                "appClipApplicationId": None,
+                            },
+                        },
+                    ],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_MOBILE_PLATFORM_APPLICATIONS,
+                {"limit": 25},
+            )
+        assert result.ok
+        assert result.data["count"] == 2
+        apps = result.data["applications"]
+        assert apps[0]["platform"] == "android"
+        assert apps[0]["app_links_enabled"] is True
+        assert apps[1]["platform"] == "apple"
+        assert apps[1]["universal_links_enabled"] is True
+
+    # ── Create validation ───────────────────────────────────────
+
+    def test_create_requires_platform(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION,
+            {"application_id": "com.example.app"},
+        )
+        assert not result.ok
+
+    def test_create_rejects_invalid_platform(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION,
+            {"platform": "windows"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_android_requires_application_id(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION,
+            {"platform": "android", "app_links_enabled": True},
+        )
+        assert not result.ok
+
+    def test_create_apple_requires_app_id(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION,
+            {
+                "platform": "apple",
+                "universal_links_enabled": True,
+            },
+        )
+        assert not result.ok
+
+    def test_create_android_happy_path(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "mobilePlatformApplicationCreate": {
+                    "mobilePlatformApplication": {
+                        "__typename": "AndroidApplication",
+                        "id":
+                            "gid://shopify/AndroidApplication/1",
+                        "applicationId": "com.example.app",
+                        "sha256CertFingerprints": [
+                            "AB:CD:EF",
+                        ],
+                        "appLinksEnabled": True,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION,
+                {
+                    "platform": "android",
+                    "application_id": "com.example.app",
+                    "sha256_cert_fingerprints": "AB:CD:EF",
+                    "app_links_enabled": True,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "input": {
+                "android": {
+                    "applicationId": "com.example.app",
+                    "sha256CertFingerprints": ["AB:CD:EF"],
+                    "appLinksEnabled": True,
+                },
+            },
+        }
+        app = result.data["application"]
+        assert app["platform"] == "android"
+        assert app["app_links_enabled"] is True
+
+    def test_create_apple_happy_path(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "mobilePlatformApplicationCreate": {
+                    "mobilePlatformApplication": {
+                        "__typename": "AppleApplication",
+                        "id":
+                            "gid://shopify/AppleApplication/1",
+                        "appId": "TEAMID.com.example.app",
+                        "universalLinksEnabled": True,
+                        "sharedWebCredentialsEnabled": True,
+                        "appClipsEnabled": False,
+                        "appClipApplicationId": "",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_MOBILE_PLATFORM_APPLICATION,
+                {
+                    "platform": "apple",
+                    "app_id": "TEAMID.com.example.app",
+                    "universal_links_enabled": True,
+                    "shared_web_credentials_enabled": True,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "input": {
+                "apple": {
+                    "appId": "TEAMID.com.example.app",
+                    "universalLinksEnabled": True,
+                    "sharedWebCredentialsEnabled": True,
+                },
+            },
+        }
+        app = result.data["application"]
+        assert app["platform"] == "apple"
+        assert app["shared_web_credentials_enabled"] is True
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_MOBILE_PLATFORM_APPLICATION,
+            {
+                "platform": "android",
+                "app_links_enabled": False,
+            },
+        )
+        assert not result.ok
+
+    def test_update_android_partial(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "mobilePlatformApplicationUpdate": {
+                    "mobilePlatformApplication": {
+                        "__typename": "AndroidApplication",
+                        "id":
+                            "gid://shopify/AndroidApplication/1",
+                        "applicationId": "com.example.app",
+                        "sha256CertFingerprints": [],
+                        "appLinksEnabled": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_MOBILE_PLATFORM_APPLICATION,
+                {
+                    "id":
+                        "gid://shopify/AndroidApplication/1",
+                    "platform": "android",
+                    "app_links_enabled": False,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/AndroidApplication/1",
+            "input": {
+                "android": {"appLinksEnabled": False},
+            },
+        }
+
+    # ── Delete ──────────────────────────────────────────────────
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "mobilePlatformApplicationDelete": {
+                    "deletedMobilePlatformApplicationId":
+                        "gid://shopify/AndroidApplication/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_MOBILE_PLATFORM_APPLICATION,
+                {
+                    "id":
+                        "gid://shopify/AndroidApplication/1",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/AndroidApplication/1",
+        }
+        assert result.data["deleted_id"] == \
+            "gid://shopify/AndroidApplication/1"
+
+    def test_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.mobile_platform_app import (
+            ShopifyMobilePlatformAppAdapter,
+        )
+        a = ShopifyMobilePlatformAppAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "mobilePlatformApplicationDelete": {
+                "deletedMobilePlatformApplicationId": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "App not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_MOBILE_PLATFORM_APPLICATION,
+                {
+                    "id":
+                        "gid://shopify/AndroidApplication/missing",
                 },
             )
         assert not result.ok
