@@ -352,6 +352,10 @@ tolerate both forms when the cost is low:
 - `customerAddress*` mutations also use the typed `UserError`
   variant (no `code` field) — same Pattern F as draft-order /
   order-edit family. Drop `code` from those userErrors selections.
+- `giftCardUpdate` userErrors are typed `UserError` (no `code`),
+  but `giftCardCreate` (`GiftCardUserError`) and `giftCardCredit`
+  / `giftCardDebit` (`GiftCardTransactionUserError`) all DO have
+  `code`. Pattern F applies per-mutation, not per-resource.
 
 ### Pattern D-prime: oneOf input objects
 

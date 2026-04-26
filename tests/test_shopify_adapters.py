@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventyfive_adapters(self):
+    def test_register_all_adds_seventysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 75
+        assert len(status) == 76
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -862,6 +862,7 @@ class TestShopifyBootstrap:
             "shopify_company_locations",
             "shopify_market_crud",
             "shopify_customer_addresses",
+            "shopify_gift_card_crud",
         }
 
     def test_register_all_idempotent(self):
@@ -869,7 +870,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 75
+        assert len(get_registry()) == 76
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1122,6 +1123,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_CUSTOMER_ADDRESS).name == "shopify_customer_addresses"
         assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER_ADDRESS).name == "shopify_customer_addresses"
         assert router.route(Capability.SHOPIFY_DELETE_CUSTOMER_ADDRESS).name == "shopify_customer_addresses"
+        assert router.route(Capability.SHOPIFY_UPDATE_GIFT_CARD).name == "shopify_gift_card_crud"
+        assert router.route(Capability.SHOPIFY_CREDIT_GIFT_CARD).name == "shopify_gift_card_crud"
+        assert router.route(Capability.SHOPIFY_DEBIT_GIFT_CARD).name == "shopify_gift_card_crud"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -20336,4 +20340,185 @@ class TestShopifyCustomerAddressesAdapter:
             "gid://shopify/MailingAddress/1"
         assert result.data["deleted_id"] == \
             "gid://shopify/MailingAddress/1"
+
+
+# ── ShopifyGiftCardCRUDAdapter ────────────────────────────
+
+
+class TestShopifyGiftCardCRUDAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter()
+        assert a.name == "shopify_gift_card_crud"
+        for cap in (
+            Capability.SHOPIFY_UPDATE_GIFT_CARD,
+            Capability.SHOPIFY_CREDIT_GIFT_CARD,
+            Capability.SHOPIFY_DEBIT_GIFT_CARD,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_GIFT_CARD, {
+            "note": "patched",
+        })
+        assert not result.ok
+
+    def test_update_requires_at_least_one_field(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_GIFT_CARD, {
+            "id": "gid://shopify/GiftCard/1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "giftCardUpdate": {
+                    "giftCard": {
+                        "id": "gid://shopify/GiftCard/1",
+                        "note": "patched",
+                        "expiresOn": "2027-01-01",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_GIFT_CARD, {
+                "id": "gid://shopify/GiftCard/1",
+                "note": "patched",
+                "expires_on": "2027-01-01",
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/GiftCard/1"
+        assert captured["input"]["note"] == "patched"
+        assert captured["input"]["expiresOn"] == "2027-01-01"
+
+    def test_credit_requires_id(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREDIT_GIFT_CARD, {
+            "amount": 5, "currency_code": "USD",
+        })
+        assert not result.ok
+
+    def test_credit_requires_amount(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREDIT_GIFT_CARD, {
+            "id": "gid://shopify/GiftCard/1",
+            "currency_code": "USD",
+        })
+        assert not result.ok
+
+    def test_credit_requires_currency(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREDIT_GIFT_CARD, {
+            "id": "gid://shopify/GiftCard/1",
+            "amount": 5,
+        })
+        assert not result.ok
+
+    def test_credit_happy_path(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "giftCardCredit": {
+                    "giftCardCreditTransaction": {
+                        "id": "gid://shopify/GiftCardCreditTransaction/9",
+                        "amount": {
+                            "amount": "5.50", "currencyCode": "USD",
+                        },
+                        "processedAt": "2026-04-26T12:00:00Z",
+                        "note": "goodwill",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREDIT_GIFT_CARD, {
+                "id": "gid://shopify/GiftCard/1",
+                "amount": 5.50,
+                "currency_code": "usd",
+                "note": "goodwill",
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/GiftCard/1"
+        assert captured["creditInput"]["creditAmount"] == {
+            "amount": "5.50", "currencyCode": "USD",
+        }
+        assert captured["creditInput"]["note"] == "goodwill"
+        assert result.data["transaction"]["amount"]["amount"] == 5.50
+
+    def test_debit_happy_path(self):
+        from core.adapters.shopify.gift_card_crud import (
+            ShopifyGiftCardCRUDAdapter,
+        )
+        a = ShopifyGiftCardCRUDAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "giftCardDebit": {
+                    "giftCardDebitTransaction": {
+                        "id": "gid://shopify/GiftCardDebitTransaction/9",
+                        "amount": {
+                            "amount": "2.50", "currencyCode": "USD",
+                        },
+                        "processedAt": "2026-04-26T12:00:00Z",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_DEBIT_GIFT_CARD, {
+                "id": "gid://shopify/GiftCard/1",
+                "amount": 2.50,
+                "currency_code": "USD",
+            })
+        assert result.ok
+        assert captured["debitInput"]["debitAmount"] == {
+            "amount": "2.50", "currencyCode": "USD",
+        }
 

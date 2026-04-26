@@ -325,6 +325,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_CUSTOMER_ADDRESS = "shopify_create_customer_address"
     SHOPIFY_UPDATE_CUSTOMER_ADDRESS = "shopify_update_customer_address"
     SHOPIFY_DELETE_CUSTOMER_ADDRESS = "shopify_delete_customer_address"
+    SHOPIFY_UPDATE_GIFT_CARD = "shopify_update_gift_card"
+    SHOPIFY_CREDIT_GIFT_CARD = "shopify_credit_gift_card"
+    SHOPIFY_DEBIT_GIFT_CARD = "shopify_debit_gift_card"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
