@@ -43,6 +43,9 @@ from .companies import ShopifyCompaniesAdapter
 from .company_contact_roles import ShopifyCompanyContactRolesAdapter
 from .company_auxiliary import ShopifyCompanyAuxiliaryAdapter
 from .company_contacts import ShopifyCompanyContactsAdapter
+from .company_contact_assignment import (
+    ShopifyCompanyContactAssignmentAdapter,
+)
 from .company_locations import ShopifyCompanyLocationsAdapter
 from .company_location_staff import (
     ShopifyCompanyLocationStaffAdapter,
@@ -303,6 +306,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifySubscriptionDraftManualDiscountAdapter,
     ShopifyOrderEditShippingAdapter,
     ShopifyUrlRedirectImportAdapter,
+    ShopifyCompanyContactAssignmentAdapter,
 )
 
 

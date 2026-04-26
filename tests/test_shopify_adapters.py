@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentyseven_adapters(self):
+    def test_register_all_adds_onehundredtwentyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 127
+        assert len(status) == 128
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -914,6 +914,7 @@ class TestShopifyBootstrap:
             "shopify_subscription_draft_manual_discount",
             "shopify_order_edit_shipping",
             "shopify_url_redirect_import",
+            "shopify_company_contact_assignment",
         }
 
     def test_register_all_idempotent(self):
@@ -921,7 +922,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 127
+        assert len(get_registry()) == 128
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1319,6 +1320,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_URL_REDIRECT_IMPORT).name == "shopify_url_redirect_import"
         assert router.route(Capability.SHOPIFY_SUBMIT_URL_REDIRECT_IMPORT).name == "shopify_url_redirect_import"
         assert router.route(Capability.SHOPIFY_GET_URL_REDIRECT_IMPORT).name == "shopify_url_redirect_import"
+        assert router.route(Capability.SHOPIFY_COMPANY_ASSIGN_CUSTOMER_AS_CONTACT).name == "shopify_company_contact_assignment"
+        assert router.route(Capability.SHOPIFY_COMPANY_ASSIGN_MAIN_CONTACT).name == "shopify_company_contact_assignment"
+        assert router.route(Capability.SHOPIFY_COMPANY_REVOKE_MAIN_CONTACT).name == "shopify_company_contact_assignment"
+        assert router.route(Capability.SHOPIFY_COMPANY_REMOVE_CONTACT).name == "shopify_company_contact_assignment"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -34065,3 +34070,301 @@ class TestShopifyUrlRedirectImportAdapter:
         assert result.ok
         assert result.data["found"] is False
         assert result.data["import"] == {}
+
+
+# ── ShopifyCompanyContactAssignmentAdapter ────────────────
+
+
+class TestShopifyCompanyContactAssignmentAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter()
+        assert a.name == "shopify_company_contact_assignment"
+        for cap in (
+            Capability.SHOPIFY_COMPANY_ASSIGN_CUSTOMER_AS_CONTACT,
+            Capability.SHOPIFY_COMPANY_ASSIGN_MAIN_CONTACT,
+            Capability.SHOPIFY_COMPANY_REVOKE_MAIN_CONTACT,
+            Capability.SHOPIFY_COMPANY_REMOVE_CONTACT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Assign customer as contact ──────────────────────────────
+
+    def test_assign_customer_requires_company_id(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_COMPANY_ASSIGN_CUSTOMER_AS_CONTACT,
+            {"customer_id": "gid://shopify/Customer/1"},
+        )
+        assert not result.ok
+
+    def test_assign_customer_requires_customer_id(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_COMPANY_ASSIGN_CUSTOMER_AS_CONTACT,
+            {"company_id": "gid://shopify/Company/1"},
+        )
+        assert not result.ok
+
+    def test_assign_customer_happy_path(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyAssignCustomerAsContact": {
+                    "companyContact": {
+                        "id":
+                            "gid://shopify/CompanyContact/1",
+                        "title": "Buyer",
+                        "isMainContact": False,
+                        "locale": "en",
+                        "createdAt": "2026-04-26T00:00:00Z",
+                        "updatedAt": "2026-04-26T00:00:00Z",
+                        "customer": {
+                            "id": "gid://shopify/Customer/1",
+                            "email": "ada@example.com",
+                            "displayName": "Ada Lovelace",
+                        },
+                        "company": {
+                            "id": "gid://shopify/Company/1",
+                            "name": "Acme",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_COMPANY_ASSIGN_CUSTOMER_AS_CONTACT,
+                {
+                    "company_id": "gid://shopify/Company/1",
+                    "customer_id": "gid://shopify/Customer/1",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "companyId": "gid://shopify/Company/1",
+            "customerId": "gid://shopify/Customer/1",
+        }
+        c = result.data["company_contact"]
+        assert c["customer_email"] == "ada@example.com"
+        assert c["company_name"] == "Acme"
+
+    # ── Assign main contact ─────────────────────────────────────
+
+    def test_assign_main_requires_both_ids(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_COMPANY_ASSIGN_MAIN_CONTACT,
+            {"company_id": "gid://shopify/Company/1"},
+        )
+        assert not result.ok
+
+    def test_assign_main_happy_path(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyAssignMainContact": {
+                    "company": {
+                        "id": "gid://shopify/Company/1",
+                        "name": "Acme",
+                        "mainContact": {
+                            "id":
+                                "gid://shopify/CompanyContact/1",
+                            "title": "Buyer",
+                            "customer": {
+                                "id":
+                                    "gid://shopify/Customer/1",
+                                "email": "ada@example.com",
+                                "displayName": "Ada",
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_COMPANY_ASSIGN_MAIN_CONTACT,
+                {
+                    "company_id": "gid://shopify/Company/1",
+                    "company_contact_id":
+                        "gid://shopify/CompanyContact/1",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "companyId": "gid://shopify/Company/1",
+            "companyContactId":
+                "gid://shopify/CompanyContact/1",
+        }
+        assert result.data["main_contact_id"] == \
+            "gid://shopify/CompanyContact/1"
+        assert result.data["main_contact_customer_email"] == \
+            "ada@example.com"
+
+    # ── Revoke main contact ─────────────────────────────────────
+
+    def test_revoke_main_requires_company_id(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_COMPANY_REVOKE_MAIN_CONTACT, {},
+        )
+        assert not result.ok
+
+    def test_revoke_main_happy_path(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyRevokeMainContact": {
+                    "company": {
+                        "id": "gid://shopify/Company/1",
+                        "name": "Acme",
+                        "mainContact": None,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_COMPANY_REVOKE_MAIN_CONTACT,
+                {"company_id": "gid://shopify/Company/1"},
+            )
+        assert result.ok
+        assert captured == {"companyId": "gid://shopify/Company/1"}
+        assert result.data["still_has_main_contact"] is False
+
+    # ── Remove contact ──────────────────────────────────────────
+
+    def test_remove_contact_requires_id(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_COMPANY_REMOVE_CONTACT, {},
+        )
+        assert not result.ok
+
+    def test_remove_contact_happy_path(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyContactRemoveFromCompany": {
+                    "removedCompanyContactId":
+                        "gid://shopify/CompanyContact/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_COMPANY_REMOVE_CONTACT,
+                {
+                    "company_contact_id":
+                        "gid://shopify/CompanyContact/1",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "companyContactId":
+                "gid://shopify/CompanyContact/1",
+        }
+        assert result.data["removed_contact_id"] == \
+            "gid://shopify/CompanyContact/1"
+
+    def test_remove_contact_user_errors_fail_fast(self):
+        from core.adapters.shopify.company_contact_assignment import (
+            ShopifyCompanyContactAssignmentAdapter,
+        )
+        a = ShopifyCompanyContactAssignmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "companyContactRemoveFromCompany": {
+                "removedCompanyContactId": None,
+                "userErrors": [{
+                    "field": ["companyContactId"],
+                    "message": "Cannot remove main contact "
+                               "without first revoking",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_COMPANY_REMOVE_CONTACT,
+                {
+                    "company_contact_id":
+                        "gid://shopify/CompanyContact/main",
+                },
+            )
+        assert not result.ok

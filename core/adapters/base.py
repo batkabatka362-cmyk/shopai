@@ -470,6 +470,10 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_URL_REDIRECT_IMPORT = "shopify_create_url_redirect_import"
     SHOPIFY_SUBMIT_URL_REDIRECT_IMPORT = "shopify_submit_url_redirect_import"
     SHOPIFY_GET_URL_REDIRECT_IMPORT = "shopify_get_url_redirect_import"
+    SHOPIFY_COMPANY_ASSIGN_CUSTOMER_AS_CONTACT = "shopify_company_assign_customer_as_contact"
+    SHOPIFY_COMPANY_ASSIGN_MAIN_CONTACT = "shopify_company_assign_main_contact"
+    SHOPIFY_COMPANY_REVOKE_MAIN_CONTACT = "shopify_company_revoke_main_contact"
+    SHOPIFY_COMPANY_REMOVE_CONTACT = "shopify_company_remove_contact"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
