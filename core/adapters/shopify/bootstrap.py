@@ -48,6 +48,7 @@ from .customizations import (
     ShopifyDeliveryCustomizationsAdapter,
     ShopifyPaymentCustomizationsAdapter,
 )
+from .discount_activate import ShopifyDiscountActivateAdapter
 from .discount_automatic import ShopifyDiscountAutomaticAdapter
 from .discount_automatic_bxgy import ShopifyDiscountAutomaticBxgyAdapter
 from .discount_code_bxgy import ShopifyDiscountCodeBxgyAdapter
@@ -187,6 +188,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyGiftCardCRUDAdapter,
     ShopifyCompanyContactsAdapter,
     ShopifyProductDuplicateAdapter,
+    ShopifyDiscountActivateAdapter,
 )
 
 

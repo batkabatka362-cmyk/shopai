@@ -333,6 +333,10 @@ class Capability(str, Enum):
     SHOPIFY_DELETE_COMPANY_CONTACT = "shopify_delete_company_contact"
     SHOPIFY_REMOVE_COMPANY_CONTACT = "shopify_remove_company_contact"
     SHOPIFY_DUPLICATE_PRODUCT = "shopify_duplicate_product"
+    SHOPIFY_ACTIVATE_AUTOMATIC_DISCOUNT = "shopify_activate_automatic_discount"
+    SHOPIFY_DEACTIVATE_AUTOMATIC_DISCOUNT = "shopify_deactivate_automatic_discount"
+    SHOPIFY_ACTIVATE_CODE_DISCOUNT = "shopify_activate_code_discount"
+    SHOPIFY_DEACTIVATE_CODE_DISCOUNT = "shopify_deactivate_code_discount"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

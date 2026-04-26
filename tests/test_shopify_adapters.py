@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventyeight_adapters(self):
+    def test_register_all_adds_seventynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 78
+        assert len(status) == 79
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -865,6 +865,7 @@ class TestShopifyBootstrap:
             "shopify_gift_card_crud",
             "shopify_company_contacts",
             "shopify_product_duplicate",
+            "shopify_discount_activate",
         }
 
     def test_register_all_idempotent(self):
@@ -872,7 +873,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 78
+        assert len(get_registry()) == 79
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1133,6 +1134,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_COMPANY_CONTACT).name == "shopify_company_contacts"
         assert router.route(Capability.SHOPIFY_REMOVE_COMPANY_CONTACT).name == "shopify_company_contacts"
         assert router.route(Capability.SHOPIFY_DUPLICATE_PRODUCT).name == "shopify_product_duplicate"
+        assert router.route(Capability.SHOPIFY_ACTIVATE_AUTOMATIC_DISCOUNT).name == "shopify_discount_activate"
+        assert router.route(Capability.SHOPIFY_DEACTIVATE_AUTOMATIC_DISCOUNT).name == "shopify_discount_activate"
+        assert router.route(Capability.SHOPIFY_ACTIVATE_CODE_DISCOUNT).name == "shopify_discount_activate"
+        assert router.route(Capability.SHOPIFY_DEACTIVATE_CODE_DISCOUNT).name == "shopify_discount_activate"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -20951,4 +20956,152 @@ class TestShopifyProductDuplicateAdapter:
                 "new_title": "Clone",
             })
         assert not result.ok
+
+
+# ── ShopifyDiscountActivateAdapter ────────────────────────
+
+
+class TestShopifyDiscountActivateAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount_activate import (
+            ShopifyDiscountActivateAdapter,
+        )
+        a = ShopifyDiscountActivateAdapter()
+        assert a.name == "shopify_discount_activate"
+        for cap in (
+            Capability.SHOPIFY_ACTIVATE_AUTOMATIC_DISCOUNT,
+            Capability.SHOPIFY_DEACTIVATE_AUTOMATIC_DISCOUNT,
+            Capability.SHOPIFY_ACTIVATE_CODE_DISCOUNT,
+            Capability.SHOPIFY_DEACTIVATE_CODE_DISCOUNT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.discount_activate import (
+            ShopifyDiscountActivateAdapter,
+        )
+        a = ShopifyDiscountActivateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_activate_automatic_requires_id(self):
+        from core.adapters.shopify.discount_activate import (
+            ShopifyDiscountActivateAdapter,
+        )
+        a = ShopifyDiscountActivateAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_ACTIVATE_AUTOMATIC_DISCOUNT, {},
+        )
+        assert not result.ok
+
+    def test_activate_automatic_happy_path(self):
+        from core.adapters.shopify.discount_activate import (
+            ShopifyDiscountActivateAdapter,
+        )
+        a = ShopifyDiscountActivateAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "discountAutomaticActivate": {
+                    "automaticDiscountNode": {
+                        "id": "gid://shopify/DiscountAutomaticNode/1",
+                        "automaticDiscount": {
+                            "__typename": "DiscountAutomaticBasic",
+                            "title": "10% off",
+                            "status": "ACTIVE",
+                            "startsAt": "2026-04-26T00:00:00Z",
+                            "endsAt": None,
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ACTIVATE_AUTOMATIC_DISCOUNT,
+                {"id": "gid://shopify/DiscountAutomaticNode/1"},
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/DiscountAutomaticNode/1"
+        assert result.data["id"] == \
+            "gid://shopify/DiscountAutomaticNode/1"
+        assert result.data["discount"]["status"] == "ACTIVE"
+        assert result.data["discount"]["type"] == "DiscountAutomaticBasic"
+
+    def test_deactivate_automatic_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_activate import (
+            ShopifyDiscountActivateAdapter,
+        )
+        a = ShopifyDiscountActivateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountAutomaticDeactivate": {
+                "automaticDiscountNode": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Discount not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DEACTIVATE_AUTOMATIC_DISCOUNT,
+                {"id": "gid://shopify/DiscountAutomaticNode/9999"},
+            )
+        assert not result.ok
+
+    def test_activate_code_happy_path(self):
+        from core.adapters.shopify.discount_activate import (
+            ShopifyDiscountActivateAdapter,
+        )
+        a = ShopifyDiscountActivateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountCodeActivate": {
+                "codeDiscountNode": {
+                    "id": "gid://shopify/DiscountCodeNode/1",
+                    "codeDiscount": {
+                        "__typename": "DiscountCodeBasic",
+                        "title": "WELCOME10",
+                        "status": "ACTIVE",
+                        "startsAt": "2026-04-26T00:00:00Z",
+                        "endsAt": "2026-12-31T23:59:59Z",
+                    },
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ACTIVATE_CODE_DISCOUNT,
+                {"id": "gid://shopify/DiscountCodeNode/1"},
+            )
+        assert result.ok
+        assert result.data["discount"]["title"] == "WELCOME10"
+        assert result.data["discount"]["status"] == "ACTIVE"
+
+    def test_deactivate_code_happy_path(self):
+        from core.adapters.shopify.discount_activate import (
+            ShopifyDiscountActivateAdapter,
+        )
+        a = ShopifyDiscountActivateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "discountCodeDeactivate": {
+                "codeDiscountNode": {
+                    "id": "gid://shopify/DiscountCodeNode/1",
+                    "codeDiscount": {
+                        "__typename": "DiscountCodeBasic",
+                        "status": "EXPIRED",
+                    },
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DEACTIVATE_CODE_DISCOUNT,
+                {"id": "gid://shopify/DiscountCodeNode/1"},
+            )
+        assert result.ok
+        assert result.data["discount"]["status"] == "EXPIRED"
 
