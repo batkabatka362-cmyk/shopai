@@ -393,6 +393,7 @@ class Capability(str, Enum):
     SHOPIFY_DELETE_CUSTOMER_SEGMENT = "shopify_delete_customer_segment"
     SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS = "shopify_bulk_delete_automatic_discounts"
     SHOPIFY_BULK_DELETE_CODE_DISCOUNTS = "shopify_bulk_delete_code_discounts"
+    SHOPIFY_UPDATE_PRODUCT_OPTION = "shopify_update_product_option"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

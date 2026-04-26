@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwo_adapters(self):
+    def test_register_all_adds_onehundredthree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 102
+        assert len(status) == 103
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -889,6 +889,7 @@ class TestShopifyBootstrap:
             "shopify_theme_ops",
             "shopify_customer_segment_write",
             "shopify_discount_bulk_delete",
+            "shopify_product_option_update",
         }
 
     def test_register_all_idempotent(self):
@@ -896,7 +897,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 102
+        assert len(get_registry()) == 103
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1217,6 +1218,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_CUSTOMER_SEGMENT).name == "shopify_customer_segment_write"
         assert router.route(Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS).name == "shopify_discount_bulk_delete"
         assert router.route(Capability.SHOPIFY_BULK_DELETE_CODE_DISCOUNTS).name == "shopify_discount_bulk_delete"
+        assert router.route(Capability.SHOPIFY_UPDATE_PRODUCT_OPTION).name == "shopify_product_option_update"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -26598,3 +26600,274 @@ class TestShopifyDiscountBulkDeleteAdapter:
             "kind": "saved_search",
             "saved_search_id": "gid://shopify/SavedSearch/9",
         }
+
+
+# ── ShopifyProductOptionUpdateAdapter ─────────────────────
+
+
+class TestShopifyProductOptionUpdateAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter()
+        assert a.name == "shopify_product_option_update"
+        assert (
+            Capability.SHOPIFY_UPDATE_PRODUCT_OPTION in a.capabilities
+        )
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_requires_product_id(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_PRODUCT_OPTION,
+            {"option": {"id": "gid://shopify/ProductOption/1",
+                        "name": "Color"}},
+        )
+        assert not result.ok
+
+    def test_option_requires_id(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_PRODUCT_OPTION,
+            {
+                "product_id": "gid://shopify/Product/1",
+                "option": {"name": "Color"},
+            },
+        )
+        assert not result.ok
+
+    def test_rejects_invalid_variant_strategy(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_PRODUCT_OPTION,
+            {
+                "product_id": "gid://shopify/Product/1",
+                "option": {"id": "gid://shopify/ProductOption/1"},
+                "variant_strategy": "DELETE_ALL",
+            },
+        )
+        assert not result.ok
+
+    def test_value_creates_accept_strings(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_value_creates(["Forest Green", "Sky Blue"])
+        assert out == [
+            {"name": "Forest Green"},
+            {"name": "Sky Blue"},
+        ]
+
+    def test_value_updates_require_id(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_value_updates([{"name": "Blue"}])
+
+    def test_value_deletes_accept_single_string(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_value_deletes(
+            "gid://shopify/ProductOptionValue/9",
+        )
+        assert out == ["gid://shopify/ProductOptionValue/9"]
+
+    def test_compose_mutation_omits_unused_variables(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        # Pattern C: only declare/pass variables actually in use.
+        # Minimal call (just option) shouldn't declare values
+        # add/update/delete or strategy.
+        m = a._compose_mutation({
+            "productId": "gid://shopify/Product/1",
+            "option": {"id": "gid://shopify/ProductOption/1"},
+        })
+        assert "$productId: ID!" in m
+        assert "$option: OptionUpdateInput!" in m
+        assert "optionValuesToAdd" not in m
+        assert "optionValuesToUpdate" not in m
+        assert "optionValuesToDelete" not in m
+        assert "variantStrategy" not in m
+
+    def test_happy_path_rename_only(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured_query: list[str] = []
+        captured_vars = {}
+
+        def fake_gql(q, v):
+            captured_query.append(q)
+            captured_vars.update(v)
+            return {
+                "productOptionUpdate": {
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "title": "Tee",
+                        "handle": "tee",
+                        "options": [{
+                            "id": "gid://shopify/ProductOption/1",
+                            "name": "Colour",
+                            "position": 1,
+                            "values": ["Red", "Blue"],
+                        }],
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_PRODUCT_OPTION,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "option": {
+                        "id": "gid://shopify/ProductOption/1",
+                        "name": "Colour",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured_vars["productId"] == "gid://shopify/Product/1"
+        assert captured_vars["option"] == {
+            "id": "gid://shopify/ProductOption/1",
+            "name": "Colour",
+        }
+        # Pattern C: optional sibling vars should NOT appear.
+        assert "optionValuesToAdd" not in captured_vars
+        assert "optionValuesToDelete" not in captured_vars
+        assert "variantStrategy" not in captured_vars
+        assert result.data["product"]["options"][0]["name"] == "Colour"
+
+    def test_happy_path_value_lifecycle(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productOptionUpdate": {
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "options": [{
+                            "id": "gid://shopify/ProductOption/1",
+                            "name": "Color",
+                            "position": 1,
+                            "values": ["Forest Green", "Royal Blue"],
+                        }],
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_PRODUCT_OPTION,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "option": {
+                        "id": "gid://shopify/ProductOption/1",
+                    },
+                    "option_values_to_add": ["Forest Green"],
+                    "option_values_to_update": [{
+                        "id":
+                            "gid://shopify/ProductOptionValue/1",
+                        "name": "Royal Blue",
+                    }],
+                    "option_values_to_delete": [
+                        "gid://shopify/ProductOptionValue/9",
+                    ],
+                    "variant_strategy": "manage",
+                },
+            )
+        assert result.ok
+        assert captured["optionValuesToAdd"] == [
+            {"name": "Forest Green"},
+        ]
+        assert captured["optionValuesToUpdate"] == [{
+            "id": "gid://shopify/ProductOptionValue/1",
+            "name": "Royal Blue",
+        }]
+        assert captured["optionValuesToDelete"] == [
+            "gid://shopify/ProductOptionValue/9",
+        ]
+        assert captured["variantStrategy"] == "MANAGE"
+
+    def test_user_errors_fail_fast(self):
+        from core.adapters.shopify.product_option_update import (
+            ShopifyProductOptionUpdateAdapter,
+        )
+        a = ShopifyProductOptionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "productOptionUpdate": {
+                "product": None,
+                "userErrors": [{
+                    "field": ["option", "id"],
+                    "message": "Option not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_PRODUCT_OPTION,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "option": {
+                        "id":
+                            "gid://shopify/ProductOption/9999",
+                        "name": "Renamed",
+                    },
+                },
+            )
+        assert not result.ok

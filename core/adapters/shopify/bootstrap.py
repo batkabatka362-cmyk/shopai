@@ -107,6 +107,7 @@ from .price_list_fixed_prices import ShopifyPriceListFixedPricesAdapter
 from .price_lists import ShopifyPriceListAdapter
 from .product_duplicate import ShopifyProductDuplicateAdapter
 from .product_media import ShopifyProductMediaAdapter
+from .product_option_update import ShopifyProductOptionUpdateAdapter
 from .product_options import ShopifyProductOptionsAdapter
 from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
@@ -237,6 +238,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyThemeOpsAdapter,
     ShopifyCustomerSegmentWriteAdapter,
     ShopifyDiscountBulkDeleteAdapter,
+    ShopifyProductOptionUpdateAdapter,
 )
 
 
