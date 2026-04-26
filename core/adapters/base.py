@@ -458,6 +458,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_SAVED_SEARCH = "shopify_create_saved_search"
     SHOPIFY_UPDATE_SAVED_SEARCH = "shopify_update_saved_search"
     SHOPIFY_DELETE_SAVED_SEARCH = "shopify_delete_saved_search"
+    SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING = "shopify_subscription_draft_add_free_shipping"
+    SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_FREE_SHIPPING = "shopify_subscription_draft_update_free_shipping"
+    SHOPIFY_SUBSCRIPTION_DRAFT_REMOVE_DISCOUNT = "shopify_subscription_draft_remove_discount"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

@@ -148,6 +148,9 @@ from .shipping_packages import ShopifyShippingPackagesAdapter
 from .shop import ShopifyShopAdapter
 from .shop_locales import ShopifyShopLocalesAdapter
 from .subscription_draft import ShopifySubscriptionDraftAdapter
+from .subscription_draft_free_shipping import (
+    ShopifySubscriptionDraftFreeShippingAdapter,
+)
 from .standard_metafield_definition import (
     ShopifyStandardMetafieldDefinitionAdapter,
 )
@@ -291,6 +294,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyProductSellingPlanBindingsAdapter,
     ShopifyProductFeedsAdapter,
     ShopifySavedSearchesAdapter,
+    ShopifySubscriptionDraftFreeShippingAdapter,
 )
 
 

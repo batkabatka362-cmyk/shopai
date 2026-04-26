@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentythree_adapters(self):
+    def test_register_all_adds_onehundredtwentyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 123
+        assert len(status) == 124
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -910,6 +910,7 @@ class TestShopifyBootstrap:
             "shopify_product_selling_plan_bindings",
             "shopify_product_feeds",
             "shopify_saved_searches",
+            "shopify_subscription_draft_free_shipping",
         }
 
     def test_register_all_idempotent(self):
@@ -917,7 +918,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 123
+        assert len(get_registry()) == 124
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1303,6 +1304,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_SAVED_SEARCH).name == "shopify_saved_searches"
         assert router.route(Capability.SHOPIFY_UPDATE_SAVED_SEARCH).name == "shopify_saved_searches"
         assert router.route(Capability.SHOPIFY_DELETE_SAVED_SEARCH).name == "shopify_saved_searches"
+        assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING).name == "shopify_subscription_draft_free_shipping"
+        assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_FREE_SHIPPING).name == "shopify_subscription_draft_free_shipping"
+        assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_REMOVE_DISCOUNT).name == "shopify_subscription_draft_free_shipping"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -32623,3 +32627,307 @@ class TestShopifySavedSearchesAdapter:
                 {"id": "gid://shopify/SavedSearch/missing"},
             )
         assert not result.ok
+
+
+# ── ShopifySubscriptionDraftFreeShippingAdapter ───────────
+
+
+class TestShopifySubscriptionDraftFreeShippingAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter()
+        assert a.name == \
+            "shopify_subscription_draft_free_shipping"
+        for cap in (
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING,
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_FREE_SHIPPING,
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_REMOVE_DISCOUNT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Add ─────────────────────────────────────────────────────
+
+    def test_add_requires_draft_id(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING,
+            {"title": "Free shipping"},
+        )
+        assert not result.ok
+
+    def test_add_requires_title(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING,
+            {"draft_id": "gid://shopify/SubscriptionDraft/1"},
+        )
+        assert not result.ok
+
+    def test_add_rejects_invalid_cycle_limit(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING,
+            {
+                "draft_id": "gid://shopify/SubscriptionDraft/1",
+                "title": "Free shipping",
+                "recurring_cycle_limit": 0,
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_add_happy_path(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionDraftFreeShippingDiscountAdd": {
+                    "discountAdded": {
+                        "id":
+                            "gid://shopify/SubscriptionManualDiscount/1",
+                        "title": "Gold tier free shipping",
+                        "type": "MANUAL",
+                        "targetType": "SHIPPING_LINE",
+                        "recurringCycleLimit": 12,
+                        "usageCount": 0,
+                    },
+                    "draft": {
+                        "id":
+                            "gid://shopify/SubscriptionDraft/1",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/1",
+                    "title": "Gold tier free shipping",
+                    "recurring_cycle_limit": 12,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "draftId": "gid://shopify/SubscriptionDraft/1",
+            "input": {
+                "title": "Gold tier free shipping",
+                "recurringCycleLimit": 12,
+            },
+        }
+        d = result.data["discount"]
+        assert d["recurring_cycle_limit"] == 12
+        assert d["target_type"] == "SHIPPING_LINE"
+
+    def test_add_user_errors_fail_fast(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "subscriptionDraftFreeShippingDiscountAdd": {
+                "discountAdded": None,
+                "draft": None,
+                "userErrors": [{
+                    "field": ["draftId"],
+                    "message": "Draft not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/missing",
+                    "title": "Free shipping",
+                },
+            )
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_requires_discount_id(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_FREE_SHIPPING,
+            {
+                "draft_id":
+                    "gid://shopify/SubscriptionDraft/1",
+                "title": "Renamed",
+            },
+        )
+        assert not result.ok
+
+    def test_update_rejects_empty_body(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_FREE_SHIPPING,
+            {
+                "draft_id":
+                    "gid://shopify/SubscriptionDraft/1",
+                "discount_id":
+                    "gid://shopify/SubscriptionManualDiscount/1",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionDraftFreeShippingDiscountUpdate": {
+                    "discountUpdated": {
+                        "id":
+                            "gid://shopify/SubscriptionManualDiscount/1",
+                        "title": "Extended",
+                        "recurringCycleLimit": 18,
+                    },
+                    "draft": {
+                        "id":
+                            "gid://shopify/SubscriptionDraft/1",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_FREE_SHIPPING,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/1",
+                    "discount_id":
+                        "gid://shopify/SubscriptionManualDiscount/1",
+                    "recurring_cycle_limit": 18,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "draftId": "gid://shopify/SubscriptionDraft/1",
+            "discountId":
+                "gid://shopify/SubscriptionManualDiscount/1",
+            "input": {"recurringCycleLimit": 18},
+        }
+
+    # ── Remove ──────────────────────────────────────────────────
+
+    def test_remove_requires_both_ids(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_REMOVE_DISCOUNT,
+            {
+                "draft_id":
+                    "gid://shopify/SubscriptionDraft/1",
+            },
+        )
+        assert not result.ok
+
+    def test_remove_happy_path(self):
+        from core.adapters.shopify.subscription_draft_free_shipping import (
+            ShopifySubscriptionDraftFreeShippingAdapter,
+        )
+        a = ShopifySubscriptionDraftFreeShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionDraftDiscountRemove": {
+                    "discountRemoved": {
+                        "id":
+                            "gid://shopify/SubscriptionManualDiscount/1",
+                        "title": "Free shipping",
+                    },
+                    "draft": {
+                        "id":
+                            "gid://shopify/SubscriptionDraft/1",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_REMOVE_DISCOUNT,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/1",
+                    "discount_id":
+                        "gid://shopify/SubscriptionManualDiscount/1",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "draftId": "gid://shopify/SubscriptionDraft/1",
+            "discountId":
+                "gid://shopify/SubscriptionManualDiscount/1",
+        }
+        assert result.data["removed_id"] == \
+            "gid://shopify/SubscriptionManualDiscount/1"
+        assert result.data["removed_title"] == "Free shipping"
