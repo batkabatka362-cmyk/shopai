@@ -33,6 +33,7 @@ from .risk_classifier import classify_risk
 from .retention_recommender import recommend_retention
 from .memory_writer import write_to_memory
 from .memory_reader import find_past_predictions
+from .shopify_hydrator import hydrate_customers
 
 
 class ChurnPredictionEngine:
@@ -68,7 +69,15 @@ class ChurnPredictionEngine:
     ) -> dict[str, Any]:
         """Run each pipeline stage in sequence, short-circuiting on failure."""
 
-        # Stage 0: Input validation and deep copy
+        # Stage 0: Auto-hydrate customers from Shopify when caller
+        # left them empty. Pass-through if the caller pre-fetched.
+        # If the router is unavailable / Shopify unreachable / scope
+        # missing, returns whatever was supplied (empty if nothing)
+        # — the validate-input step below still emits its standard
+        # "requires non-empty customer list" error in that case.
+        input_payload = self._hydrate_payload(input_payload)
+
+        # Stage 1: Input validation and deep copy
         customers = self._validate_input(input_payload)
         if customers is None:
             return self._error_output(
@@ -304,6 +313,40 @@ class ChurnPredictionEngine:
     # ------------------------------------------------------------------
     # Input validation
     # ------------------------------------------------------------------
+
+    def _hydrate_payload(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Auto-fetch customers from Shopify when the caller left
+        them empty. Returns a payload with ``data.customers``
+        populated — pass-through (same object) if the caller
+        pre-fetched, or a copy with the hydrated list when fetched.
+
+        Honors ``data.hydrate_limit`` and ``data.hydrate_query``
+        for scoping the auto-fetch (e.g. "orders_count:>0").
+        """
+        if not isinstance(payload, dict):
+            return payload
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return payload
+        supplied = data.get("customers", [])
+        if supplied:
+            return payload
+        hydrated = hydrate_customers(
+            supplied,
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
+        if not hydrated:
+            return payload
+        # Shallow-copy so we don't mutate the caller's dict.
+        new_data = dict(data)
+        new_data["customers"] = hydrated
+        new_payload = dict(payload)
+        new_payload["data"] = new_data
+        return new_payload
 
     def _validate_input(
         self,
