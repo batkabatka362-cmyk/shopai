@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetyeight_adapters(self):
+    def test_register_all_adds_ninetynine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 98
+        assert len(status) == 99
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -885,6 +885,7 @@ class TestShopifyBootstrap:
             "shopify_subscription_billing",
             "shopify_customer_onboarding",
             "shopify_standard_metafield_definition",
+            "shopify_reverse_delivery",
         }
 
     def test_register_all_idempotent(self):
@@ -892,7 +893,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 98
+        assert len(get_registry()) == 99
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1202,6 +1203,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL).name == "shopify_customer_onboarding"
         assert router.route(Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL).name == "shopify_customer_onboarding"
         assert router.route(Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION).name == "shopify_standard_metafield_definition"
+        assert router.route(Capability.SHOPIFY_CREATE_REVERSE_DELIVERY).name == "shopify_reverse_delivery"
+        assert router.route(Capability.SHOPIFY_UPDATE_REVERSE_DELIVERY_SHIPPING).name == "shopify_reverse_delivery"
+        assert router.route(Capability.SHOPIFY_DISPOSE_REVERSE_FULFILLMENT_ORDER).name == "shopify_reverse_delivery"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -25676,3 +25680,322 @@ class TestShopifyStandardMetafieldDefinitionAdapter:
                 },
             )
         assert not result.ok
+
+
+# ── ShopifyReverseDeliveryAdapter ─────────────────────────
+
+
+class TestShopifyReverseDeliveryAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter()
+        assert a.name == "shopify_reverse_delivery"
+        for cap in (
+            Capability.SHOPIFY_CREATE_REVERSE_DELIVERY,
+            Capability.SHOPIFY_UPDATE_REVERSE_DELIVERY_SHIPPING,
+            Capability.SHOPIFY_DISPOSE_REVERSE_FULFILLMENT_ORDER,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Builder helpers ────────────────────────
+
+    def test_label_accepts_bare_url(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_label("https://labels.example/abc.pdf")
+        assert out == {"fileUrl": "https://labels.example/abc.pdf"}
+
+    def test_label_accepts_dict(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_label({
+            "file_url": "https://labels.example/abc.pdf",
+        })
+        assert out == {"fileUrl": "https://labels.example/abc.pdf"}
+
+    def test_label_rejects_missing_url(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_label({})
+
+    def test_tracking_rejects_no_fields(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_tracking({})
+
+    def test_dispositions_rejects_invalid_type(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_dispositions([{
+                "reverse_fulfillment_order_line_item_id":
+                    "gid://shopify/ReverseFulfillmentOrderLineItem/1",
+                "quantity": 1,
+                "disposition_type": "BURN",
+            }])
+
+    # ── Create reverse delivery ────────────────
+
+    def test_create_requires_rfo_id(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_REVERSE_DELIVERY,
+            {"line_items": [{
+                "reverse_fulfillment_order_line_item_id":
+                    "gid://shopify/ReverseFulfillmentOrderLineItem/1",
+                "quantity": 1,
+            }]},
+        )
+        assert not result.ok
+
+    def test_create_requires_line_items(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_REVERSE_DELIVERY,
+            {"reverse_fulfillment_order_id":
+             "gid://shopify/ReverseFulfillmentOrder/1"},
+        )
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "reverseDeliveryCreateWithShipping": {
+                    "reverseDelivery": {
+                        "id": "gid://shopify/ReverseDelivery/1",
+                        "deliverable": {
+                            "label": {
+                                "publicFileUrl":
+                                    "https://shopify.cdn/labels/1.pdf",
+                                "createdAt": "2026-04-27T00:00:00Z",
+                            },
+                            "tracking": {
+                                "number": "1Z999",
+                                "url":
+                                    "https://ups.example/track/1Z999",
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_REVERSE_DELIVERY,
+                {
+                    "reverse_fulfillment_order_id":
+                        "gid://shopify/ReverseFulfillmentOrder/1",
+                    "line_items": [{
+                        "reverse_fulfillment_order_line_item_id":
+                            "gid://shopify/ReverseFulfillmentOrderLineItem/9",
+                        "quantity": 2,
+                    }],
+                    "tracking": {
+                        "number": "1Z999",
+                        "url":
+                            "https://ups.example/track/1Z999",
+                    },
+                    "label":
+                        "https://labels.example/return-1.pdf",
+                    "notify_customer": True,
+                },
+            )
+        assert result.ok
+        assert captured["reverseFulfillmentOrderId"] == \
+            "gid://shopify/ReverseFulfillmentOrder/1"
+        assert captured["reverseDeliveryLineItems"] == [{
+            "reverseFulfillmentOrderLineItemId":
+                "gid://shopify/ReverseFulfillmentOrderLineItem/9",
+            "quantity": 2,
+        }]
+        assert captured["trackingInput"] == {
+            "number": "1Z999",
+            "url": "https://ups.example/track/1Z999",
+        }
+        assert captured["labelInput"] == {
+            "fileUrl": "https://labels.example/return-1.pdf",
+        }
+        assert captured["notifyCustomer"] is True
+        assert result.data["reverse_delivery"]["tracking_number"] == \
+            "1Z999"
+        assert result.data["line_items_count"] == 1
+
+    # ── Update shipping ───────────────────────
+
+    def test_update_shipping_requires_change(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_REVERSE_DELIVERY_SHIPPING,
+            {"reverse_delivery_id":
+             "gid://shopify/ReverseDelivery/1"},
+        )
+        assert not result.ok
+
+    def test_update_shipping_happy_path(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "reverseDeliveryShippingUpdate": {
+                    "reverseDelivery": {
+                        "id": "gid://shopify/ReverseDelivery/1",
+                        "deliverable": {
+                            "tracking": {
+                                "number": "FX-NEW",
+                                "url": "https://fedex.example/FX-NEW",
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_REVERSE_DELIVERY_SHIPPING,
+                {
+                    "reverse_delivery_id":
+                        "gid://shopify/ReverseDelivery/1",
+                    "tracking": {"number": "FX-NEW"},
+                },
+            )
+        assert result.ok
+        assert captured["trackingInput"] == {"number": "FX-NEW"}
+        assert captured["labelInput"] is None
+        assert result.data["reverse_delivery"][
+            "tracking_number"] == "FX-NEW"
+
+    # ── Dispose ───────────────────────────────
+
+    def test_dispose_requires_dispositions(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DISPOSE_REVERSE_FULFILLMENT_ORDER, {},
+        )
+        assert not result.ok
+
+    def test_dispose_happy_path(self):
+        from core.adapters.shopify.reverse_delivery import (
+            ShopifyReverseDeliveryAdapter,
+        )
+        a = ShopifyReverseDeliveryAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "reverseFulfillmentOrderDispose": {
+                    "reverseFulfillmentOrderLineItems": [{
+                        "id":
+                            "gid://shopify/ReverseFulfillmentOrderLineItem/9",
+                        "dispositions": [{
+                            "id":
+                                "gid://shopify/ReverseFulfillmentOrderDisposition/1",
+                            "type": "RESTOCKED",
+                            "quantity": 2,
+                            "location": {
+                                "id": "gid://shopify/Location/1",
+                                "name": "Receiving",
+                            },
+                        }],
+                    }],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DISPOSE_REVERSE_FULFILLMENT_ORDER,
+                {"dispositions": [{
+                    "reverse_fulfillment_order_line_item_id":
+                        "gid://shopify/ReverseFulfillmentOrderLineItem/9",
+                    "quantity": 2,
+                    "disposition_type": "restocked",
+                    "location_id": "gid://shopify/Location/1",
+                }]},
+            )
+        assert result.ok
+        assert captured["dispositionInputs"][0] == {
+            "reverseFulfillmentOrderLineItemId":
+                "gid://shopify/ReverseFulfillmentOrderLineItem/9",
+            "quantity": 2,
+            "dispositionType": "RESTOCKED",
+            "locationId": "gid://shopify/Location/1",
+        }
+        assert result.data["dispositions_count"] == 1
+        assert result.data["line_items"][0][
+            "dispositions"][0]["type"] == "RESTOCKED"

@@ -382,6 +382,9 @@ class Capability(str, Enum):
     SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL = "shopify_generate_customer_activation_url"
     SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL = "shopify_send_customer_invite_email"
     SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION = "shopify_enable_standard_metafield_definition"
+    SHOPIFY_CREATE_REVERSE_DELIVERY = "shopify_create_reverse_delivery"
+    SHOPIFY_UPDATE_REVERSE_DELIVERY_SHIPPING = "shopify_update_reverse_delivery_shipping"
+    SHOPIFY_DISPOSE_REVERSE_FULFILLMENT_ORDER = "shopify_dispose_reverse_fulfillment_order"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

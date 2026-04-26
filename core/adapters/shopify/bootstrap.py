@@ -110,6 +110,7 @@ from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
 from .refunds import ShopifyRefundsAdapter
 from .returns import ShopifyReturnsAdapter
+from .reverse_delivery import ShopifyReverseDeliveryAdapter
 from .risk import ShopifyRiskAdapter
 from .script_tags import ShopifyScriptTagsAdapter
 from .segments import ShopifyCustomerSegmentsAdapter
@@ -229,6 +230,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifySubscriptionBillingAdapter,
     ShopifyCustomerOnboardingAdapter,
     ShopifyStandardMetafieldDefinitionAdapter,
+    ShopifyReverseDeliveryAdapter,
 )
 
 
