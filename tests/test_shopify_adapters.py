@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetyseven_adapters(self):
+    def test_register_all_adds_ninetyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 97
+        assert len(status) == 98
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -884,6 +884,7 @@ class TestShopifyBootstrap:
             "shopify_metafields_delete",
             "shopify_subscription_billing",
             "shopify_customer_onboarding",
+            "shopify_standard_metafield_definition",
         }
 
     def test_register_all_idempotent(self):
@@ -891,7 +892,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 97
+        assert len(get_registry()) == 98
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1200,6 +1201,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE).name == "shopify_subscription_billing"
         assert router.route(Capability.SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL).name == "shopify_customer_onboarding"
         assert router.route(Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL).name == "shopify_customer_onboarding"
+        assert router.route(Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION).name == "shopify_standard_metafield_definition"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -25476,3 +25478,201 @@ class TestShopifyCustomerOnboardingAdapter:
             )
         assert not result.ok
 
+
+# ── ShopifyStandardMetafieldDefinitionAdapter ─────────────
+
+
+class TestShopifyStandardMetafieldDefinitionAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter()
+        assert a.name == "shopify_standard_metafield_definition"
+        assert (
+            Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION
+            in a.capabilities
+        )
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_requires_owner_type(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION,
+            {"namespace": "custom", "key": "harmonized_system_code"},
+        )
+        assert not result.ok
+
+    def test_rejects_invalid_owner_type(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION,
+            {
+                "owner_type": "RECIPE",
+                "namespace": "custom",
+                "key": "x",
+            },
+        )
+        assert not result.ok
+
+    def test_requires_id_or_namespace_key(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION,
+            {"owner_type": "PRODUCT"},
+        )
+        assert not result.ok
+
+    def test_requires_key_when_namespace_supplied(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION,
+            {"owner_type": "PRODUCT", "namespace": "custom"},
+        )
+        assert not result.ok
+
+    def test_happy_path_via_namespace_key(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "standardMetafieldDefinitionEnable": {
+                    "createdDefinition": {
+                        "id":
+                            "gid://shopify/MetafieldDefinition/77",
+                        "name": "Harmonized system code",
+                        "key": "harmonized_system_code",
+                        "namespace": "custom",
+                        "ownerType": "PRODUCT",
+                        "pinnedPosition": 1,
+                        "type": {
+                            "name": "single_line_text_field",
+                            "category": "TEXT",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION,
+                {
+                    "owner_type": "product",
+                    "namespace": "custom",
+                    "key": "harmonized_system_code",
+                    "pin": True,
+                },
+            )
+        assert result.ok
+        assert captured["ownerType"] == "PRODUCT"
+        assert captured["id"] is None
+        assert captured["namespace"] == "custom"
+        assert captured["key"] == "harmonized_system_code"
+        assert captured["pin"] is True
+        assert result.data["definition"]["name"] == \
+            "Harmonized system code"
+        assert result.data["definition"]["pinned_position"] == 1
+        assert result.data["definition"]["type_name"] == \
+            "single_line_text_field"
+
+    def test_happy_path_via_id(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "standardMetafieldDefinitionEnable": {
+                    "createdDefinition": {
+                        "id":
+                            "gid://shopify/MetafieldDefinition/77",
+                        "name": "Country of origin",
+                        "ownerType": "PRODUCT",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION,
+                {
+                    "owner_type": "PRODUCT",
+                    "id": "gid://shopify/StandardMetafieldDefinition/9",
+                },
+            )
+        assert result.ok
+        assert captured["id"] == \
+            "gid://shopify/StandardMetafieldDefinition/9"
+        assert captured["namespace"] is None
+        assert captured["key"] is None
+
+    def test_user_errors_fail_fast(self):
+        from core.adapters.shopify.standard_metafield_definition import (
+            ShopifyStandardMetafieldDefinitionAdapter,
+        )
+        a = ShopifyStandardMetafieldDefinitionAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "standardMetafieldDefinitionEnable": {
+                "createdDefinition": None,
+                "userErrors": [{
+                    "field": ["key"],
+                    "message": "Standard definition not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION,
+                {
+                    "owner_type": "PRODUCT",
+                    "namespace": "custom",
+                    "key": "no_such_standard_field",
+                },
+            )
+        assert not result.ok

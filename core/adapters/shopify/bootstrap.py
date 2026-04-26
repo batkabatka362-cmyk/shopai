@@ -116,6 +116,9 @@ from .segments import ShopifyCustomerSegmentsAdapter
 from .selling_plan_groups import ShopifySellingPlanGroupsAdapter
 from .shop import ShopifyShopAdapter
 from .subscription_draft import ShopifySubscriptionDraftAdapter
+from .standard_metafield_definition import (
+    ShopifyStandardMetafieldDefinitionAdapter,
+)
 from .subscription_billing import ShopifySubscriptionBillingAdapter
 from .subscriptions import ShopifySubscriptionContractsAdapter
 from .themes import ShopifyThemesAdapter
@@ -225,6 +228,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMetafieldsDeleteAdapter,
     ShopifySubscriptionBillingAdapter,
     ShopifyCustomerOnboardingAdapter,
+    ShopifyStandardMetafieldDefinitionAdapter,
 )
 
 

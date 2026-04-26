@@ -381,6 +381,7 @@ class Capability(str, Enum):
     SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE = "shopify_reschedule_subscription_billing_cycle"
     SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL = "shopify_generate_customer_activation_url"
     SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL = "shopify_send_customer_invite_email"
+    SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION = "shopify_enable_standard_metafield_definition"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
