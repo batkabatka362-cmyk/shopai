@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentyfour_adapters(self):
+    def test_register_all_adds_onehundredtwentyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 124
+        assert len(status) == 125
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -911,6 +911,7 @@ class TestShopifyBootstrap:
             "shopify_product_feeds",
             "shopify_saved_searches",
             "shopify_subscription_draft_free_shipping",
+            "shopify_subscription_draft_manual_discount",
         }
 
     def test_register_all_idempotent(self):
@@ -918,7 +919,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 124
+        assert len(get_registry()) == 125
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1307,6 +1308,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_FREE_SHIPPING).name == "shopify_subscription_draft_free_shipping"
         assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_FREE_SHIPPING).name == "shopify_subscription_draft_free_shipping"
         assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_REMOVE_DISCOUNT).name == "shopify_subscription_draft_free_shipping"
+        assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT).name == "shopify_subscription_draft_manual_discount"
+        assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_MANUAL_DISCOUNT).name == "shopify_subscription_draft_manual_discount"
+        assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE).name == "shopify_subscription_draft_manual_discount"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -32931,3 +32935,464 @@ class TestShopifySubscriptionDraftFreeShippingAdapter:
         assert result.data["removed_id"] == \
             "gid://shopify/SubscriptionManualDiscount/1"
         assert result.data["removed_title"] == "Free shipping"
+
+
+# ── ShopifySubscriptionDraftManualDiscountAdapter ─────────
+
+
+class TestShopifySubscriptionDraftManualDiscountAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter()
+        assert a.name == \
+            "shopify_subscription_draft_manual_discount"
+        for cap in (
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_MANUAL_DISCOUNT,
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Add validation ──────────────────────────────────────────
+
+    def test_add_requires_draft_id(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+            {"title": "10%", "value": {"percentage": 10}},
+        )
+        assert not result.ok
+
+    def test_add_requires_title(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+            {
+                "draft_id": "gid://shopify/SubscriptionDraft/1",
+                "value": {"percentage": 10},
+            },
+        )
+        assert not result.ok
+
+    def test_add_rejects_value_with_both_kinds(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+            {
+                "draft_id": "gid://shopify/SubscriptionDraft/1",
+                "title": "Mixed",
+                "value": {
+                    "percentage": 10,
+                    "fixed_amount": {"amount": 5},
+                },
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_add_rejects_percentage_out_of_range(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+            {
+                "draft_id": "gid://shopify/SubscriptionDraft/1",
+                "title": "Bad",
+                "value": {"percentage": 150},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_add_rejects_invalid_cycle_limit(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        # Pattern G — never use OR-fallback on numeric params
+        # where 0 is a real (rejectable) value. Adapter uses
+        # explicit `in` check.
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+            {
+                "draft_id": "gid://shopify/SubscriptionDraft/1",
+                "title": "Goodwill",
+                "value": {"percentage": 10},
+                "recurring_cycle_limit": 0,
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_add_rejects_entitled_lines_with_neither_add_nor_remove(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+            {
+                "draft_id": "gid://shopify/SubscriptionDraft/1",
+                "title": "Bad scope",
+                "value": {"percentage": 10},
+                "entitled_lines": {"lines": {}},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    # ── Add happy paths ─────────────────────────────────────────
+
+    def test_add_happy_path_percentage_all_lines(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionDraftDiscountAdd": {
+                    "discountAdded": {
+                        "id":
+                            "gid://shopify/SubscriptionManualDiscount/1",
+                        "title": "Goodwill 15%",
+                        "type": "MANUAL",
+                        "targetType": "LINE_ITEM",
+                        "recurringCycleLimit": 4,
+                        "usageCount": 0,
+                    },
+                    "draft": {
+                        "id":
+                            "gid://shopify/SubscriptionDraft/1",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/1",
+                    "title": "Goodwill 15%",
+                    "value": {"percentage": 15},
+                    "recurring_cycle_limit": 4,
+                    "entitled_lines": {"all": True},
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "draftId": "gid://shopify/SubscriptionDraft/1",
+            "input": {
+                "title": "Goodwill 15%",
+                "value": {"percentage": 15},
+                "recurringCycleLimit": 4,
+                "entitledLines": {"all": True},
+            },
+        }
+        assert result.data["discount"]["target_type"] == "LINE_ITEM"
+
+    def test_add_happy_path_fixed_amount_scoped_lines(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionDraftDiscountAdd": {
+                    "discountAdded": {
+                        "id":
+                            "gid://shopify/SubscriptionManualDiscount/2",
+                        "title": "$5 line credit",
+                    },
+                    "draft": {
+                        "id":
+                            "gid://shopify/SubscriptionDraft/1",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/1",
+                    "title": "$5 line credit",
+                    "value": {
+                        "fixed_amount": {
+                            "amount": 5.00,
+                            "applies_on_each_item": True,
+                        },
+                    },
+                    "entitled_lines": {
+                        "lines": {
+                            "add": [
+                                "gid://shopify/SubscriptionLine/9",
+                            ],
+                        },
+                    },
+                },
+            )
+        assert result.ok
+        body = captured["input"]
+        assert body["value"] == {
+            "fixedAmount": {
+                "amount": 5.0,
+                "appliesOnEachItem": True,
+            },
+        }
+        assert body["entitledLines"] == {
+            "lines": {
+                "add": ["gid://shopify/SubscriptionLine/9"],
+            },
+        }
+
+    def test_add_user_errors_fail_fast(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "subscriptionDraftDiscountAdd": {
+                "discountAdded": None,
+                "draft": None,
+                "userErrors": [{
+                    "field": ["draftId"],
+                    "message": "Draft not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/missing",
+                    "title": "x",
+                    "value": {"percentage": 10},
+                },
+            )
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_rejects_empty_body(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_MANUAL_DISCOUNT,
+            {
+                "draft_id":
+                    "gid://shopify/SubscriptionDraft/1",
+                "discount_id":
+                    "gid://shopify/SubscriptionManualDiscount/1",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_happy_path_partial(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionDraftDiscountUpdate": {
+                    "discountUpdated": {
+                        "id":
+                            "gid://shopify/SubscriptionManualDiscount/1",
+                        "title": "20% off — extended",
+                        "recurringCycleLimit": 12,
+                    },
+                    "draft": {
+                        "id":
+                            "gid://shopify/SubscriptionDraft/1",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_MANUAL_DISCOUNT,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/1",
+                    "discount_id":
+                        "gid://shopify/SubscriptionManualDiscount/1",
+                    "title": "20% off — extended",
+                    "recurring_cycle_limit": 12,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "draftId": "gid://shopify/SubscriptionDraft/1",
+            "discountId":
+                "gid://shopify/SubscriptionManualDiscount/1",
+            "input": {
+                "title": "20% off — extended",
+                "recurringCycleLimit": 12,
+            },
+        }
+
+    # ── Apply discount code ─────────────────────────────────────
+
+    def test_apply_code_requires_draft_id(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE,
+            {"redeem_code": "SUBSCRIBE10"},
+        )
+        assert not result.ok
+
+    def test_apply_code_requires_redeem_code(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE,
+            {
+                "draft_id":
+                    "gid://shopify/SubscriptionDraft/1",
+            },
+        )
+        assert not result.ok
+
+    def test_apply_code_happy_path(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionDraftDiscountCodeApply": {
+                    "appliedDiscount": {
+                        "id":
+                            "gid://shopify/SubscriptionAppliedCodeDiscount/1",
+                        "redeemCode": "SUBSCRIBE10",
+                        "rejectionReason": None,
+                    },
+                    "draft": {
+                        "id":
+                            "gid://shopify/SubscriptionDraft/1",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/1",
+                    "redeem_code": "SUBSCRIBE10",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "draftId": "gid://shopify/SubscriptionDraft/1",
+            "redeemCode": "SUBSCRIBE10",
+        }
+        assert result.data["redeem_code"] == "SUBSCRIBE10"
+
+    def test_apply_code_user_errors_fail_fast(self):
+        from core.adapters.shopify.subscription_draft_manual_discount import (
+            ShopifySubscriptionDraftManualDiscountAdapter,
+        )
+        a = ShopifySubscriptionDraftManualDiscountAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "subscriptionDraftDiscountCodeApply": {
+                "appliedDiscount": None,
+                "draft": None,
+                "userErrors": [{
+                    "field": ["redeemCode"],
+                    "message": "Code is invalid",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE,
+                {
+                    "draft_id":
+                        "gid://shopify/SubscriptionDraft/1",
+                    "redeem_code": "BADCODE",
+                },
+            )
+        assert not result.ok

@@ -151,6 +151,9 @@ from .subscription_draft import ShopifySubscriptionDraftAdapter
 from .subscription_draft_free_shipping import (
     ShopifySubscriptionDraftFreeShippingAdapter,
 )
+from .subscription_draft_manual_discount import (
+    ShopifySubscriptionDraftManualDiscountAdapter,
+)
 from .standard_metafield_definition import (
     ShopifyStandardMetafieldDefinitionAdapter,
 )
@@ -295,6 +298,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyProductFeedsAdapter,
     ShopifySavedSearchesAdapter,
     ShopifySubscriptionDraftFreeShippingAdapter,
+    ShopifySubscriptionDraftManualDiscountAdapter,
 )
 
 
