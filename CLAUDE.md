@@ -383,6 +383,9 @@ tolerate both forms when the cost is low:
   quantity or ignored"`. Pattern C — adapter defaults to
   `ignoreCompareQuantity=true` when the caller doesn't supply
   per-quantity compare values.
+- `fulfillmentTrackingInfoUpdate` and `fulfillmentCancel` both
+  use the typed `UserError` (no `code`) — Pattern F. Drop
+  `code` from those userErrors selections.
 
 ### Pattern D-prime: oneOf input objects
 

@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightythree_adapters(self):
+    def test_register_all_adds_eightyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 83
+        assert len(status) == 84
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -870,6 +870,7 @@ class TestShopifyBootstrap:
             "shopify_collection_membership",
             "shopify_inventory_adjust",
             "shopify_order_risk_assessment",
+            "shopify_fulfillment_tracking",
         }
 
     def test_register_all_idempotent(self):
@@ -877,7 +878,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 83
+        assert len(get_registry()) == 84
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1150,6 +1151,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_REORDER_COLLECTION_PRODUCTS).name == "shopify_collection_membership"
         assert router.route(Capability.SHOPIFY_SET_INVENTORY_QUANTITIES).name == "shopify_inventory_adjust"
         assert router.route(Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT).name == "shopify_order_risk_assessment"
+        assert router.route(Capability.SHOPIFY_UPDATE_FULFILLMENT_TRACKING).name == "shopify_fulfillment_tracking"
+        assert router.route(Capability.SHOPIFY_CANCEL_FULFILLMENT).name == "shopify_fulfillment_tracking"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -21867,4 +21870,221 @@ class TestShopifyOrderRiskAssessmentAdapter:
                 },
             )
         assert not result.ok
+
+
+# ── ShopifyFulfillmentTrackingAdapter ─────────────────────
+
+
+class TestShopifyFulfillmentTrackingAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter()
+        assert a.name == "shopify_fulfillment_tracking"
+        for cap in (
+            Capability.SHOPIFY_UPDATE_FULFILLMENT_TRACKING,
+            Capability.SHOPIFY_CANCEL_FULFILLMENT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Tracking input ──────────────────────────
+
+    def test_tracking_input_requires_at_least_one_field(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_tracking_input({})
+
+    def test_tracking_input_singular_form(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_tracking_input({
+            "company": "UPS",
+            "number": "1Z999",
+            "url": "https://ups.example/track/1Z999",
+        })
+        assert out == {
+            "company": "UPS",
+            "number": "1Z999",
+            "url": "https://ups.example/track/1Z999",
+        }
+
+    def test_tracking_input_plural_form(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_tracking_input({
+            "company": "USPS",
+            "numbers": ["A1", "A2"],
+            "urls": [
+                "https://usps.example/A1",
+                "https://usps.example/A2",
+            ],
+        })
+        assert out["numbers"] == ["A1", "A2"]
+        assert out["urls"] == [
+            "https://usps.example/A1",
+            "https://usps.example/A2",
+        ]
+        assert "number" not in out
+
+    def test_tracking_input_carrier_alias(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_tracking_input({
+            "carrier": "FedEx", "number": "FX1",
+        })
+        assert out["company"] == "FedEx"
+
+    # ── Update tracking ─────────────────────────
+
+    def test_update_requires_fulfillment_id(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_FULFILLMENT_TRACKING,
+            {"number": "1Z999", "company": "UPS"},
+        )
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "fulfillmentTrackingInfoUpdate": {
+                    "fulfillment": {
+                        "id": "gid://shopify/Fulfillment/1",
+                        "status": "SUCCESS",
+                        "displayStatus": "FULFILLED",
+                        "trackingInfo": [{
+                            "number": "1Z999",
+                            "url": "https://ups.example/1Z999",
+                            "company": "UPS",
+                        }],
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_FULFILLMENT_TRACKING,
+                {
+                    "fulfillment_id": "gid://shopify/Fulfillment/1",
+                    "company": "UPS",
+                    "number": "1Z999",
+                    "url": "https://ups.example/1Z999",
+                    "notify_customer": True,
+                },
+            )
+        assert result.ok
+        assert captured["fulfillmentId"] == \
+            "gid://shopify/Fulfillment/1"
+        assert captured["trackingInfoInput"] == {
+            "company": "UPS",
+            "number": "1Z999",
+            "url": "https://ups.example/1Z999",
+        }
+        assert captured["notifyCustomer"] is True
+        assert result.data["fulfillment"]["tracking"][0]["company"] == \
+            "UPS"
+
+    def test_update_user_errors_fail_fast(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "fulfillmentTrackingInfoUpdate": {
+                "fulfillment": None,
+                "userErrors": [{
+                    "field": ["fulfillmentId"],
+                    "message": "Fulfillment not found",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_FULFILLMENT_TRACKING,
+                {
+                    "fulfillment_id": "gid://shopify/Fulfillment/9999",
+                    "number": "X",
+                },
+            )
+        assert not result.ok
+
+    # ── Cancel ──────────────────────────────────
+
+    def test_cancel_requires_id(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(Capability.SHOPIFY_CANCEL_FULFILLMENT, {})
+        assert not result.ok
+
+    def test_cancel_happy_path(self):
+        from core.adapters.shopify.fulfillment_tracking import (
+            ShopifyFulfillmentTrackingAdapter,
+        )
+        a = ShopifyFulfillmentTrackingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "fulfillmentCancel": {
+                "fulfillment": {
+                    "id": "gid://shopify/Fulfillment/1",
+                    "status": "CANCELLED",
+                    "displayStatus": "CANCELED",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CANCEL_FULFILLMENT, {
+                "id": "gid://shopify/Fulfillment/1",
+            })
+        assert result.ok
+        assert result.data["fulfillment"]["status"] == "CANCELLED"
 

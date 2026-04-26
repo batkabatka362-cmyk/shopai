@@ -63,6 +63,7 @@ from .draft_order_invoice import ShopifyDraftOrderInvoiceSendAdapter
 from .draft_orders import ShopifyDraftOrdersAdapter
 from .files import ShopifyFilesAdapter
 from .fulfillment import ShopifyFulfillmentAdapter
+from .fulfillment_tracking import ShopifyFulfillmentTrackingAdapter
 from .fulfillment_events import ShopifyFulfillmentEventsAdapter
 from .fulfillment_hold import ShopifyFulfillmentHoldAdapter
 from .fulfillment_services import ShopifyFulfillmentServicesAdapter
@@ -197,6 +198,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCollectionMembershipAdapter,
     ShopifyInventoryAdjustAdapter,
     ShopifyOrderRiskAssessmentAdapter,
+    ShopifyFulfillmentTrackingAdapter,
 )
 
 

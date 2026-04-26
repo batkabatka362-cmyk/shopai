@@ -345,6 +345,8 @@ class Capability(str, Enum):
     SHOPIFY_REORDER_COLLECTION_PRODUCTS = "shopify_reorder_collection_products"
     SHOPIFY_SET_INVENTORY_QUANTITIES = "shopify_set_inventory_quantities"
     SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT = "shopify_create_order_risk_assessment"
+    SHOPIFY_UPDATE_FULFILLMENT_TRACKING = "shopify_update_fulfillment_tracking"
+    SHOPIFY_CANCEL_FULFILLMENT = "shopify_cancel_fulfillment"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
