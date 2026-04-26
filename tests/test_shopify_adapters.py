@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredseven_adapters(self):
+    def test_register_all_adds_onehundredeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 107
+        assert len(status) == 108
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -894,6 +894,7 @@ class TestShopifyBootstrap:
             "shopify_discount_redeem_codes",
             "shopify_customer_payment_method_ops",
             "shopify_metaobject_definition_update",
+            "shopify_app_billing",
         }
 
     def test_register_all_idempotent(self):
@@ -901,7 +902,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 107
+        assert len(get_registry()) == 108
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1230,6 +1231,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL).name == "shopify_customer_payment_method_ops"
         assert router.route(Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL).name == "shopify_customer_payment_method_ops"
         assert router.route(Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION).name == "shopify_metaobject_definition_update"
+        assert router.route(Capability.SHOPIFY_CREATE_APP_PURCHASE_ONE_TIME).name == "shopify_app_billing"
+        assert router.route(Capability.SHOPIFY_UPDATE_APP_SUBSCRIPTION_LINE_ITEM).name == "shopify_app_billing"
+        assert router.route(Capability.SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL).name == "shopify_app_billing"
+        assert router.route(Capability.SHOPIFY_CREATE_APP_USAGE_RECORD).name == "shopify_app_billing"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -27889,6 +27894,375 @@ class TestShopifyMetaobjectDefinitionUpdateAdapter:
                     "field_creates": [{
                         "key": "title", "type": "single_line_text_field",
                     }],
+                },
+            )
+        assert not result.ok
+
+
+# ── ShopifyAppBillingAdapter ──────────────────────────────
+
+
+class TestShopifyAppBillingAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter()
+        assert a.name == "shopify_app_billing"
+        for cap in (
+            Capability.SHOPIFY_CREATE_APP_PURCHASE_ONE_TIME,
+            Capability.SHOPIFY_UPDATE_APP_SUBSCRIPTION_LINE_ITEM,
+            Capability.SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL,
+            Capability.SHOPIFY_CREATE_APP_USAGE_RECORD,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── One-time charge ─────────────────────────────────────────
+
+    def test_one_time_requires_name(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_APP_PURCHASE_ONE_TIME,
+            {"return_url": "https://x", "price": "9.99"},
+        )
+        assert not result.ok
+
+    def test_one_time_requires_return_url(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_APP_PURCHASE_ONE_TIME,
+            {"name": "Audit", "price": "9.99"},
+        )
+        assert not result.ok
+
+    def test_one_time_rejects_non_numeric_price(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_APP_PURCHASE_ONE_TIME,
+            {
+                "name": "Audit", "return_url": "https://x",
+                "price": "many",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_one_time_happy_path(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "appPurchaseOneTimeCreate": {
+                    "appPurchaseOneTime": {
+                        "id": "gid://shopify/AppPurchaseOneTime/1",
+                        "name": "Audit",
+                        "status": "PENDING",
+                        "test": True,
+                        "createdAt": "2026-04-26T00:00:00Z",
+                        "price": {
+                            "amount": "9.99",
+                            "currencyCode": "USD",
+                        },
+                    },
+                    "confirmationUrl":
+                        "https://shop.example.com/charges/1/confirm",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_APP_PURCHASE_ONE_TIME,
+                {
+                    "name": "Audit",
+                    "return_url": "https://shopai.dev/done",
+                    "price": "9.99",
+                    "test": True,
+                },
+            )
+        assert result.ok
+        assert captured["name"] == "Audit"
+        assert captured["price"] == {
+            "amount": 9.99, "currencyCode": "USD",
+        }
+        assert captured["test"] is True
+        assert result.data["confirmation_url"] == \
+            "https://shop.example.com/charges/1/confirm"
+        assert result.data["price"]["amount"] == 9.99
+
+    def test_one_time_user_errors_fail_fast(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "appPurchaseOneTimeCreate": {
+                "appPurchaseOneTime": None,
+                "confirmationUrl": None,
+                "userErrors": [{
+                    "field": ["price"], "message": "must be > 0",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_APP_PURCHASE_ONE_TIME,
+                {
+                    "name": "Audit",
+                    "return_url": "https://x",
+                    "price": "0.00",
+                },
+            )
+        assert not result.ok
+
+    # ── Line item update ────────────────────────────────────────
+
+    def test_line_item_update_requires_id(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_APP_SUBSCRIPTION_LINE_ITEM,
+            {"capped_amount": "200.00"},
+        )
+        assert not result.ok
+
+    def test_line_item_update_happy_path(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "appSubscriptionLineItemUpdate": {
+                    "appSubscription": {
+                        "id": "gid://shopify/AppSubscription/1",
+                        "name": "Pro",
+                        "status": "ACTIVE",
+                        "currentPeriodEnd": "2026-05-26T00:00:00Z",
+                    },
+                    "confirmationUrl":
+                        "https://shop.example.com/upgrade/confirm",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_APP_SUBSCRIPTION_LINE_ITEM,
+                {
+                    "id": "gid://shopify/AppSubscriptionLineItem/1",
+                    "capped_amount": "200.00",
+                    "currency_code": "USD",
+                },
+            )
+        assert result.ok
+        assert captured["id"] == \
+            "gid://shopify/AppSubscriptionLineItem/1"
+        assert captured["cappedAmount"] == {
+            "amount": 200.0, "currencyCode": "USD",
+        }
+        assert result.data["new_capped_amount"] == 200.0
+        assert result.data["confirmation_url"].startswith("https://")
+
+    # ── Trial extend ────────────────────────────────────────────
+
+    def test_trial_extend_requires_id(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL,
+            {"days": 7},
+        )
+        assert not result.ok
+
+    def test_trial_extend_requires_days(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL,
+            {"id": "gid://shopify/AppSubscription/1"},
+        )
+        assert not result.ok
+
+    def test_trial_extend_rejects_zero_days(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL,
+            {"id": "gid://shopify/AppSubscription/1", "days": 0},
+        )
+        assert not result.ok
+
+    def test_trial_extend_happy_path(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "appSubscriptionTrialExtend": {
+                    "appSubscription": {
+                        "id": "gid://shopify/AppSubscription/1",
+                        "name": "Pro",
+                        "status": "ACTIVE",
+                        "trialDays": 21,
+                        "currentPeriodEnd": "2026-05-30T00:00:00Z",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL,
+                {
+                    "id": "gid://shopify/AppSubscription/1",
+                    "days": 7,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/AppSubscription/1", "days": 7,
+        }
+        assert result.data["trial_days"] == 21
+        assert result.data["days_added"] == 7
+
+    # ── Usage record ────────────────────────────────────────────
+
+    def test_usage_record_requires_line_item_id(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_APP_USAGE_RECORD,
+            {
+                "description": "campaign launch",
+                "price": "0.50",
+            },
+        )
+        assert not result.ok
+
+    def test_usage_record_requires_description(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_APP_USAGE_RECORD,
+            {
+                "subscription_line_item_id":
+                    "gid://shopify/AppSubscriptionLineItem/1",
+                "price": "0.50",
+            },
+        )
+        assert not result.ok
+
+    def test_usage_record_happy_path_with_idempotency(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "appUsageRecordCreate": {
+                    "appUsageRecord": {
+                        "id": "gid://shopify/AppUsageRecord/1",
+                        "description": "campaign launch",
+                        "idempotencyKey": "launch-42",
+                        "createdAt": "2026-04-26T00:00:00Z",
+                        "price": {
+                            "amount": "0.50",
+                            "currencyCode": "USD",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_APP_USAGE_RECORD,
+                {
+                    "subscription_line_item_id":
+                        "gid://shopify/AppSubscriptionLineItem/1",
+                    "description": "campaign launch",
+                    "price": "0.50",
+                    "idempotency_key": "launch-42",
+                },
+            )
+        assert result.ok
+        assert captured["subscriptionLineItemId"] == \
+            "gid://shopify/AppSubscriptionLineItem/1"
+        assert captured["price"] == {
+            "amount": 0.5, "currencyCode": "USD",
+        }
+        assert captured["description"] == "campaign launch"
+        assert captured["idempotencyKey"] == "launch-42"
+        assert result.data["usage_record_id"] == \
+            "gid://shopify/AppUsageRecord/1"
+        assert result.data["price"]["amount"] == 0.5
+
+    def test_usage_record_user_errors_fail_fast(self):
+        from core.adapters.shopify.app_billing import (
+            ShopifyAppBillingAdapter,
+        )
+        a = ShopifyAppBillingAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "appUsageRecordCreate": {
+                "appUsageRecord": None,
+                "userErrors": [{
+                    "field": ["price"],
+                    "message": "Price exceeds capped amount",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_APP_USAGE_RECORD,
+                {
+                    "subscription_line_item_id":
+                        "gid://shopify/AppSubscriptionLineItem/1",
+                    "description": "expensive",
+                    "price": "999.00",
                 },
             )
         assert not result.ok

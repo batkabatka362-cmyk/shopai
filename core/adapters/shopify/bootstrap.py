@@ -24,6 +24,7 @@ from utils.logger import get_logger
 from ..registry import AdapterRegistry, get_registry
 from .abandoned_checkouts import ShopifyAbandonedCheckoutsAdapter
 from .analytics import ShopifyAnalyticsAdapter
+from .app_billing import ShopifyAppBillingAdapter
 from .app_subscriptions import ShopifyAppSubscriptionsAdapter
 from .apps import ShopifyAppsAdapter
 from .articles import ShopifyArticlesAdapter
@@ -251,6 +252,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDiscountRedeemCodesAdapter,
     ShopifyCustomerPaymentMethodOpsAdapter,
     ShopifyMetaobjectDefinitionUpdateAdapter,
+    ShopifyAppBillingAdapter,
 )
 
 
