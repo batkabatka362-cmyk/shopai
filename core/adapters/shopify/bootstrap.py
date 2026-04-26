@@ -38,6 +38,7 @@ from .catalog_write import ShopifyCatalogWriteAdapter
 from .channels import ShopifyChannelsAdapter
 from .collection_membership import ShopifyCollectionMembershipAdapter
 from .collections import ShopifyCollectionsAdapter
+from .comments import ShopifyCommentsAdapter
 from .companies import ShopifyCompaniesAdapter
 from .company_contact_roles import ShopifyCompanyContactRolesAdapter
 from .company_auxiliary import ShopifyCompanyAuxiliaryAdapter
@@ -257,6 +258,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyAppBillingAdapter,
     ShopifyCatalogWriteAdapter,
     ShopifyBlogsAdapter,
+    ShopifyCommentsAdapter,
 )
 
 

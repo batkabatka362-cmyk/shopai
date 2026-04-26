@@ -412,6 +412,12 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_BLOG = "shopify_create_blog"
     SHOPIFY_UPDATE_BLOG = "shopify_update_blog"
     SHOPIFY_DELETE_BLOG = "shopify_delete_blog"
+    SHOPIFY_LIST_COMMENTS = "shopify_list_comments"
+    SHOPIFY_GET_COMMENT = "shopify_get_comment"
+    SHOPIFY_APPROVE_COMMENT = "shopify_approve_comment"
+    SHOPIFY_MARK_COMMENT_SPAM = "shopify_mark_comment_spam"
+    SHOPIFY_MARK_COMMENT_NOT_SPAM = "shopify_mark_comment_not_spam"
+    SHOPIFY_DELETE_COMMENT = "shopify_delete_comment"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredten_adapters(self):
+    def test_register_all_adds_onehundredeleven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 110
+        assert len(status) == 111
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -897,6 +897,7 @@ class TestShopifyBootstrap:
             "shopify_app_billing",
             "shopify_catalog_write",
             "shopify_blogs",
+            "shopify_comments",
         }
 
     def test_register_all_idempotent(self):
@@ -904,7 +905,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 110
+        assert len(get_registry()) == 111
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1244,6 +1245,12 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_BLOG).name == "shopify_blogs"
         assert router.route(Capability.SHOPIFY_UPDATE_BLOG).name == "shopify_blogs"
         assert router.route(Capability.SHOPIFY_DELETE_BLOG).name == "shopify_blogs"
+        assert router.route(Capability.SHOPIFY_LIST_COMMENTS).name == "shopify_comments"
+        assert router.route(Capability.SHOPIFY_GET_COMMENT).name == "shopify_comments"
+        assert router.route(Capability.SHOPIFY_APPROVE_COMMENT).name == "shopify_comments"
+        assert router.route(Capability.SHOPIFY_MARK_COMMENT_SPAM).name == "shopify_comments"
+        assert router.route(Capability.SHOPIFY_MARK_COMMENT_NOT_SPAM).name == "shopify_comments"
+        assert router.route(Capability.SHOPIFY_DELETE_COMMENT).name == "shopify_comments"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -28916,5 +28923,259 @@ class TestShopifyBlogsAdapter:
             result = a.execute(
                 Capability.SHOPIFY_DELETE_BLOG,
                 {"id": "gid://shopify/Blog/9999999"},
+            )
+        assert not result.ok
+
+
+# ── ShopifyCommentsAdapter ────────────────────────────────
+
+
+class TestShopifyCommentsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter()
+        assert a.name == "shopify_comments"
+        for cap in (
+            Capability.SHOPIFY_LIST_COMMENTS,
+            Capability.SHOPIFY_GET_COMMENT,
+            Capability.SHOPIFY_APPROVE_COMMENT,
+            Capability.SHOPIFY_MARK_COMMENT_SPAM,
+            Capability.SHOPIFY_MARK_COMMENT_NOT_SPAM,
+            Capability.SHOPIFY_DELETE_COMMENT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_LIST_COMMENTS,
+            {"sort_key": "TITLE"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_happy_path_with_status_filter(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "comments": {
+                    "pageInfo": {
+                        "hasNextPage": False, "endCursor": None,
+                    },
+                    "edges": [{
+                        "node": {
+                            "id": "gid://shopify/Comment/1",
+                            "status": "PENDING",
+                            "body": "Great post!",
+                            "bodyHtml": "<p>Great post!</p>",
+                            "ip": "1.2.3.4",
+                            "userAgent": "Mozilla/5.0",
+                            "isPublished": False,
+                            "createdAt": "2026-04-26T00:00:00Z",
+                            "publishedAt": None,
+                            "updatedAt": "2026-04-26T00:00:00Z",
+                            "author": {
+                                "name": "Ada",
+                                "email": "ada@example.com",
+                            },
+                            "article": {
+                                "id": "gid://shopify/Article/1",
+                                "title": "Hello",
+                                "handle": "hello",
+                            },
+                        },
+                    }],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_COMMENTS,
+                {
+                    "limit": 25,
+                    "query": "status:pending",
+                    "sort_key": "created_at",
+                    "reverse": True,
+                },
+            )
+        assert result.ok
+        assert captured["first"] == 25
+        assert captured["query"] == "status:pending"
+        assert captured["sortKey"] == "CREATED_AT"
+        assert captured["reverse"] is True
+        assert result.data["count"] == 1
+        c = result.data["comments"][0]
+        assert c["author_name"] == "Ada"
+        assert c["article_handle"] == "hello"
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_GET_COMMENT, {})
+        assert not result.ok
+
+    def test_get_returns_empty_when_not_found(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"comment": None}):
+            result = a.execute(
+                Capability.SHOPIFY_GET_COMMENT,
+                {"id": "gid://shopify/Comment/missing"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["comment"] == {}
+
+    def test_approve_requires_id(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_APPROVE_COMMENT, {})
+        assert not result.ok
+
+    def test_approve_happy_path(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "commentApprove": {
+                    "comment": {
+                        "id": "gid://shopify/Comment/1",
+                        "status": "PUBLISHED",
+                        "isPublished": True,
+                        "publishedAt": "2026-04-26T00:00:00Z",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_APPROVE_COMMENT,
+                {"id": "gid://shopify/Comment/1"},
+            )
+        assert result.ok
+        assert captured == {"id": "gid://shopify/Comment/1"}
+        assert result.data["comment"]["status"] == "PUBLISHED"
+        assert result.data["comment"]["is_published"] is True
+
+    def test_spam_happy_path(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "commentSpam": {
+                "comment": {
+                    "id": "gid://shopify/Comment/1",
+                    "status": "SPAM",
+                    "isPublished": False,
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_MARK_COMMENT_SPAM,
+                {"id": "gid://shopify/Comment/1"},
+            )
+        assert result.ok
+        assert result.data["comment"]["status"] == "SPAM"
+
+    def test_not_spam_happy_path(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "commentNotSpam": {
+                "comment": {
+                    "id": "gid://shopify/Comment/1",
+                    "status": "PENDING",
+                    "isPublished": False,
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_MARK_COMMENT_NOT_SPAM,
+                {"id": "gid://shopify/Comment/1"},
+            )
+        assert result.ok
+        assert result.data["comment"]["status"] == "PENDING"
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "commentDelete": {
+                    "deletedCommentId": "gid://shopify/Comment/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_COMMENT,
+                {"id": "gid://shopify/Comment/1"},
+            )
+        assert result.ok
+        assert captured == {"id": "gid://shopify/Comment/1"}
+        assert result.data["deleted_id"] == \
+            "gid://shopify/Comment/1"
+
+    def test_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.comments import (
+            ShopifyCommentsAdapter,
+        )
+        a = ShopifyCommentsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "commentDelete": {
+                "deletedCommentId": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Comment does not exist",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_COMMENT,
+                {"id": "gid://shopify/Comment/9999999"},
             )
         assert not result.ok
