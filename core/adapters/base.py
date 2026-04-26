@@ -400,6 +400,7 @@ class Capability(str, Enum):
     SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES = "shopify_bulk_delete_discount_redeem_codes"
     SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL = "shopify_send_payment_method_update_email"
     SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL = "shopify_get_payment_method_update_url"
+    SHOPIFY_UPDATE_METAOBJECT_DEFINITION = "shopify_update_metaobject_definition"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

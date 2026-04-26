@@ -95,6 +95,9 @@ from .metafield_definition_pin import ShopifyMetafieldDefinitionPinAdapter
 from .metafields_delete import ShopifyMetafieldsDeleteAdapter
 from .metafield_definitions import ShopifyMetafieldDefinitionsAdapter
 from .metaobject_definitions import ShopifyMetaobjectDefinitionsAdapter
+from .metaobject_definition_update import (
+    ShopifyMetaobjectDefinitionUpdateAdapter,
+)
 from .metaobjects import ShopifyMetaobjectsAdapter
 from .metaobjects_upsert import ShopifyMetaobjectsUpsertAdapter
 from .order_edits import ShopifyOrderEditsAdapter
@@ -247,6 +250,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyGiftCardNotifyAdapter,
     ShopifyDiscountRedeemCodesAdapter,
     ShopifyCustomerPaymentMethodOpsAdapter,
+    ShopifyMetaobjectDefinitionUpdateAdapter,
 )
 
 

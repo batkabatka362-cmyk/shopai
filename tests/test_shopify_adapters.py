@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredsix_adapters(self):
+    def test_register_all_adds_onehundredseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 106
+        assert len(status) == 107
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -893,6 +893,7 @@ class TestShopifyBootstrap:
             "shopify_gift_card_notify",
             "shopify_discount_redeem_codes",
             "shopify_customer_payment_method_ops",
+            "shopify_metaobject_definition_update",
         }
 
     def test_register_all_idempotent(self):
@@ -900,7 +901,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 106
+        assert len(get_registry()) == 107
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1228,6 +1229,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES).name == "shopify_discount_redeem_codes"
         assert router.route(Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL).name == "shopify_customer_payment_method_ops"
         assert router.route(Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL).name == "shopify_customer_payment_method_ops"
+        assert router.route(Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION).name == "shopify_metaobject_definition_update"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -27586,5 +27588,307 @@ class TestShopifyCustomerPaymentMethodOpsAdapter:
             result = a.execute(
                 Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL,
                 {"id": "gid://shopify/CustomerPaymentMethod/missing"},
+            )
+        assert not result.ok
+
+
+# ── ShopifyMetaobjectDefinitionUpdateAdapter ──────────────
+
+
+class TestShopifyMetaobjectDefinitionUpdateAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter()
+        assert a.name == "shopify_metaobject_definition_update"
+        assert Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION in \
+            a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_requires_id(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+            {"name": "renamed"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_empty_definition_rejected(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+            {"id": "gid://shopify/MetaobjectDefinition/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_field_create_requires_key_and_type(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+            {
+                "id": "gid://shopify/MetaobjectDefinition/1",
+                "field_creates": [{"name": "Missing key"}],
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_field_update_requires_key(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+            {
+                "id": "gid://shopify/MetaobjectDefinition/1",
+                "field_updates": [{"name": "Renamed but no key"}],
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_field_deletes_accept_string_or_list(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "metaobjectDefinitionUpdate": {
+                    "metaobjectDefinition": {
+                        "id": "gid://shopify/MetaobjectDefinition/1",
+                        "name": "Recipe",
+                        "type": "recipe",
+                        "fieldDefinitions": [],
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+                {
+                    "id": "gid://shopify/MetaobjectDefinition/1",
+                    "field_deletes": "old_summary",
+                },
+            )
+        assert result.ok
+        ops = captured["definition"]["fieldDefinitions"]
+        assert ops == [{"delete": {"key": "old_summary"}}]
+
+    def test_invalid_access_admin_rejected(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+            {
+                "id": "gid://shopify/MetaobjectDefinition/1",
+                "access": {"admin": "not_a_real_value"},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_capability_block_requires_enabled(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+            {
+                "id": "gid://shopify/MetaobjectDefinition/1",
+                "capabilities": {"publishable": {}},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_happy_path_full_migration(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "metaobjectDefinitionUpdate": {
+                    "metaobjectDefinition": {
+                        "id": "gid://shopify/MetaobjectDefinition/1",
+                        "name": "Recipe v2",
+                        "type": "recipe",
+                        "description": "Updated",
+                        "displayNameKey": "title",
+                        "fieldDefinitions": [
+                            {
+                                "key": "title", "name": "Title",
+                                "description": "", "required": True,
+                                "type": {
+                                    "name": "single_line_text_field",
+                                    "category": "text",
+                                },
+                            },
+                            {
+                                "key": "nutrition", "name":
+                                    "Nutrition facts",
+                                "description": "",
+                                "required": False,
+                                "type": {
+                                    "name": "json", "category": "json",
+                                },
+                            },
+                        ],
+                        "access": {
+                            "admin": "MERCHANT_READ_WRITE",
+                            "storefront": "PUBLIC_READ",
+                        },
+                        "capabilities": {
+                            "publishable": {"enabled": True},
+                            "translatable": {"enabled": True},
+                            "renderable": {"enabled": False},
+                            "onlineStore": {"enabled": False},
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+                {
+                    "id": "gid://shopify/MetaobjectDefinition/1",
+                    "name": "Recipe v2",
+                    "description": "Updated",
+                    "display_name_key": "title",
+                    "reset_field_order": True,
+                    "field_creates": [{
+                        "key": "nutrition", "type": "json",
+                        "name": "Nutrition facts",
+                        "validations": [
+                            {"name": "max_length", "value": 5000},
+                        ],
+                    }],
+                    "field_updates": [{
+                        "key": "title", "required": True,
+                    }],
+                    "field_deletes": ["legacy_summary"],
+                    "access": {
+                        "admin": "merchant_read_write",
+                        "storefront": "public_read",
+                    },
+                    "capabilities": {
+                        "publishable": {"enabled": True},
+                        "translatable": {"enabled": True},
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/MetaobjectDefinition/1"
+        d = captured["definition"]
+        assert d["name"] == "Recipe v2"
+        assert d["description"] == "Updated"
+        assert d["displayNameKey"] == "title"
+        assert d["resetFieldOrder"] is True
+        # operations packaged correctly
+        ops = d["fieldDefinitions"]
+        assert {"create": {
+            "key": "nutrition", "type": "json",
+            "name": "Nutrition facts",
+            "validations": [{"name": "max_length", "value": "5000"}],
+        }} in ops
+        assert {"update": {"key": "title", "required": True}} in ops
+        assert {"delete": {"key": "legacy_summary"}} in ops
+        # access uppercased
+        assert d["access"] == {
+            "admin": "MERCHANT_READ_WRITE",
+            "storefront": "PUBLIC_READ",
+        }
+        # capabilities translated
+        assert d["capabilities"] == {
+            "publishable": {"enabled": True},
+            "translatable": {"enabled": True},
+        }
+        # normalised response
+        m = result.data["metaobject_definition"]
+        assert m["name"] == "Recipe v2"
+        assert m["capability_publishable"] is True
+        assert m["access_admin"] == "MERCHANT_READ_WRITE"
+        assert len(m["field_definitions"]) == 2
+
+    def test_user_errors_fail_fast(self):
+        from core.adapters.shopify.metaobject_definition_update import (
+            ShopifyMetaobjectDefinitionUpdateAdapter,
+        )
+        a = ShopifyMetaobjectDefinitionUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "metaobjectDefinitionUpdate": {
+                "metaobjectDefinition": None,
+                "userErrors": [{
+                    "field": ["definition", "fieldDefinitions"],
+                    "message": "Field key already exists",
+                    "code": "TAKEN",
+                    "elementIndex": 0,
+                    "elementKey": "title",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
+                {
+                    "id": "gid://shopify/MetaobjectDefinition/1",
+                    "field_creates": [{
+                        "key": "title", "type": "single_line_text_field",
+                    }],
+                },
             )
         assert not result.ok
