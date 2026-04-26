@@ -122,6 +122,7 @@ from .standard_metafield_definition import (
 )
 from .subscription_billing import ShopifySubscriptionBillingAdapter
 from .subscriptions import ShopifySubscriptionContractsAdapter
+from .theme_ops import ShopifyThemeOpsAdapter
 from .themes import ShopifyThemesAdapter
 from .translations import ShopifyTranslationsAdapter
 from .validations import ShopifyValidationsAdapter
@@ -231,6 +232,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCustomerOnboardingAdapter,
     ShopifyStandardMetafieldDefinitionAdapter,
     ShopifyReverseDeliveryAdapter,
+    ShopifyThemeOpsAdapter,
 )
 
 

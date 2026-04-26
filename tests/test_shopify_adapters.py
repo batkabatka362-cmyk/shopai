@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetynine_adapters(self):
+    def test_register_all_adds_onehundred_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 99
+        assert len(status) == 100
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -886,6 +886,7 @@ class TestShopifyBootstrap:
             "shopify_customer_onboarding",
             "shopify_standard_metafield_definition",
             "shopify_reverse_delivery",
+            "shopify_theme_ops",
         }
 
     def test_register_all_idempotent(self):
@@ -893,7 +894,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 99
+        assert len(get_registry()) == 100
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1206,6 +1207,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_REVERSE_DELIVERY).name == "shopify_reverse_delivery"
         assert router.route(Capability.SHOPIFY_UPDATE_REVERSE_DELIVERY_SHIPPING).name == "shopify_reverse_delivery"
         assert router.route(Capability.SHOPIFY_DISPOSE_REVERSE_FULFILLMENT_ORDER).name == "shopify_reverse_delivery"
+        assert router.route(Capability.SHOPIFY_CREATE_THEME).name == "shopify_theme_ops"
+        assert router.route(Capability.SHOPIFY_UPDATE_THEME).name == "shopify_theme_ops"
+        assert router.route(Capability.SHOPIFY_PUBLISH_THEME).name == "shopify_theme_ops"
+        assert router.route(Capability.SHOPIFY_DELETE_THEME).name == "shopify_theme_ops"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -25999,3 +26004,221 @@ class TestShopifyReverseDeliveryAdapter:
         assert result.data["dispositions_count"] == 1
         assert result.data["line_items"][0][
             "dispositions"][0]["type"] == "RESTOCKED"
+
+
+# ── ShopifyThemeOpsAdapter ────────────────────────────────
+
+
+class TestShopifyThemeOpsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter()
+        assert a.name == "shopify_theme_ops"
+        for cap in (
+            Capability.SHOPIFY_CREATE_THEME,
+            Capability.SHOPIFY_UPDATE_THEME,
+            Capability.SHOPIFY_PUBLISH_THEME,
+            Capability.SHOPIFY_DELETE_THEME,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Create ──────────────────────────────────
+
+    def test_create_requires_source(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_THEME, {"name": "Holiday"},
+        )
+        assert not result.ok
+
+    def test_create_rejects_invalid_role(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CREATE_THEME, {
+            "source": "https://themes.example/holiday.zip",
+            "role": "PRIMARY",
+        })
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "themeCreate": {
+                    "theme": {
+                        "id": "gid://shopify/OnlineStoreTheme/1",
+                        "name": "Holiday 2026",
+                        "role": "UNPUBLISHED",
+                        "processing": True,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_CREATE_THEME, {
+                "source": "https://themes.example/holiday.zip",
+                "name": "Holiday 2026",
+                "role": "unpublished",
+            })
+        assert result.ok
+        assert captured["source"] == \
+            "https://themes.example/holiday.zip"
+        assert captured["name"] == "Holiday 2026"
+        assert captured["role"] == "UNPUBLISHED"
+        assert result.data["theme"]["role"] == "UNPUBLISHED"
+        assert result.data["theme"]["processing"] is True
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "themeCreate": {
+                "theme": None,
+                "userErrors": [{
+                    "field": ["source"],
+                    "message": "Source URL not reachable",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_CREATE_THEME, {
+                "source": "https://themes.example/bad.zip",
+            })
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_THEME, {
+            "name": "Renamed",
+        })
+        assert not result.ok
+
+    def test_update_requires_name(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_THEME, {
+            "id": "gid://shopify/OnlineStoreTheme/1",
+        })
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "themeUpdate": {
+                    "theme": {
+                        "id": "gid://shopify/OnlineStoreTheme/1",
+                        "name": "Holiday 2026 v2",
+                        "role": "UNPUBLISHED",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_THEME, {
+                "id": "gid://shopify/OnlineStoreTheme/1",
+                "name": "Holiday 2026 v2",
+            })
+        assert result.ok
+        assert captured["id"] == "gid://shopify/OnlineStoreTheme/1"
+        assert captured["input"] == {"name": "Holiday 2026 v2"}
+        assert result.data["theme"]["name"] == "Holiday 2026 v2"
+
+    # ── Publish ─────────────────────────────────
+
+    def test_publish_requires_id(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_PUBLISH_THEME, {})
+        assert not result.ok
+
+    def test_publish_happy_path(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "themePublish": {
+                "theme": {
+                    "id": "gid://shopify/OnlineStoreTheme/1",
+                    "name": "Holiday 2026",
+                    "role": "MAIN",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_PUBLISH_THEME, {
+                "id": "gid://shopify/OnlineStoreTheme/1",
+            })
+        assert result.ok
+        assert result.data["theme"]["role"] == "MAIN"
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_THEME, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.theme_ops import (
+            ShopifyThemeOpsAdapter,
+        )
+        a = ShopifyThemeOpsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "themeDelete": {
+                "deletedThemeId":
+                    "gid://shopify/OnlineStoreTheme/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DELETE_THEME, {
+                "id": "gid://shopify/OnlineStoreTheme/1",
+            })
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/OnlineStoreTheme/1"

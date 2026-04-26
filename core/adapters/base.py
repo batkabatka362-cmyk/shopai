@@ -385,6 +385,10 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_REVERSE_DELIVERY = "shopify_create_reverse_delivery"
     SHOPIFY_UPDATE_REVERSE_DELIVERY_SHIPPING = "shopify_update_reverse_delivery_shipping"
     SHOPIFY_DISPOSE_REVERSE_FULFILLMENT_ORDER = "shopify_dispose_reverse_fulfillment_order"
+    SHOPIFY_CREATE_THEME = "shopify_create_theme"
+    SHOPIFY_UPDATE_THEME = "shopify_update_theme"
+    SHOPIFY_PUBLISH_THEME = "shopify_publish_theme"
+    SHOPIFY_DELETE_THEME = "shopify_delete_theme"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
