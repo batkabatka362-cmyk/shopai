@@ -405,6 +405,10 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_APP_SUBSCRIPTION_LINE_ITEM = "shopify_update_app_subscription_line_item"
     SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL = "shopify_extend_app_subscription_trial"
     SHOPIFY_CREATE_APP_USAGE_RECORD = "shopify_create_app_usage_record"
+    SHOPIFY_CREATE_CATALOG = "shopify_create_catalog"
+    SHOPIFY_UPDATE_CATALOG = "shopify_update_catalog"
+    SHOPIFY_DELETE_CATALOG = "shopify_delete_catalog"
+    SHOPIFY_UPDATE_CATALOG_CONTEXT = "shopify_update_catalog_context"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredeight_adapters(self):
+    def test_register_all_adds_onehundrednine_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 108
+        assert len(status) == 109
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -895,6 +895,7 @@ class TestShopifyBootstrap:
             "shopify_customer_payment_method_ops",
             "shopify_metaobject_definition_update",
             "shopify_app_billing",
+            "shopify_catalog_write",
         }
 
     def test_register_all_idempotent(self):
@@ -902,7 +903,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 108
+        assert len(get_registry()) == 109
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1235,6 +1236,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_APP_SUBSCRIPTION_LINE_ITEM).name == "shopify_app_billing"
         assert router.route(Capability.SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL).name == "shopify_app_billing"
         assert router.route(Capability.SHOPIFY_CREATE_APP_USAGE_RECORD).name == "shopify_app_billing"
+        assert router.route(Capability.SHOPIFY_CREATE_CATALOG).name == "shopify_catalog_write"
+        assert router.route(Capability.SHOPIFY_UPDATE_CATALOG).name == "shopify_catalog_write"
+        assert router.route(Capability.SHOPIFY_DELETE_CATALOG).name == "shopify_catalog_write"
+        assert router.route(Capability.SHOPIFY_UPDATE_CATALOG_CONTEXT).name == "shopify_catalog_write"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -28263,6 +28268,441 @@ class TestShopifyAppBillingAdapter:
                         "gid://shopify/AppSubscriptionLineItem/1",
                     "description": "expensive",
                     "price": "999.00",
+                },
+            )
+        assert not result.ok
+
+
+# ── ShopifyCatalogWriteAdapter ────────────────────────────
+
+
+class TestShopifyCatalogWriteAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter()
+        assert a.name == "shopify_catalog_write"
+        for cap in (
+            Capability.SHOPIFY_CREATE_CATALOG,
+            Capability.SHOPIFY_UPDATE_CATALOG,
+            Capability.SHOPIFY_DELETE_CATALOG,
+            Capability.SHOPIFY_UPDATE_CATALOG_CONTEXT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Create ──────────────────────────────────────────────────
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_CATALOG,
+            {
+                "status": "active",
+                "context": {
+                    "market_ids": ["gid://shopify/Market/1"],
+                },
+            },
+        )
+        assert not result.ok
+
+    def test_create_invalid_status_rejected(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_CATALOG,
+            {
+                "title": "Wholesale",
+                "status": "live",
+                "context": {
+                    "market_ids": ["gid://shopify/Market/1"],
+                },
+            },
+        )
+        assert not result.ok
+
+    def test_create_rejects_both_context_kinds(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_CATALOG,
+            {
+                "title": "Wholesale",
+                "status": "DRAFT",
+                "context": {
+                    "market_ids": ["gid://shopify/Market/1"],
+                    "company_location_ids": [
+                        "gid://shopify/CompanyLocation/1",
+                    ],
+                },
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_rejects_empty_context(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_CATALOG,
+            {
+                "title": "Wholesale",
+                "status": "DRAFT",
+                "context": {},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_happy_path_market(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "catalogCreate": {
+                    "catalog": {
+                        "__typename": "MarketCatalog",
+                        "id": "gid://shopify/Catalog/1",
+                        "title": "APAC market catalog",
+                        "status": "ACTIVE",
+                        "priceList": {
+                            "id": "gid://shopify/PriceList/3",
+                            "name": "APAC", "currency": "USD",
+                        },
+                        "publication": {
+                            "id": "gid://shopify/Publication/4",
+                            "catalog": {
+                                "id": "gid://shopify/Catalog/1",
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_CATALOG,
+                {
+                    "title": "APAC market catalog",
+                    "status": "active",
+                    "context": {
+                        "market_ids": ["gid://shopify/Market/2"],
+                    },
+                    "price_list_id": "gid://shopify/PriceList/3",
+                    "publication_id": "gid://shopify/Publication/4",
+                },
+            )
+        assert result.ok
+        body = captured["input"]
+        assert body["title"] == "APAC market catalog"
+        assert body["status"] == "ACTIVE"
+        assert body["context"] == {
+            "marketIds": ["gid://shopify/Market/2"],
+        }
+        assert body["priceListId"] == "gid://shopify/PriceList/3"
+        assert body["publicationId"] == "gid://shopify/Publication/4"
+        c = result.data["catalog"]
+        assert c["type"] == "MarketCatalog"
+        assert c["price_list_currency"] == "USD"
+
+    def test_create_happy_path_company_location_string_id(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "catalogCreate": {
+                    "catalog": {
+                        "__typename": "CompanyLocationCatalog",
+                        "id": "gid://shopify/Catalog/2",
+                        "title": "B2B tier",
+                        "status": "DRAFT",
+                        "priceList": None,
+                        "publication": None,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_CATALOG,
+                {
+                    "title": "B2B tier",
+                    "status": "DRAFT",
+                    "context": {
+                        "company_location_ids":
+                            "gid://shopify/CompanyLocation/9",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["input"]["context"] == {
+            "companyLocationIds":
+                ["gid://shopify/CompanyLocation/9"],
+        }
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "catalogCreate": {
+                "catalog": None,
+                "userErrors": [{
+                    "field": ["input", "title"],
+                    "message": "Title has already been taken",
+                    "code": "TAKEN",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_CATALOG,
+                {
+                    "title": "Duplicate",
+                    "status": "active",
+                    "context": {
+                        "market_ids": ["gid://shopify/Market/1"],
+                    },
+                },
+            )
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CATALOG,
+            {"title": "rename"},
+        )
+        assert not result.ok
+
+    def test_update_rejects_empty_body(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CATALOG,
+            {"id": "gid://shopify/Catalog/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_happy_path_partial(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "catalogUpdate": {
+                    "catalog": {
+                        "__typename": "MarketCatalog",
+                        "id": "gid://shopify/Catalog/1",
+                        "title": "Renamed",
+                        "status": "ARCHIVED",
+                        "priceList": None,
+                        "publication": None,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CATALOG,
+                {
+                    "id": "gid://shopify/Catalog/1",
+                    "title": "Renamed",
+                    "status": "ARCHIVED",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/Catalog/1",
+            "input": {"title": "Renamed", "status": "ARCHIVED"},
+        }
+
+    # ── Delete ──────────────────────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DELETE_CATALOG, {})
+        assert not result.ok
+
+    def test_delete_happy_path_with_dependents(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "catalogDelete": {
+                    "deletedId": "gid://shopify/Catalog/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_CATALOG,
+                {
+                    "id": "gid://shopify/Catalog/1",
+                    "delete_dependent_resources": True,
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/Catalog/1",
+            "deleteDependentResources": True,
+        }
+        assert result.data["deleted_id"] == \
+            "gid://shopify/Catalog/1"
+
+    # ── Context update ──────────────────────────────────────────
+
+    def test_context_update_requires_id(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CATALOG_CONTEXT,
+            {
+                "contexts_to_add": {
+                    "market_ids": ["gid://shopify/Market/1"],
+                },
+            },
+        )
+        assert not result.ok
+
+    def test_context_update_requires_at_least_one_side(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CATALOG_CONTEXT,
+            {"catalog_id": "gid://shopify/Catalog/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_context_update_happy_path_add_only(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "catalogContextUpdate": {
+                    "catalog": {
+                        "__typename": "CompanyLocationCatalog",
+                        "id": "gid://shopify/Catalog/1",
+                        "title": "B2B",
+                        "status": "ACTIVE",
+                        "priceList": None,
+                        "publication": None,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CATALOG_CONTEXT,
+                {
+                    "catalog_id": "gid://shopify/Catalog/1",
+                    "contexts_to_add": {
+                        "company_location_ids": [
+                            "gid://shopify/CompanyLocation/1",
+                            "gid://shopify/CompanyLocation/2",
+                        ],
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["catalogId"] == "gid://shopify/Catalog/1"
+        assert captured["contextsToAdd"] == {
+            "companyLocationIds": [
+                "gid://shopify/CompanyLocation/1",
+                "gid://shopify/CompanyLocation/2",
+            ],
+        }
+        assert captured["contextsToRemove"] is None
+        assert result.data["added"] == {
+            "kind": "company_location", "count": 2,
+        }
+        assert result.data["removed"] == {}
+
+    def test_context_update_user_errors_fail_fast(self):
+        from core.adapters.shopify.catalog_write import (
+            ShopifyCatalogWriteAdapter,
+        )
+        a = ShopifyCatalogWriteAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "catalogContextUpdate": {
+                "catalog": None,
+                "userErrors": [{
+                    "field": ["contextsToAdd"],
+                    "message": "Catalog not found",
+                    "code": "CATALOG_NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CATALOG_CONTEXT,
+                {
+                    "catalog_id": "gid://shopify/Catalog/missing",
+                    "contexts_to_add": {
+                        "market_ids": ["gid://shopify/Market/1"],
+                    },
                 },
             )
         assert not result.ok

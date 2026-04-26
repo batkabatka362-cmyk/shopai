@@ -33,6 +33,7 @@ from .bulk_mutations import ShopifyBulkMutationsAdapter
 from .carrier_services import ShopifyCarrierServicesAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
 from .catalogs import ShopifyCatalogsAdapter
+from .catalog_write import ShopifyCatalogWriteAdapter
 from .channels import ShopifyChannelsAdapter
 from .collection_membership import ShopifyCollectionMembershipAdapter
 from .collections import ShopifyCollectionsAdapter
@@ -253,6 +254,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCustomerPaymentMethodOpsAdapter,
     ShopifyMetaobjectDefinitionUpdateAdapter,
     ShopifyAppBillingAdapter,
+    ShopifyCatalogWriteAdapter,
 )
 
 
