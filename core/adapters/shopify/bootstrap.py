@@ -67,6 +67,7 @@ from .fulfillment import ShopifyFulfillmentAdapter
 from .fulfillment_tracking import ShopifyFulfillmentTrackingAdapter
 from .fulfillment_events import ShopifyFulfillmentEventsAdapter
 from .fulfillment_hold import ShopifyFulfillmentHoldAdapter
+from .fulfillment_order_ops import ShopifyFulfillmentOrderOpsAdapter
 from .fulfillment_services import ShopifyFulfillmentServicesAdapter
 from .generic_tags import ShopifyGenericTagsAdapter
 from .gift_card_crud import ShopifyGiftCardCRUDAdapter
@@ -217,6 +218,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyGenericTagsAdapter,
     ShopifyProductOptionsAdapter,
     ShopifyPaymentReminderAdapter,
+    ShopifyFulfillmentOrderOpsAdapter,
 )
 
 

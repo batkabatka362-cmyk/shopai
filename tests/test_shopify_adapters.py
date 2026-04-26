@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetythree_adapters(self):
+    def test_register_all_adds_ninetyfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 93
+        assert len(status) == 94
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -880,6 +880,7 @@ class TestShopifyBootstrap:
             "shopify_generic_tags",
             "shopify_product_options",
             "shopify_payment_reminder",
+            "shopify_fulfillment_order_ops",
         }
 
     def test_register_all_idempotent(self):
@@ -887,7 +888,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 93
+        assert len(get_registry()) == 94
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1186,6 +1187,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_PRODUCT_OPTIONS).name == "shopify_product_options"
         assert router.route(Capability.SHOPIFY_REORDER_PRODUCT_OPTIONS).name == "shopify_product_options"
         assert router.route(Capability.SHOPIFY_SEND_PAYMENT_REMINDER).name == "shopify_payment_reminder"
+        assert router.route(Capability.SHOPIFY_MOVE_FULFILLMENT_ORDER).name == "shopify_fulfillment_order_ops"
+        assert router.route(Capability.SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER).name == "shopify_fulfillment_order_ops"
+        assert router.route(Capability.SHOPIFY_SPLIT_FULFILLMENT_ORDER).name == "shopify_fulfillment_order_ops"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -24384,4 +24388,304 @@ class TestShopifyPaymentReminderAdapter:
                 },
             )
         assert not result.ok
+
+
+# ── ShopifyFulfillmentOrderOpsAdapter ─────────────────────
+
+
+class TestShopifyFulfillmentOrderOpsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter()
+        assert a.name == "shopify_fulfillment_order_ops"
+        for cap in (
+            Capability.SHOPIFY_MOVE_FULFILLMENT_ORDER,
+            Capability.SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER,
+            Capability.SHOPIFY_SPLIT_FULFILLMENT_ORDER,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Move ────────────────────────────────────
+
+    def test_move_requires_fo_id(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(Capability.SHOPIFY_MOVE_FULFILLMENT_ORDER, {
+            "new_location_id": "gid://shopify/Location/1",
+        })
+        assert not result.ok
+
+    def test_move_requires_new_location_id(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(Capability.SHOPIFY_MOVE_FULFILLMENT_ORDER, {
+            "id": "gid://shopify/FulfillmentOrder/1",
+        })
+        assert not result.ok
+
+    def test_move_happy_path_full_relocation(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "fulfillmentOrderMove": {
+                    "movedFulfillmentOrder": {
+                        "id": "gid://shopify/FulfillmentOrder/2",
+                        "status": "OPEN",
+                        "assignedLocation": {
+                            "location": {
+                                "id": "gid://shopify/Location/2",
+                                "name": "West Coast",
+                            },
+                        },
+                    },
+                    "originalFulfillmentOrder": {
+                        "id": "gid://shopify/FulfillmentOrder/1",
+                        "status": "CLOSED",
+                    },
+                    "remainingFulfillmentOrder": None,
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_MOVE_FULFILLMENT_ORDER,
+                {
+                    "id": "gid://shopify/FulfillmentOrder/1",
+                    "new_location_id": "gid://shopify/Location/2",
+                },
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/FulfillmentOrder/1"
+        assert captured["newLocationId"] == \
+            "gid://shopify/Location/2"
+        assert captured["fulfillmentOrderLineItems"] is None
+        assert result.data["moved_fulfillment_order"][
+            "location_id"] == "gid://shopify/Location/2"
+
+    def test_move_partial_with_line_items(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "fulfillmentOrderMove": {
+                    "movedFulfillmentOrder": {
+                        "id": "gid://shopify/FulfillmentOrder/3",
+                    },
+                    "remainingFulfillmentOrder": {
+                        "id": "gid://shopify/FulfillmentOrder/4",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_MOVE_FULFILLMENT_ORDER,
+                {
+                    "id": "gid://shopify/FulfillmentOrder/1",
+                    "new_location_id": "gid://shopify/Location/2",
+                    "line_items": [
+                        {"id":
+                         "gid://shopify/FulfillmentOrderLineItem/9",
+                         "quantity": 2},
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["fulfillmentOrderLineItems"] == [
+            {"id": "gid://shopify/FulfillmentOrderLineItem/9",
+             "quantity": 2},
+        ]
+
+    # ── Reschedule ──────────────────────────────
+
+    def test_reschedule_requires_id(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER,
+            {"fulfill_at": "2026-05-15T00:00:00Z"},
+        )
+        assert not result.ok
+
+    def test_reschedule_requires_fulfill_at(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER,
+            {"id": "gid://shopify/FulfillmentOrder/1"},
+        )
+        assert not result.ok
+
+    def test_reschedule_happy_path(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "fulfillmentOrderReschedule": {
+                    "fulfillmentOrder": {
+                        "id": "gid://shopify/FulfillmentOrder/1",
+                        "status": "OPEN",
+                        "fulfillAt": "2026-05-15T00:00:00Z",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER,
+                {
+                    "id": "gid://shopify/FulfillmentOrder/1",
+                    "fulfill_at": "2026-05-15T00:00:00Z",
+                },
+            )
+        assert result.ok
+        assert captured["fulfillAt"] == "2026-05-15T00:00:00Z"
+        assert result.data["fulfillment_order"]["fulfill_at"] == \
+            "2026-05-15T00:00:00Z"
+
+    # ── Split ───────────────────────────────────
+
+    def test_split_requires_splits(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SPLIT_FULFILLMENT_ORDER, {},
+        )
+        assert not result.ok
+
+    def test_split_rejects_zero_quantity_line(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_splits([{
+                "fulfillment_order_id":
+                    "gid://shopify/FulfillmentOrder/1",
+                "line_items": [{
+                    "id":
+                        "gid://shopify/FulfillmentOrderLineItem/1",
+                    "quantity": 0,
+                }],
+            }])
+
+    def test_split_happy_path(self):
+        from core.adapters.shopify.fulfillment_order_ops import (
+            ShopifyFulfillmentOrderOpsAdapter,
+        )
+        a = ShopifyFulfillmentOrderOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "fulfillmentOrderSplit": {
+                    "fulfillmentOrderSplits": [{
+                        "fulfillmentOrder": {
+                            "id":
+                                "gid://shopify/FulfillmentOrder/1",
+                            "status": "OPEN",
+                        },
+                        "remainingFulfillmentOrder": {
+                            "id":
+                                "gid://shopify/FulfillmentOrder/2",
+                            "status": "OPEN",
+                        },
+                        "replacementFulfillmentOrder": {
+                            "id":
+                                "gid://shopify/FulfillmentOrder/3",
+                            "status": "OPEN",
+                        },
+                    }],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SPLIT_FULFILLMENT_ORDER,
+                {"splits": [{
+                    "fulfillment_order_id":
+                        "gid://shopify/FulfillmentOrder/1",
+                    "line_items": [{
+                        "id":
+                            "gid://shopify/FulfillmentOrderLineItem/9",
+                        "quantity": 2,
+                    }],
+                }]},
+            )
+        assert result.ok
+        assert captured["fulfillmentOrderSplits"][0][
+            "fulfillmentOrderId"] == \
+            "gid://shopify/FulfillmentOrder/1"
+        assert captured["fulfillmentOrderSplits"][0][
+            "fulfillmentOrderLineItems"] == [
+            {"id":
+             "gid://shopify/FulfillmentOrderLineItem/9",
+             "quantity": 2},
+        ]
+        assert result.data["splits_count"] == 1
+        assert len(result.data["splits"]) == 1
 

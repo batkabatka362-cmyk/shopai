@@ -371,6 +371,9 @@ class Capability(str, Enum):
     SHOPIFY_DELETE_PRODUCT_OPTIONS = "shopify_delete_product_options"
     SHOPIFY_REORDER_PRODUCT_OPTIONS = "shopify_reorder_product_options"
     SHOPIFY_SEND_PAYMENT_REMINDER = "shopify_send_payment_reminder"
+    SHOPIFY_MOVE_FULFILLMENT_ORDER = "shopify_move_fulfillment_order"
+    SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER = "shopify_reschedule_fulfillment_order"
+    SHOPIFY_SPLIT_FULFILLMENT_ORDER = "shopify_split_fulfillment_order"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
