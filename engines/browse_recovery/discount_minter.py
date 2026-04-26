@@ -2,57 +2,42 @@
 
 The offer_builder produces N personalized offers (one per browsing
 user that abandoned), each carrying a ``discount_pct`` recommendation.
-Without this stage, those recommendations are inert — the email /
-push / retarget-ad copy says "20% off!" while no real code exists in
-Shopify, so the merchant has to manually mint codes to honor the
-offers.
+Without this stage, those recommendations are inert: the email /
+push / retarget-ad copy says "20% off!" while no real code exists.
 
 This module bridges the gap: for each offer above the
-``min_intent_likelihood`` cutoff, it calls
-``Capability.SHOPIFY_CREATE_DISCOUNT`` via the SmartRouter and stamps
-the minted code back onto the offer dict. Below the cutoff (default:
-``low``-intent abandoners) we skip — those offers usually go out as
-generic "come back" messages that don't need a real discount, and
-minting one code per browser at scale would clutter the merchant's
+``mintable_likelihoods`` cutoff, calls
+``engines._recovery_codes.mint_recovery_code`` and stamps the result
+back onto the offer dict in place. Below the cutoff we skip — those
+offers usually go out as generic come-back messages without a code,
+and minting per-browser at scale would clutter the merchant's
 discount list.
 
-Differs from ``cart_recovery/discount_minter`` in shape:
+Differs from cart_recovery's minter in shape:
 
-  * cart_recovery: 1 customer → 1 code (returns a single dict).
+  * cart_recovery: 1 customer → 1 code (returns a dict).
   * browse_recovery: N users → N codes (mutates each offer in
     place to add ``code`` / ``discount_id`` / ``ends_at`` /
     ``minted``).
 
-Pattern matches cart_recovery's graceful-fallback contract — router
-unavailable / non-mintable / failure is logged at debug and the
-offer keeps its discount_pct + an empty ``code: ""`` so downstream
-consumers can detect "this offer has no real code".
-
-Code naming and bounds (mirrors cart_recovery for consistency):
-
-  * Code name: ``BROWSE-{user-token}-{epoch}`` (≤32 chars).
-  * 7-day expiry default; store-level override via
-    ``recovery_code_ttl_days`` (clamped 1-90).
-  * usage_limit=1, applies_once_per_customer=True so codes can't
-    be shared / replayed.
+Pattern matches cart_recovery's graceful-fallback contract — every
+failure mode (router unavailable / non-mintable / adapter raises /
+adapter ok=False / out-of-filter / zero-pct) stamps the offer with
+empty code fields + ``minted=False`` so downstream consumers can
+detect "no real code, send a generic come-back message".
 """
 from __future__ import annotations
 
-import time
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from utils.logger import get_logger
+from engines._recovery_codes import mint_recovery_code as _mint
 
-logger = get_logger("browse_recovery.discount_minter")
-
-
-_DEFAULT_TTL_DAYS = 7
 
 # Code prefix — distinguishes browse-recovery codes from
-# cart-recovery (RECOVER-) and merchant-evergreen codes when the
-# operator audits the discount list.
+# cart-recovery (RECOVER-) and merchant-evergreen codes.
 _CODE_PREFIX = "BROWSE"
+
+_DEFAULT_TTL_DAYS = 7
 
 # Likelihood tiers that warrant minting a real code. "low"-intent
 # offers go out as generic come-back messages without a discount
@@ -69,25 +54,20 @@ def mint_offer_codes(
 ) -> list[dict[str, Any]]:
     """Mint a Shopify discount code per qualifying offer.
 
-    Mutates each offer dict in place to add four fields:
-
-      * ``code``: minted Shopify code name, or ``""`` on skip/fail.
-      * ``discount_id``: Shopify GID for the code, or ``""``.
-      * ``ends_at``: ISO datetime when the code expires.
+    Mutates each offer dict in place with four fields:
+      * ``code``: minted code name, or ``""`` on skip/fail.
+      * ``discount_id``: Shopify GID, or ``""``.
+      * ``ends_at``: ISO datetime, or ``""``.
       * ``minted``: ``True`` only when a real code was created.
 
     Args:
-        offers: Output of ``build_offers`` — list of per-user
-            offer dicts.
+        offers: Output of ``build_offers`` — per-user offer dicts.
         intent_scores: Output of ``score_intent`` — used to read
-            ``purchase_likelihood`` so we know which offers are
-            worth minting for.
+            ``purchase_likelihood`` per user.
         store: Optional store config; honors
             ``recovery_code_ttl_days``.
-        mintable_likelihoods: Override the default
-            ``{"high", "medium"}`` filter. Pass ``{"high",
-            "medium", "low"}`` to mint for everyone, or a smaller
-            set to be more conservative.
+        mintable_likelihoods: Override the default ``{"high",
+            "medium"}`` filter.
 
     Returns:
         The same offers list (mutated). Returned for chainability.
@@ -100,18 +80,7 @@ def mint_offer_codes(
         if mintable_likelihoods is not None
         else _DEFAULT_MINTABLE_LIKELIHOODS
     )
-
     likelihood_by_user = _index_likelihoods(intent_scores)
-
-    router = _get_router()
-    capability = _get_capability_create_discount()
-    if router is None or capability is None:
-        # Router not initialised → stamp empty code fields on every
-        # offer so downstream contract is consistent.
-        for offer in offers:
-            _stamp_skipped(offer)
-        return offers
-
     ttl_days = _resolve_ttl_days(store)
 
     for offer in offers:
@@ -130,54 +99,32 @@ def mint_offer_codes(
             _stamp_skipped(offer)
             continue
 
-        code_name = _build_code_name(user_id)
-        starts_at = datetime.now(timezone.utc)
-        ends_at = starts_at + timedelta(days=ttl_days)
-        params: dict[str, Any] = {
-            "title": (
-                f"Browse recovery: {discount_pct:g}% off "
-                f"({likelihood} intent)"
-            ),
-            "code": code_name,
-            "starts_at": starts_at.replace(microsecond=0).isoformat()
-                .replace("+00:00", "Z"),
-            "ends_at": ends_at.replace(microsecond=0).isoformat()
-                .replace("+00:00", "Z"),
-            "percentage": discount_pct,
-            "usage_limit": 1,
-            "applies_once_per_customer": True,
-        }
-
-        try:
-            result = router.execute(capability, params)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "browse-recovery mint raised for %s: %s",
-                user_id, exc,
-            )
-            _stamp_skipped(offer)
-            continue
-
-        if not getattr(result, "ok", False):
-            logger.debug(
-                "browse-recovery mint failed for %s: %s",
-                user_id, getattr(result, "error", "unknown"),
-            )
-            _stamp_skipped(offer)
-            continue
-
-        data = getattr(result, "data", {}) or {}
-        offer["code"] = code_name
-        offer["discount_id"] = (
-            data.get("discount_id") or data.get("id") or ""
+        token = _build_token(user_id)
+        title = (
+            f"Browse recovery: {discount_pct:g}% off "
+            f"({likelihood} intent)"
         )
-        offer["ends_at"] = params["ends_at"]
+        result = _mint(
+            token=token,
+            code_prefix=_CODE_PREFIX,
+            value=discount_pct,
+            value_kind="percentage",
+            ttl_days=ttl_days,
+            title=title,
+        )
+        if result is None:
+            _stamp_skipped(offer)
+            continue
+
+        offer["code"] = result["code"]
+        offer["discount_id"] = result.get("discount_id", "") or ""
+        offer["ends_at"] = result.get("ends_at", "") or ""
         offer["minted"] = True
 
     return offers
 
 
-# ── Helpers ────────────────────────────────────────────────────
+# ── Per-engine helpers ────────────────────────────────────────
 
 
 def _index_likelihoods(
@@ -194,28 +141,6 @@ def _index_likelihoods(
     return out
 
 
-def _get_router() -> Any | None:
-    try:
-        from core.adapters import get_router
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("router import failed: %s", exc)
-        return None
-    try:
-        return get_router()
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("router init failed: %s", exc)
-        return None
-
-
-def _get_capability_create_discount() -> Any | None:
-    try:
-        from core.adapters.base import Capability
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Capability import failed: %s", exc)
-        return None
-    return Capability.SHOPIFY_CREATE_DISCOUNT
-
-
 def _stamp_skipped(offer: dict[str, Any]) -> None:
     offer["code"] = ""
     offer["discount_id"] = ""
@@ -223,21 +148,17 @@ def _stamp_skipped(offer: dict[str, Any]) -> None:
     offer["minted"] = False
 
 
-def _build_code_name(user_id: str) -> str:
-    """Generate ``BROWSE-{token}-{epoch}`` (≤32 chars).
+def _build_token(user_id: str) -> str:
+    """Sanitised user_id, uppercase, alphanum-only, capped at 12.
 
-    Token is the user_id with non-alphanumerics stripped, uppercased,
-    capped at 12 chars. Falls back to ``ANON`` for blanks.
+    Falls back to ``ANON`` for blanks.
     """
-    token = "ANON"
-    if user_id:
-        sanitized = "".join(
-            c for c in user_id.upper() if c.isalnum()
-        )
-        if sanitized:
-            token = sanitized[:12]
-    epoch = int(time.time())
-    return f"{_CODE_PREFIX}-{token}-{epoch}"[:32]
+    if not user_id:
+        return "ANON"
+    sanitized = "".join(
+        c for c in user_id.upper() if c.isalnum()
+    )
+    return sanitized[:12] or "ANON"
 
 
 def _resolve_ttl_days(store: dict[str, Any] | None) -> int:
@@ -247,7 +168,6 @@ def _resolve_ttl_days(store: dict[str, Any] | None) -> int:
     if raw is None:
         return _DEFAULT_TTL_DAYS
     try:
-        days = int(raw)
+        return int(raw)
     except (TypeError, ValueError):
         return _DEFAULT_TTL_DAYS
-    return max(1, min(days, 90))

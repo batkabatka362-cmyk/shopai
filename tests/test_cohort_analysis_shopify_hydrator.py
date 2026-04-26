@@ -37,7 +37,7 @@ class TestPassThrough:
     def test_supplied_customers_pass_through(self):
         supplied = [{"id": "gid://shopify/Customer/1"}]
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
         ) as mock_router:
             result = hydrate_customers(supplied)
         assert result is supplied
@@ -46,7 +46,7 @@ class TestPassThrough:
     def test_supplied_orders_pass_through(self):
         supplied = [{"id": "gid://shopify/Order/1"}]
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
         ) as mock_router:
             result = hydrate_orders(supplied)
         assert result is supplied
@@ -73,7 +73,7 @@ class TestHydrateHappyPath:
             },
         ))
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_customers([])
@@ -97,7 +97,7 @@ class TestHydrateHappyPath:
             },
         ))
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_orders([])
@@ -111,7 +111,7 @@ class TestHydrateHappyPath:
             ok=True, data={"customers": []},
         ))
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             hydrate_customers(
@@ -125,7 +125,7 @@ class TestHydrateHappyPath:
             ok=True, data={"orders": []},
         ))
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             hydrate_orders(
@@ -139,7 +139,7 @@ class TestHydrateHappyPath:
             ok=True, data={"customers": []},
         ))
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             hydrate_customers([], query="   ")
@@ -158,7 +158,7 @@ class TestHydrateHappyPath:
             },
         ))
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_customers([])
@@ -179,7 +179,7 @@ class TestLimitClamp:
                 ok=True, data={"customers": []},
             ))
             with patch(
-                "engines.cohort_analysis.shopify_hydrator._get_router",
+                "engines._shopify_hydrator._get_router",
                 return_value=stub,
             ):
                 hydrate_customers([], limit=raw)
@@ -194,14 +194,14 @@ class TestGracefulFallbacks:
 
     def test_router_unavailable_returns_empty_for_customers(self):
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=None,
         ):
             assert hydrate_customers([]) == []
 
     def test_router_unavailable_returns_empty_for_orders(self):
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=None,
         ):
             assert hydrate_orders([]) == []
@@ -211,7 +211,7 @@ class TestGracefulFallbacks:
             ok=False, error="scope missing",
         ))
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             assert hydrate_customers([]) == []
@@ -223,7 +223,7 @@ class TestGracefulFallbacks:
                 raise RuntimeError("network down")
 
         with patch(
-            "engines.cohort_analysis.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=_ExplodingRouter(),
         ):
             assert hydrate_customers([]) == []

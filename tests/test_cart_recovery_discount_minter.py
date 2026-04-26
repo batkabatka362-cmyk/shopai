@@ -54,7 +54,7 @@ class TestIncentiveTypeRouting:
         # No router-available patch needed — the function must
         # short-circuit BEFORE looking up the router.
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
         ) as mock_router:
             result = mint_recovery_code(
                 {"type": incentive_type, "value": 10},
@@ -67,7 +67,7 @@ class TestIncentiveTypeRouting:
 
     def test_zero_value_short_circuits(self):
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
         ) as mock_router:
             result = mint_recovery_code(
                 {"type": "percentage", "value": 0},
@@ -78,7 +78,7 @@ class TestIncentiveTypeRouting:
 
     def test_non_numeric_value_short_circuits(self):
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
         ) as mock_router:
             result = mint_recovery_code(
                 {"type": "percentage", "value": "many"},
@@ -95,7 +95,7 @@ class TestGracefulFallbacks:
 
     def test_router_unavailable_returns_none(self):
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=None,
         ):
             result = mint_recovery_code(
@@ -109,7 +109,7 @@ class TestGracefulFallbacks:
             ok=False, error="discount code already exists",
         ))
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub_router,
         ):
             result = mint_recovery_code(
@@ -124,7 +124,7 @@ class TestGracefulFallbacks:
                 raise RuntimeError("network down")
 
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=_ExplodingRouter(),
         ):
             result = mint_recovery_code(
@@ -151,7 +151,7 @@ class TestMintHappyPath:
             },
         ))
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub_router,
         ):
             result = mint_recovery_code(
@@ -196,7 +196,7 @@ class TestMintHappyPath:
             data={"discount_id": "gid://shopify/DiscountCodeNode/2"},
         ))
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub_router,
         ):
             mint_recovery_code(
@@ -217,7 +217,7 @@ class TestMintHappyPath:
             data={"discount_id": "gid://shopify/DiscountCodeNode/3"},
         ))
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub_router,
         ):
             mint_recovery_code(
@@ -237,7 +237,7 @@ class TestMintHappyPath:
             data={"discount_id": "gid://shopify/DiscountCodeNode/4"},
         ))
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub_router,
         ):
             mint_recovery_code(
@@ -255,7 +255,7 @@ class TestMintHappyPath:
             data={"discount_id": "gid://shopify/DiscountCodeNode/5"},
         ))
         with patch(
-            "engines.cart_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub_router,
         ):
             mint_recovery_code(
@@ -292,7 +292,7 @@ class TestMintHappyPath:
                 },
             ))
             with patch(
-                "engines.cart_recovery.discount_minter._get_router",
+                "engines._recovery_codes._get_router",
                 return_value=stub_router,
             ):
                 mint_recovery_code(
