@@ -344,6 +344,14 @@ tolerate both forms when the cost is low:
     `'MarketConditionsRegionsInput' requires exactly one argument,
     but 2 were provided`. `applicationLevel` is for the all-countries
     policy; specific-country lists drop it.
+- `customerAddressCreate`/`customerAddressUpdate` payloads return
+  `address: MailingAddress` — NOT `customerAddress`. Likewise
+  `customerAddressDelete` returns `deletedAddressId`, NOT
+  `deletedCustomerAddressId`. Older REST/legacy field names don't
+  carry over to the GraphQL Admin API.
+- `customerAddress*` mutations also use the typed `UserError`
+  variant (no `code` field) — same Pattern F as draft-order /
+  order-edit family. Drop `code` from those userErrors selections.
 
 ### Pattern D-prime: oneOf input objects
 

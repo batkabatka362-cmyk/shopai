@@ -322,6 +322,9 @@ class Capability(str, Enum):
     SHOPIFY_DELETE_MARKET = "shopify_delete_market"
     SHOPIFY_ADD_MARKET_REGIONS = "shopify_add_market_regions"
     SHOPIFY_DELETE_MARKET_REGION = "shopify_delete_market_region"
+    SHOPIFY_CREATE_CUSTOMER_ADDRESS = "shopify_create_customer_address"
+    SHOPIFY_UPDATE_CUSTOMER_ADDRESS = "shopify_update_customer_address"
+    SHOPIFY_DELETE_CUSTOMER_ADDRESS = "shopify_delete_customer_address"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

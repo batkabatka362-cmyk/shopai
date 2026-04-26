@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventyfour_adapters(self):
+    def test_register_all_adds_seventyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 74
+        assert len(status) == 75
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -861,6 +861,7 @@ class TestShopifyBootstrap:
             "shopify_discount_automatic_bxgy",
             "shopify_company_locations",
             "shopify_market_crud",
+            "shopify_customer_addresses",
         }
 
     def test_register_all_idempotent(self):
@@ -868,7 +869,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 74
+        assert len(get_registry()) == 75
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1118,6 +1119,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_MARKET).name == "shopify_market_crud"
         assert router.route(Capability.SHOPIFY_ADD_MARKET_REGIONS).name == "shopify_market_crud"
         assert router.route(Capability.SHOPIFY_DELETE_MARKET_REGION).name == "shopify_market_crud"
+        assert router.route(Capability.SHOPIFY_CREATE_CUSTOMER_ADDRESS).name == "shopify_customer_addresses"
+        assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER_ADDRESS).name == "shopify_customer_addresses"
+        assert router.route(Capability.SHOPIFY_DELETE_CUSTOMER_ADDRESS).name == "shopify_customer_addresses"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -20004,4 +20008,332 @@ class TestShopifyMarketCRUDAdapter:
             "gid://shopify/MarketRegionCountry/9",
         ]
         assert result.data["regions_remaining"] == []
+
+
+# ── ShopifyCustomerAddressesAdapter ───────────────────────
+
+
+class TestShopifyCustomerAddressesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter()
+        assert a.name == "shopify_customer_addresses"
+        for cap in (
+            Capability.SHOPIFY_CREATE_CUSTOMER_ADDRESS,
+            Capability.SHOPIFY_UPDATE_CUSTOMER_ADDRESS,
+            Capability.SHOPIFY_DELETE_CUSTOMER_ADDRESS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Address builder ─────────────────────────
+
+    def test_address_rejects_country_freeform(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_address_input({
+                "address1": "1 Main",
+                "country": "United States",
+            })
+
+    def test_address_rejects_province_freeform(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_address_input({
+                "address1": "1 Main",
+                "province": "California",
+            })
+
+    def test_address_uppercases_country_code(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_address_input({
+            "address1": "1 Main",
+            "country_code": "us",
+        })
+        assert out["countryCode"] == "US"
+
+    def test_address_aliases_full_shape(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_address_input({
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "company": "ShopAI",
+            "address1": "1 Main",
+            "address2": "Suite 100",
+            "city": "Reno",
+            "province_code": "NV",
+            "zip": "89501",
+            "country_code": "US",
+            "phone": "+15551234567",
+        })
+        assert out["firstName"] == "Ada"
+        assert out["lastName"] == "Lovelace"
+        assert out["countryCode"] == "US"
+        assert out["provinceCode"] == "NV"
+        assert "country" not in out
+        assert "province" not in out
+
+    def test_address_rejects_empty(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_address_input({})
+
+    # ── Create ──────────────────────────────────
+
+    def test_create_requires_customer_id(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_CUSTOMER_ADDRESS,
+            {"address": {"address1": "1 Main", "country_code": "US"}},
+        )
+        assert not result.ok
+
+    def test_create_requires_address(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_CUSTOMER_ADDRESS,
+            {"customer_id": "gid://shopify/Customer/1"},
+        )
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerAddressCreate": {
+                    "address": {
+                        "id": "gid://shopify/MailingAddress/1",
+                        "firstName": "Ada",
+                        "address1": "1 Main",
+                        "city": "Reno",
+                        "countryCodeV2": "US",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_CUSTOMER_ADDRESS,
+                {
+                    "customer_id": "gid://shopify/Customer/1",
+                    "address": {
+                        "first_name": "Ada",
+                        "address1": "1 Main",
+                        "city": "Reno",
+                        "country_code": "US",
+                        "zip": "89501",
+                    },
+                    "set_as_default": True,
+                },
+            )
+        assert result.ok
+        assert captured["customerId"] == "gid://shopify/Customer/1"
+        assert captured["address"]["countryCode"] == "US"
+        assert captured["setAsDefault"] is True
+        assert result.data["address"]["country_code"] == "US"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerAddressCreate": {
+                "customerAddress": None,
+                "userErrors": [{
+                    "field": ["address", "zip"],
+                    "message": "Zip is invalid",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_CUSTOMER_ADDRESS,
+                {
+                    "customer_id": "gid://shopify/Customer/1",
+                    "address": {
+                        "address1": "1 Main",
+                        "country_code": "US",
+                        "zip": "BAD",
+                    },
+                },
+            )
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────
+
+    def test_update_requires_address_id(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER_ADDRESS,
+            {
+                "customer_id": "gid://shopify/Customer/1",
+                "address": {"address1": "X", "country_code": "US"},
+            },
+        )
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerAddressUpdate": {
+                    "address": {
+                        "id": "gid://shopify/MailingAddress/1",
+                        "address1": "2 Updated",
+                        "countryCodeV2": "CA",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CUSTOMER_ADDRESS,
+                {
+                    "customer_id": "gid://shopify/Customer/1",
+                    "address_id": "gid://shopify/MailingAddress/1",
+                    "address": {
+                        "address1": "2 Updated",
+                        "country_code": "CA",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["addressId"] == "gid://shopify/MailingAddress/1"
+        assert captured["address"]["countryCode"] == "CA"
+        assert result.data["address"]["address1"] == "2 Updated"
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_requires_customer_id(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_CUSTOMER_ADDRESS,
+            {"address_id": "gid://shopify/MailingAddress/1"},
+        )
+        assert not result.ok
+
+    def test_delete_requires_address_id(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_CUSTOMER_ADDRESS,
+            {"customer_id": "gid://shopify/Customer/1"},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.customer_addresses import (
+            ShopifyCustomerAddressesAdapter,
+        )
+        a = ShopifyCustomerAddressesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerAddressDelete": {
+                    "deletedAddressId":
+                        "gid://shopify/MailingAddress/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_CUSTOMER_ADDRESS,
+                {
+                    "customer_id": "gid://shopify/Customer/1",
+                    "address_id": "gid://shopify/MailingAddress/1",
+                },
+            )
+        assert result.ok
+        assert captured["customerId"] == "gid://shopify/Customer/1"
+        assert captured["addressId"] == \
+            "gid://shopify/MailingAddress/1"
+        assert result.data["deleted_id"] == \
+            "gid://shopify/MailingAddress/1"
 
