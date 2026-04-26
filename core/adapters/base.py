@@ -379,6 +379,8 @@ class Capability(str, Enum):
     SHOPIFY_SKIP_SUBSCRIPTION_BILLING_CYCLE = "shopify_skip_subscription_billing_cycle"
     SHOPIFY_UNSKIP_SUBSCRIPTION_BILLING_CYCLE = "shopify_unskip_subscription_billing_cycle"
     SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE = "shopify_reschedule_subscription_billing_cycle"
+    SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL = "shopify_generate_customer_activation_url"
+    SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL = "shopify_send_customer_invite_email"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

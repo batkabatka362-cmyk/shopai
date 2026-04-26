@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetysix_adapters(self):
+    def test_register_all_adds_ninetyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 96
+        assert len(status) == 97
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -883,6 +883,7 @@ class TestShopifyBootstrap:
             "shopify_fulfillment_order_ops",
             "shopify_metafields_delete",
             "shopify_subscription_billing",
+            "shopify_customer_onboarding",
         }
 
     def test_register_all_idempotent(self):
@@ -890,7 +891,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 96
+        assert len(get_registry()) == 97
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1197,6 +1198,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_SKIP_SUBSCRIPTION_BILLING_CYCLE).name == "shopify_subscription_billing"
         assert router.route(Capability.SHOPIFY_UNSKIP_SUBSCRIPTION_BILLING_CYCLE).name == "shopify_subscription_billing"
         assert router.route(Capability.SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE).name == "shopify_subscription_billing"
+        assert router.route(Capability.SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL).name == "shopify_customer_onboarding"
+        assert router.route(Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL).name == "shopify_customer_onboarding"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -25265,4 +25268,211 @@ class TestShopifySubscriptionBillingAdapter:
         }
         assert result.data["billing_cycle"][
             "billing_attempt_expected_date"] == "2026-06-01T00:00:00Z"
+
+
+# ── ShopifyCustomerOnboardingAdapter ──────────────────────
+
+
+class TestShopifyCustomerOnboardingAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter()
+        assert a.name == "shopify_customer_onboarding"
+        for cap in (
+            Capability.SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL,
+            Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Generate URL ───────────────────────────
+
+    def test_generate_url_requires_customer_id(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL, {},
+        )
+        assert not result.ok
+
+    def test_generate_url_happy_path(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerGenerateAccountActivationUrl": {
+                    "accountActivationUrl":
+                        "https://shop.example/activate/abc123",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL,
+                {"customer_id": "gid://shopify/Customer/1"},
+            )
+        assert result.ok
+        assert captured["customerId"] == "gid://shopify/Customer/1"
+        assert result.data["activation_url"] == \
+            "https://shop.example/activate/abc123"
+
+    def test_generate_url_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerGenerateAccountActivationUrl": {
+                "accountActivationUrl": None,
+                "userErrors": [{
+                    "field": ["customerId"],
+                    "message": "Customer already activated",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL,
+                {"customer_id": "gid://shopify/Customer/1"},
+            )
+        assert not result.ok
+
+    # ── Send invite email ─────────────────────
+
+    def test_send_invite_requires_customer_id(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL, {},
+        )
+        assert not result.ok
+
+    def test_send_invite_no_overrides(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerSendAccountInviteEmail": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "email": "ada@example.com",
+                        "state": "INVITED",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL,
+                {"customer_id": "gid://shopify/Customer/1"},
+            )
+        assert result.ok
+        assert captured["customerId"] == "gid://shopify/Customer/1"
+        assert captured["email"] is None
+        assert result.data["state"] == "INVITED"
+        assert result.data["email"] == "ada@example.com"
+
+    def test_send_invite_with_overrides(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerSendAccountInviteEmail": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "email": "ada@example.com",
+                        "state": "INVITED",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL,
+                {
+                    "customer_id":
+                        "gid://shopify/Customer/1",
+                    "email": {
+                        "subject": "Welcome to Acme!",
+                        "body": "Set your password.",
+                        "bcc": ["ops@acme.com"],
+                        "custom_message": "Cheers!",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["email"] == {
+            "subject": "Welcome to Acme!",
+            "body": "Set your password.",
+            "customMessage": "Cheers!",
+            "bcc": ["ops@acme.com"],
+        }
+
+    def test_send_invite_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_onboarding import (
+            ShopifyCustomerOnboardingAdapter,
+        )
+        a = ShopifyCustomerOnboardingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerSendAccountInviteEmail": {
+                "customer": None,
+                "userErrors": [{
+                    "field": ["customerId"],
+                    "message": "Customer not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL,
+                {"customer_id": "gid://shopify/Customer/9999"},
+            )
+        assert not result.ok
 
