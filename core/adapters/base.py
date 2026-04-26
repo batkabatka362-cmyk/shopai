@@ -398,6 +398,8 @@ class Capability(str, Enum):
     SHOPIFY_SEND_GIFT_CARD_TO_RECIPIENT = "shopify_send_gift_card_to_recipient"
     SHOPIFY_BULK_ADD_DISCOUNT_REDEEM_CODES = "shopify_bulk_add_discount_redeem_codes"
     SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES = "shopify_bulk_delete_discount_redeem_codes"
+    SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL = "shopify_send_payment_method_update_email"
+    SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL = "shopify_get_payment_method_update_url"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

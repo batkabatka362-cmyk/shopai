@@ -43,6 +43,9 @@ from .company_locations import ShopifyCompanyLocationsAdapter
 from .customer_consent import ShopifyCustomerConsentAdapter
 from .customer_merge import ShopifyCustomerMergeAdapter
 from .customer_payment_methods import ShopifyCustomerPaymentMethodsAdapter
+from .customer_payment_method_ops import (
+    ShopifyCustomerPaymentMethodOpsAdapter,
+)
 from .customer_addresses import ShopifyCustomerAddressesAdapter
 from .customer_onboarding import ShopifyCustomerOnboardingAdapter
 from .customer_segment_write import ShopifyCustomerSegmentWriteAdapter
@@ -243,6 +246,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyProductOptionUpdateAdapter,
     ShopifyGiftCardNotifyAdapter,
     ShopifyDiscountRedeemCodesAdapter,
+    ShopifyCustomerPaymentMethodOpsAdapter,
 )
 
 

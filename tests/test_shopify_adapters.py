@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredfive_adapters(self):
+    def test_register_all_adds_onehundredsix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 105
+        assert len(status) == 106
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -892,6 +892,7 @@ class TestShopifyBootstrap:
             "shopify_product_option_update",
             "shopify_gift_card_notify",
             "shopify_discount_redeem_codes",
+            "shopify_customer_payment_method_ops",
         }
 
     def test_register_all_idempotent(self):
@@ -899,7 +900,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 105
+        assert len(get_registry()) == 106
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1225,6 +1226,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_SEND_GIFT_CARD_TO_RECIPIENT).name == "shopify_gift_card_notify"
         assert router.route(Capability.SHOPIFY_BULK_ADD_DISCOUNT_REDEEM_CODES).name == "shopify_discount_redeem_codes"
         assert router.route(Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES).name == "shopify_discount_redeem_codes"
+        assert router.route(Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL).name == "shopify_customer_payment_method_ops"
+        assert router.route(Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL).name == "shopify_customer_payment_method_ops"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -27329,5 +27332,259 @@ class TestShopifyDiscountRedeemCodesAdapter:
                         "gid://shopify/DiscountCodeNode/1",
                     "search": "BAD::SYNTAX",
                 },
+            )
+        assert not result.ok
+
+
+# ── ShopifyCustomerPaymentMethodOpsAdapter ────────────────
+
+
+class TestShopifyCustomerPaymentMethodOpsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter()
+        assert a.name == "shopify_customer_payment_method_ops"
+        for cap in (
+            Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL,
+            Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_send_email_requires_id(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL, {},
+        )
+        assert not result.ok
+
+    def test_send_email_default_uses_customer_email(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerPaymentMethodSendUpdateEmail": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "email": "ada@example.com",
+                        "displayName": "Ada Lovelace",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL,
+                {"id": "gid://shopify/CustomerPaymentMethod/1"},
+            )
+        assert result.ok
+        assert captured["customerPaymentMethodId"] == \
+            "gid://shopify/CustomerPaymentMethod/1"
+        assert captured["email"] is None
+        assert result.data["customer_email"] == "ada@example.com"
+        assert result.data["customer_display_name"] == "Ada Lovelace"
+        assert result.data["email_override"] == ""
+
+    def test_send_email_with_string_override(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerPaymentMethodSendUpdateEmail": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "email": "ada@example.com",
+                        "displayName": "Ada",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL,
+                {
+                    "id": "gid://shopify/CustomerPaymentMethod/1",
+                    "email": "billing@example.com",
+                },
+            )
+        assert result.ok
+        assert captured["email"] == {"emailAddress": "billing@example.com"}
+        assert result.data["email_override"] == "billing@example.com"
+
+    def test_send_email_with_dict_override_subject_body(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerPaymentMethodSendUpdateEmail": {
+                    "customer": {
+                        "id": "gid://shopify/Customer/1",
+                        "email": "ada@example.com",
+                        "displayName": "Ada",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL,
+                {
+                    "id": "gid://shopify/CustomerPaymentMethod/1",
+                    "email": {
+                        "emailAddress": "billing@example.com",
+                        "subject": "Update your card",
+                        "body": "Click below to refresh.",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["email"] == {
+            "emailAddress": "billing@example.com",
+            "subject": "Update your card",
+            "customMessage": "Click below to refresh.",
+        }
+
+    def test_send_email_dict_missing_address_raises(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL,
+            {
+                "id": "gid://shopify/CustomerPaymentMethod/1",
+                "email": {"subject": "no address"},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_send_email_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerPaymentMethodSendUpdateEmail": {
+                "customer": None,
+                "userErrors": [{
+                    "field": ["customerPaymentMethodId"],
+                    "message": "Payment method not found",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL,
+                {"id": "gid://shopify/CustomerPaymentMethod/missing"},
+            )
+        assert not result.ok
+
+    def test_get_update_url_requires_id(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL, {},
+        )
+        assert not result.ok
+
+    def test_get_update_url_happy_path(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerPaymentMethodGetUpdateUrl": {
+                    "updatePaymentMethodUrl":
+                        "https://shop.example.com/update-card/abc",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL,
+                {"id": "gid://shopify/CustomerPaymentMethod/1"},
+            )
+        assert result.ok
+        assert captured["customerPaymentMethodId"] == \
+            "gid://shopify/CustomerPaymentMethod/1"
+        assert result.data["update_url"] == \
+            "https://shop.example.com/update-card/abc"
+
+    def test_get_update_url_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_payment_method_ops import (
+            ShopifyCustomerPaymentMethodOpsAdapter,
+        )
+        a = ShopifyCustomerPaymentMethodOpsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerPaymentMethodGetUpdateUrl": {
+                "updatePaymentMethodUrl": None,
+                "userErrors": [{
+                    "field": ["customerPaymentMethodId"],
+                    "message": "Payment method not found",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL,
+                {"id": "gid://shopify/CustomerPaymentMethod/missing"},
             )
         assert not result.ok
