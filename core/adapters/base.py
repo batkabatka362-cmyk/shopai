@@ -340,6 +340,9 @@ class Capability(str, Enum):
     SHOPIFY_CANCEL_ORDER = "shopify_cancel_order"
     SHOPIFY_REOPEN_ORDER = "shopify_reopen_order"
     SHOPIFY_MARK_ORDER_AS_PAID = "shopify_mark_order_as_paid"
+    SHOPIFY_ADD_PRODUCTS_TO_COLLECTION = "shopify_add_products_to_collection"
+    SHOPIFY_REMOVE_PRODUCTS_FROM_COLLECTION = "shopify_remove_products_from_collection"
+    SHOPIFY_REORDER_COLLECTION_PRODUCTS = "shopify_reorder_collection_products"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

@@ -153,7 +153,6 @@ mutation collectionCreate($input: CollectionInput!) {{
     userErrors {{
       field
       message
-      code
     }}
   }}
 }}
@@ -169,7 +168,6 @@ mutation collectionUpdate($input: CollectionInput!) {{
     userErrors {{
       field
       message
-      code
     }}
   }}
 }}
@@ -183,7 +181,6 @@ mutation collectionDelete($input: CollectionDeleteInput!) {
     userErrors {
       field
       message
-      code
     }
   }
 }

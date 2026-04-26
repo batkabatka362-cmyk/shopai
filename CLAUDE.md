@@ -368,6 +368,14 @@ tolerate both forms when the cost is low:
 - `orderClose` / `orderOpen` / `orderMarkAsPaid` use the typed
   `UserError` (no `code`) — Pattern F applies. Drop `code`
   from those userErrors selections.
+- `collectionCreate` / `collectionUpdate` / `collectionDelete`
+  all use the typed `UserError` (no `code`) — Pattern F.
+- `collectionReorderProducts` requires the target collection to
+  have `sortOrder=MANUAL`. Calling it on a collection sorted by
+  best-selling / alphabetical / etc. fails with
+  `"Can't reorder products unless collection is manually sorted"`.
+  Adapter surfaces the userError verbatim — pre-checking would
+  add a read round-trip on every call.
 
 ### Pattern D-prime: oneOf input objects
 

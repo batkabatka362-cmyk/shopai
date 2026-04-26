@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eighty_adapters(self):
+    def test_register_all_adds_eightyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 80
+        assert len(status) == 81
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -867,6 +867,7 @@ class TestShopifyBootstrap:
             "shopify_product_duplicate",
             "shopify_discount_activate",
             "shopify_order_lifecycle",
+            "shopify_collection_membership",
         }
 
     def test_register_all_idempotent(self):
@@ -874,7 +875,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 80
+        assert len(get_registry()) == 81
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1142,6 +1143,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CANCEL_ORDER).name == "shopify_order_lifecycle"
         assert router.route(Capability.SHOPIFY_REOPEN_ORDER).name == "shopify_order_lifecycle"
         assert router.route(Capability.SHOPIFY_MARK_ORDER_AS_PAID).name == "shopify_order_lifecycle"
+        assert router.route(Capability.SHOPIFY_ADD_PRODUCTS_TO_COLLECTION).name == "shopify_collection_membership"
+        assert router.route(Capability.SHOPIFY_REMOVE_PRODUCTS_FROM_COLLECTION).name == "shopify_collection_membership"
+        assert router.route(Capability.SHOPIFY_REORDER_COLLECTION_PRODUCTS).name == "shopify_collection_membership"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -21306,4 +21310,241 @@ class TestShopifyOrderLifecycleAdapter:
             })
         assert result.ok
         assert result.data["order"]["financial_status"] == "PAID"
+
+
+# ── ShopifyCollectionMembershipAdapter ────────────────────
+
+
+class TestShopifyCollectionMembershipAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter()
+        assert a.name == "shopify_collection_membership"
+        for cap in (
+            Capability.SHOPIFY_ADD_PRODUCTS_TO_COLLECTION,
+            Capability.SHOPIFY_REMOVE_PRODUCTS_FROM_COLLECTION,
+            Capability.SHOPIFY_REORDER_COLLECTION_PRODUCTS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Add ─────────────────────────────────────
+
+    def test_add_requires_collection_id(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ADD_PRODUCTS_TO_COLLECTION,
+            {"product_ids": ["gid://shopify/Product/1"]},
+        )
+        assert not result.ok
+
+    def test_add_requires_product_ids(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ADD_PRODUCTS_TO_COLLECTION,
+            {"id": "gid://shopify/Collection/1"},
+        )
+        assert not result.ok
+
+    def test_add_accepts_single_string(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "collectionAddProducts": {
+                    "collection": {
+                        "id": "gid://shopify/Collection/1",
+                        "title": "Featured",
+                        "handle": "featured",
+                        "productsCount": {"count": 5},
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ADD_PRODUCTS_TO_COLLECTION,
+                {
+                    "id": "gid://shopify/Collection/1",
+                    "product_ids": "gid://shopify/Product/9",
+                },
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/Collection/1"
+        assert captured["productIds"] == ["gid://shopify/Product/9"]
+        assert result.data["products_count"] == 5
+        assert result.data["added_count"] == 1
+
+    def test_add_user_errors_fail_fast(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "collectionAddProducts": {
+                "collection": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": (
+                        "Cannot manually add products to a smart collection"
+                    ),
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ADD_PRODUCTS_TO_COLLECTION,
+                {
+                    "id": "gid://shopify/Collection/1",
+                    "product_ids": ["gid://shopify/Product/1"],
+                },
+            )
+        assert not result.ok
+
+    # ── Remove ──────────────────────────────────
+
+    def test_remove_happy_path(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "collectionRemoveProducts": {
+                    "job": {
+                        "id": "gid://shopify/Job/77", "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_REMOVE_PRODUCTS_FROM_COLLECTION,
+                {
+                    "id": "gid://shopify/Collection/1",
+                    "product_ids": [
+                        "gid://shopify/Product/1",
+                        "gid://shopify/Product/2",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["productIds"] == [
+            "gid://shopify/Product/1", "gid://shopify/Product/2",
+        ]
+        assert result.data["job_id"] == "gid://shopify/Job/77"
+        assert result.data["removed_count"] == 2
+
+    # ── Reorder ─────────────────────────────────
+
+    def test_reorder_requires_moves(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_REORDER_COLLECTION_PRODUCTS,
+            {"id": "gid://shopify/Collection/1"},
+        )
+        assert not result.ok
+
+    def test_reorder_rejects_negative_position(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_moves([{
+                "id": "gid://shopify/Product/1",
+                "new_position": -1,
+            }])
+
+    def test_reorder_rejects_missing_id(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_moves([{"new_position": 0}])
+
+    def test_reorder_happy_path(self):
+        from core.adapters.shopify.collection_membership import (
+            ShopifyCollectionMembershipAdapter,
+        )
+        a = ShopifyCollectionMembershipAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "collectionReorderProducts": {
+                    "job": {
+                        "id": "gid://shopify/Job/88", "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_REORDER_COLLECTION_PRODUCTS,
+                {
+                    "id": "gid://shopify/Collection/1",
+                    "moves": [
+                        {"id": "gid://shopify/Product/1", "new_position": 0},
+                        {"id": "gid://shopify/Product/2", "new_position": 1},
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["moves"] == [
+            {"id": "gid://shopify/Product/1", "newPosition": "0"},
+            {"id": "gid://shopify/Product/2", "newPosition": "1"},
+        ]
+        assert result.data["moves_count"] == 2
 

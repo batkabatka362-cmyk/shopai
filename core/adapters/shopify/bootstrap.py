@@ -33,6 +33,7 @@ from .carrier_services import ShopifyCarrierServicesAdapter
 from .cart_transforms import ShopifyCartTransformsAdapter
 from .catalogs import ShopifyCatalogsAdapter
 from .channels import ShopifyChannelsAdapter
+from .collection_membership import ShopifyCollectionMembershipAdapter
 from .collections import ShopifyCollectionsAdapter
 from .companies import ShopifyCompaniesAdapter
 from .company_contact_roles import ShopifyCompanyContactRolesAdapter
@@ -191,6 +192,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyProductDuplicateAdapter,
     ShopifyDiscountActivateAdapter,
     ShopifyOrderLifecycleAdapter,
+    ShopifyCollectionMembershipAdapter,
 )
 
 
