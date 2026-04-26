@@ -114,6 +114,7 @@ from .metaobject_definition_update import (
 from .metaobjects import ShopifyMetaobjectsAdapter
 from .metaobjects_upsert import ShopifyMetaobjectsUpsertAdapter
 from .order_edits import ShopifyOrderEditsAdapter
+from .order_edit_shipping import ShopifyOrderEditShippingAdapter
 from .order_invoice import ShopifyOrderInvoiceSendAdapter
 from .order_transactions import ShopifyOrderTransactionsAdapter
 from .order_lifecycle import ShopifyOrderLifecycleAdapter
@@ -299,6 +300,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifySavedSearchesAdapter,
     ShopifySubscriptionDraftFreeShippingAdapter,
     ShopifySubscriptionDraftManualDiscountAdapter,
+    ShopifyOrderEditShippingAdapter,
 )
 
 

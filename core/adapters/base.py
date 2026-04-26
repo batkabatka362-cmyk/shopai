@@ -464,6 +464,9 @@ class Capability(str, Enum):
     SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT = "shopify_subscription_draft_add_manual_discount"
     SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_MANUAL_DISCOUNT = "shopify_subscription_draft_update_manual_discount"
     SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE = "shopify_subscription_draft_apply_discount_code"
+    SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE = "shopify_order_edit_add_shipping_line"
+    SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE = "shopify_order_edit_update_shipping_line"
+    SHOPIFY_ORDER_EDIT_REMOVE_SHIPPING_LINE = "shopify_order_edit_remove_shipping_line"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

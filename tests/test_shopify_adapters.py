@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentyfive_adapters(self):
+    def test_register_all_adds_onehundredtwentysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 125
+        assert len(status) == 126
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -912,6 +912,7 @@ class TestShopifyBootstrap:
             "shopify_saved_searches",
             "shopify_subscription_draft_free_shipping",
             "shopify_subscription_draft_manual_discount",
+            "shopify_order_edit_shipping",
         }
 
     def test_register_all_idempotent(self):
@@ -919,7 +920,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 125
+        assert len(get_registry()) == 126
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1311,6 +1312,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_ADD_MANUAL_DISCOUNT).name == "shopify_subscription_draft_manual_discount"
         assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_MANUAL_DISCOUNT).name == "shopify_subscription_draft_manual_discount"
         assert router.route(Capability.SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE).name == "shopify_subscription_draft_manual_discount"
+        assert router.route(Capability.SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE).name == "shopify_order_edit_shipping"
+        assert router.route(Capability.SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE).name == "shopify_order_edit_shipping"
+        assert router.route(Capability.SHOPIFY_ORDER_EDIT_REMOVE_SHIPPING_LINE).name == "shopify_order_edit_shipping"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -33396,3 +33400,422 @@ class TestShopifySubscriptionDraftManualDiscountAdapter:
                 },
             )
         assert not result.ok
+
+
+# ── ShopifyOrderEditShippingAdapter ───────────────────────
+
+
+class TestShopifyOrderEditShippingAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter()
+        assert a.name == "shopify_order_edit_shipping"
+        for cap in (
+            Capability.SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE,
+            Capability.SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE,
+            Capability.SHOPIFY_ORDER_EDIT_REMOVE_SHIPPING_LINE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Add ─────────────────────────────────────────────────────
+
+    def test_add_requires_order_id(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE,
+            {"title": "Express", "price": "10.00"},
+        )
+        assert not result.ok
+
+    def test_add_requires_title(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE,
+            {"order_id": "gid://shopify/Order/1", "price": "10.00"},
+        )
+        assert not result.ok
+
+    def test_add_rejects_negative_price(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE,
+            {
+                "order_id": "gid://shopify/Order/1",
+                "title": "Express",
+                "price": "-5.00",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_add_full_cycle_happy_path(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        calls = []
+
+        def fake_gql(q, v):
+            calls.append((q, v))
+            if "orderEditBegin" in q:
+                return {
+                    "orderEditBegin": {
+                        "calculatedOrder": {
+                            "id":
+                                "gid://shopify/CalculatedOrder/1",
+                        },
+                        "userErrors": [],
+                    },
+                }
+            if "orderEditAddShippingLine" in q:
+                return {
+                    "orderEditAddShippingLine": {
+                        "calculatedShippingLine": {
+                            "id":
+                                "gid://shopify/CalculatedShippingLine/1",
+                            "title": "Express",
+                            "price": {
+                                "shopMoney": {
+                                    "amount": "12.50",
+                                    "currencyCode": "USD",
+                                },
+                            },
+                            "stagedStatus": "ADDED",
+                        },
+                        "userErrors": [],
+                    },
+                }
+            if "orderEditCommit" in q:
+                return {
+                    "orderEditCommit": {
+                        "order": {
+                            "id": "gid://shopify/Order/1",
+                            "name": "#1001",
+                            "totalPriceSet": {
+                                "presentmentMoney": {
+                                    "amount": "112.50",
+                                    "currencyCode": "USD",
+                                },
+                            },
+                        },
+                        "userErrors": [],
+                    },
+                }
+            return {}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "title": "Express",
+                    "price": "12.50",
+                    "currency_code": "USD",
+                    "notify_customer": False,
+                    "staff_note": "Express upgrade",
+                },
+            )
+        assert result.ok
+        # 3 wire calls: begin → add → commit
+        assert len(calls) == 3
+        # begin uses the live order id
+        assert calls[0][1] == {"id": "gid://shopify/Order/1"}
+        # add uses the calculated-order id and shippingLine input
+        assert calls[1][1] == {
+            "id": "gid://shopify/CalculatedOrder/1",
+            "shippingLine": {
+                "title": "Express",
+                "price": {
+                    "amount": 12.5, "currencyCode": "USD",
+                },
+            },
+        }
+        # commit uses the calculated-order id with staff-note +
+        # notify
+        assert calls[2][1] == {
+            "id": "gid://shopify/CalculatedOrder/1",
+            "notifyCustomer": False,
+            "staffNote": "Express upgrade",
+        }
+        assert result.data["shipping_line"]["amount"] == 12.5
+        assert result.data["total_price"] == 112.5
+        assert result.data["order_name"] == "#1001"
+
+    def test_add_aborts_without_commit_on_op_user_errors(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        calls = []
+
+        def fake_gql(q, v):
+            calls.append(q)
+            if "orderEditBegin" in q:
+                return {
+                    "orderEditBegin": {
+                        "calculatedOrder": {
+                            "id":
+                                "gid://shopify/CalculatedOrder/1",
+                        },
+                        "userErrors": [],
+                    },
+                }
+            if "orderEditAddShippingLine" in q:
+                return {
+                    "orderEditAddShippingLine": {
+                        "calculatedShippingLine": None,
+                        "userErrors": [{
+                            "field": ["shippingLine", "price"],
+                            "message": "Price exceeds order total",
+                        }],
+                    },
+                }
+            return {}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "title": "Express",
+                    "price": "999.00",
+                },
+            )
+        assert not result.ok
+        # 2 calls only — begin + failed add. Commit never fires.
+        assert len(calls) == 2
+        assert any("orderEditBegin" in c for c in calls)
+        assert any("orderEditAddShippingLine" in c for c in calls)
+        assert not any("orderEditCommit" in c for c in calls)
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_requires_shipping_line_id(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE,
+            {
+                "order_id": "gid://shopify/Order/1",
+                "title": "Free shipping retroactive",
+                "price": "0.00",
+            },
+        )
+        assert not result.ok
+
+    def test_update_rejects_empty_body(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE,
+            {
+                "order_id": "gid://shopify/Order/1",
+                "shipping_line_id":
+                    "gid://shopify/ShippingLine/1",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_full_cycle_happy_path(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        calls = []
+
+        def fake_gql(q, v):
+            calls.append((q, v))
+            if "orderEditBegin" in q:
+                return {
+                    "orderEditBegin": {
+                        "calculatedOrder": {
+                            "id":
+                                "gid://shopify/CalculatedOrder/1",
+                        },
+                        "userErrors": [],
+                    },
+                }
+            if "orderEditUpdateShippingLine" in q:
+                return {
+                    "orderEditUpdateShippingLine": {
+                        "calculatedShippingLine": {
+                            "id":
+                                "gid://shopify/CalculatedShippingLine/1",
+                            "title": "Free shipping retroactive",
+                            "price": {
+                                "shopMoney": {
+                                    "amount": "0.00",
+                                    "currencyCode": "USD",
+                                },
+                            },
+                            "stagedStatus": "EDITED",
+                        },
+                        "userErrors": [],
+                    },
+                }
+            if "orderEditCommit" in q:
+                return {
+                    "orderEditCommit": {
+                        "order": {
+                            "id": "gid://shopify/Order/1",
+                            "name": "#1001",
+                            "totalPriceSet": {
+                                "presentmentMoney": {
+                                    "amount": "100.00",
+                                    "currencyCode": "USD",
+                                },
+                            },
+                        },
+                        "userErrors": [],
+                    },
+                }
+            return {}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "shipping_line_id":
+                        "gid://shopify/ShippingLine/1",
+                    "title": "Free shipping retroactive",
+                    "price": "0.00",
+                },
+            )
+        assert result.ok
+        assert len(calls) == 3
+        # update call shape
+        assert calls[1][1] == {
+            "id": "gid://shopify/CalculatedOrder/1",
+            "shippingLineId": "gid://shopify/ShippingLine/1",
+            "shippingLine": {
+                "title": "Free shipping retroactive",
+                "price": {"amount": 0.0, "currencyCode": "USD"},
+            },
+        }
+        assert result.data["shipping_line"]["amount"] == 0.0
+        assert result.data["shipping_line"]["staged_status"] == \
+            "EDITED"
+
+    # ── Remove ──────────────────────────────────────────────────
+
+    def test_remove_requires_shipping_line_id(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ORDER_EDIT_REMOVE_SHIPPING_LINE,
+            {"order_id": "gid://shopify/Order/1"},
+        )
+        assert not result.ok
+
+    def test_remove_full_cycle_happy_path(self):
+        from core.adapters.shopify.order_edit_shipping import (
+            ShopifyOrderEditShippingAdapter,
+        )
+        a = ShopifyOrderEditShippingAdapter(
+            shop_url="s", access_token="t",
+        )
+        calls = []
+
+        def fake_gql(q, v):
+            calls.append(q)
+            if "orderEditBegin" in q:
+                return {
+                    "orderEditBegin": {
+                        "calculatedOrder": {
+                            "id":
+                                "gid://shopify/CalculatedOrder/1",
+                        },
+                        "userErrors": [],
+                    },
+                }
+            if "orderEditRemoveShippingLine" in q:
+                return {
+                    "orderEditRemoveShippingLine": {
+                        "calculatedOrder": {
+                            "id":
+                                "gid://shopify/CalculatedOrder/1",
+                        },
+                        "userErrors": [],
+                    },
+                }
+            if "orderEditCommit" in q:
+                return {
+                    "orderEditCommit": {
+                        "order": {
+                            "id": "gid://shopify/Order/1",
+                            "name": "#1001",
+                            "totalPriceSet": {
+                                "presentmentMoney": {
+                                    "amount": "90.00",
+                                    "currencyCode": "USD",
+                                },
+                            },
+                        },
+                        "userErrors": [],
+                    },
+                }
+            return {}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ORDER_EDIT_REMOVE_SHIPPING_LINE,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "shipping_line_id":
+                        "gid://shopify/ShippingLine/1",
+                    "notify_customer": True,
+                },
+            )
+        assert result.ok
+        assert len(calls) == 3
+        assert result.data["removed_shipping_line_id"] == \
+            "gid://shopify/ShippingLine/1"
+        assert result.data["total_price"] == 90.0
