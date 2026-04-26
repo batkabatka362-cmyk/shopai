@@ -239,102 +239,55 @@ class AutonomousController:
             # lazily, so failures here MUST NOT take down the
             # rest of the controller — the legacy ``self._llm``
             # path keeps working as before.
+            # Each adapter family is registered independently so a
+            # missing-module / bootstrap-failure on one doesn't sink
+            # the rest. The router itself is always populated as long
+            # as `core.adapters` imports — individual register_all()
+            # failures get logged and skipped.
             try:
                 from core.adapters import get_router
-                from core.adapters.llm.bootstrap import register_all as register_llms
-                from core.adapters.shopify.bootstrap import register_all as register_shopify
-                from core.adapters.search.bootstrap import register_all as register_search
-                from core.adapters.shipping.bootstrap import register_all as register_shipping
-                from core.adapters.email.bootstrap import register_all as register_email
-                from core.adapters.sms.bootstrap import register_all as register_sms
-                from core.adapters.payment.bootstrap import register_all as register_payment
-                from core.adapters.image.bootstrap import register_all as register_image
-                from core.adapters.obsidian.bootstrap import register_all as register_obsidian
-                from core.adapters.browser.bootstrap import register_all as register_browser
-                from core.adapters.vector.bootstrap import register_all as register_vector
-                from core.adapters.scraper.bootstrap import register_all as register_scraper
-                from core.adapters.reviews.bootstrap import register_all as register_reviews
-                from core.adapters.ads.bootstrap import register_all as register_ads
-                from core.adapters.ads_spy.bootstrap import register_all as register_ads_spy
-                from core.adapters.video_gen.bootstrap import register_all as register_video_gen
-                from core.adapters.sourcing.bootstrap import register_all as register_sourcing
-                from core.adapters.subscription.bootstrap import register_all as register_subscription
-                from core.adapters.voice.bootstrap import register_all as register_voice
-                from core.adapters.automation.bootstrap import register_all as register_automation
-                from core.adapters.helpdesk.bootstrap import register_all as register_helpdesk
-                from core.adapters.analytics.bootstrap import register_all as register_analytics
-                from core.adapters.crm.bootstrap import register_all as register_crm
-                from core.adapters.sourcing.bootstrap import register_all as register_sourcing
-                llm_status = register_llms()
-                shopify_status = register_shopify()
-                search_status = register_search()
-                shipping_status = register_shipping()
-                email_status = register_email()
-                sms_status = register_sms()
-                payment_status = register_payment()
-                image_status = register_image()
-                obsidian_status = register_obsidian()
-                browser_status = register_browser()
-                vector_status = register_vector()
-                scraper_status = register_scraper()
-                reviews_status = register_reviews()
-                ads_status = register_ads()
-                ads_spy_status = register_ads_spy()
-                video_gen_status = register_video_gen()
-                sourcing_status = register_sourcing()
-                subscription_status = register_subscription()
-                voice_status = register_voice()
-                automation_status = register_automation()
-                helpdesk_status = register_helpdesk()
-                analytics_status = register_analytics()
-                crm_status = register_crm()
-                sourcing_status = register_sourcing()
-                self._adapter_status = {
-                    **llm_status, **shopify_status,
-                    **search_status, **shipping_status,
-                    **email_status, **sms_status,
-                    **payment_status, **image_status,
-                    **obsidian_status, **browser_status,
-                    **vector_status, **scraper_status,
-                    **reviews_status, **ads_status,
-                    **ads_spy_status,
-                    **video_gen_status,
-                    **sourcing_status,
-                    **subscription_status, **voice_status,
-                    **automation_status, **helpdesk_status,
-                    **analytics_status, **crm_status,
-                    **sourcing_status,
-                }
+                self._adapter_status = {}
+                _ADAPTER_FAMILIES = (
+                    "llm", "shopify", "search", "shipping",
+                    "email", "sms", "payment", "image",
+                    "obsidian", "browser", "vector", "scraper",
+                    "reviews", "ads", "ads_spy", "video_gen",
+                    "sourcing", "subscription", "voice",
+                    "automation", "helpdesk", "analytics", "crm",
+                )
+                _registered_per_family: dict[str, int] = {}
+                for family in _ADAPTER_FAMILIES:
+                    try:
+                        mod = __import__(
+                            f"core.adapters.{family}.bootstrap",
+                            fromlist=["register_all"],
+                        )
+                        family_status = mod.register_all() or {}
+                    except ModuleNotFoundError:
+                        # Adapter family not present in this build.
+                        # Expected for optional integrations the
+                        # operator hasn't installed.
+                        _registered_per_family[family] = 0
+                        continue
+                    except Exception as fam_exc:  # noqa: BLE001
+                        logger.warning(
+                            "Adapter family %s failed to register: %s",
+                            family, fam_exc,
+                        )
+                        _registered_per_family[family] = 0
+                        continue
+                    self._adapter_status.update(family_status)
+                    _registered_per_family[family] = len(family_status)
                 self._adapter_router = get_router()
                 logger.info(
                     "Adapter layer initialised: %d adapters registered, "
-                    "%d configured (%d LLM, %d Shopify, %d search, "
-                    "%d shipping, %d email, %d SMS, %d payment, "
-                    "%d image, %d vault, %d browser, %d vector, "
-                    "%d scraper, %d reviews, %d ads, %d ads_spy, "
-                    "%d video_gen, %d sourcing, %d subscription, %d voice, %d automation)",
+                    "%d configured across families: %s",
                     len(self._adapter_status),
                     sum(1 for v in self._adapter_status.values() if v),
-                    len(llm_status),
-                    len(shopify_status),
-                    len(search_status),
-                    len(shipping_status),
-                    len(email_status),
-                    len(sms_status),
-                    len(payment_status),
-                    len(image_status),
-                    len(obsidian_status),
-                    len(browser_status),
-                    len(vector_status),
-                    len(scraper_status),
-                    len(reviews_status),
-                    len(ads_status),
-                    len(ads_spy_status),
-                    len(video_gen_status),
-                    len(sourcing_status),
-                    len(subscription_status),
-                    len(voice_status),
-                    len(automation_status),
+                    ", ".join(
+                        f"{f}={n}" for f, n
+                        in _registered_per_family.items() if n
+                    ),
                 )
             except Exception as adapter_exc:  # noqa: BLE001
                 logger.warning(

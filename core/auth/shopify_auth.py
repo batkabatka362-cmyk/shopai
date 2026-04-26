@@ -170,21 +170,27 @@ class ShopifyAuth:
     # ── Token Request ────────────────────────────────────────
 
     def _request_token(self) -> dict[str, Any]:
-        """Request new access token from Shopify using authorization code exchange."""
+        """Request new access token from Shopify via the client_credentials grant.
+
+        Per Shopify's 2026 docs the token endpoint expects a
+        form-encoded body with ``grant_type=client_credentials``;
+        a JSON body or a missing ``grant_type`` produces a 400.
+        """
         if not self._shop_url:
             raise RuntimeError("ShopifyAuth: shop_url not configured")
         url = f"https://{self._shop_url}/admin/oauth/access_token"
 
-        payload = json.dumps({
+        payload = urllib.parse.urlencode({
             "client_id": self._client_id,
             "client_secret": self._client_secret,
+            "grant_type": "client_credentials",
         }).encode("utf-8")
 
         req = urllib.request.Request(
             url,
             data=payload,
             headers={
-                "Content-Type": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
             },
             method="POST",
@@ -229,19 +235,23 @@ class ShopifyAuth:
         return f"https://{self._shop_url}/admin/oauth/authorize?{params}"
 
     def exchange_code(self, code: str) -> str:
-        """Exchange authorization code for access token."""
+        """Exchange authorization code for access token (authorization_code grant)."""
         url = f"https://{self._shop_url}/admin/oauth/access_token"
 
-        payload = json.dumps({
+        payload = urllib.parse.urlencode({
             "client_id": self._client_id,
             "client_secret": self._client_secret,
             "code": code,
+            "grant_type": "authorization_code",
         }).encode("utf-8")
 
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
             method="POST",
         )
 
