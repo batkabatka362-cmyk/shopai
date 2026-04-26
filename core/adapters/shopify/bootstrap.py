@@ -167,6 +167,7 @@ from .theme_ops import ShopifyThemeOpsAdapter
 from .themes import ShopifyThemesAdapter
 from .translations import ShopifyTranslationsAdapter
 from .url_redirects import ShopifyUrlRedirectsAdapter
+from .url_redirect_import import ShopifyUrlRedirectImportAdapter
 from .validations import ShopifyValidationsAdapter
 from .web_pixels import ShopifyWebPixelsAdapter
 from .webhooks import ShopifyWebhooksAdapter
@@ -301,6 +302,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifySubscriptionDraftFreeShippingAdapter,
     ShopifySubscriptionDraftManualDiscountAdapter,
     ShopifyOrderEditShippingAdapter,
+    ShopifyUrlRedirectImportAdapter,
 )
 
 

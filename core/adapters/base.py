@@ -467,6 +467,9 @@ class Capability(str, Enum):
     SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE = "shopify_order_edit_add_shipping_line"
     SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE = "shopify_order_edit_update_shipping_line"
     SHOPIFY_ORDER_EDIT_REMOVE_SHIPPING_LINE = "shopify_order_edit_remove_shipping_line"
+    SHOPIFY_CREATE_URL_REDIRECT_IMPORT = "shopify_create_url_redirect_import"
+    SHOPIFY_SUBMIT_URL_REDIRECT_IMPORT = "shopify_submit_url_redirect_import"
+    SHOPIFY_GET_URL_REDIRECT_IMPORT = "shopify_get_url_redirect_import"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

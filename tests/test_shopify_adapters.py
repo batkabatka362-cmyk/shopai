@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentysix_adapters(self):
+    def test_register_all_adds_onehundredtwentyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 126
+        assert len(status) == 127
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -913,6 +913,7 @@ class TestShopifyBootstrap:
             "shopify_subscription_draft_free_shipping",
             "shopify_subscription_draft_manual_discount",
             "shopify_order_edit_shipping",
+            "shopify_url_redirect_import",
         }
 
     def test_register_all_idempotent(self):
@@ -920,7 +921,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 126
+        assert len(get_registry()) == 127
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1315,6 +1316,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_ORDER_EDIT_ADD_SHIPPING_LINE).name == "shopify_order_edit_shipping"
         assert router.route(Capability.SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE).name == "shopify_order_edit_shipping"
         assert router.route(Capability.SHOPIFY_ORDER_EDIT_REMOVE_SHIPPING_LINE).name == "shopify_order_edit_shipping"
+        assert router.route(Capability.SHOPIFY_CREATE_URL_REDIRECT_IMPORT).name == "shopify_url_redirect_import"
+        assert router.route(Capability.SHOPIFY_SUBMIT_URL_REDIRECT_IMPORT).name == "shopify_url_redirect_import"
+        assert router.route(Capability.SHOPIFY_GET_URL_REDIRECT_IMPORT).name == "shopify_url_redirect_import"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -33819,3 +33823,245 @@ class TestShopifyOrderEditShippingAdapter:
         assert result.data["removed_shipping_line_id"] == \
             "gid://shopify/ShippingLine/1"
         assert result.data["total_price"] == 90.0
+
+
+# ── ShopifyUrlRedirectImportAdapter ───────────────────────
+
+
+class TestShopifyUrlRedirectImportAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter()
+        assert a.name == "shopify_url_redirect_import"
+        for cap in (
+            Capability.SHOPIFY_CREATE_URL_REDIRECT_IMPORT,
+            Capability.SHOPIFY_SUBMIT_URL_REDIRECT_IMPORT,
+            Capability.SHOPIFY_GET_URL_REDIRECT_IMPORT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_create_requires_url(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_URL_REDIRECT_IMPORT, {},
+        )
+        assert not result.ok
+
+    def test_create_rejects_relative_url(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_URL_REDIRECT_IMPORT,
+            {"url": "/redirects.csv"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "urlRedirectImportCreate": {
+                    "urlRedirectImport": {
+                        "id":
+                            "gid://shopify/UrlRedirectImport/1",
+                        "count": 100,
+                        "createdCount": 0,
+                        "updatedCount": 0,
+                        "failedCount": 0,
+                        "finished": False,
+                        "finishedAt": None,
+                        "previewRedirects": [
+                            {
+                                "path": "/old-1",
+                                "target": "/new-1",
+                            },
+                            {
+                                "path": "/old-2",
+                                "target": "/new-2",
+                            },
+                        ],
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_URL_REDIRECT_IMPORT,
+                {
+                    "url":
+                        "https://example.com/redirects.csv",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "url": "https://example.com/redirects.csv",
+        }
+        imp = result.data["import"]
+        assert imp["count"] == 100
+        assert imp["finished"] is False
+        assert len(imp["preview_redirects"]) == 2
+        assert imp["preview_redirects"][0]["path"] == "/old-1"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "urlRedirectImportCreate": {
+                "urlRedirectImport": None,
+                "userErrors": [{
+                    "field": ["url"],
+                    "message": "URL could not be fetched",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_URL_REDIRECT_IMPORT,
+                {"url": "https://example.com/missing.csv"},
+            )
+        assert not result.ok
+
+    def test_submit_requires_id(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SUBMIT_URL_REDIRECT_IMPORT, {},
+        )
+        assert not result.ok
+
+    def test_submit_happy_path(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "urlRedirectImportSubmit": {
+                    "job": {
+                        "id": "gid://shopify/Job/1",
+                        "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SUBMIT_URL_REDIRECT_IMPORT,
+                {"id": "gid://shopify/UrlRedirectImport/1"},
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/UrlRedirectImport/1",
+        }
+        assert result.data["job_id"] == "gid://shopify/Job/1"
+        assert result.data["job_done"] is False
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_GET_URL_REDIRECT_IMPORT, {},
+        )
+        assert not result.ok
+
+    def test_get_returns_finished_state(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            return {
+                "urlRedirectImport": {
+                    "id":
+                        "gid://shopify/UrlRedirectImport/1",
+                    "count": 100,
+                    "createdCount": 95,
+                    "updatedCount": 3,
+                    "failedCount": 2,
+                    "finished": True,
+                    "finishedAt": "2026-04-26T00:00:00Z",
+                    "previewRedirects": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_GET_URL_REDIRECT_IMPORT,
+                {"id": "gid://shopify/UrlRedirectImport/1"},
+            )
+        assert result.ok
+        imp = result.data["import"]
+        assert imp["finished"] is True
+        assert imp["created_count"] == 95
+        assert imp["failed_count"] == 2
+
+    def test_get_returns_empty_when_not_found(self):
+        from core.adapters.shopify.url_redirect_import import (
+            ShopifyUrlRedirectImportAdapter,
+        )
+        a = ShopifyUrlRedirectImportAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "urlRedirectImport": None,
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_GET_URL_REDIRECT_IMPORT,
+                {"id": "gid://shopify/UrlRedirectImport/missing"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["import"] == {}
