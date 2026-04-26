@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightynine_adapters(self):
+    def test_register_all_adds_ninety_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 89
+        assert len(status) == 90
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -876,6 +876,7 @@ class TestShopifyBootstrap:
             "shopify_order_payment",
             "shopify_metafield_definition_pin",
             "shopify_company_auxiliary",
+            "shopify_inventory_transfer",
         }
 
     def test_register_all_idempotent(self):
@@ -883,7 +884,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 89
+        assert len(get_registry()) == 90
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1171,6 +1172,11 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME).name == "shopify_company_auxiliary"
         assert router.route(Capability.SHOPIFY_DELETE_COMPANY_ADDRESS).name == "shopify_company_auxiliary"
         assert router.route(Capability.SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS).name == "shopify_company_auxiliary"
+        assert router.route(Capability.SHOPIFY_CREATE_INVENTORY_TRANSFER).name == "shopify_inventory_transfer"
+        assert router.route(Capability.SHOPIFY_EDIT_INVENTORY_TRANSFER).name == "shopify_inventory_transfer"
+        assert router.route(Capability.SHOPIFY_CANCEL_INVENTORY_TRANSFER).name == "shopify_inventory_transfer"
+        assert router.route(Capability.SHOPIFY_DELETE_INVENTORY_TRANSFER).name == "shopify_inventory_transfer"
+        assert router.route(Capability.SHOPIFY_MARK_INVENTORY_TRANSFER_READY).name == "shopify_inventory_transfer"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -23459,4 +23465,358 @@ class TestShopifyCompanyAuxiliaryAdapter:
         assert result.data["tax_exemptions"] == [
             "CA_RESELLER_EXEMPTION",
         ]
+
+
+# ── ShopifyInventoryTransferAdapter ───────────────────────
+
+
+class TestShopifyInventoryTransferAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter()
+        assert a.name == "shopify_inventory_transfer"
+        for cap in (
+            Capability.SHOPIFY_CREATE_INVENTORY_TRANSFER,
+            Capability.SHOPIFY_EDIT_INVENTORY_TRANSFER,
+            Capability.SHOPIFY_CANCEL_INVENTORY_TRANSFER,
+            Capability.SHOPIFY_DELETE_INVENTORY_TRANSFER,
+            Capability.SHOPIFY_MARK_INVENTORY_TRANSFER_READY,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Line items builder ──────────────────────
+
+    def test_line_items_rejects_zero_quantity(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_line_items([{
+                "inventory_item_id":
+                    "gid://shopify/InventoryItem/1",
+                "quantity": 0,
+            }])
+
+    def test_line_items_rejects_missing_inventory_id(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_line_items([{"quantity": 5}])
+
+    # ── Create ──────────────────────────────────
+
+    def test_create_requires_origin(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_INVENTORY_TRANSFER,
+            {
+                "destination_location_id": "gid://shopify/Location/2",
+                "line_items": [{
+                    "inventory_item_id":
+                        "gid://shopify/InventoryItem/1",
+                    "quantity": 1,
+                }],
+            },
+        )
+        assert not result.ok
+
+    def test_create_requires_destination(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_INVENTORY_TRANSFER,
+            {
+                "origin_location_id": "gid://shopify/Location/1",
+                "line_items": [{
+                    "inventory_item_id":
+                        "gid://shopify/InventoryItem/1",
+                    "quantity": 1,
+                }],
+            },
+        )
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "inventoryTransferCreate": {
+                    "inventoryTransfer": {
+                        "id": "gid://shopify/InventoryTransfer/1",
+                        "status": "DRAFT",
+                        "referenceName": "TR-001",
+                        "note": "rebalance",
+                        "origin": {
+                            "name": "Main DC",
+                            "location": {
+                                "id": "gid://shopify/Location/1",
+                                "name": "Main DC",
+                            },
+                        },
+                        "destination": {
+                            "name": "West Coast",
+                            "location": {
+                                "id": "gid://shopify/Location/2",
+                                "name": "West Coast",
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_INVENTORY_TRANSFER,
+                {
+                    "origin_location_id":
+                        "gid://shopify/Location/1",
+                    "destination_location_id":
+                        "gid://shopify/Location/2",
+                    "line_items": [
+                        {
+                            "inventory_item_id":
+                                "gid://shopify/InventoryItem/1",
+                            "quantity": 5,
+                        },
+                        {
+                            "inventory_item_id":
+                                "gid://shopify/InventoryItem/2",
+                            "quantity": 3,
+                        },
+                    ],
+                    "note": "rebalance",
+                    "tags": ["rebalance", "auto"],
+                    "reference_name": "TR-001",
+                },
+            )
+        assert result.ok
+        inp = captured["input"]
+        assert inp["originLocationId"] == "gid://shopify/Location/1"
+        assert inp["destinationLocationId"] == \
+            "gid://shopify/Location/2"
+        assert inp["lineItems"] == [
+            {"inventoryItemId":
+             "gid://shopify/InventoryItem/1", "quantity": 5},
+            {"inventoryItemId":
+             "gid://shopify/InventoryItem/2", "quantity": 3},
+        ]
+        assert inp["tags"] == ["rebalance", "auto"]
+        assert inp["referenceName"] == "TR-001"
+        assert result.data["transfer"]["status"] == "DRAFT"
+        assert result.data["transfer"]["origin_name"] == "Main DC"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "inventoryTransferCreate": {
+                "inventoryTransfer": None,
+                "userErrors": [{
+                    "field": ["input", "originLocationId"],
+                    "message": "Origin == destination not allowed",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_INVENTORY_TRANSFER,
+                {
+                    "origin_location_id": "gid://shopify/Location/1",
+                    "destination_location_id":
+                        "gid://shopify/Location/1",
+                    "line_items": [{
+                        "inventory_item_id":
+                            "gid://shopify/InventoryItem/1",
+                        "quantity": 1,
+                    }],
+                },
+            )
+        assert not result.ok
+
+    # ── Edit ────────────────────────────────────
+
+    def test_edit_requires_id(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_EDIT_INVENTORY_TRANSFER,
+            {"note": "patched"},
+        )
+        assert not result.ok
+
+    def test_edit_requires_at_least_one_field(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_EDIT_INVENTORY_TRANSFER,
+            {"id": "gid://shopify/InventoryTransfer/1"},
+        )
+        assert not result.ok
+
+    def test_edit_uses_origin_id_not_origin_location_id(self):
+        # Pattern D: Edit input uses originId / destinationId, not
+        # the *LocationId fields Create uses.
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "inventoryTransferEdit": {
+                    "inventoryTransfer": {
+                        "id": "gid://shopify/InventoryTransfer/1",
+                        "status": "DRAFT",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_EDIT_INVENTORY_TRANSFER,
+                {
+                    "id": "gid://shopify/InventoryTransfer/1",
+                    "origin_location_id":
+                        "gid://shopify/Location/3",
+                    "destination_location_id":
+                        "gid://shopify/Location/4",
+                    "note": "rerouted",
+                },
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/InventoryTransfer/1"
+        assert captured["input"]["originId"] == \
+            "gid://shopify/Location/3"
+        assert captured["input"]["destinationId"] == \
+            "gid://shopify/Location/4"
+        assert "originLocationId" not in captured["input"]
+        assert captured["input"]["note"] == "rerouted"
+
+    # ── Cancel ──────────────────────────────────
+
+    def test_cancel_happy_path(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "inventoryTransferCancel": {
+                "inventoryTransfer": {
+                    "id": "gid://shopify/InventoryTransfer/1",
+                    "status": "CANCELED",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CANCEL_INVENTORY_TRANSFER,
+                {"id": "gid://shopify/InventoryTransfer/1"},
+            )
+        assert result.ok
+        assert result.data["transfer"]["status"] == "CANCELED"
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "inventoryTransferDelete": {
+                "deletedId": "gid://shopify/InventoryTransfer/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_INVENTORY_TRANSFER,
+                {"id": "gid://shopify/InventoryTransfer/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/InventoryTransfer/1"
+
+    # ── Mark ready ──────────────────────────────
+
+    def test_mark_ready_happy_path(self):
+        from core.adapters.shopify.inventory_transfer import (
+            ShopifyInventoryTransferAdapter,
+        )
+        a = ShopifyInventoryTransferAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "inventoryTransferMarkAsReadyToShip": {
+                "inventoryTransfer": {
+                    "id": "gid://shopify/InventoryTransfer/1",
+                    "status": "OPEN",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_MARK_INVENTORY_TRANSFER_READY,
+                {"id": "gid://shopify/InventoryTransfer/1"},
+            )
+        assert result.ok
+        assert result.data["transfer"]["status"] == "OPEN"
 

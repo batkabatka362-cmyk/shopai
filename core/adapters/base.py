@@ -360,6 +360,11 @@ class Capability(str, Enum):
     SHOPIFY_SEND_COMPANY_CONTACT_WELCOME = "shopify_send_company_contact_welcome"
     SHOPIFY_DELETE_COMPANY_ADDRESS = "shopify_delete_company_address"
     SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS = "shopify_update_company_location_tax_settings"
+    SHOPIFY_CREATE_INVENTORY_TRANSFER = "shopify_create_inventory_transfer"
+    SHOPIFY_EDIT_INVENTORY_TRANSFER = "shopify_edit_inventory_transfer"
+    SHOPIFY_CANCEL_INVENTORY_TRANSFER = "shopify_cancel_inventory_transfer"
+    SHOPIFY_DELETE_INVENTORY_TRANSFER = "shopify_delete_inventory_transfer"
+    SHOPIFY_MARK_INVENTORY_TRANSFER_READY = "shopify_mark_inventory_transfer_ready"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

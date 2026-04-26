@@ -392,6 +392,18 @@ tolerate both forms when the cost is low:
   — the base `_check_user_errors` helper looks for the literal
   `userErrors` key and misses this one. Adapters using
   `productReorderMedia` extract the custom key manually.
+- `InventoryTransfer.origin` and `.destination` are
+  `LocationSnapshot` (a value-typed snapshot at transfer-creation
+  time), NOT `Location`. The snapshot has `name` directly but
+  the underlying `id` lives under `.location.id`. Selecting
+  `origin { id }` fails with "Field 'id' doesn't exist on
+  LocationSnapshot". Use `origin { name location { id name } }`.
+- `InventoryTransferEditInput` uses `originId` /
+  `destinationId`, but `InventoryTransferCreateInput` uses
+  `originLocationId` / `destinationLocationId`. Pattern D —
+  same logical field, different camelCase names per mutation.
+  Adapter routes friendly snake_case (`origin_location_id`)
+  to the right field per call site.
 
 ### Pattern D-prime: oneOf input objects
 

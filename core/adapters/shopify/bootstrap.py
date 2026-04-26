@@ -74,6 +74,7 @@ from .inventory import ShopifyInventoryAdapter
 from .inventory_adjust import ShopifyInventoryAdjustAdapter
 from .inventory_activation import ShopifyInventoryActivationAdapter
 from .inventory_shipments import ShopifyInventoryShipmentsAdapter
+from .inventory_transfer import ShopifyInventoryTransferAdapter
 from .locations import ShopifyLocationsAdapter
 from .market_web_presences import ShopifyMarketWebPresencesAdapter
 from .marketing_events import ShopifyMarketingEventsAdapter
@@ -209,6 +210,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyOrderPaymentAdapter,
     ShopifyMetafieldDefinitionPinAdapter,
     ShopifyCompanyAuxiliaryAdapter,
+    ShopifyInventoryTransferAdapter,
 )
 
 
