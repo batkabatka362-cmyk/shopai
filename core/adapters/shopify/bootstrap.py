@@ -74,6 +74,7 @@ from .fulfillment_order_ops import ShopifyFulfillmentOrderOpsAdapter
 from .fulfillment_services import ShopifyFulfillmentServicesAdapter
 from .generic_tags import ShopifyGenericTagsAdapter
 from .gift_card_crud import ShopifyGiftCardCRUDAdapter
+from .gift_card_notify import ShopifyGiftCardNotifyAdapter
 from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
 from .inventory_adjust import ShopifyInventoryAdjustAdapter
@@ -239,6 +240,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCustomerSegmentWriteAdapter,
     ShopifyDiscountBulkDeleteAdapter,
     ShopifyProductOptionUpdateAdapter,
+    ShopifyGiftCardNotifyAdapter,
 )
 
 

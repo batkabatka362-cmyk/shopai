@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredthree_adapters(self):
+    def test_register_all_adds_onehundredfour_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 103
+        assert len(status) == 104
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -890,6 +890,7 @@ class TestShopifyBootstrap:
             "shopify_customer_segment_write",
             "shopify_discount_bulk_delete",
             "shopify_product_option_update",
+            "shopify_gift_card_notify",
         }
 
     def test_register_all_idempotent(self):
@@ -897,7 +898,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 103
+        assert len(get_registry()) == 104
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1219,6 +1220,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS).name == "shopify_discount_bulk_delete"
         assert router.route(Capability.SHOPIFY_BULK_DELETE_CODE_DISCOUNTS).name == "shopify_discount_bulk_delete"
         assert router.route(Capability.SHOPIFY_UPDATE_PRODUCT_OPTION).name == "shopify_product_option_update"
+        assert router.route(Capability.SHOPIFY_SEND_GIFT_CARD_TO_CUSTOMER).name == "shopify_gift_card_notify"
+        assert router.route(Capability.SHOPIFY_SEND_GIFT_CARD_TO_RECIPIENT).name == "shopify_gift_card_notify"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -26871,3 +26874,144 @@ class TestShopifyProductOptionUpdateAdapter:
                 },
             )
         assert not result.ok
+
+
+# ── ShopifyGiftCardNotifyAdapter ──────────────────────────
+
+
+class TestShopifyGiftCardNotifyAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.gift_card_notify import (
+            ShopifyGiftCardNotifyAdapter,
+        )
+        a = ShopifyGiftCardNotifyAdapter()
+        assert a.name == "shopify_gift_card_notify"
+        for cap in (
+            Capability.SHOPIFY_SEND_GIFT_CARD_TO_CUSTOMER,
+            Capability.SHOPIFY_SEND_GIFT_CARD_TO_RECIPIENT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.gift_card_notify import (
+            ShopifyGiftCardNotifyAdapter,
+        )
+        a = ShopifyGiftCardNotifyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_send_to_customer_requires_id(self):
+        from core.adapters.shopify.gift_card_notify import (
+            ShopifyGiftCardNotifyAdapter,
+        )
+        a = ShopifyGiftCardNotifyAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_GIFT_CARD_TO_CUSTOMER, {},
+        )
+        assert not result.ok
+
+    def test_send_to_customer_happy_path(self):
+        from core.adapters.shopify.gift_card_notify import (
+            ShopifyGiftCardNotifyAdapter,
+        )
+        a = ShopifyGiftCardNotifyAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "giftCardSendNotificationToCustomer": {
+                    "giftCard": {
+                        "id": "gid://shopify/GiftCard/1",
+                        "maskedCode": "ABCD",
+                        "enabled": True,
+                        "balance": {
+                            "amount": "25.00",
+                            "currencyCode": "USD",
+                        },
+                        "customer": {
+                            "id": "gid://shopify/Customer/1",
+                            "email": "ada@example.com",
+                        },
+                        "recipientAttributes": None,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_GIFT_CARD_TO_CUSTOMER,
+                {"id": "gid://shopify/GiftCard/1"},
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/GiftCard/1"
+        assert result.data["gift_card"]["customer_email"] == \
+            "ada@example.com"
+        assert result.data["gift_card"]["balance"]["amount"] == 25.0
+
+    def test_send_to_customer_user_errors_fail_fast(self):
+        from core.adapters.shopify.gift_card_notify import (
+            ShopifyGiftCardNotifyAdapter,
+        )
+        a = ShopifyGiftCardNotifyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "giftCardSendNotificationToCustomer": {
+                "giftCard": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Gift card has no customer assigned",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_GIFT_CARD_TO_CUSTOMER,
+                {"id": "gid://shopify/GiftCard/1"},
+            )
+        assert not result.ok
+
+    def test_send_to_recipient_happy_path(self):
+        from core.adapters.shopify.gift_card_notify import (
+            ShopifyGiftCardNotifyAdapter,
+        )
+        a = ShopifyGiftCardNotifyAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "giftCardSendNotificationToRecipient": {
+                    "giftCard": {
+                        "id": "gid://shopify/GiftCard/1",
+                        "enabled": True,
+                        "recipientAttributes": {
+                            "preferredName": "Bob",
+                            "message": "Happy birthday!",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_GIFT_CARD_TO_RECIPIENT,
+                {"id": "gid://shopify/GiftCard/1"},
+            )
+        assert result.ok
+        assert result.data["gift_card"][
+            "recipient_preferred_name"] == "Bob"
+        assert result.data["gift_card"]["recipient_message"] == \
+            "Happy birthday!"
