@@ -132,6 +132,7 @@ from .risk import ShopifyRiskAdapter
 from .script_tags import ShopifyScriptTagsAdapter
 from .segments import ShopifyCustomerSegmentsAdapter
 from .selling_plan_groups import ShopifySellingPlanGroupsAdapter
+from .shipping_packages import ShopifyShippingPackagesAdapter
 from .shop import ShopifyShopAdapter
 from .subscription_draft import ShopifySubscriptionDraftAdapter
 from .standard_metafield_definition import (
@@ -267,6 +268,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyInventoryItemAdapter,
     ShopifyCustomerMarketingAdapter,
     ShopifyStorefrontAccessTokensAdapter,
+    ShopifyShippingPackagesAdapter,
 )
 
 

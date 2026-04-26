@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredfourteen_adapters(self):
+    def test_register_all_adds_onehundredfifteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 114
+        assert len(status) == 115
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -901,6 +901,7 @@ class TestShopifyBootstrap:
             "shopify_inventory_item",
             "shopify_customer_marketing",
             "shopify_storefront_access_tokens",
+            "shopify_shipping_packages",
         }
 
     def test_register_all_idempotent(self):
@@ -908,7 +909,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 114
+        assert len(get_registry()) == 115
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1261,6 +1262,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_LIST_STOREFRONT_ACCESS_TOKENS).name == "shopify_storefront_access_tokens"
         assert router.route(Capability.SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN).name == "shopify_storefront_access_tokens"
         assert router.route(Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN).name == "shopify_storefront_access_tokens"
+        assert router.route(Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE).name == "shopify_shipping_packages"
+        assert router.route(Capability.SHOPIFY_DELETE_SHIPPING_PACKAGE).name == "shopify_shipping_packages"
+        assert router.route(Capability.SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE).name == "shopify_shipping_packages"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -29999,5 +30003,296 @@ class TestShopifyStorefrontAccessTokensAdapter:
             result = a.execute(
                 Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN,
                 {"id": "gid://shopify/StorefrontAccessToken/missing"},
+            )
+        assert not result.ok
+
+
+# ── ShopifyShippingPackagesAdapter ────────────────────────
+
+
+class TestShopifyShippingPackagesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter()
+        assert a.name == "shopify_shipping_packages"
+        for cap in (
+            Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE,
+            Capability.SHOPIFY_DELETE_SHIPPING_PACKAGE,
+            Capability.SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE,
+            {"name": "rename"},
+        )
+        assert not result.ok
+
+    def test_update_rejects_empty_input(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE,
+            {"id": "gid://shopify/DeliveryCustomShippingPackage/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_rejects_invalid_type(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE,
+            {
+                "id": "gid://shopify/DeliveryCustomShippingPackage/1",
+                "type": "carton",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_rejects_invalid_weight_unit(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE,
+            {
+                "id": "gid://shopify/DeliveryCustomShippingPackage/1",
+                "weight": {"value": 1, "unit": "stones"},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_rejects_dimensions_missing_field(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE,
+            {
+                "id": "gid://shopify/DeliveryCustomShippingPackage/1",
+                "dimensions": {
+                    "length": 10, "width": 10, "unit": "cm",
+                },
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_happy_path_full_payload(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "shippingPackageUpdate": {"userErrors": []},
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE,
+                {
+                    "id":
+                        "gid://shopify/DeliveryCustomShippingPackage/1",
+                    "name": "12x12x4 reinforced",
+                    "type": "box",
+                    "default": False,
+                    "weight": {"value": 0.3, "unit": "kg"},
+                    "dimensions": {
+                        "length": 12, "width": 12, "height": 4,
+                        "unit": "in",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["id"] == \
+            "gid://shopify/DeliveryCustomShippingPackage/1"
+        sp = captured["shippingPackage"]
+        assert sp["name"] == "12x12x4 reinforced"
+        assert sp["type"] == "BOX"
+        assert sp["default"] is False
+        assert sp["weight"] == {"value": 0.3, "unit": "KILOGRAMS"}
+        assert sp["dimensions"] == {
+            "length": 12.0, "width": 12.0, "height": 4.0,
+            "unit": "INCHES",
+        }
+
+    def test_update_user_errors_fail_fast(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "shippingPackageUpdate": {
+                "userErrors": [{
+                    "field": ["shippingPackage", "name"],
+                    "message": "Name has already been taken",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE,
+                {
+                    "id":
+                        "gid://shopify/DeliveryCustomShippingPackage/1",
+                    "name": "Duplicate",
+                },
+            )
+        assert not result.ok
+
+    # ── Delete ──────────────────────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_SHIPPING_PACKAGE, {},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "shippingPackageDelete": {
+                    "deletedId":
+                        "gid://shopify/DeliveryCustomShippingPackage/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_SHIPPING_PACKAGE,
+                {"id":
+                    "gid://shopify/DeliveryCustomShippingPackage/1"},
+            )
+        assert result.ok
+        assert captured == {
+            "id":
+                "gid://shopify/DeliveryCustomShippingPackage/1",
+        }
+        assert result.data["deleted_id"] == \
+            "gid://shopify/DeliveryCustomShippingPackage/1"
+
+    # ── Make default ────────────────────────────────────────────
+
+    def test_make_default_requires_id(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE, {},
+        )
+        assert not result.ok
+
+    def test_make_default_happy_path(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "shippingPackageMakeDefault": {"userErrors": []},
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE,
+                {"id":
+                    "gid://shopify/DeliveryCustomShippingPackage/1"},
+            )
+        assert result.ok
+        assert captured == {
+            "id":
+                "gid://shopify/DeliveryCustomShippingPackage/1",
+        }
+        assert result.data["default"] is True
+
+    def test_make_default_user_errors_fail_fast(self):
+        from core.adapters.shopify.shipping_packages import (
+            ShopifyShippingPackagesAdapter,
+        )
+        a = ShopifyShippingPackagesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "shippingPackageMakeDefault": {
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Package not found",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE,
+                {"id":
+                    "gid://shopify/DeliveryCustomShippingPackage/missing"},
             )
         assert not result.ok

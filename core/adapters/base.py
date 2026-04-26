@@ -425,6 +425,9 @@ class Capability(str, Enum):
     SHOPIFY_LIST_STOREFRONT_ACCESS_TOKENS = "shopify_list_storefront_access_tokens"
     SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN = "shopify_create_storefront_access_token"
     SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN = "shopify_delete_storefront_access_token"
+    SHOPIFY_UPDATE_SHIPPING_PACKAGE = "shopify_update_shipping_package"
+    SHOPIFY_DELETE_SHIPPING_PACKAGE = "shopify_delete_shipping_package"
+    SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE = "shopify_make_default_shipping_package"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
