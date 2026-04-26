@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightyseven_adapters(self):
+    def test_register_all_adds_eightyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 87
+        assert len(status) == 88
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -874,6 +874,7 @@ class TestShopifyBootstrap:
             "shopify_product_media",
             "shopify_price_list_fixed_prices",
             "shopify_order_payment",
+            "shopify_metafield_definition_pin",
         }
 
     def test_register_all_idempotent(self):
@@ -881,7 +882,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 87
+        assert len(get_registry()) == 88
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1164,6 +1165,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
         assert router.route(Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT).name == "shopify_order_payment"
         assert router.route(Capability.SHOPIFY_VOID_TRANSACTION).name == "shopify_order_payment"
+        assert router.route(Capability.SHOPIFY_PIN_METAFIELD_DEFINITION).name == "shopify_metafield_definition_pin"
+        assert router.route(Capability.SHOPIFY_UNPIN_METAFIELD_DEFINITION).name == "shopify_metafield_definition_pin"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -22936,6 +22939,247 @@ class TestShopifyOrderPaymentAdapter:
                 {
                     "parent_transaction_id":
                         "gid://shopify/OrderTransaction/8",
+                },
+            )
+        assert not result.ok
+
+
+# ── ShopifyMetafieldDefinitionPinAdapter ──────────────────
+
+
+class TestShopifyMetafieldDefinitionPinAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter()
+        assert a.name == "shopify_metafield_definition_pin"
+        for cap in (
+            Capability.SHOPIFY_PIN_METAFIELD_DEFINITION,
+            Capability.SHOPIFY_UNPIN_METAFIELD_DEFINITION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Variable builder ────────────────────────
+
+    def test_variables_definition_id_path(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        v = a._build_variables({
+            "definition_id":
+                "gid://shopify/MetafieldDefinition/1",
+        })
+        assert v["definitionId"] == \
+            "gid://shopify/MetafieldDefinition/1"
+        assert v["identifier"] is None
+
+    def test_variables_identifier_path(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        v = a._build_variables({
+            "owner_type": "product",
+            "namespace": "custom",
+            "key": "fabric_composition",
+        })
+        assert v["definitionId"] is None
+        assert v["identifier"] == {
+            "ownerType": "PRODUCT",
+            "namespace": "custom",
+            "key": "fabric_composition",
+        }
+
+    def test_variables_identifier_optional_namespace(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        v = a._build_variables({
+            "owner_type": "PRODUCT",
+            "key": "color",
+        })
+        assert v["identifier"] == {
+            "ownerType": "PRODUCT",
+            "key": "color",
+        }
+        assert "namespace" not in v["identifier"]
+
+    def test_variables_definition_id_wins_over_triple(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        v = a._build_variables({
+            "definition_id":
+                "gid://shopify/MetafieldDefinition/9",
+            "owner_type": "PRODUCT",
+            "key": "ignored",
+        })
+        assert v["definitionId"] == \
+            "gid://shopify/MetafieldDefinition/9"
+        assert v["identifier"] is None
+
+    def test_variables_rejects_invalid_owner_type(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_variables({
+                "owner_type": "RECIPE",
+                "key": "ingredients",
+            })
+
+    def test_variables_requires_one_of(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_variables({})
+
+    def test_variables_triple_requires_key(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_variables({"owner_type": "PRODUCT"})
+
+    # ── Pin / Unpin happy paths ────────────────
+
+    def test_pin_happy_path(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "metafieldDefinitionPin": {
+                    "pinnedDefinition": {
+                        "id":
+                            "gid://shopify/MetafieldDefinition/1",
+                        "name": "Color",
+                        "key": "color",
+                        "namespace": "custom",
+                        "ownerType": "PRODUCT",
+                        "pinnedPosition": 3,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_PIN_METAFIELD_DEFINITION,
+                {
+                    "definition_id":
+                        "gid://shopify/MetafieldDefinition/1",
+                },
+            )
+        assert result.ok
+        assert captured["definitionId"] == \
+            "gid://shopify/MetafieldDefinition/1"
+        assert captured["identifier"] is None
+        assert result.data["definition"]["key"] == "color"
+        assert result.data["definition"]["pinned_position"] == 3
+
+    def test_unpin_via_identifier_happy_path(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "metafieldDefinitionUnpin": {
+                    "unpinnedDefinition": {
+                        "id":
+                            "gid://shopify/MetafieldDefinition/2",
+                        "key": "fabric_composition",
+                        "ownerType": "PRODUCT",
+                        "pinnedPosition": None,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UNPIN_METAFIELD_DEFINITION,
+                {
+                    "owner_type": "PRODUCT",
+                    "key": "fabric_composition",
+                    "namespace": "custom",
+                },
+            )
+        assert result.ok
+        assert captured["identifier"] == {
+            "ownerType": "PRODUCT",
+            "namespace": "custom",
+            "key": "fabric_composition",
+        }
+        assert result.data["definition"]["pinned_position"] == 0
+
+    def test_pin_user_errors_fail_fast(self):
+        from core.adapters.shopify.metafield_definition_pin import (
+            ShopifyMetafieldDefinitionPinAdapter,
+        )
+        a = ShopifyMetafieldDefinitionPinAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "metafieldDefinitionPin": {
+                "pinnedDefinition": None,
+                "userErrors": [{
+                    "field": ["definitionId"],
+                    "message": "Definition not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_PIN_METAFIELD_DEFINITION,
+                {
+                    "definition_id":
+                        "gid://shopify/MetafieldDefinition/9999",
                 },
             )
         assert not result.ok
