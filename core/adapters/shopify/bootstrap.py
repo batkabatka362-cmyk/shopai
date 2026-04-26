@@ -130,6 +130,9 @@ from .product_duplicate import ShopifyProductDuplicateAdapter
 from .product_media import ShopifyProductMediaAdapter
 from .product_option_update import ShopifyProductOptionUpdateAdapter
 from .product_options import ShopifyProductOptionsAdapter
+from .product_selling_plan_bindings import (
+    ShopifyProductSellingPlanBindingsAdapter,
+)
 from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
 from .refunds import ShopifyRefundsAdapter
@@ -283,6 +286,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyUrlRedirectsAdapter,
     ShopifyCustomerPrivacyAdapter,
     ShopifyShopLocalesAdapter,
+    ShopifyProductSellingPlanBindingsAdapter,
 )
 
 

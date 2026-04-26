@@ -445,6 +445,10 @@ class Capability(str, Enum):
     SHOPIFY_ENABLE_SHOP_LOCALE = "shopify_enable_shop_locale"
     SHOPIFY_DISABLE_SHOP_LOCALE = "shopify_disable_shop_locale"
     SHOPIFY_UPDATE_SHOP_LOCALE = "shopify_update_shop_locale"
+    SHOPIFY_PRODUCT_JOIN_SELLING_PLAN_GROUPS = "shopify_product_join_selling_plan_groups"
+    SHOPIFY_PRODUCT_LEAVE_SELLING_PLAN_GROUPS = "shopify_product_leave_selling_plan_groups"
+    SHOPIFY_PRODUCT_VARIANT_JOIN_SELLING_PLAN_GROUPS = "shopify_product_variant_join_selling_plan_groups"
+    SHOPIFY_PRODUCT_VARIANT_LEAVE_SELLING_PLAN_GROUPS = "shopify_product_variant_leave_selling_plan_groups"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

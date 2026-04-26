@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwenty_adapters(self):
+    def test_register_all_adds_onehundredtwentyone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 120
+        assert len(status) == 121
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -907,6 +907,7 @@ class TestShopifyBootstrap:
             "shopify_url_redirects",
             "shopify_customer_privacy",
             "shopify_shop_locales",
+            "shopify_product_selling_plan_bindings",
         }
 
     def test_register_all_idempotent(self):
@@ -914,7 +915,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 120
+        assert len(get_registry()) == 121
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1287,6 +1288,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_ENABLE_SHOP_LOCALE).name == "shopify_shop_locales"
         assert router.route(Capability.SHOPIFY_DISABLE_SHOP_LOCALE).name == "shopify_shop_locales"
         assert router.route(Capability.SHOPIFY_UPDATE_SHOP_LOCALE).name == "shopify_shop_locales"
+        assert router.route(Capability.SHOPIFY_PRODUCT_JOIN_SELLING_PLAN_GROUPS).name == "shopify_product_selling_plan_bindings"
+        assert router.route(Capability.SHOPIFY_PRODUCT_LEAVE_SELLING_PLAN_GROUPS).name == "shopify_product_selling_plan_bindings"
+        assert router.route(Capability.SHOPIFY_PRODUCT_VARIANT_JOIN_SELLING_PLAN_GROUPS).name == "shopify_product_selling_plan_bindings"
+        assert router.route(Capability.SHOPIFY_PRODUCT_VARIANT_LEAVE_SELLING_PLAN_GROUPS).name == "shopify_product_selling_plan_bindings"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -31801,5 +31806,250 @@ class TestShopifyShopLocalesAdapter:
             result = a.execute(
                 Capability.SHOPIFY_UPDATE_SHOP_LOCALE,
                 {"locale": "ja", "published": True},
+            )
+        assert not result.ok
+
+
+# ── ShopifyProductSellingPlanBindingsAdapter ──────────────
+
+
+class TestShopifyProductSellingPlanBindingsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter()
+        assert a.name == "shopify_product_selling_plan_bindings"
+        for cap in (
+            Capability.SHOPIFY_PRODUCT_JOIN_SELLING_PLAN_GROUPS,
+            Capability.SHOPIFY_PRODUCT_LEAVE_SELLING_PLAN_GROUPS,
+            Capability.SHOPIFY_PRODUCT_VARIANT_JOIN_SELLING_PLAN_GROUPS,
+            Capability.SHOPIFY_PRODUCT_VARIANT_LEAVE_SELLING_PLAN_GROUPS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_join_requires_id(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_PRODUCT_JOIN_SELLING_PLAN_GROUPS,
+            {"selling_plan_group_ids": [
+                "gid://shopify/SellingPlanGroup/1",
+            ]},
+        )
+        assert not result.ok
+
+    def test_join_requires_group_ids(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_PRODUCT_JOIN_SELLING_PLAN_GROUPS,
+            {"id": "gid://shopify/Product/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_join_accepts_string_id_for_groups(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productJoinSellingPlanGroups": {
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "title": "Test product",
+                        "sellingPlanGroupCount": 1,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_PRODUCT_JOIN_SELLING_PLAN_GROUPS,
+                {
+                    "id": "gid://shopify/Product/1",
+                    "selling_plan_group_ids":
+                        "gid://shopify/SellingPlanGroup/1",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/Product/1",
+            "sellingPlanGroupIds": [
+                "gid://shopify/SellingPlanGroup/1",
+            ],
+        }
+        r = result.data["resource"]
+        assert r["id"] == "gid://shopify/Product/1"
+        assert r["selling_plan_group_count"] == 1
+
+    def test_leave_happy_path(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productLeaveSellingPlanGroups": {
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "title": "Test product",
+                        "sellingPlanGroupCount": 0,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_PRODUCT_LEAVE_SELLING_PLAN_GROUPS,
+                {
+                    "id": "gid://shopify/Product/1",
+                    "selling_plan_group_ids": [
+                        "gid://shopify/SellingPlanGroup/1",
+                    ],
+                },
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+
+    def test_variant_join_includes_product_in_response(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productVariantJoinSellingPlanGroups": {
+                    "productVariant": {
+                        "id": "gid://shopify/ProductVariant/1",
+                        "title": "12-pack",
+                        "sellingPlanGroupCount": 2,
+                        "product": {
+                            "id": "gid://shopify/Product/1",
+                            "title": "Coffee",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_PRODUCT_VARIANT_JOIN_SELLING_PLAN_GROUPS,
+                {
+                    "id": "gid://shopify/ProductVariant/1",
+                    "selling_plan_group_ids": [
+                        "gid://shopify/SellingPlanGroup/1",
+                        "gid://shopify/SellingPlanGroup/2",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["sellingPlanGroupIds"] == [
+            "gid://shopify/SellingPlanGroup/1",
+            "gid://shopify/SellingPlanGroup/2",
+        ]
+        r = result.data["resource"]
+        assert r["title"] == "12-pack"
+        assert r["product_id"] == "gid://shopify/Product/1"
+        assert r["product_title"] == "Coffee"
+
+    def test_variant_leave_happy_path(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "productVariantLeaveSellingPlanGroups": {
+                "productVariant": {
+                    "id": "gid://shopify/ProductVariant/1",
+                    "title": "12-pack",
+                    "sellingPlanGroupCount": 0,
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "title": "Coffee",
+                    },
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_PRODUCT_VARIANT_LEAVE_SELLING_PLAN_GROUPS,
+                {
+                    "id": "gid://shopify/ProductVariant/1",
+                    "selling_plan_group_ids": [
+                        "gid://shopify/SellingPlanGroup/1",
+                    ],
+                },
+            )
+        assert result.ok
+        assert result.data["resource"]["selling_plan_group_count"] \
+            == 0
+
+    def test_user_errors_fail_fast(self):
+        from core.adapters.shopify.product_selling_plan_bindings import (
+            ShopifyProductSellingPlanBindingsAdapter,
+        )
+        a = ShopifyProductSellingPlanBindingsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "productJoinSellingPlanGroups": {
+                "product": None,
+                "userErrors": [{
+                    "field": ["sellingPlanGroupIds"],
+                    "message": "Selling plan group not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_PRODUCT_JOIN_SELLING_PLAN_GROUPS,
+                {
+                    "id": "gid://shopify/Product/1",
+                    "selling_plan_group_ids": [
+                        "gid://shopify/SellingPlanGroup/missing",
+                    ],
+                },
             )
         assert not result.ok
