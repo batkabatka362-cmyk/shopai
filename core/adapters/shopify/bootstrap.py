@@ -49,6 +49,7 @@ from .company_location_staff import (
 )
 from .customer_consent import ShopifyCustomerConsentAdapter
 from .customer_marketing import ShopifyCustomerMarketingAdapter
+from .customer_privacy import ShopifyCustomerPrivacyAdapter
 from .customer_merge import ShopifyCustomerMergeAdapter
 from .customer_payment_methods import ShopifyCustomerPaymentMethodsAdapter
 from .customer_payment_method_ops import (
@@ -279,6 +280,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCompanyLocationStaffAdapter,
     ShopifyDiscountFreeShippingUpdateAdapter,
     ShopifyUrlRedirectsAdapter,
+    ShopifyCustomerPrivacyAdapter,
 )
 
 

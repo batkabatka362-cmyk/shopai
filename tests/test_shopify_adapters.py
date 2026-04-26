@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredeighteen_adapters(self):
+    def test_register_all_adds_onehundrednineteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 118
+        assert len(status) == 119
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -905,6 +905,7 @@ class TestShopifyBootstrap:
             "shopify_company_location_staff",
             "shopify_discount_free_shipping_update",
             "shopify_url_redirects",
+            "shopify_customer_privacy",
         }
 
     def test_register_all_idempotent(self):
@@ -912,7 +913,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 118
+        assert len(get_registry()) == 119
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1279,6 +1280,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_URL_REDIRECT).name == "shopify_url_redirects"
         assert router.route(Capability.SHOPIFY_DELETE_URL_REDIRECT).name == "shopify_url_redirects"
         assert router.route(Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS).name == "shopify_url_redirects"
+        assert router.route(Capability.SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE).name == "shopify_customer_privacy"
+        assert router.route(Capability.SHOPIFY_DATA_SALE_OPT_OUT).name == "shopify_customer_privacy"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -31340,5 +31343,210 @@ class TestShopifyUrlRedirectsAdapter:
             result = a.execute(
                 Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS,
                 {"search": "[bad"},
+            )
+        assert not result.ok
+
+
+# ── ShopifyCustomerPrivacyAdapter ─────────────────────────
+
+
+class TestShopifyCustomerPrivacyAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter()
+        assert a.name == "shopify_customer_privacy"
+        for cap in (
+            Capability.SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE,
+            Capability.SHOPIFY_DATA_SALE_OPT_OUT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Erasure ─────────────────────────────────────────────────
+
+    def test_erasure_requires_customer_id(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE, {},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_erasure_happy_path(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "customerRequestDataErasure": {
+                    "customerId": "gid://shopify/Customer/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE,
+                {"customer_id": "gid://shopify/Customer/1"},
+            )
+        assert result.ok
+        assert captured == {"customerId": "gid://shopify/Customer/1"}
+        assert result.data["customer_id"] == \
+            "gid://shopify/Customer/1"
+        assert result.data["queued"] is True
+
+    def test_erasure_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "customerRequestDataErasure": {
+                "customerId": None,
+                "userErrors": [{
+                    "field": ["customerId"],
+                    "message": "Customer cannot be erased — has "
+                               "outstanding active orders",
+                    "code": "ACTIVE_ORDERS",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE,
+                {"customer_id": "gid://shopify/Customer/blocked"},
+            )
+        assert not result.ok
+
+    # ── Data sale opt-out ───────────────────────────────────────
+
+    def test_opt_out_requires_email(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DATA_SALE_OPT_OUT, {},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_opt_out_rejects_invalid_email(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DATA_SALE_OPT_OUT,
+            {"email": "not-an-email"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_opt_out_happy_path_registered_customer(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "dataSaleOptOut": {
+                    "customerId": "gid://shopify/Customer/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DATA_SALE_OPT_OUT,
+                {"email": " ada@example.com "},
+            )
+        assert result.ok
+        assert captured == {"email": "ada@example.com"}
+        assert result.data["customer_id"] == \
+            "gid://shopify/Customer/1"
+        assert result.data["matched_existing_customer"] is True
+        assert result.data["email"] == "ada@example.com"
+
+    def test_opt_out_happy_path_unregistered_email(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            # CCPA opt-out from someone not in the customer DB —
+            # Shopify accepts the request but returns null customerId.
+            return {
+                "dataSaleOptOut": {
+                    "customerId": None,
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DATA_SALE_OPT_OUT,
+                {"email": "anonymous@example.com"},
+            )
+        assert result.ok
+        assert result.data["customer_id"] == ""
+        assert result.data["matched_existing_customer"] is False
+
+    def test_opt_out_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_privacy import (
+            ShopifyCustomerPrivacyAdapter,
+        )
+        a = ShopifyCustomerPrivacyAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "dataSaleOptOut": {
+                "customerId": None,
+                "userErrors": [{
+                    "field": ["email"],
+                    "message": "Email is invalid",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DATA_SALE_OPT_OUT,
+                {"email": "weird@example.com"},
             )
         assert not result.ok

@@ -439,6 +439,8 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_URL_REDIRECT = "shopify_update_url_redirect"
     SHOPIFY_DELETE_URL_REDIRECT = "shopify_delete_url_redirect"
     SHOPIFY_BULK_DELETE_URL_REDIRECTS = "shopify_bulk_delete_url_redirects"
+    SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE = "shopify_request_customer_data_erasure"
+    SHOPIFY_DATA_SALE_OPT_OUT = "shopify_data_sale_opt_out"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
