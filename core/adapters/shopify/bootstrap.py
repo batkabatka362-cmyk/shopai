@@ -138,6 +138,7 @@ from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
 from .refunds import ShopifyRefundsAdapter
 from .returns import ShopifyReturnsAdapter
+from .saved_searches import ShopifySavedSearchesAdapter
 from .reverse_delivery import ShopifyReverseDeliveryAdapter
 from .risk import ShopifyRiskAdapter
 from .script_tags import ShopifyScriptTagsAdapter
@@ -289,6 +290,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyShopLocalesAdapter,
     ShopifyProductSellingPlanBindingsAdapter,
     ShopifyProductFeedsAdapter,
+    ShopifySavedSearchesAdapter,
 )
 
 

@@ -454,6 +454,10 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_PRODUCT_FEED = "shopify_create_product_feed"
     SHOPIFY_DELETE_PRODUCT_FEED = "shopify_delete_product_feed"
     SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC = "shopify_trigger_product_full_sync"
+    SHOPIFY_LIST_SAVED_SEARCHES = "shopify_list_saved_searches"
+    SHOPIFY_CREATE_SAVED_SEARCH = "shopify_create_saved_search"
+    SHOPIFY_UPDATE_SAVED_SEARCH = "shopify_update_saved_search"
+    SHOPIFY_DELETE_SAVED_SEARCH = "shopify_delete_saved_search"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

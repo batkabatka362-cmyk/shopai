@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentytwo_adapters(self):
+    def test_register_all_adds_onehundredtwentythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 122
+        assert len(status) == 123
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -909,6 +909,7 @@ class TestShopifyBootstrap:
             "shopify_shop_locales",
             "shopify_product_selling_plan_bindings",
             "shopify_product_feeds",
+            "shopify_saved_searches",
         }
 
     def test_register_all_idempotent(self):
@@ -916,7 +917,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 122
+        assert len(get_registry()) == 123
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1298,6 +1299,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_PRODUCT_FEED).name == "shopify_product_feeds"
         assert router.route(Capability.SHOPIFY_DELETE_PRODUCT_FEED).name == "shopify_product_feeds"
         assert router.route(Capability.SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC).name == "shopify_product_feeds"
+        assert router.route(Capability.SHOPIFY_LIST_SAVED_SEARCHES).name == "shopify_saved_searches"
+        assert router.route(Capability.SHOPIFY_CREATE_SAVED_SEARCH).name == "shopify_saved_searches"
+        assert router.route(Capability.SHOPIFY_UPDATE_SAVED_SEARCH).name == "shopify_saved_searches"
+        assert router.route(Capability.SHOPIFY_DELETE_SAVED_SEARCH).name == "shopify_saved_searches"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -32287,5 +32292,334 @@ class TestShopifyProductFeedsAdapter:
             result = a.execute(
                 Capability.SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC,
                 {"id": "gid://shopify/ProductFeed/missing"},
+            )
+        assert not result.ok
+
+
+# ── ShopifySavedSearchesAdapter ───────────────────────────
+
+
+class TestShopifySavedSearchesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter()
+        assert a.name == "shopify_saved_searches"
+        for cap in (
+            Capability.SHOPIFY_LIST_SAVED_SEARCHES,
+            Capability.SHOPIFY_CREATE_SAVED_SEARCH,
+            Capability.SHOPIFY_UPDATE_SAVED_SEARCH,
+            Capability.SHOPIFY_DELETE_SAVED_SEARCH,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ────────────────────────────────────────────────────
+
+    def test_list_requires_resource_type(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_LIST_SAVED_SEARCHES, {},
+        )
+        assert not result.ok
+
+    def test_list_invalid_resource_type_rejected(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_LIST_SAVED_SEARCHES,
+            {"resource_type": "MAGIC"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_unsupported_connection_resource_rejected(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        # PAGE / BLOG / ARTICLE / PRICE_RULE / BALANCE_TRANSACTION
+        # are valid resource types BUT have no per-resource
+        # savedSearches connection in the schema (Pattern B).
+        result = a.execute(
+            Capability.SHOPIFY_LIST_SAVED_SEARCHES,
+            {"resource_type": "page"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_happy_path_dispatches_to_customer_connection(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured["q"] = q
+            captured["v"] = v
+            return {
+                "customerSavedSearches": {
+                    "pageInfo": {
+                        "hasNextPage": False, "endCursor": None,
+                    },
+                    "edges": [{
+                        "node": {
+                            "id": "gid://shopify/SavedSearch/1",
+                            "legacyResourceId": "1",
+                            "name": "VIPs",
+                            "query": "tag:vip AND total_spent:>500",
+                            "resourceType": "CUSTOMER",
+                            "searchTerms": "vip",
+                        },
+                    }],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_SAVED_SEARCHES,
+                {"resource_type": "customer", "limit": 25},
+            )
+        assert result.ok
+        assert "customerSavedSearches" in captured["q"]
+        assert captured["v"]["first"] == 25
+        assert result.data["resource_type"] == "CUSTOMER"
+        assert result.data["count"] == 1
+        s0 = result.data["saved_searches"][0]
+        assert s0["name"] == "VIPs"
+
+    # ── Create ──────────────────────────────────────────────────
+
+    def test_create_requires_resource_type(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_SAVED_SEARCH,
+            {"name": "VIPs", "query": "tag:vip"},
+        )
+        assert not result.ok
+
+    def test_create_requires_name(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_SAVED_SEARCH,
+            {"resource_type": "customer", "query": "tag:vip"},
+        )
+        assert not result.ok
+
+    def test_create_requires_query(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_SAVED_SEARCH,
+            {"resource_type": "customer", "name": "VIPs"},
+        )
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "savedSearchCreate": {
+                    "savedSearch": {
+                        "id": "gid://shopify/SavedSearch/1",
+                        "legacyResourceId": "1",
+                        "name": "VIPs",
+                        "query": "tag:vip AND total_spent:>500",
+                        "resourceType": "CUSTOMER",
+                        "searchTerms": "vip",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_SAVED_SEARCH,
+                {
+                    "resource_type": "customer",
+                    "name": "VIPs",
+                    "query": "tag:vip AND total_spent:>500",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "input": {
+                "resourceType": "CUSTOMER",
+                "name": "VIPs",
+                "query": "tag:vip AND total_spent:>500",
+            },
+        }
+        assert result.data["saved_search"]["resource_type"] == \
+            "CUSTOMER"
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SAVED_SEARCH,
+            {"name": "Renamed"},
+        )
+        assert not result.ok
+
+    def test_update_rejects_empty_body(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SAVED_SEARCH,
+            {"id": "gid://shopify/SavedSearch/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "savedSearchUpdate": {
+                    "savedSearch": {
+                        "id": "gid://shopify/SavedSearch/1",
+                        "name": "Top customers",
+                        "query": "tag:vip",
+                        "resourceType": "CUSTOMER",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SAVED_SEARCH,
+                {
+                    "id": "gid://shopify/SavedSearch/1",
+                    "name": "Top customers",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "input": {
+                "id": "gid://shopify/SavedSearch/1",
+                "name": "Top customers",
+            },
+        }
+
+    # ── Delete ──────────────────────────────────────────────────
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "savedSearchDelete": {
+                    "deletedSavedSearchId":
+                        "gid://shopify/SavedSearch/1",
+                    "shop": {"id": "gid://shopify/Shop/1"},
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_SAVED_SEARCH,
+                {"id": "gid://shopify/SavedSearch/1"},
+            )
+        assert result.ok
+        assert captured == {
+            "input": {"id": "gid://shopify/SavedSearch/1"},
+        }
+        assert result.data["deleted_id"] == \
+            "gid://shopify/SavedSearch/1"
+
+    def test_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.saved_searches import (
+            ShopifySavedSearchesAdapter,
+        )
+        a = ShopifySavedSearchesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "savedSearchDelete": {
+                "deletedSavedSearchId": None,
+                "shop": None,
+                "userErrors": [{
+                    "field": ["input", "id"],
+                    "message": "Saved search not found",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_SAVED_SEARCH,
+                {"id": "gid://shopify/SavedSearch/missing"},
             )
         assert not result.ok
