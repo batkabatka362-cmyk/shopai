@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundred_adapters(self):
+    def test_register_all_adds_onehundredone_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 100
+        assert len(status) == 101
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -887,6 +887,7 @@ class TestShopifyBootstrap:
             "shopify_standard_metafield_definition",
             "shopify_reverse_delivery",
             "shopify_theme_ops",
+            "shopify_customer_segment_write",
         }
 
     def test_register_all_idempotent(self):
@@ -894,7 +895,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 100
+        assert len(get_registry()) == 101
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1211,6 +1212,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_THEME).name == "shopify_theme_ops"
         assert router.route(Capability.SHOPIFY_PUBLISH_THEME).name == "shopify_theme_ops"
         assert router.route(Capability.SHOPIFY_DELETE_THEME).name == "shopify_theme_ops"
+        assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER_SEGMENT).name == "shopify_customer_segment_write"
+        assert router.route(Capability.SHOPIFY_DELETE_CUSTOMER_SEGMENT).name == "shopify_customer_segment_write"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -26222,3 +26225,160 @@ class TestShopifyThemeOpsAdapter:
         assert result.ok
         assert result.data["deleted_id"] == \
             "gid://shopify/OnlineStoreTheme/1"
+
+
+# ── ShopifyCustomerSegmentWriteAdapter ────────────────────
+
+
+class TestShopifyCustomerSegmentWriteAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.customer_segment_write import (
+            ShopifyCustomerSegmentWriteAdapter,
+        )
+        a = ShopifyCustomerSegmentWriteAdapter()
+        assert a.name == "shopify_customer_segment_write"
+        for cap in (
+            Capability.SHOPIFY_UPDATE_CUSTOMER_SEGMENT,
+            Capability.SHOPIFY_DELETE_CUSTOMER_SEGMENT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.customer_segment_write import (
+            ShopifyCustomerSegmentWriteAdapter,
+        )
+        a = ShopifyCustomerSegmentWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Update ─────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.customer_segment_write import (
+            ShopifyCustomerSegmentWriteAdapter,
+        )
+        a = ShopifyCustomerSegmentWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER_SEGMENT,
+            {"name": "Renamed"},
+        )
+        assert not result.ok
+
+    def test_update_requires_at_least_one_field(self):
+        from core.adapters.shopify.customer_segment_write import (
+            ShopifyCustomerSegmentWriteAdapter,
+        )
+        a = ShopifyCustomerSegmentWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_CUSTOMER_SEGMENT,
+            {"id": "gid://shopify/Segment/1"},
+        )
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.customer_segment_write import (
+            ShopifyCustomerSegmentWriteAdapter,
+        )
+        a = ShopifyCustomerSegmentWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "segmentUpdate": {
+                    "segment": {
+                        "id": "gid://shopify/Segment/1",
+                        "name": "VIP — Q2 2026",
+                        "query": "amount_spent > 1000",
+                        "creationDate": "2026-01-01T00:00:00Z",
+                        "lastEditDate": "2026-04-27T00:00:00Z",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CUSTOMER_SEGMENT,
+                {
+                    "id": "gid://shopify/Segment/1",
+                    "name": "VIP — Q2 2026",
+                    "query": "amount_spent > 1000",
+                },
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/Segment/1"
+        assert captured["name"] == "VIP — Q2 2026"
+        assert captured["query"] == "amount_spent > 1000"
+        assert result.data["segment"]["name"] == "VIP — Q2 2026"
+        assert result.data["segment"]["query"] == \
+            "amount_spent > 1000"
+
+    def test_update_user_errors_fail_fast(self):
+        from core.adapters.shopify.customer_segment_write import (
+            ShopifyCustomerSegmentWriteAdapter,
+        )
+        a = ShopifyCustomerSegmentWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "segmentUpdate": {
+                "segment": None,
+                "userErrors": [{
+                    "field": ["query"],
+                    "message": "Invalid ShopifyQL syntax",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_CUSTOMER_SEGMENT,
+                {
+                    "id": "gid://shopify/Segment/1",
+                    "query": "BAD SYNTAX",
+                },
+            )
+        assert not result.ok
+
+    # ── Delete ─────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.customer_segment_write import (
+            ShopifyCustomerSegmentWriteAdapter,
+        )
+        a = ShopifyCustomerSegmentWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_CUSTOMER_SEGMENT, {},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.customer_segment_write import (
+            ShopifyCustomerSegmentWriteAdapter,
+        )
+        a = ShopifyCustomerSegmentWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "segmentDelete": {
+                "deletedSegmentId": "gid://shopify/Segment/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_CUSTOMER_SEGMENT,
+                {"id": "gid://shopify/Segment/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/Segment/1"

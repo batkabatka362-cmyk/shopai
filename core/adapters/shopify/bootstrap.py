@@ -45,6 +45,7 @@ from .customer_merge import ShopifyCustomerMergeAdapter
 from .customer_payment_methods import ShopifyCustomerPaymentMethodsAdapter
 from .customer_addresses import ShopifyCustomerAddressesAdapter
 from .customer_onboarding import ShopifyCustomerOnboardingAdapter
+from .customer_segment_write import ShopifyCustomerSegmentWriteAdapter
 from .customers import ShopifyCustomersAdapter
 from .delivery_profiles import ShopifyDeliveryProfilesAdapter
 from .customizations import (
@@ -233,6 +234,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyStandardMetafieldDefinitionAdapter,
     ShopifyReverseDeliveryAdapter,
     ShopifyThemeOpsAdapter,
+    ShopifyCustomerSegmentWriteAdapter,
 )
 
 

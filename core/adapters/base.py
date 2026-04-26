@@ -389,6 +389,8 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_THEME = "shopify_update_theme"
     SHOPIFY_PUBLISH_THEME = "shopify_publish_theme"
     SHOPIFY_DELETE_THEME = "shopify_delete_theme"
+    SHOPIFY_UPDATE_CUSTOMER_SEGMENT = "shopify_update_customer_segment"
+    SHOPIFY_DELETE_CUSTOMER_SEGMENT = "shopify_delete_customer_segment"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
