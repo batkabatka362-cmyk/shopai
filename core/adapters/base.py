@@ -370,6 +370,7 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_PRODUCT_OPTIONS = "shopify_create_product_options"
     SHOPIFY_DELETE_PRODUCT_OPTIONS = "shopify_delete_product_options"
     SHOPIFY_REORDER_PRODUCT_OPTIONS = "shopify_reorder_product_options"
+    SHOPIFY_SEND_PAYMENT_REMINDER = "shopify_send_payment_reminder"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

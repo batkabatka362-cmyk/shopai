@@ -95,6 +95,7 @@ from .order_payment import ShopifyOrderPaymentAdapter
 from .order_risk_assessment import ShopifyOrderRiskAssessmentAdapter
 from .orders import ShopifyOrdersAdapter
 from .pages import ShopifyPagesAdapter
+from .payment_reminder import ShopifyPaymentReminderAdapter
 from .payment_terms import ShopifyPaymentTermsAdapter
 from .payments_payouts import ShopifyPaymentsPayoutsAdapter
 from .price_list_fixed_prices import ShopifyPriceListFixedPricesAdapter
@@ -215,6 +216,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyInventoryTransferAdapter,
     ShopifyGenericTagsAdapter,
     ShopifyProductOptionsAdapter,
+    ShopifyPaymentReminderAdapter,
 )
 
 

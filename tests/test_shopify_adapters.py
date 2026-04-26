@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetytwo_adapters(self):
+    def test_register_all_adds_ninetythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 92
+        assert len(status) == 93
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -879,6 +879,7 @@ class TestShopifyBootstrap:
             "shopify_inventory_transfer",
             "shopify_generic_tags",
             "shopify_product_options",
+            "shopify_payment_reminder",
         }
 
     def test_register_all_idempotent(self):
@@ -886,7 +887,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 92
+        assert len(get_registry()) == 93
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1184,6 +1185,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_PRODUCT_OPTIONS).name == "shopify_product_options"
         assert router.route(Capability.SHOPIFY_DELETE_PRODUCT_OPTIONS).name == "shopify_product_options"
         assert router.route(Capability.SHOPIFY_REORDER_PRODUCT_OPTIONS).name == "shopify_product_options"
+        assert router.route(Capability.SHOPIFY_SEND_PAYMENT_REMINDER).name == "shopify_payment_reminder"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -24287,4 +24289,99 @@ class TestShopifyProductOptionsAdapter:
             "gid://shopify/ProductOption/2"
         assert result.data["reordered_count"] == 2
         assert result.data["product"]["options"][0]["name"] == "Size"
+
+
+# ── ShopifyPaymentReminderAdapter ─────────────────────────
+
+
+class TestShopifyPaymentReminderAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.payment_reminder import (
+            ShopifyPaymentReminderAdapter,
+        )
+        a = ShopifyPaymentReminderAdapter()
+        assert a.name == "shopify_payment_reminder"
+        assert (
+            Capability.SHOPIFY_SEND_PAYMENT_REMINDER in a.capabilities
+        )
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.payment_reminder import (
+            ShopifyPaymentReminderAdapter,
+        )
+        a = ShopifyPaymentReminderAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_send_requires_id(self):
+        from core.adapters.shopify.payment_reminder import (
+            ShopifyPaymentReminderAdapter,
+        )
+        a = ShopifyPaymentReminderAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_PAYMENT_REMINDER, {},
+        )
+        assert not result.ok
+
+    def test_send_happy_path(self):
+        from core.adapters.shopify.payment_reminder import (
+            ShopifyPaymentReminderAdapter,
+        )
+        a = ShopifyPaymentReminderAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "paymentReminderSend": {
+                    "success": True,
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_PAYMENT_REMINDER,
+                {
+                    "payment_schedule_id":
+                        "gid://shopify/PaymentSchedule/1",
+                },
+            )
+        assert result.ok
+        assert captured["paymentScheduleId"] == \
+            "gid://shopify/PaymentSchedule/1"
+        assert result.data["success"] is True
+
+    def test_send_user_errors_fail_fast(self):
+        from core.adapters.shopify.payment_reminder import (
+            ShopifyPaymentReminderAdapter,
+        )
+        a = ShopifyPaymentReminderAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "paymentReminderSend": {
+                "success": False,
+                "userErrors": [{
+                    "field": ["paymentScheduleId"],
+                    "message": "Schedule already paid",
+                    "code": "ALREADY_PAID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_PAYMENT_REMINDER,
+                {
+                    "payment_schedule_id":
+                        "gid://shopify/PaymentSchedule/1",
+                },
+            )
+        assert not result.ok
 
