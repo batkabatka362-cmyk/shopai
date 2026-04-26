@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredseventeen_adapters(self):
+    def test_register_all_adds_onehundredeighteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 117
+        assert len(status) == 118
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -904,6 +904,7 @@ class TestShopifyBootstrap:
             "shopify_shipping_packages",
             "shopify_company_location_staff",
             "shopify_discount_free_shipping_update",
+            "shopify_url_redirects",
         }
 
     def test_register_all_idempotent(self):
@@ -911,7 +912,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 117
+        assert len(get_registry()) == 118
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1272,6 +1273,12 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL).name == "shopify_company_location_staff"
         assert router.route(Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING).name == "shopify_discount_free_shipping_update"
         assert router.route(Capability.SHOPIFY_UPDATE_DISCOUNT_CODE_FREE_SHIPPING).name == "shopify_discount_free_shipping_update"
+        assert router.route(Capability.SHOPIFY_LIST_URL_REDIRECTS).name == "shopify_url_redirects"
+        assert router.route(Capability.SHOPIFY_GET_URL_REDIRECT).name == "shopify_url_redirects"
+        assert router.route(Capability.SHOPIFY_CREATE_URL_REDIRECT).name == "shopify_url_redirects"
+        assert router.route(Capability.SHOPIFY_UPDATE_URL_REDIRECT).name == "shopify_url_redirects"
+        assert router.route(Capability.SHOPIFY_DELETE_URL_REDIRECT).name == "shopify_url_redirects"
+        assert router.route(Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS).name == "shopify_url_redirects"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -30945,5 +30952,393 @@ class TestShopifyDiscountFreeShippingUpdateAdapter:
                     "id": "gid://shopify/DiscountCodeNode/1",
                     "code": "DUPLICATE",
                 },
+            )
+        assert not result.ok
+
+
+# ── ShopifyUrlRedirectsAdapter ────────────────────────────
+
+
+class TestShopifyUrlRedirectsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter()
+        assert a.name == "shopify_url_redirects"
+        for cap in (
+            Capability.SHOPIFY_LIST_URL_REDIRECTS,
+            Capability.SHOPIFY_GET_URL_REDIRECT,
+            Capability.SHOPIFY_CREATE_URL_REDIRECT,
+            Capability.SHOPIFY_UPDATE_URL_REDIRECT,
+            Capability.SHOPIFY_DELETE_URL_REDIRECT,
+            Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List ────────────────────────────────────────────────────
+
+    def test_list_invalid_sort_key_rejected(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_LIST_URL_REDIRECTS,
+            {"sort_key": "TITLE"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "urlRedirects": {
+                    "pageInfo": {
+                        "hasNextPage": False, "endCursor": None,
+                    },
+                    "edges": [{
+                        "node": {
+                            "id": "gid://shopify/UrlRedirect/1",
+                            "path": "/products/old-sku",
+                            "target": "/products/new-sku",
+                        },
+                    }],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_URL_REDIRECTS,
+                {
+                    "limit": 25, "sort_key": "path",
+                    "query": "path:/products/*",
+                },
+            )
+        assert result.ok
+        assert captured["first"] == 25
+        assert captured["sortKey"] == "PATH"
+        assert captured["query"] == "path:/products/*"
+        assert result.data["count"] == 1
+        r0 = result.data["redirects"][0]
+        assert r0["path"] == "/products/old-sku"
+
+    # ── Get ─────────────────────────────────────────────────────
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(Capability.SHOPIFY_GET_URL_REDIRECT, {})
+        assert not result.ok
+
+    def test_get_returns_empty_when_not_found(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(
+            a, "_gql", return_value={"urlRedirect": None},
+        ):
+            result = a.execute(
+                Capability.SHOPIFY_GET_URL_REDIRECT,
+                {"id": "gid://shopify/UrlRedirect/missing"},
+            )
+        assert result.ok
+        assert result.data["found"] is False
+        assert result.data["redirect"] == {}
+
+    # ── Create ──────────────────────────────────────────────────
+
+    def test_create_requires_path(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_URL_REDIRECT,
+            {"target": "/new"},
+        )
+        assert not result.ok
+
+    def test_create_requires_target(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_URL_REDIRECT,
+            {"path": "/old"},
+        )
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "urlRedirectCreate": {
+                    "urlRedirect": {
+                        "id": "gid://shopify/UrlRedirect/1",
+                        "path": "/old",
+                        "target": "/new",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_URL_REDIRECT,
+                {"path": "/old", "target": "/new"},
+            )
+        assert result.ok
+        assert captured == {
+            "urlRedirect": {"path": "/old", "target": "/new"},
+        }
+        assert result.data["redirect"]["target"] == "/new"
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_rejects_empty_body(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_URL_REDIRECT,
+            {"id": "gid://shopify/UrlRedirect/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_happy_path_target_only(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "urlRedirectUpdate": {
+                    "urlRedirect": {
+                        "id": "gid://shopify/UrlRedirect/1",
+                        "path": "/old",
+                        "target": "/newer",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_URL_REDIRECT,
+                {
+                    "id": "gid://shopify/UrlRedirect/1",
+                    "target": "/newer",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/UrlRedirect/1",
+            "urlRedirect": {"target": "/newer"},
+        }
+
+    # ── Delete ──────────────────────────────────────────────────
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "urlRedirectDelete": {
+                    "deletedUrlRedirectId":
+                        "gid://shopify/UrlRedirect/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_URL_REDIRECT,
+                {"id": "gid://shopify/UrlRedirect/1"},
+            )
+        assert result.ok
+        assert captured == {"id": "gid://shopify/UrlRedirect/1"}
+        assert result.data["deleted_id"] == \
+            "gid://shopify/UrlRedirect/1"
+
+    # ── Bulk delete ─────────────────────────────────────────────
+
+    def test_bulk_delete_rejects_no_selector(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS, {},
+        )
+        assert not result.ok
+
+    def test_bulk_delete_rejects_multiple_selectors(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS,
+            {
+                "ids": ["gid://shopify/UrlRedirect/1"],
+                "all": True,
+            },
+        )
+        assert not result.ok
+
+    def test_bulk_delete_via_ids(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {"name": None, "vars": None}
+
+        def fake_gql(q, v):
+            captured["name"] = "byIds" \
+                if "$ids" in q else "?"
+            captured["vars"] = v
+            return {
+                "urlRedirectBulkDeleteByIds": {
+                    "job": {"id": "gid://shopify/Job/1", "done": False},
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS,
+                {
+                    "ids": [
+                        "gid://shopify/UrlRedirect/1",
+                        "gid://shopify/UrlRedirect/2",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["name"] == "byIds"
+        assert captured["vars"] == {
+            "ids": [
+                "gid://shopify/UrlRedirect/1",
+                "gid://shopify/UrlRedirect/2",
+            ],
+        }
+        assert result.data["selector"] == {
+            "kind": "ids", "count": 2,
+        }
+        assert result.data["job_id"] == "gid://shopify/Job/1"
+
+    def test_bulk_delete_via_all(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update({"q": q, "v": v})
+            return {
+                "urlRedirectBulkDeleteAll": {
+                    "job": {"id": "gid://shopify/Job/2", "done": False},
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS,
+                {"all": True},
+            )
+        assert result.ok
+        assert captured["v"] == {}
+        assert "urlRedirectBulkDeleteAll" in captured["q"]
+        assert result.data["selector"] == {"kind": "all"}
+
+    def test_bulk_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.url_redirects import (
+            ShopifyUrlRedirectsAdapter,
+        )
+        a = ShopifyUrlRedirectsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "urlRedirectBulkDeleteBySearch": {
+                "job": None,
+                "userErrors": [{
+                    "field": ["search"],
+                    "message": "Invalid search syntax",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS,
+                {"search": "[bad"},
             )
         assert not result.ok

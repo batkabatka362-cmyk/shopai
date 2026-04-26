@@ -433,6 +433,12 @@ class Capability(str, Enum):
     SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL = "shopify_send_company_contact_welcome_email"
     SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING = "shopify_update_discount_auto_free_shipping"
     SHOPIFY_UPDATE_DISCOUNT_CODE_FREE_SHIPPING = "shopify_update_discount_code_free_shipping"
+    SHOPIFY_LIST_URL_REDIRECTS = "shopify_list_url_redirects"
+    SHOPIFY_GET_URL_REDIRECT = "shopify_get_url_redirect"
+    SHOPIFY_CREATE_URL_REDIRECT = "shopify_create_url_redirect"
+    SHOPIFY_UPDATE_URL_REDIRECT = "shopify_update_url_redirect"
+    SHOPIFY_DELETE_URL_REDIRECT = "shopify_delete_url_redirect"
+    SHOPIFY_BULK_DELETE_URL_REDIRECTS = "shopify_bulk_delete_url_redirects"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
