@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredfour_adapters(self):
+    def test_register_all_adds_onehundredfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 104
+        assert len(status) == 105
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -891,6 +891,7 @@ class TestShopifyBootstrap:
             "shopify_discount_bulk_delete",
             "shopify_product_option_update",
             "shopify_gift_card_notify",
+            "shopify_discount_redeem_codes",
         }
 
     def test_register_all_idempotent(self):
@@ -898,7 +899,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 104
+        assert len(get_registry()) == 105
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1222,6 +1223,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_PRODUCT_OPTION).name == "shopify_product_option_update"
         assert router.route(Capability.SHOPIFY_SEND_GIFT_CARD_TO_CUSTOMER).name == "shopify_gift_card_notify"
         assert router.route(Capability.SHOPIFY_SEND_GIFT_CARD_TO_RECIPIENT).name == "shopify_gift_card_notify"
+        assert router.route(Capability.SHOPIFY_BULK_ADD_DISCOUNT_REDEEM_CODES).name == "shopify_discount_redeem_codes"
+        assert router.route(Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES).name == "shopify_discount_redeem_codes"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -27015,3 +27018,316 @@ class TestShopifyGiftCardNotifyAdapter:
             "recipient_preferred_name"] == "Bob"
         assert result.data["gift_card"]["recipient_message"] == \
             "Happy birthday!"
+
+
+# ── ShopifyDiscountRedeemCodesAdapter ─────────────────────
+
+
+class TestShopifyDiscountRedeemCodesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter()
+        assert a.name == "shopify_discount_redeem_codes"
+        for cap in (
+            Capability.SHOPIFY_BULK_ADD_DISCOUNT_REDEEM_CODES,
+            Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Codes builder ─────────────────────────
+
+    def test_codes_accept_strings(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_codes(["VIP10", "GOLD20"])
+        assert out == [
+            {"code": "VIP10"},
+            {"code": "GOLD20"},
+        ]
+
+    def test_codes_accept_dicts(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_codes([
+            {"code": "  WHITESPACE  "}, {"code": "TIDY"},
+        ])
+        assert out == [
+            {"code": "WHITESPACE"},
+            {"code": "TIDY"},
+        ]
+
+    def test_codes_reject_blank(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_codes(["", "  "])
+
+    # ── Bulk add ──────────────────────────────
+
+    def test_bulk_add_requires_discount_id(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_BULK_ADD_DISCOUNT_REDEEM_CODES,
+            {"codes": ["X"]},
+        )
+        assert not result.ok
+
+    def test_bulk_add_happy_path_single_chunk(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "discountRedeemCodeBulkAdd": {
+                    "bulkCreation": {
+                        "id":
+                            "gid://shopify/DiscountRedeemCodeBulkCreation/1",
+                        "codesCount": 2,
+                        "failedCount": 0,
+                        "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_ADD_DISCOUNT_REDEEM_CODES,
+                {
+                    "discount_id": "gid://shopify/DiscountCodeNode/1",
+                    "codes": ["VIP10", "GOLD20"],
+                },
+            )
+        assert result.ok
+        assert captured["discountId"] == \
+            "gid://shopify/DiscountCodeNode/1"
+        assert captured["codes"] == [
+            {"code": "VIP10"},
+            {"code": "GOLD20"},
+        ]
+        assert result.data["requested_count"] == 2
+        assert result.data["chunks"] == 1
+        assert result.data["bulk_creations"][0]["codes_count"] == 2
+
+    def test_bulk_add_chunks_above_100(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        chunk_sizes: list[int] = []
+
+        def fake_gql(q, v):
+            chunk_sizes.append(len(v["codes"]))
+            return {
+                "discountRedeemCodeBulkAdd": {
+                    "bulkCreation": {
+                        "id": "gid://shopify/Bulk/1",
+                        "codesCount": len(v["codes"]),
+                        "failedCount": 0,
+                        "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        codes = [f"CODE-{i:04d}" for i in range(150)]
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_ADD_DISCOUNT_REDEEM_CODES,
+                {
+                    "discount_id":
+                        "gid://shopify/DiscountCodeNode/1",
+                    "codes": codes,
+                },
+            )
+        assert result.ok
+        assert chunk_sizes == [100, 50]
+        assert result.data["chunks"] == 2
+
+    # ── Bulk delete ───────────────────────────
+
+    def test_bulk_delete_rejects_no_selector(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES,
+            {"discount_id": "gid://shopify/DiscountCodeNode/1"},
+        )
+        assert not result.ok
+
+    def test_bulk_delete_rejects_multiple_selectors(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES,
+            {
+                "discount_id":
+                    "gid://shopify/DiscountCodeNode/1",
+                "ids": ["gid://shopify/DiscountRedeemCode/1"],
+                "search": "VIP",
+            },
+        )
+        assert not result.ok
+
+    def test_bulk_delete_via_search(self):
+        # Pattern C: only the chosen selector key should appear in
+        # the variables payload.
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            captured["__query"] = q
+            return {
+                "discountCodeRedeemCodeBulkDelete": {
+                    "job": {
+                        "id": "gid://shopify/Job/77",
+                        "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES,
+                {
+                    "discount_id":
+                        "gid://shopify/DiscountCodeNode/1",
+                    "search": "VIP-",
+                },
+            )
+        assert result.ok
+        # Pattern C: payload only carries discountId + chosen
+        # selector — no null siblings.
+        assert set(captured.keys()) == {
+            "__query", "discountId", "search",
+        }
+        assert captured["search"] == "VIP-"
+        assert "ids" not in captured["__query"]
+        assert "savedSearchId" not in captured["__query"]
+        assert result.data["selector"] == {
+            "kind": "search", "query": "VIP-",
+        }
+
+    def test_bulk_delete_via_ids(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "discountCodeRedeemCodeBulkDelete": {
+                    "job": {
+                        "id": "gid://shopify/Job/9",
+                        "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES,
+                {
+                    "discount_id":
+                        "gid://shopify/DiscountCodeNode/1",
+                    "ids": [
+                        "gid://shopify/DiscountRedeemCode/1",
+                        "gid://shopify/DiscountRedeemCode/2",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "discountId":
+                "gid://shopify/DiscountCodeNode/1",
+            "ids": [
+                "gid://shopify/DiscountRedeemCode/1",
+                "gid://shopify/DiscountRedeemCode/2",
+            ],
+        }
+        assert result.data["selector"]["count"] == 2
+
+    def test_bulk_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_redeem_codes import (
+            ShopifyDiscountRedeemCodesAdapter,
+        )
+        a = ShopifyDiscountRedeemCodesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "discountCodeRedeemCodeBulkDelete": {
+                "job": None,
+                "userErrors": [{
+                    "field": ["search"],
+                    "message": "Invalid search",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES,
+                {
+                    "discount_id":
+                        "gid://shopify/DiscountCodeNode/1",
+                    "search": "BAD::SYNTAX",
+                },
+            )
+        assert not result.ok

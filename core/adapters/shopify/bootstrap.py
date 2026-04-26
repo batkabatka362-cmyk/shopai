@@ -55,6 +55,7 @@ from .customizations import (
 from .discount_activate import ShopifyDiscountActivateAdapter
 from .discount_automatic import ShopifyDiscountAutomaticAdapter
 from .discount_bulk_delete import ShopifyDiscountBulkDeleteAdapter
+from .discount_redeem_codes import ShopifyDiscountRedeemCodesAdapter
 from .discount_automatic_bxgy import ShopifyDiscountAutomaticBxgyAdapter
 from .discount_code_bxgy import ShopifyDiscountCodeBxgyAdapter
 from .discount_code_free_shipping import (
@@ -241,6 +242,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDiscountBulkDeleteAdapter,
     ShopifyProductOptionUpdateAdapter,
     ShopifyGiftCardNotifyAdapter,
+    ShopifyDiscountRedeemCodesAdapter,
 )
 
 
