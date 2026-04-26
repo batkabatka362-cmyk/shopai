@@ -386,6 +386,12 @@ tolerate both forms when the cost is low:
 - `fulfillmentTrackingInfoUpdate` and `fulfillmentCancel` both
   use the typed `UserError` (no `code`) — Pattern F. Drop
   `code` from those userErrors selections.
+- `productReorderMedia` returns `mediaUserErrors` (NOT the
+  standard `userErrors` key) of type `MediaUserError` (has
+  `code`). Same shape as `orderCancel`'s `orderCancelUserErrors`
+  — the base `_check_user_errors` helper looks for the literal
+  `userErrors` key and misses this one. Adapters using
+  `productReorderMedia` extract the custom key manually.
 
 ### Pattern D-prime: oneOf input objects
 

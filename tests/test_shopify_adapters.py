@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightyfour_adapters(self):
+    def test_register_all_adds_eightyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 84
+        assert len(status) == 85
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -871,6 +871,7 @@ class TestShopifyBootstrap:
             "shopify_inventory_adjust",
             "shopify_order_risk_assessment",
             "shopify_fulfillment_tracking",
+            "shopify_product_media",
         }
 
     def test_register_all_idempotent(self):
@@ -878,7 +879,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 84
+        assert len(get_registry()) == 85
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1153,6 +1154,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT).name == "shopify_order_risk_assessment"
         assert router.route(Capability.SHOPIFY_UPDATE_FULFILLMENT_TRACKING).name == "shopify_fulfillment_tracking"
         assert router.route(Capability.SHOPIFY_CANCEL_FULFILLMENT).name == "shopify_fulfillment_tracking"
+        assert router.route(Capability.SHOPIFY_REORDER_PRODUCT_MEDIA).name == "shopify_product_media"
+        assert router.route(Capability.SHOPIFY_APPEND_VARIANT_MEDIA).name == "shopify_product_media"
+        assert router.route(Capability.SHOPIFY_DETACH_VARIANT_MEDIA).name == "shopify_product_media"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -22087,4 +22091,295 @@ class TestShopifyFulfillmentTrackingAdapter:
             })
         assert result.ok
         assert result.data["fulfillment"]["status"] == "CANCELLED"
+
+
+# ── ShopifyProductMediaAdapter ────────────────────────────
+
+
+class TestShopifyProductMediaAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter()
+        assert a.name == "shopify_product_media"
+        for cap in (
+            Capability.SHOPIFY_REORDER_PRODUCT_MEDIA,
+            Capability.SHOPIFY_APPEND_VARIANT_MEDIA,
+            Capability.SHOPIFY_DETACH_VARIANT_MEDIA,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Move builder ────────────────────────────
+
+    def test_moves_rejects_negative_position(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_moves([{
+                "id": "gid://shopify/MediaImage/1",
+                "new_position": -1,
+            }])
+
+    def test_moves_rejects_missing_id(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_moves([{"new_position": 0}])
+
+    # ── Variant media builder ───────────────────
+
+    def test_variant_media_rejects_empty_media_ids(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_variant_media([{
+                "variant_id": "gid://shopify/ProductVariant/1",
+                "media_ids": [],
+            }], label="variant_media")
+
+    def test_variant_media_accepts_single_string(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        out = a._build_variant_media([{
+            "variant_id": "gid://shopify/ProductVariant/1",
+            "media_ids": "gid://shopify/MediaImage/9",
+        }], label="variant_media")
+        assert out == [{
+            "variantId": "gid://shopify/ProductVariant/1",
+            "mediaIds": ["gid://shopify/MediaImage/9"],
+        }]
+
+    # ── Reorder ─────────────────────────────────
+
+    def test_reorder_requires_product_id(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_REORDER_PRODUCT_MEDIA,
+            {"moves": [{"id": "gid://shopify/MediaImage/1",
+                        "new_position": 0}]},
+        )
+        assert not result.ok
+
+    def test_reorder_happy_path(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productReorderMedia": {
+                    "job": {
+                        "id": "gid://shopify/Job/77", "done": False,
+                    },
+                    "mediaUserErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_REORDER_PRODUCT_MEDIA,
+                {
+                    "id": "gid://shopify/Product/1",
+                    "moves": [
+                        {"id": "gid://shopify/MediaImage/1",
+                         "new_position": 0},
+                        {"id": "gid://shopify/MediaImage/2",
+                         "new_position": 1},
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["id"] == "gid://shopify/Product/1"
+        assert captured["moves"][0] == {
+            "id": "gid://shopify/MediaImage/1",
+            "newPosition": "0",
+        }
+        assert result.data["job_id"] == "gid://shopify/Job/77"
+        assert result.data["moves_count"] == 2
+
+    def test_reorder_media_user_errors_fail_fast(self):
+        # Pattern D: productReorderMedia uses mediaUserErrors,
+        # which the base helper misses. Adapter must catch it
+        # manually.
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "productReorderMedia": {
+                "job": None,
+                "mediaUserErrors": [{
+                    "field": ["moves", "0", "newPosition"],
+                    "message": "Position out of range",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_REORDER_PRODUCT_MEDIA,
+                {
+                    "id": "gid://shopify/Product/1",
+                    "moves": [{
+                        "id": "gid://shopify/MediaImage/1",
+                        "new_position": 999,
+                    }],
+                },
+            )
+        assert not result.ok
+
+    # ── Append variant media ────────────────────
+
+    def test_append_requires_product_id(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_APPEND_VARIANT_MEDIA,
+            {"variant_media": [{
+                "variant_id": "gid://shopify/ProductVariant/1",
+                "media_ids": ["gid://shopify/MediaImage/1"],
+            }]},
+        )
+        assert not result.ok
+
+    def test_append_happy_path(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productVariantAppendMedia": {
+                    "product": {
+                        "id": "gid://shopify/Product/1",
+                        "handle": "blue-thing",
+                        "title": "Blue Thing",
+                    },
+                    "productVariants": [
+                        {"id": "gid://shopify/ProductVariant/1",
+                         "title": "Blue"},
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_APPEND_VARIANT_MEDIA,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "variant_media": [{
+                        "variant_id":
+                            "gid://shopify/ProductVariant/1",
+                        "media_ids": [
+                            "gid://shopify/MediaImage/1",
+                            "gid://shopify/MediaImage/2",
+                        ],
+                    }],
+                },
+            )
+        assert result.ok
+        assert captured["productId"] == "gid://shopify/Product/1"
+        assert captured["variantMedia"] == [{
+            "variantId": "gid://shopify/ProductVariant/1",
+            "mediaIds": [
+                "gid://shopify/MediaImage/1",
+                "gid://shopify/MediaImage/2",
+            ],
+        }]
+        assert result.data["product"]["handle"] == "blue-thing"
+        assert result.data["variants_count"] == 1
+        assert result.data["appended_count"] == 1
+
+    def test_append_user_errors_fail_fast(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "productVariantAppendMedia": {
+                "product": None,
+                "productVariants": None,
+                "userErrors": [{
+                    "field": ["variantMedia", "0", "mediaIds"],
+                    "message": "Media not found",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_APPEND_VARIANT_MEDIA,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "variant_media": [{
+                        "variant_id":
+                            "gid://shopify/ProductVariant/1",
+                        "media_ids": ["gid://shopify/MediaImage/9999"],
+                    }],
+                },
+            )
+        assert not result.ok
+
+    # ── Detach variant media ────────────────────
+
+    def test_detach_happy_path(self):
+        from core.adapters.shopify.product_media import (
+            ShopifyProductMediaAdapter,
+        )
+        a = ShopifyProductMediaAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "productVariantDetachMedia": {
+                "product": {
+                    "id": "gid://shopify/Product/1",
+                    "handle": "thing",
+                    "title": "Thing",
+                },
+                "productVariants": [
+                    {"id": "gid://shopify/ProductVariant/1",
+                     "title": "Default"},
+                ],
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DETACH_VARIANT_MEDIA,
+                {
+                    "product_id": "gid://shopify/Product/1",
+                    "variant_media": [{
+                        "variant_id":
+                            "gid://shopify/ProductVariant/1",
+                        "media_ids": ["gid://shopify/MediaImage/1"],
+                    }],
+                },
+            )
+        assert result.ok
+        assert result.data["detached_count"] == 1
 

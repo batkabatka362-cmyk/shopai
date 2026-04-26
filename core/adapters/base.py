@@ -347,6 +347,9 @@ class Capability(str, Enum):
     SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT = "shopify_create_order_risk_assessment"
     SHOPIFY_UPDATE_FULFILLMENT_TRACKING = "shopify_update_fulfillment_tracking"
     SHOPIFY_CANCEL_FULFILLMENT = "shopify_cancel_fulfillment"
+    SHOPIFY_REORDER_PRODUCT_MEDIA = "shopify_reorder_product_media"
+    SHOPIFY_APPEND_VARIANT_MEDIA = "shopify_append_variant_media"
+    SHOPIFY_DETACH_VARIANT_MEDIA = "shopify_detach_variant_media"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
