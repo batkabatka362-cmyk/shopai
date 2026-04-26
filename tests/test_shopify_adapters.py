@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventyseven_adapters(self):
+    def test_register_all_adds_seventyeight_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 77
+        assert len(status) == 78
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -864,6 +864,7 @@ class TestShopifyBootstrap:
             "shopify_customer_addresses",
             "shopify_gift_card_crud",
             "shopify_company_contacts",
+            "shopify_product_duplicate",
         }
 
     def test_register_all_idempotent(self):
@@ -871,7 +872,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 77
+        assert len(get_registry()) == 78
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1131,6 +1132,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_COMPANY_CONTACT).name == "shopify_company_contacts"
         assert router.route(Capability.SHOPIFY_DELETE_COMPANY_CONTACT).name == "shopify_company_contacts"
         assert router.route(Capability.SHOPIFY_REMOVE_COMPANY_CONTACT).name == "shopify_company_contacts"
+        assert router.route(Capability.SHOPIFY_DUPLICATE_PRODUCT).name == "shopify_product_duplicate"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -20803,4 +20805,150 @@ class TestShopifyCompanyContactsAdapter:
         assert result.ok
         assert result.data["removed_id"] == \
             "gid://shopify/CompanyContact/1"
+
+
+# ── ShopifyProductDuplicateAdapter ────────────────────────
+
+
+class TestShopifyProductDuplicateAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.product_duplicate import (
+            ShopifyProductDuplicateAdapter,
+        )
+        a = ShopifyProductDuplicateAdapter()
+        assert a.name == "shopify_product_duplicate"
+        assert Capability.SHOPIFY_DUPLICATE_PRODUCT in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.product_duplicate import (
+            ShopifyProductDuplicateAdapter,
+        )
+        a = ShopifyProductDuplicateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_requires_product_id(self):
+        from core.adapters.shopify.product_duplicate import (
+            ShopifyProductDuplicateAdapter,
+        )
+        a = ShopifyProductDuplicateAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DUPLICATE_PRODUCT, {
+            "new_title": "Clone",
+        })
+        assert not result.ok
+
+    def test_requires_new_title(self):
+        from core.adapters.shopify.product_duplicate import (
+            ShopifyProductDuplicateAdapter,
+        )
+        a = ShopifyProductDuplicateAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DUPLICATE_PRODUCT, {
+            "product_id": "gid://shopify/Product/1",
+        })
+        assert not result.ok
+
+    def test_rejects_invalid_status(self):
+        from core.adapters.shopify.product_duplicate import (
+            ShopifyProductDuplicateAdapter,
+        )
+        a = ShopifyProductDuplicateAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_DUPLICATE_PRODUCT, {
+            "product_id": "gid://shopify/Product/1",
+            "new_title": "Clone",
+            "new_status": "PAUSED",
+        })
+        assert not result.ok
+
+    def test_happy_path_synchronous(self):
+        from core.adapters.shopify.product_duplicate import (
+            ShopifyProductDuplicateAdapter,
+        )
+        a = ShopifyProductDuplicateAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productDuplicate": {
+                    "newProduct": {
+                        "id": "gid://shopify/Product/2",
+                        "title": "Clone v1",
+                        "handle": "clone-v1",
+                        "status": "DRAFT",
+                        "tags": ["a", "b"],
+                    },
+                    "imageJob": None,
+                    "productDuplicateOperation": None,
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_DUPLICATE_PRODUCT, {
+                "product_id": "gid://shopify/Product/1",
+                "new_title": "Clone v1",
+                "new_status": "draft",
+                "include_images": True,
+                "include_translations": False,
+                "synchronous": True,
+            })
+        assert result.ok
+        assert captured["productId"] == "gid://shopify/Product/1"
+        assert captured["newTitle"] == "Clone v1"
+        assert captured["newStatus"] == "DRAFT"
+        assert captured["includeImages"] is True
+        assert captured["includeTranslations"] is False
+        assert captured["synchronous"] is True
+        assert result.data["new_product"]["id"] == \
+            "gid://shopify/Product/2"
+        assert result.data["new_product"]["tags"] == ["a", "b"]
+
+    def test_happy_path_async_returns_operation(self):
+        from core.adapters.shopify.product_duplicate import (
+            ShopifyProductDuplicateAdapter,
+        )
+        a = ShopifyProductDuplicateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "productDuplicate": {
+                "newProduct": None,
+                "imageJob": {"id": "gid://shopify/Job/77", "done": False},
+                "productDuplicateOperation": {
+                    "id": "gid://shopify/ProductDuplicateOperation/9",
+                    "status": "ACTIVE",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DUPLICATE_PRODUCT, {
+                "product_id": "gid://shopify/Product/1",
+                "new_title": "Clone v1",
+            })
+        assert result.ok
+        assert result.data["operation_id"] == \
+            "gid://shopify/ProductDuplicateOperation/9"
+        assert result.data["operation_status"] == "ACTIVE"
+        assert result.data["image_job_id"] == "gid://shopify/Job/77"
+        assert result.data["image_job_done"] is False
+        assert result.data["new_product"] == {}
+
+    def test_user_errors_fail_fast(self):
+        from core.adapters.shopify.product_duplicate import (
+            ShopifyProductDuplicateAdapter,
+        )
+        a = ShopifyProductDuplicateAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "productDuplicate": {
+                "newProduct": None,
+                "userErrors": [{
+                    "field": ["productId"],
+                    "message": "Product not found",
+                }],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_DUPLICATE_PRODUCT, {
+                "product_id": "gid://shopify/Product/9999",
+                "new_title": "Clone",
+            })
+        assert not result.ok
 

@@ -87,6 +87,7 @@ from .pages import ShopifyPagesAdapter
 from .payment_terms import ShopifyPaymentTermsAdapter
 from .payments_payouts import ShopifyPaymentsPayoutsAdapter
 from .price_lists import ShopifyPriceListAdapter
+from .product_duplicate import ShopifyProductDuplicateAdapter
 from .products import ShopifyProductsAdapter
 from .publications import ShopifyPublicationsAdapter
 from .refunds import ShopifyRefundsAdapter
@@ -185,6 +186,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCustomerAddressesAdapter,
     ShopifyGiftCardCRUDAdapter,
     ShopifyCompanyContactsAdapter,
+    ShopifyProductDuplicateAdapter,
 )
 
 

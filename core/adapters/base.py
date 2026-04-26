@@ -332,6 +332,7 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_COMPANY_CONTACT = "shopify_update_company_contact"
     SHOPIFY_DELETE_COMPANY_CONTACT = "shopify_delete_company_contact"
     SHOPIFY_REMOVE_COMPANY_CONTACT = "shopify_remove_company_contact"
+    SHOPIFY_DUPLICATE_PRODUCT = "shopify_duplicate_product"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

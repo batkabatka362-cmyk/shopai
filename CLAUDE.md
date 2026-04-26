@@ -356,6 +356,9 @@ tolerate both forms when the cost is low:
   but `giftCardCreate` (`GiftCardUserError`) and `giftCardCredit`
   / `giftCardDebit` (`GiftCardTransactionUserError`) all DO have
   `code`. Pattern F applies per-mutation, not per-resource.
+- `productDelete` and `productDuplicate` userErrors are typed
+  `UserError` (no `code`) — same Pattern F. Most product
+  mutations DO use `UserErrors` (with code), so check per-mutation.
 
 ### Pattern D-prime: oneOf input objects
 

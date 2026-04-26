@@ -188,7 +188,6 @@ mutation productDelete($input: ProductDeleteInput!) {
     userErrors {
       field
       message
-      code
     }
   }
 }
