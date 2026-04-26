@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredone_adapters(self):
+    def test_register_all_adds_onehundredtwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 101
+        assert len(status) == 102
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -888,6 +888,7 @@ class TestShopifyBootstrap:
             "shopify_reverse_delivery",
             "shopify_theme_ops",
             "shopify_customer_segment_write",
+            "shopify_discount_bulk_delete",
         }
 
     def test_register_all_idempotent(self):
@@ -895,7 +896,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 101
+        assert len(get_registry()) == 102
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1214,6 +1215,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_THEME).name == "shopify_theme_ops"
         assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER_SEGMENT).name == "shopify_customer_segment_write"
         assert router.route(Capability.SHOPIFY_DELETE_CUSTOMER_SEGMENT).name == "shopify_customer_segment_write"
+        assert router.route(Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS).name == "shopify_discount_bulk_delete"
+        assert router.route(Capability.SHOPIFY_BULK_DELETE_CODE_DISCOUNTS).name == "shopify_discount_bulk_delete"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -26382,3 +26385,216 @@ class TestShopifyCustomerSegmentWriteAdapter:
         assert result.ok
         assert result.data["deleted_id"] == \
             "gid://shopify/Segment/1"
+
+
+# ── ShopifyDiscountBulkDeleteAdapter ──────────────────────
+
+
+class TestShopifyDiscountBulkDeleteAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter()
+        assert a.name == "shopify_discount_bulk_delete"
+        for cap in (
+            Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS,
+            Capability.SHOPIFY_BULK_DELETE_CODE_DISCOUNTS,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Selector validation ───────────────────
+
+    def test_rejects_no_selector(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS, {},
+        )
+        assert not result.ok
+
+    def test_rejects_multiple_selectors(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS,
+            {
+                "ids": ["gid://shopify/DiscountAutomaticNode/1"],
+                "search": "summer",
+            },
+        )
+        assert not result.ok
+
+    def test_ids_accepts_single_string(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_selector_variables({
+            "ids": "gid://shopify/DiscountAutomaticNode/1",
+        })
+        # Pattern C: only the chosen selector key is emitted —
+        # null siblings would trigger Shopify's "only one of"
+        # rejection.
+        assert out == {
+            "ids": ["gid://shopify/DiscountAutomaticNode/1"],
+        }
+
+    # ── Automatic bulk delete ─────────────────
+
+    def test_bulk_delete_automatic_via_ids(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "discountAutomaticBulkDelete": {
+                    "job": {
+                        "id": "gid://shopify/Job/77",
+                        "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS,
+                {"ids": [
+                    "gid://shopify/DiscountAutomaticNode/1",
+                    "gid://shopify/DiscountAutomaticNode/2",
+                ]},
+            )
+        assert result.ok
+        assert captured == {
+            "ids": [
+                "gid://shopify/DiscountAutomaticNode/1",
+                "gid://shopify/DiscountAutomaticNode/2",
+            ],
+        }
+        assert result.data["job_id"] == "gid://shopify/Job/77"
+        assert result.data["selector"] == {
+            "kind": "ids", "count": 2,
+        }
+
+    def test_bulk_delete_automatic_via_search(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "discountAutomaticBulkDelete": {
+                    "job": {
+                        "id": "gid://shopify/Job/88",
+                        "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS,
+                {"search": "summer-2025"},
+            )
+        assert result.ok
+        assert captured == {"search": "summer-2025"}
+        assert result.data["selector"] == {
+            "kind": "search", "query": "summer-2025",
+        }
+
+    def test_bulk_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "discountAutomaticBulkDelete": {
+                "job": None,
+                "userErrors": [{
+                    "field": ["search"],
+                    "message": "Invalid search syntax",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS,
+                {"search": "BAD::SYNTAX"},
+            )
+        assert not result.ok
+
+    # ── Code bulk delete ──────────────────────
+
+    def test_bulk_delete_code_via_saved_search_id(self):
+        from core.adapters.shopify.discount_bulk_delete import (
+            ShopifyDiscountBulkDeleteAdapter,
+        )
+        a = ShopifyDiscountBulkDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "discountCodeBulkDelete": {
+                    "job": {
+                        "id": "gid://shopify/Job/99",
+                        "done": False,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_BULK_DELETE_CODE_DISCOUNTS,
+                {
+                    "saved_search_id":
+                        "gid://shopify/SavedSearch/9",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "savedSearchId": "gid://shopify/SavedSearch/9",
+        }
+        assert result.data["selector"] == {
+            "kind": "saved_search",
+            "saved_search_id": "gid://shopify/SavedSearch/9",
+        }

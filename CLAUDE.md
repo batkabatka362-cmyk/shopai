@@ -404,6 +404,14 @@ tolerate both forms when the cost is low:
   same logical field, different camelCase names per mutation.
   Adapter routes friendly snake_case (`origin_location_id`)
   to the right field per call site.
+- `discountAutomaticBulkDelete` / `discountCodeBulkDelete`
+  treat **null GraphQL variables as "set"**. Sending
+  `{ids: [...], search: null, savedSearchId: null}` fails
+  with "Only one of IDs, search argument or saved search ID
+  is allowed" even though only `ids` is non-null. Pattern C
+  / D: emit ONLY the chosen selector key; route to one of
+  three pre-built mutation variants per selector. The same
+  trap applies to any "exactly one of" mutation arg set.
 
 ### Pattern D-prime: oneOf input objects
 
