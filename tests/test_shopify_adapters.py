@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetyfive_adapters(self):
+    def test_register_all_adds_ninetysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 95
+        assert len(status) == 96
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -882,6 +882,7 @@ class TestShopifyBootstrap:
             "shopify_payment_reminder",
             "shopify_fulfillment_order_ops",
             "shopify_metafields_delete",
+            "shopify_subscription_billing",
         }
 
     def test_register_all_idempotent(self):
@@ -889,7 +890,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 95
+        assert len(get_registry()) == 96
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1192,6 +1193,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER).name == "shopify_fulfillment_order_ops"
         assert router.route(Capability.SHOPIFY_SPLIT_FULFILLMENT_ORDER).name == "shopify_fulfillment_order_ops"
         assert router.route(Capability.SHOPIFY_DELETE_METAFIELDS).name == "shopify_metafields_delete"
+        assert router.route(Capability.SHOPIFY_CREATE_SUBSCRIPTION_BILLING_ATTEMPT).name == "shopify_subscription_billing"
+        assert router.route(Capability.SHOPIFY_SKIP_SUBSCRIPTION_BILLING_CYCLE).name == "shopify_subscription_billing"
+        assert router.route(Capability.SHOPIFY_UNSKIP_SUBSCRIPTION_BILLING_CYCLE).name == "shopify_subscription_billing"
+        assert router.route(Capability.SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE).name == "shopify_subscription_billing"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -24916,4 +24921,348 @@ class TestShopifyMetafieldsDeleteAdapter:
                 }]},
             )
         assert not result.ok
+
+
+# ── ShopifySubscriptionBillingAdapter ─────────────────────
+
+
+class TestShopifySubscriptionBillingAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter()
+        assert a.name == "shopify_subscription_billing"
+        for cap in (
+            Capability.SHOPIFY_CREATE_SUBSCRIPTION_BILLING_ATTEMPT,
+            Capability.SHOPIFY_SKIP_SUBSCRIPTION_BILLING_CYCLE,
+            Capability.SHOPIFY_UNSKIP_SUBSCRIPTION_BILLING_CYCLE,
+            Capability.SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Selector builder ───────────────────────
+
+    def test_selector_index(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        assert a._build_selector({"cycle_index": 5}) == {"index": 5}
+
+    def test_selector_date(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        assert a._build_selector({
+            "date": "2026-05-01T00:00:00Z",
+        }) == {"date": "2026-05-01T00:00:00Z"}
+
+    def test_selector_rejects_both(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_selector({
+                "cycle_index": 5,
+                "date": "2026-05-01T00:00:00Z",
+            })
+
+    def test_selector_rejects_neither(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_selector({})
+
+    def test_selector_rejects_zero_index(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_selector({"cycle_index": 0})
+
+    # ── Billing attempt create ────────────────
+
+    def test_create_attempt_requires_contract_id(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_SUBSCRIPTION_BILLING_ATTEMPT,
+            {"idempotency_key": "abc"},
+        )
+        assert not result.ok
+
+    def test_create_attempt_requires_idempotency_key(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_SUBSCRIPTION_BILLING_ATTEMPT,
+            {"contract_id":
+             "gid://shopify/SubscriptionContract/1"},
+        )
+        assert not result.ok
+
+    def test_create_attempt_happy_path(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionBillingAttemptCreate": {
+                    "subscriptionBillingAttempt": {
+                        "id":
+                            "gid://shopify/SubscriptionBillingAttempt/1",
+                        "ready": False,
+                        "idempotencyKey": "retry-2026-04-26",
+                        "nextActionUrl": None,
+                        "errorCode": None,
+                        "errorMessage": None,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_SUBSCRIPTION_BILLING_ATTEMPT,
+                {
+                    "contract_id":
+                        "gid://shopify/SubscriptionContract/1",
+                    "idempotency_key": "retry-2026-04-26",
+                    "cycle_index": 3,
+                    "inventory_policy":
+                        "ALLOW_OVERSELLING",
+                },
+            )
+        assert result.ok
+        assert captured["subscriptionContractId"] == \
+            "gid://shopify/SubscriptionContract/1"
+        inp = captured["subscriptionBillingAttemptInput"]
+        assert inp["idempotencyKey"] == "retry-2026-04-26"
+        assert inp["billingCycleSelector"] == {"index": 3}
+        assert inp["inventoryPolicy"] == "ALLOW_OVERSELLING"
+        assert result.data["idempotency_key"] == "retry-2026-04-26"
+
+    def test_create_attempt_user_errors_fail_fast(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "subscriptionBillingAttemptCreate": {
+                "subscriptionBillingAttempt": None,
+                "userErrors": [{
+                    "field": ["subscriptionContractId"],
+                    "message": "Contract not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_SUBSCRIPTION_BILLING_ATTEMPT,
+                {
+                    "contract_id":
+                        "gid://shopify/SubscriptionContract/9999",
+                    "idempotency_key": "x",
+                },
+            )
+        assert not result.ok
+
+    # ── Skip / Unskip ─────────────────────────
+
+    def test_skip_happy_path(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionBillingCycleSkip": {
+                    "billingCycle": {
+                        "cycleIndex": 4,
+                        "skipped": True,
+                        "edited": True,
+                        "status": "UNBILLED",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SKIP_SUBSCRIPTION_BILLING_CYCLE,
+                {
+                    "contract_id":
+                        "gid://shopify/SubscriptionContract/1",
+                    "cycle_index": 4,
+                },
+            )
+        assert result.ok
+        assert captured["billingCycleInput"] == {
+            "contractId": "gid://shopify/SubscriptionContract/1",
+            "selector": {"index": 4},
+        }
+        assert result.data["billing_cycle"]["skipped"] is True
+
+    def test_unskip_happy_path(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "subscriptionBillingCycleUnskip": {
+                "billingCycle": {
+                    "cycleIndex": 4,
+                    "skipped": False,
+                    "edited": True,
+                    "status": "UNBILLED",
+                },
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UNSKIP_SUBSCRIPTION_BILLING_CYCLE,
+                {
+                    "contract_id":
+                        "gid://shopify/SubscriptionContract/1",
+                    "cycle_index": 4,
+                },
+            )
+        assert result.ok
+        assert result.data["billing_cycle"]["skipped"] is False
+
+    # ── Reschedule ────────────────────────────
+
+    def test_reschedule_requires_reason(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE,
+            {
+                "contract_id":
+                    "gid://shopify/SubscriptionContract/1",
+                "cycle_index": 4,
+                "billing_date": "2026-06-01T00:00:00Z",
+            },
+        )
+        assert not result.ok
+
+    def test_reschedule_rejects_no_change(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE,
+            {
+                "contract_id":
+                    "gid://shopify/SubscriptionContract/1",
+                "cycle_index": 4,
+                "reason": "MERCHANT_INITIATED",
+            },
+        )
+        assert not result.ok
+
+    def test_reschedule_happy_path(self):
+        from core.adapters.shopify.subscription_billing import (
+            ShopifySubscriptionBillingAdapter,
+        )
+        a = ShopifySubscriptionBillingAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "subscriptionBillingCycleScheduleEdit": {
+                    "billingCycle": {
+                        "cycleIndex": 4,
+                        "billingAttemptExpectedDate":
+                            "2026-06-01T00:00:00Z",
+                        "edited": True,
+                        "skipped": False,
+                        "status": "UNBILLED",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE,
+                {
+                    "contract_id":
+                        "gid://shopify/SubscriptionContract/1",
+                    "cycle_index": 4,
+                    "billing_date": "2026-06-01T00:00:00Z",
+                    "reason": "merchant_initiated",
+                },
+            )
+        assert result.ok
+        assert captured["billingCycleInput"] == {
+            "contractId": "gid://shopify/SubscriptionContract/1",
+            "selector": {"index": 4},
+        }
+        assert captured["input"] == {
+            "reason": "MERCHANT_INITIATED",
+            "billingDate": "2026-06-01T00:00:00Z",
+        }
+        assert result.data["billing_cycle"][
+            "billing_attempt_expected_date"] == "2026-06-01T00:00:00Z"
 

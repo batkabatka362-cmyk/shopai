@@ -375,6 +375,10 @@ class Capability(str, Enum):
     SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER = "shopify_reschedule_fulfillment_order"
     SHOPIFY_SPLIT_FULFILLMENT_ORDER = "shopify_split_fulfillment_order"
     SHOPIFY_DELETE_METAFIELDS = "shopify_delete_metafields"
+    SHOPIFY_CREATE_SUBSCRIPTION_BILLING_ATTEMPT = "shopify_create_subscription_billing_attempt"
+    SHOPIFY_SKIP_SUBSCRIPTION_BILLING_CYCLE = "shopify_skip_subscription_billing_cycle"
+    SHOPIFY_UNSKIP_SUBSCRIPTION_BILLING_CYCLE = "shopify_unskip_subscription_billing_cycle"
+    SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE = "shopify_reschedule_subscription_billing_cycle"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
