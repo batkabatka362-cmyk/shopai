@@ -84,6 +84,7 @@ from .market_crud import ShopifyMarketCRUDAdapter
 from .markets import ShopifyMarketsAdapter
 from .metafield import ShopifyMetafieldAdapter
 from .metafield_definition_pin import ShopifyMetafieldDefinitionPinAdapter
+from .metafields_delete import ShopifyMetafieldsDeleteAdapter
 from .metafield_definitions import ShopifyMetafieldDefinitionsAdapter
 from .metaobject_definitions import ShopifyMetaobjectDefinitionsAdapter
 from .metaobjects import ShopifyMetaobjectsAdapter
@@ -219,6 +220,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyProductOptionsAdapter,
     ShopifyPaymentReminderAdapter,
     ShopifyFulfillmentOrderOpsAdapter,
+    ShopifyMetafieldsDeleteAdapter,
 )
 
 

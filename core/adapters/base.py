@@ -374,6 +374,7 @@ class Capability(str, Enum):
     SHOPIFY_MOVE_FULFILLMENT_ORDER = "shopify_move_fulfillment_order"
     SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER = "shopify_reschedule_fulfillment_order"
     SHOPIFY_SPLIT_FULFILLMENT_ORDER = "shopify_split_fulfillment_order"
+    SHOPIFY_DELETE_METAFIELDS = "shopify_delete_metafields"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

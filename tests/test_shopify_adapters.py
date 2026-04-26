@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_ninetyfour_adapters(self):
+    def test_register_all_adds_ninetyfive_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 94
+        assert len(status) == 95
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -881,6 +881,7 @@ class TestShopifyBootstrap:
             "shopify_product_options",
             "shopify_payment_reminder",
             "shopify_fulfillment_order_ops",
+            "shopify_metafields_delete",
         }
 
     def test_register_all_idempotent(self):
@@ -888,7 +889,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 94
+        assert len(get_registry()) == 95
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1190,6 +1191,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_MOVE_FULFILLMENT_ORDER).name == "shopify_fulfillment_order_ops"
         assert router.route(Capability.SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER).name == "shopify_fulfillment_order_ops"
         assert router.route(Capability.SHOPIFY_SPLIT_FULFILLMENT_ORDER).name == "shopify_fulfillment_order_ops"
+        assert router.route(Capability.SHOPIFY_DELETE_METAFIELDS).name == "shopify_metafields_delete"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -24688,4 +24690,230 @@ class TestShopifyFulfillmentOrderOpsAdapter:
         ]
         assert result.data["splits_count"] == 1
         assert len(result.data["splits"]) == 1
+
+
+# ── ShopifyMetafieldsDeleteAdapter ────────────────────────
+
+
+class TestShopifyMetafieldsDeleteAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter()
+        assert a.name == "shopify_metafields_delete"
+        assert (
+            Capability.SHOPIFY_DELETE_METAFIELDS in a.capabilities
+        )
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Identifier builder ─────────────────────
+
+    def test_identifiers_rejects_empty(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_identifiers([])
+
+    def test_identifiers_rejects_missing_owner_id(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_identifiers([{
+                "namespace": "custom", "key": "color",
+            }])
+
+    def test_identifiers_rejects_missing_namespace(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_identifiers([{
+                "owner_id": "gid://shopify/Product/1", "key": "color",
+            }])
+
+    def test_identifiers_rejects_missing_key(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_identifiers([{
+                "owner_id": "gid://shopify/Product/1",
+                "namespace": "custom",
+            }])
+
+    def test_identifiers_camelcase_alias(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_identifiers([{
+            "ownerId": "gid://shopify/Product/1",
+            "namespace": "custom",
+            "key": "color",
+        }])
+        assert out == [{
+            "ownerId": "gid://shopify/Product/1",
+            "namespace": "custom",
+            "key": "color",
+        }]
+
+    # ── Delete ─────────────────────────────────
+
+    def test_delete_requires_metafields(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(Capability.SHOPIFY_DELETE_METAFIELDS, {})
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "metafieldsDelete": {
+                    "deletedMetafields": [
+                        {
+                            "ownerId":
+                                "gid://shopify/Product/1",
+                            "namespace": "custom",
+                            "key": "color",
+                        },
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_METAFIELDS,
+                {"metafields": [{
+                    "owner_id": "gid://shopify/Product/1",
+                    "namespace": "custom",
+                    "key": "color",
+                }]},
+            )
+        assert result.ok
+        assert captured["metafields"] == [{
+            "ownerId": "gid://shopify/Product/1",
+            "namespace": "custom",
+            "key": "color",
+        }]
+        assert result.data["deleted_count"] == 1
+        assert result.data["requested_count"] == 1
+        assert result.data["deleted_metafields"][0] == {
+            "owner_id": "gid://shopify/Product/1",
+            "namespace": "custom",
+            "key": "color",
+        }
+
+    def test_delete_chunks_above_25(self):
+        # Pattern: Shopify caps metafieldsDelete at 25 entries per
+        # call. Adapter chunks larger payloads automatically.
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        call_count = {"n": 0}
+        chunk_sizes: list[int] = []
+
+        def fake_gql(q, v):
+            call_count["n"] += 1
+            chunk_sizes.append(len(v["metafields"]))
+            return {
+                "metafieldsDelete": {
+                    "deletedMetafields": [
+                        {"ownerId": m["ownerId"],
+                         "namespace": m["namespace"],
+                         "key": m["key"]}
+                        for m in v["metafields"]
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        # 30 identifiers → should split into 25 + 5.
+        identifiers = [
+            {
+                "owner_id": f"gid://shopify/Product/{i}",
+                "namespace": "custom",
+                "key": "color",
+            }
+            for i in range(30)
+        ]
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_METAFIELDS,
+                {"metafields": identifiers},
+            )
+        assert result.ok
+        assert call_count["n"] == 2
+        assert chunk_sizes == [25, 5]
+        assert result.data["deleted_count"] == 30
+        assert result.data["requested_count"] == 30
+
+    def test_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.metafields_delete import (
+            ShopifyMetafieldsDeleteAdapter,
+        )
+        a = ShopifyMetafieldsDeleteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "metafieldsDelete": {
+                "deletedMetafields": None,
+                "userErrors": [{
+                    "field": ["metafields", "0", "ownerId"],
+                    "message": "Owner not found",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_METAFIELDS,
+                {"metafields": [{
+                    "owner_id": "gid://shopify/Product/9999",
+                    "namespace": "custom",
+                    "key": "color",
+                }]},
+            )
+        assert not result.ok
 
