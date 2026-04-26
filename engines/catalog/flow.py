@@ -20,6 +20,8 @@ from .tag_assigner import assign_tags
 from .catalog_validator import validate_catalog
 from .memory_reader import read_past_catalogs
 from .memory_writer import write_catalog_result
+from .shopify_hydrator import hydrate_products
+from .shopify_applier import apply_tag_assignments
 
 
 class CatalogEngine:
@@ -48,6 +50,17 @@ class CatalogEngine:
         categories = data.get("categories", [])
         tags = data.get("tags", [])
 
+        # Stage 0.5: Auto-hydrate products from Shopify when caller
+        # didn't pre-fetch. Pass-through if non-empty; auto-fetch
+        # via Capability.SHOPIFY_LIST_PRODUCTS otherwise. The
+        # standard "Products list is required" guard still fires
+        # when both supplied AND hydrated are empty.
+        products = hydrate_products(
+            products,
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
+
         if not products:
             return self._fail("Products list is required", 0.0)
 
@@ -67,6 +80,19 @@ class CatalogEngine:
         if tag_result.get("status") == "error":
             return self._fail(f"Tag assignment failed: {tag_result.get('error')}", time.monotonic() - start)
         tag_assignments = tag_result.get("assignments", [])
+
+        # Stage 3.5: Push tag assignments to Shopify (opt-in via
+        # data.apply_tags=True). When opt-in is off, every
+        # assignment is stamped applied=False with a "disabled by
+        # caller" reason — recommendations still flow through the
+        # output. When opt-in is on, mutates each assignment with
+        # applied/apply_error fields based on the
+        # SHOPIFY_ADD_TAGS result. Per-assignment graceful
+        # fallback — one product's failure doesn't stop the rest.
+        tag_assignments = apply_tag_assignments(
+            tag_assignments,
+            apply=bool(data.get("apply_tags", False)),
+        )
 
         val_result = validate_catalog(products=products, categories=organized_cats, tag_assignments=tag_assignments)
         if val_result.get("status") == "error":
