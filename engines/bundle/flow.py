@@ -23,6 +23,7 @@ from .price_optimizer import optimize_prices
 from .cannibalization_checker import check_cannibalization
 from .memory_reader import read_past_bundles
 from .memory_writer import write_bundle_result
+from .shopify_hydrator import hydrate_products, hydrate_orders
 
 
 class BundleEngine:
@@ -63,6 +64,24 @@ class BundleEngine:
         orders = data.get("orders", [])
         pricing_data = data.get("pricing_data", {})
         constraints = data.get("constraints", {})
+
+        # ---- Stage 0.5: Auto-hydrate from Shopify when caller
+        # didn't pre-fetch. No-op if products / orders are already
+        # populated. If the router is unavailable / Shopify is
+        # unreachable / scopes are missing, returns whatever was
+        # supplied (empty if nothing) — the standard "Product list
+        # is required" check below still fires.
+        hydrate_limit = data.get("hydrate_limit")
+        hydrate_query = data.get("hydrate_query")
+        products = hydrate_products(
+            products,
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
+        orders = hydrate_orders(
+            orders,
+            limit=hydrate_limit,
+        )
 
         if not products:
             return self._fail("Product list is required", 0.0)
