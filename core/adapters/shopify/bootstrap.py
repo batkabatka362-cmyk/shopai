@@ -72,6 +72,9 @@ from .discount_code_bxgy import ShopifyDiscountCodeBxgyAdapter
 from .discount_code_free_shipping import (
     ShopifyDiscountCodeFreeShippingAdapter,
 )
+from .discount_free_shipping_update import (
+    ShopifyDiscountFreeShippingUpdateAdapter,
+)
 from .discounts import ShopifyDiscountAdapter
 from .disputes import ShopifyDisputesAdapter
 from .draft_order_calculate import ShopifyDraftOrderCalculateAdapter
@@ -273,6 +276,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyStorefrontAccessTokensAdapter,
     ShopifyShippingPackagesAdapter,
     ShopifyCompanyLocationStaffAdapter,
+    ShopifyDiscountFreeShippingUpdateAdapter,
 )
 
 

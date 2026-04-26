@@ -431,6 +431,8 @@ class Capability(str, Enum):
     SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF = "shopify_assign_company_location_staff"
     SHOPIFY_REMOVE_COMPANY_LOCATION_STAFF = "shopify_remove_company_location_staff"
     SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL = "shopify_send_company_contact_welcome_email"
+    SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING = "shopify_update_discount_auto_free_shipping"
+    SHOPIFY_UPDATE_DISCOUNT_CODE_FREE_SHIPPING = "shopify_update_discount_code_free_shipping"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

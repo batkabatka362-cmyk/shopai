@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredsixteen_adapters(self):
+    def test_register_all_adds_onehundredseventeen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 116
+        assert len(status) == 117
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -903,6 +903,7 @@ class TestShopifyBootstrap:
             "shopify_storefront_access_tokens",
             "shopify_shipping_packages",
             "shopify_company_location_staff",
+            "shopify_discount_free_shipping_update",
         }
 
     def test_register_all_idempotent(self):
@@ -910,7 +911,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 116
+        assert len(get_registry()) == 117
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1269,6 +1270,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF).name == "shopify_company_location_staff"
         assert router.route(Capability.SHOPIFY_REMOVE_COMPANY_LOCATION_STAFF).name == "shopify_company_location_staff"
         assert router.route(Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL).name == "shopify_company_location_staff"
+        assert router.route(Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING).name == "shopify_discount_free_shipping_update"
+        assert router.route(Capability.SHOPIFY_UPDATE_DISCOUNT_CODE_FREE_SHIPPING).name == "shopify_discount_free_shipping_update"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -30640,6 +30643,307 @@ class TestShopifyCompanyLocationStaffAdapter:
                 {
                     "company_contact_id":
                         "gid://shopify/CompanyContact/missing",
+                },
+            )
+        assert not result.ok
+
+
+# ── ShopifyDiscountFreeShippingUpdateAdapter ──────────────
+
+
+class TestShopifyDiscountFreeShippingUpdateAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter()
+        assert a.name == "shopify_discount_free_shipping_update"
+        for cap in (
+            Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING,
+            Capability.SHOPIFY_UPDATE_DISCOUNT_CODE_FREE_SHIPPING,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Validation ──────────────────────────────────────────────
+
+    def test_auto_requires_id(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING,
+            {"title": "rename"},
+        )
+        assert not result.ok
+
+    def test_auto_rejects_empty_body(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING,
+            {"id": "gid://shopify/DiscountAutomaticNode/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_rejects_non_numeric_minimum_subtotal(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING,
+            {
+                "id": "gid://shopify/DiscountAutomaticNode/1",
+                "minimum_subtotal": "many",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_rejects_destination_with_no_actionable_field(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING,
+            {
+                "id": "gid://shopify/DiscountAutomaticNode/1",
+                "destination": {},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    # ── Auto happy path ─────────────────────────────────────────
+
+    def test_auto_happy_path_with_destination_diff(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "discountAutomaticFreeShippingUpdate": {
+                    "automaticDiscountNode": {
+                        "id": "gid://shopify/DiscountAutomaticNode/1",
+                        "automaticDiscount": {
+                            "title": "Free shipping (extended)",
+                            "status": "ACTIVE",
+                            "startsAt": "2026-01-01T00:00:00Z",
+                            "endsAt": "2027-06-30T23:59:59Z",
+                            "combinesWith": {
+                                "productDiscounts": True,
+                                "orderDiscounts": False,
+                                "shippingDiscounts": False,
+                            },
+                            "minimumRequirement": {
+                                "greaterThanOrEqualToSubtotal": {
+                                    "amount": "50.0",
+                                    "currencyCode": "USD",
+                                },
+                            },
+                            "destinationSelection": {
+                                "countries": ["US", "CA", "MX"],
+                                "includeRestOfWorld": False,
+                            },
+                            "maximumShippingPrice": {
+                                "amount": "20.00",
+                                "currencyCode": "USD",
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING,
+                {
+                    "id": "gid://shopify/DiscountAutomaticNode/1",
+                    "title": "Free shipping (extended)",
+                    "ends_at": "2027-06-30T23:59:59Z",
+                    "minimum_subtotal": "50.00",
+                    "destination": {
+                        "add_countries": ["mx"],
+                        "remove_countries": ["de"],
+                        "include_rest_of_world": False,
+                    },
+                    "maximum_shipping_price": "20.00",
+                    "combines_with": {
+                        "product_discounts": True,
+                        "order_discounts": False,
+                    },
+                },
+            )
+        assert result.ok
+        body = captured["freeShippingAutomaticDiscount"]
+        assert body["title"] == "Free shipping (extended)"
+        assert body["endsAt"] == "2027-06-30T23:59:59Z"
+        assert body["minimumRequirement"] == {
+            "subtotal": {"greaterThanOrEqualToSubtotal": 50.0},
+        }
+        assert body["destination"] == {
+            "countries": {
+                "add": ["MX"],
+                "remove": ["DE"],
+                "includeRestOfWorld": False,
+            },
+        }
+        assert body["maximumShippingPrice"] == 20.0
+        assert body["combinesWith"] == {
+            "productDiscounts": True, "orderDiscounts": False,
+        }
+        d = result.data["discount"]
+        assert d["title"] == "Free shipping (extended)"
+        assert d["maximum_shipping_amount"] == 20.0
+        assert "MX" in d["destination_countries"]
+
+    def test_auto_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "discountAutomaticFreeShippingUpdate": {
+                "automaticDiscountNode": None,
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Discount not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING,
+                {
+                    "id":
+                        "gid://shopify/DiscountAutomaticNode/missing",
+                    "title": "Late",
+                },
+            )
+        assert not result.ok
+
+    # ── Code happy path ─────────────────────────────────────────
+
+    def test_code_happy_path_with_code_only_fields(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "discountCodeFreeShippingUpdate": {
+                    "codeDiscountNode": {
+                        "id": "gid://shopify/DiscountCodeNode/1",
+                        "codeDiscount": {
+                            "title": "SHIPFREE",
+                            "status": "ACTIVE",
+                            "startsAt": "2026-01-01T00:00:00Z",
+                            "endsAt": None,
+                            "combinesWith": {
+                                "productDiscounts": False,
+                                "orderDiscounts": False,
+                                "shippingDiscounts": False,
+                            },
+                            "minimumRequirement": None,
+                            "destinationSelection": {
+                                "allCountries": True,
+                            },
+                            "maximumShippingPrice": None,
+                            "codes": {
+                                "edges": [
+                                    {"node": {"code": "SHIPFREE2"}},
+                                ],
+                            },
+                            "usageLimit": 5000,
+                            "appliesOncePerCustomer": True,
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_DISCOUNT_CODE_FREE_SHIPPING,
+                {
+                    "id": "gid://shopify/DiscountCodeNode/1",
+                    "code": "SHIPFREE2",
+                    "usage_limit": 5000,
+                    "applies_once_per_customer": True,
+                    "title": "SHIPFREE",
+                },
+            )
+        assert result.ok
+        body = captured["freeShippingCodeDiscount"]
+        assert body["code"] == "SHIPFREE2"
+        assert body["usageLimit"] == 5000
+        assert body["appliesOncePerCustomer"] is True
+        d = result.data["discount"]
+        assert d["code"] == "SHIPFREE2"
+        assert d["usage_limit"] == 5000
+        assert d["applies_once_per_customer"] is True
+        assert d["destination_all_countries"] is True
+
+    def test_code_user_errors_fail_fast(self):
+        from core.adapters.shopify.discount_free_shipping_update import (
+            ShopifyDiscountFreeShippingUpdateAdapter,
+        )
+        a = ShopifyDiscountFreeShippingUpdateAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "discountCodeFreeShippingUpdate": {
+                "codeDiscountNode": None,
+                "userErrors": [{
+                    "field": ["freeShippingCodeDiscount", "code"],
+                    "message": "Code has already been taken",
+                    "code": "TAKEN",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_DISCOUNT_CODE_FREE_SHIPPING,
+                {
+                    "id": "gid://shopify/DiscountCodeNode/1",
+                    "code": "DUPLICATE",
                 },
             )
         assert not result.ok
