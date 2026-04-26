@@ -418,6 +418,7 @@ class Capability(str, Enum):
     SHOPIFY_MARK_COMMENT_SPAM = "shopify_mark_comment_spam"
     SHOPIFY_MARK_COMMENT_NOT_SPAM = "shopify_mark_comment_not_spam"
     SHOPIFY_DELETE_COMMENT = "shopify_delete_comment"
+    SHOPIFY_UPDATE_INVENTORY_ITEM = "shopify_update_inventory_item"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

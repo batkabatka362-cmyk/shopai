@@ -85,6 +85,7 @@ from .gift_card_crud import ShopifyGiftCardCRUDAdapter
 from .gift_card_notify import ShopifyGiftCardNotifyAdapter
 from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
+from .inventory_item import ShopifyInventoryItemAdapter
 from .inventory_adjust import ShopifyInventoryAdjustAdapter
 from .inventory_activation import ShopifyInventoryActivationAdapter
 from .inventory_shipments import ShopifyInventoryShipmentsAdapter
@@ -259,6 +260,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCatalogWriteAdapter,
     ShopifyBlogsAdapter,
     ShopifyCommentsAdapter,
+    ShopifyInventoryItemAdapter,
 )
 
 

@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredeleven_adapters(self):
+    def test_register_all_adds_onehundredtwelve_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 111
+        assert len(status) == 112
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -898,6 +898,7 @@ class TestShopifyBootstrap:
             "shopify_catalog_write",
             "shopify_blogs",
             "shopify_comments",
+            "shopify_inventory_item",
         }
 
     def test_register_all_idempotent(self):
@@ -905,7 +906,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 111
+        assert len(get_registry()) == 112
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1251,6 +1252,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_MARK_COMMENT_SPAM).name == "shopify_comments"
         assert router.route(Capability.SHOPIFY_MARK_COMMENT_NOT_SPAM).name == "shopify_comments"
         assert router.route(Capability.SHOPIFY_DELETE_COMMENT).name == "shopify_comments"
+        assert router.route(Capability.SHOPIFY_UPDATE_INVENTORY_ITEM).name == "shopify_inventory_item"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -29177,5 +29179,214 @@ class TestShopifyCommentsAdapter:
             result = a.execute(
                 Capability.SHOPIFY_DELETE_COMMENT,
                 {"id": "gid://shopify/Comment/9999999"},
+            )
+        assert not result.ok
+
+
+# ── ShopifyInventoryItemAdapter ───────────────────────────
+
+
+class TestShopifyInventoryItemAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter()
+        assert a.name == "shopify_inventory_item"
+        assert Capability.SHOPIFY_UPDATE_INVENTORY_ITEM in \
+            a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_requires_id(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_INVENTORY_ITEM,
+            {"sku": "X"},
+        )
+        assert not result.ok
+
+    def test_rejects_empty_input(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_INVENTORY_ITEM,
+            {"id": "gid://shopify/InventoryItem/1"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_rejects_non_numeric_cost(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_INVENTORY_ITEM,
+            {
+                "id": "gid://shopify/InventoryItem/1",
+                "cost": "many",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_rejects_invalid_weight_unit(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_INVENTORY_ITEM,
+            {
+                "id": "gid://shopify/InventoryItem/1",
+                "weight": {"value": 1, "unit": "stones"},
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_country_hs_requires_both_fields(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_INVENTORY_ITEM,
+            {
+                "id": "gid://shopify/InventoryItem/1",
+                "country_harmonized_system_codes": [
+                    {"country_code": "DE"},
+                ],
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_happy_path_full_payload(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "inventoryItemUpdate": {
+                    "inventoryItem": {
+                        "id": "gid://shopify/InventoryItem/1",
+                        "sku": "SKU-NEW",
+                        "tracked": True,
+                        "requiresShipping": True,
+                        "countryCodeOfOrigin": "US",
+                        "provinceCodeOfOrigin": "CA",
+                        "harmonizedSystemCode": "1234.56",
+                        "unitCost": {
+                            "amount": "12.50",
+                            "currencyCode": "USD",
+                        },
+                        "measurement": {
+                            "id": "gid://shopify/InventoryItemMeasurement/1",
+                            "weight": {
+                                "value": 1.2, "unit": "KILOGRAMS",
+                            },
+                        },
+                        "duplicateSkuCount": 0,
+                        "updatedAt": "2026-04-26T00:00:00Z",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_INVENTORY_ITEM,
+                {
+                    "id": "gid://shopify/InventoryItem/1",
+                    "sku": "SKU-NEW",
+                    "cost": "12.50",
+                    "tracked": True,
+                    "requires_shipping": True,
+                    "country_code_of_origin": "us",
+                    "province_code_of_origin": "ca",
+                    "harmonized_system_code": "1234.56",
+                    "country_harmonized_system_codes": [{
+                        "country_code": "de",
+                        "harmonized_system_code": "1234.56.78",
+                    }],
+                    "weight": {"value": 1.2, "unit": "kg"},
+                },
+            )
+        assert result.ok
+        body = captured["input"]
+        assert body["sku"] == "SKU-NEW"
+        assert body["cost"] == 12.5
+        assert body["tracked"] is True
+        assert body["requiresShipping"] is True
+        assert body["countryCodeOfOrigin"] == "US"
+        assert body["provinceCodeOfOrigin"] == "CA"
+        assert body["harmonizedSystemCode"] == "1234.56"
+        assert body["countryHarmonizedSystemCodes"] == [{
+            "countryCode": "DE",
+            "harmonizedSystemCode": "1234.56.78",
+        }]
+        assert body["measurement"] == {
+            "weight": {"value": 1.2, "unit": "KILOGRAMS"},
+        }
+        item = result.data["inventory_item"]
+        assert item["sku"] == "SKU-NEW"
+        assert item["unit_cost"]["amount"] == 12.5
+        assert item["weight"]["value"] == 1.2
+        assert item["weight"]["unit"] == "KILOGRAMS"
+
+    def test_user_errors_fail_fast(self):
+        from core.adapters.shopify.inventory_item import (
+            ShopifyInventoryItemAdapter,
+        )
+        a = ShopifyInventoryItemAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "inventoryItemUpdate": {
+                "inventoryItem": None,
+                "userErrors": [{
+                    "field": ["input", "harmonizedSystemCode"],
+                    "message": "Harmonized code is invalid",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_INVENTORY_ITEM,
+                {
+                    "id": "gid://shopify/InventoryItem/1",
+                    "harmonized_system_code": "invalid",
+                },
             )
         assert not result.ok
