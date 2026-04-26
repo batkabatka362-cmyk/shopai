@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredthirteen_adapters(self):
+    def test_register_all_adds_onehundredfourteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 113
+        assert len(status) == 114
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -900,6 +900,7 @@ class TestShopifyBootstrap:
             "shopify_comments",
             "shopify_inventory_item",
             "shopify_customer_marketing",
+            "shopify_storefront_access_tokens",
         }
 
     def test_register_all_idempotent(self):
@@ -907,7 +908,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 113
+        assert len(get_registry()) == 114
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1257,6 +1258,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT).name == "shopify_customer_marketing"
         assert router.route(Capability.SHOPIFY_UPDATE_CUSTOMER_SMS_MARKETING_CONSENT).name == "shopify_customer_marketing"
         assert router.route(Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE).name == "shopify_customer_marketing"
+        assert router.route(Capability.SHOPIFY_LIST_STOREFRONT_ACCESS_TOKENS).name == "shopify_storefront_access_tokens"
+        assert router.route(Capability.SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN).name == "shopify_storefront_access_tokens"
+        assert router.route(Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN).name == "shopify_storefront_access_tokens"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -29774,5 +29778,226 @@ class TestShopifyCustomerMarketingAdapter:
                     "customer_id":
                         "gid://shopify/Customer/missing",
                 },
+            )
+        assert not result.ok
+
+
+# ── ShopifyStorefrontAccessTokensAdapter ──────────────────
+
+
+class TestShopifyStorefrontAccessTokensAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter()
+        assert a.name == "shopify_storefront_access_tokens"
+        for cap in (
+            Capability.SHOPIFY_LIST_STOREFRONT_ACCESS_TOKENS,
+            Capability.SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN,
+            Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "shop": {
+                    "storefrontAccessTokens": {
+                        "pageInfo": {
+                            "hasNextPage": False, "endCursor": None,
+                        },
+                        "edges": [{
+                            "node": {
+                                "id":
+                                    "gid://shopify/StorefrontAccessToken/1",
+                                "title": "Headless web",
+                                "accessToken": "shpat_storefront_xxx",
+                                "accessScopes": [
+                                    {"handle": "unauthenticated_read_product_listings"},
+                                    {"handle": "unauthenticated_read_collection_listings"},
+                                ],
+                                "createdAt":
+                                    "2026-04-26T00:00:00Z",
+                                "updatedAt":
+                                    "2026-04-26T00:00:00Z",
+                            },
+                        }],
+                    },
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_STOREFRONT_ACCESS_TOKENS,
+                {"limit": 25, "reverse": True},
+            )
+        assert result.ok
+        assert captured["first"] == 25
+        assert captured["reverse"] is True
+        assert result.data["count"] == 1
+        t = result.data["access_tokens"][0]
+        assert t["title"] == "Headless web"
+        assert "unauthenticated_read_product_listings" in \
+            t["access_scopes"]
+
+    def test_create_requires_title(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN, {},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "storefrontAccessTokenCreate": {
+                    "storefrontAccessToken": {
+                        "id":
+                            "gid://shopify/StorefrontAccessToken/1",
+                        "title": "Mobile iOS app",
+                        "accessToken": "shpat_storefront_yyy",
+                        "accessScopes": [
+                            {"handle":
+                                "unauthenticated_read_product_listings"},
+                        ],
+                        "createdAt": "2026-04-26T00:00:00Z",
+                        "updatedAt": "2026-04-26T00:00:00Z",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN,
+                {"title": "Mobile iOS app"},
+            )
+        assert result.ok
+        assert captured == {"input": {"title": "Mobile iOS app"}}
+        t = result.data["access_token"]
+        assert t["title"] == "Mobile iOS app"
+        assert t["access_token"] == "shpat_storefront_yyy"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "storefrontAccessTokenCreate": {
+                "storefrontAccessToken": None,
+                "userErrors": [{
+                    "field": ["input", "title"],
+                    "message": "Title has already been taken",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN,
+                {"title": "Duplicate"},
+            )
+        assert not result.ok
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN, {},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "storefrontAccessTokenDelete": {
+                    "deletedStorefrontAccessTokenId":
+                        "gid://shopify/StorefrontAccessToken/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN,
+                {"id": "gid://shopify/StorefrontAccessToken/1"},
+            )
+        assert result.ok
+        # Pattern A: id at field level *inside* delete input wrapper
+        assert captured == {
+            "input": {"id": "gid://shopify/StorefrontAccessToken/1"},
+        }
+        assert result.data["deleted_id"] == \
+            "gid://shopify/StorefrontAccessToken/1"
+
+    def test_delete_user_errors_fail_fast(self):
+        from core.adapters.shopify.storefront_access_tokens import (
+            ShopifyStorefrontAccessTokensAdapter,
+        )
+        a = ShopifyStorefrontAccessTokensAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "storefrontAccessTokenDelete": {
+                "deletedStorefrontAccessTokenId": None,
+                "userErrors": [{
+                    "field": ["input", "id"],
+                    "message": "Token not found",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN,
+                {"id": "gid://shopify/StorefrontAccessToken/missing"},
             )
         assert not result.ok

@@ -422,6 +422,9 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_CUSTOMER_EMAIL_MARKETING_CONSENT = "shopify_update_customer_email_marketing_consent"
     SHOPIFY_UPDATE_CUSTOMER_SMS_MARKETING_CONSENT = "shopify_update_customer_sms_marketing_consent"
     SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE = "shopify_send_customer_account_invite"
+    SHOPIFY_LIST_STOREFRONT_ACCESS_TOKENS = "shopify_list_storefront_access_tokens"
+    SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN = "shopify_create_storefront_access_token"
+    SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN = "shopify_delete_storefront_access_token"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

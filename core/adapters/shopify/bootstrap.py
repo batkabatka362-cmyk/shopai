@@ -137,6 +137,9 @@ from .subscription_draft import ShopifySubscriptionDraftAdapter
 from .standard_metafield_definition import (
     ShopifyStandardMetafieldDefinitionAdapter,
 )
+from .storefront_access_tokens import (
+    ShopifyStorefrontAccessTokensAdapter,
+)
 from .subscription_billing import ShopifySubscriptionBillingAdapter
 from .subscriptions import ShopifySubscriptionContractsAdapter
 from .theme_ops import ShopifyThemeOpsAdapter
@@ -263,6 +266,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCommentsAdapter,
     ShopifyInventoryItemAdapter,
     ShopifyCustomerMarketingAdapter,
+    ShopifyStorefrontAccessTokensAdapter,
 )
 
 
