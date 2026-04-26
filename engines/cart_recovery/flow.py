@@ -29,6 +29,7 @@ from .cart_analyzer import analyze_cart
 from .abandonment_classifier import classify_abandonment
 from .recovery_strategy_selector import select_recovery_strategy
 from .incentive_calculator import calculate_incentive
+from .discount_minter import mint_recovery_code
 from .message_builder import build_message
 from .timing_optimizer import optimize_timing
 from .channel_selector import select_channel
@@ -132,6 +133,18 @@ class CartRecoveryEngine:
             )
         incentive = incentive_result["incentive"]
 
+        # Stage 4.5: Mint Shopify discount code (when adapter wired).
+        # The calculated incentive is a recommendation — without an
+        # actual code in Shopify, the recovery email can't honor the
+        # offer at checkout. mint_recovery_code calls
+        # Capability.SHOPIFY_CREATE_DISCOUNT via the SmartRouter and
+        # returns {code, discount_id, ends_at, applies_once} on
+        # success, or None when the router is unavailable / the
+        # incentive isn't mintable / the adapter call failed. Either
+        # way the pipeline continues — None just means downstream
+        # falls back to the merchant's evergreen recovery code.
+        recovery_code = mint_recovery_code(incentive, customer, store)
+
         # Stage 5: Message Builder (model: LLaMA)
         message_result = build_message(
             strategy,
@@ -197,6 +210,21 @@ class CartRecoveryEngine:
                 "incentive": {
                     "type": incentive.get("type", "none"),
                     "value": incentive.get("value", 0),
+                    # Real Shopify code minted in Stage 4.5 — None
+                    # if the router was unavailable or the incentive
+                    # type isn't mintable (free_shipping/bundle/etc.).
+                    "code": (
+                        recovery_code.get("code", "")
+                        if recovery_code else ""
+                    ),
+                    "discount_id": (
+                        recovery_code.get("discount_id", "")
+                        if recovery_code else ""
+                    ),
+                    "ends_at": (
+                        recovery_code.get("ends_at", "")
+                        if recovery_code else ""
+                    ),
                 },
                 "message": {
                     "subject": message.get("subject", ""),
