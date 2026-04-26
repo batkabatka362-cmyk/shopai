@@ -25,6 +25,7 @@ from .tier_manager import manage_tiers
 from .reward_recommender import recommend_rewards
 from .memory_reader import read_past_loyalty
 from .memory_writer import write_loyalty_result
+from engines._shopify_hydrator import hydrate
 
 
 class LoyaltyEngine:
@@ -63,6 +64,26 @@ class LoyaltyEngine:
 
         customers = data.get("customers", [])
         orders = data.get("orders", [])
+
+        # Auto-hydrate from Shopify when caller left lists empty.
+        # Pre-existing failure semantics preserved: empty supplied
+        # AND empty hydrated → "Customer list is required".
+        hydrate_limit = data.get("hydrate_limit")
+        hydrate_query = data.get("hydrate_query")
+        customers = hydrate(
+            supplied=customers,
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
+        orders = hydrate(
+            supplied=orders,
+            capability_name="SHOPIFY_FETCH_ORDERS",
+            list_field="orders",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
         program_config = data.get("program_config", {})
         current_points = data.get("current_points", {})
 

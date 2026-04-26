@@ -27,6 +27,7 @@ from .cannibalization_checker import check_cannibalization
 from .revenue_projector import project_revenue
 from .memory_reader import read_past_discounts
 from .memory_writer import write_discount_result
+from engines._shopify_hydrator import hydrate
 
 
 class DiscountStrategyEngine:
@@ -67,6 +68,18 @@ class DiscountStrategyEngine:
         goal = str(data.get("goal", "boost_revenue"))
         inventory_days = int(data.get("inventory_days", 90))
         customer_segments = data.get("customer_segments", [])
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. Honors data.hydrate_limit / hydrate_query.
+        # Pre-existing failure semantics preserved: empty supplied
+        # AND empty hydrated → standard "Products list is required".
+        products = hydrate(
+            supplied=products,
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not products:
             return self._fail("Products list is required", 0.0)

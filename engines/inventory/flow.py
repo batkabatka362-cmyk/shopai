@@ -30,6 +30,7 @@ from .alert_generator import generate_alerts
 from .cost_tracker import compute_costs
 from .memory_reader import read_past_inventory
 from .memory_writer import write_inventory_result
+from engines._shopify_hydrator import hydrate
 
 
 class InventoryEngine:
@@ -69,6 +70,17 @@ class InventoryEngine:
         products = data.get("products", [])
         warehouse_capacity = int(data.get("warehouse_capacity", 10000))
         service_level_target = float(data.get("service_level_target", 0.95))
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not products:
             return self._fail("Product list is required", 0.0)
