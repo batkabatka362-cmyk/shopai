@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightyfive_adapters(self):
+    def test_register_all_adds_eightysix_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 85
+        assert len(status) == 86
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -872,6 +872,7 @@ class TestShopifyBootstrap:
             "shopify_order_risk_assessment",
             "shopify_fulfillment_tracking",
             "shopify_product_media",
+            "shopify_price_list_fixed_prices",
         }
 
     def test_register_all_idempotent(self):
@@ -879,7 +880,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 85
+        assert len(get_registry()) == 86
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1157,6 +1158,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_REORDER_PRODUCT_MEDIA).name == "shopify_product_media"
         assert router.route(Capability.SHOPIFY_APPEND_VARIANT_MEDIA).name == "shopify_product_media"
         assert router.route(Capability.SHOPIFY_DETACH_VARIANT_MEDIA).name == "shopify_product_media"
+        assert router.route(Capability.SHOPIFY_ADD_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
+        assert router.route(Capability.SHOPIFY_DELETE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
+        assert router.route(Capability.SHOPIFY_UPDATE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -22382,4 +22386,337 @@ class TestShopifyProductMediaAdapter:
             )
         assert result.ok
         assert result.data["detached_count"] == 1
+
+
+# ── ShopifyPriceListFixedPricesAdapter ────────────────────
+
+
+class TestShopifyPriceListFixedPricesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter()
+        assert a.name == "shopify_price_list_fixed_prices"
+        for cap in (
+            Capability.SHOPIFY_ADD_PRICE_LIST_PRICES,
+            Capability.SHOPIFY_DELETE_PRICE_LIST_PRICES,
+            Capability.SHOPIFY_UPDATE_PRICE_LIST_PRICES,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Price builder ───────────────────────────
+
+    def test_prices_flat_form(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_prices([{
+            "variant_id": "gid://shopify/ProductVariant/1",
+            "amount": 19.99,
+            "currency_code": "usd",
+        }], label="prices")
+        assert out == [{
+            "variantId": "gid://shopify/ProductVariant/1",
+            "price": {"amount": "19.99", "currencyCode": "USD"},
+        }]
+
+    def test_prices_nested_form_with_compare_at(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        out = a._build_prices([{
+            "variant_id": "gid://shopify/ProductVariant/1",
+            "price": {"amount": "15.00", "currency_code": "USD"},
+            "compare_at_price": {
+                "amount": "20.00", "currency_code": "USD",
+            },
+        }], label="prices")
+        assert out[0]["compareAtPrice"] == {
+            "amount": "20.00", "currencyCode": "USD",
+        }
+
+    def test_prices_rejects_missing_variant_id(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_prices(
+                [{"amount": 1, "currency_code": "USD"}],
+                label="prices",
+            )
+
+    def test_prices_rejects_missing_currency(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_prices([{
+                "variant_id": "gid://shopify/ProductVariant/1",
+                "amount": 1,
+            }], label="prices")
+
+    def test_prices_rejects_negative_amount(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_prices([{
+                "variant_id": "gid://shopify/ProductVariant/1",
+                "amount": -1,
+                "currency_code": "USD",
+            }], label="prices")
+
+    # ── Add ─────────────────────────────────────
+
+    def test_add_requires_price_list_id(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ADD_PRICE_LIST_PRICES,
+            {"prices": [{
+                "variant_id": "gid://shopify/ProductVariant/1",
+                "amount": 1, "currency_code": "USD",
+            }]},
+        )
+        assert not result.ok
+
+    def test_add_happy_path(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "priceListFixedPricesAdd": {
+                    "prices": [
+                        {
+                            "variant": {
+                                "id": "gid://shopify/ProductVariant/1",
+                            },
+                            "price": {
+                                "amount": "19.99",
+                                "currencyCode": "USD",
+                            },
+                            "compareAtPrice": None,
+                        },
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ADD_PRICE_LIST_PRICES,
+                {
+                    "price_list_id": "gid://shopify/PriceList/1",
+                    "prices": [{
+                        "variant_id":
+                            "gid://shopify/ProductVariant/1",
+                        "amount": 19.99,
+                        "currency_code": "USD",
+                    }],
+                },
+            )
+        assert result.ok
+        assert captured["priceListId"] == "gid://shopify/PriceList/1"
+        assert captured["prices"][0]["price"] == {
+            "amount": "19.99", "currencyCode": "USD",
+        }
+        assert result.data["added_count"] == 1
+        assert result.data["prices"][0]["variant_id"] == \
+            "gid://shopify/ProductVariant/1"
+
+    def test_add_user_errors_fail_fast(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "priceListFixedPricesAdd": {
+                "prices": None,
+                "userErrors": [{
+                    "field": ["prices", "0", "variantId"],
+                    "message": "Variant not found",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ADD_PRICE_LIST_PRICES,
+                {
+                    "price_list_id": "gid://shopify/PriceList/1",
+                    "prices": [{
+                        "variant_id":
+                            "gid://shopify/ProductVariant/9999",
+                        "amount": 1, "currency_code": "USD",
+                    }],
+                },
+            )
+        assert not result.ok
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_requires_variant_ids(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_PRICE_LIST_PRICES,
+            {"price_list_id": "gid://shopify/PriceList/1"},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "priceListFixedPricesDelete": {
+                    "deletedFixedPriceVariantIds": [
+                        "gid://shopify/ProductVariant/1",
+                        "gid://shopify/ProductVariant/2",
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_PRICE_LIST_PRICES,
+                {
+                    "price_list_id": "gid://shopify/PriceList/1",
+                    "variant_ids": [
+                        "gid://shopify/ProductVariant/1",
+                        "gid://shopify/ProductVariant/2",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["priceListId"] == "gid://shopify/PriceList/1"
+        assert result.data["deleted_count"] == 2
+
+    # ── Update ──────────────────────────────────
+
+    def test_update_requires_at_least_one_change(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_PRICE_LIST_PRICES,
+            {
+                "price_list_id": "gid://shopify/PriceList/1",
+                "prices_to_add": [],
+                "variant_ids_to_delete": [],
+            },
+        )
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.price_list_fixed_prices import (
+            ShopifyPriceListFixedPricesAdapter,
+        )
+        a = ShopifyPriceListFixedPricesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "priceListFixedPricesUpdate": {
+                    "priceList": {
+                        "id": "gid://shopify/PriceList/1",
+                        "name": "Wholesale Tier 2",
+                    },
+                    "pricesAdded": [{
+                        "variant": {
+                            "id": "gid://shopify/ProductVariant/3",
+                        },
+                        "price": {
+                            "amount": "12.00",
+                            "currencyCode": "USD",
+                        },
+                    }],
+                    "deletedFixedPriceVariantIds": [
+                        "gid://shopify/ProductVariant/4",
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_PRICE_LIST_PRICES,
+                {
+                    "price_list_id": "gid://shopify/PriceList/1",
+                    "prices_to_add": [{
+                        "variant_id":
+                            "gid://shopify/ProductVariant/3",
+                        "amount": 12.00,
+                        "currency_code": "USD",
+                    }],
+                    "variant_ids_to_delete": [
+                        "gid://shopify/ProductVariant/4",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured["pricesToAdd"][0]["price"]["amount"] == "12.00"
+        assert captured["variantIdsToDelete"] == [
+            "gid://shopify/ProductVariant/4",
+        ]
+        assert result.data["price_list_name"] == "Wholesale Tier 2"
+        assert result.data["added_count"] == 1
+        assert result.data["deleted_count"] == 1
 

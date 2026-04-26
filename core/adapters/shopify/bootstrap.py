@@ -92,6 +92,7 @@ from .orders import ShopifyOrdersAdapter
 from .pages import ShopifyPagesAdapter
 from .payment_terms import ShopifyPaymentTermsAdapter
 from .payments_payouts import ShopifyPaymentsPayoutsAdapter
+from .price_list_fixed_prices import ShopifyPriceListFixedPricesAdapter
 from .price_lists import ShopifyPriceListAdapter
 from .product_duplicate import ShopifyProductDuplicateAdapter
 from .product_media import ShopifyProductMediaAdapter
@@ -201,6 +202,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyOrderRiskAssessmentAdapter,
     ShopifyFulfillmentTrackingAdapter,
     ShopifyProductMediaAdapter,
+    ShopifyPriceListFixedPricesAdapter,
 )
 
 

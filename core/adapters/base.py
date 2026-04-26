@@ -350,6 +350,9 @@ class Capability(str, Enum):
     SHOPIFY_REORDER_PRODUCT_MEDIA = "shopify_reorder_product_media"
     SHOPIFY_APPEND_VARIANT_MEDIA = "shopify_append_variant_media"
     SHOPIFY_DETACH_VARIANT_MEDIA = "shopify_detach_variant_media"
+    SHOPIFY_ADD_PRICE_LIST_PRICES = "shopify_add_price_list_prices"
+    SHOPIFY_DELETE_PRICE_LIST_PRICES = "shopify_delete_price_list_prices"
+    SHOPIFY_UPDATE_PRICE_LIST_PRICES = "shopify_update_price_list_prices"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
