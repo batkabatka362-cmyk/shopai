@@ -428,6 +428,9 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_SHIPPING_PACKAGE = "shopify_update_shipping_package"
     SHOPIFY_DELETE_SHIPPING_PACKAGE = "shopify_delete_shipping_package"
     SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE = "shopify_make_default_shipping_package"
+    SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF = "shopify_assign_company_location_staff"
+    SHOPIFY_REMOVE_COMPANY_LOCATION_STAFF = "shopify_remove_company_location_staff"
+    SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL = "shopify_send_company_contact_welcome_email"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

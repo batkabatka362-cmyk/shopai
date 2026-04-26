@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredfifteen_adapters(self):
+    def test_register_all_adds_onehundredsixteen_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 115
+        assert len(status) == 116
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -902,6 +902,7 @@ class TestShopifyBootstrap:
             "shopify_customer_marketing",
             "shopify_storefront_access_tokens",
             "shopify_shipping_packages",
+            "shopify_company_location_staff",
         }
 
     def test_register_all_idempotent(self):
@@ -909,7 +910,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 115
+        assert len(get_registry()) == 116
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1265,6 +1266,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_SHIPPING_PACKAGE).name == "shopify_shipping_packages"
         assert router.route(Capability.SHOPIFY_DELETE_SHIPPING_PACKAGE).name == "shopify_shipping_packages"
         assert router.route(Capability.SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE).name == "shopify_shipping_packages"
+        assert router.route(Capability.SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF).name == "shopify_company_location_staff"
+        assert router.route(Capability.SHOPIFY_REMOVE_COMPANY_LOCATION_STAFF).name == "shopify_company_location_staff"
+        assert router.route(Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL).name == "shopify_company_location_staff"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -30294,5 +30298,348 @@ class TestShopifyShippingPackagesAdapter:
                 Capability.SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE,
                 {"id":
                     "gid://shopify/DeliveryCustomShippingPackage/missing"},
+            )
+        assert not result.ok
+
+
+# ── ShopifyCompanyLocationStaffAdapter ────────────────────
+
+
+class TestShopifyCompanyLocationStaffAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter()
+        assert a.name == "shopify_company_location_staff"
+        for cap in (
+            Capability.SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF,
+            Capability.SHOPIFY_REMOVE_COMPANY_LOCATION_STAFF,
+            Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Assign ──────────────────────────────────────────────────
+
+    def test_assign_requires_location_id(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF,
+            {"staff_member_ids": ["gid://shopify/StaffMember/1"]},
+        )
+        assert not result.ok
+
+    def test_assign_requires_staff_ids(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF,
+            {
+                "company_location_id":
+                    "gid://shopify/CompanyLocation/1",
+            },
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_assign_happy_path(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyLocationAssignStaffMembers": {
+                    "companyLocationStaffMemberAssignments": [
+                        {
+                            "id":
+                                "gid://shopify/CompanyLocationStaffMemberAssignment/1",
+                            "companyLocation": {
+                                "id":
+                                    "gid://shopify/CompanyLocation/1",
+                                "name": "HQ",
+                            },
+                            "staffMember": {
+                                "id":
+                                    "gid://shopify/StaffMember/1",
+                                "name": "Ada",
+                                "email": "ada@example.com",
+                            },
+                        },
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF,
+                {
+                    "company_location_id":
+                        "gid://shopify/CompanyLocation/1",
+                    "staff_member_ids": [
+                        "gid://shopify/StaffMember/1",
+                    ],
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "companyLocationId":
+                "gid://shopify/CompanyLocation/1",
+            "staffMemberIds":
+                ["gid://shopify/StaffMember/1"],
+        }
+        assert result.data["count"] == 1
+        a0 = result.data["assignments"][0]
+        assert a0["staff_member_email"] == "ada@example.com"
+        assert a0["company_location_name"] == "HQ"
+
+    def test_assign_user_errors_fail_fast(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "companyLocationAssignStaffMembers": {
+                "companyLocationStaffMemberAssignments": None,
+                "userErrors": [{
+                    "field": ["staffMemberIds"],
+                    "message": "Staff member not found",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ASSIGN_COMPANY_LOCATION_STAFF,
+                {
+                    "company_location_id":
+                        "gid://shopify/CompanyLocation/1",
+                    "staff_member_ids": [
+                        "gid://shopify/StaffMember/missing",
+                    ],
+                },
+            )
+        assert not result.ok
+
+    # ── Remove ──────────────────────────────────────────────────
+
+    def test_remove_requires_assignment_ids(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_REMOVE_COMPANY_LOCATION_STAFF, {},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_remove_accepts_single_string_id(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyLocationRemoveStaffMembers": {
+                    "deletedCompanyLocationStaffMemberAssignmentIds": [
+                        "gid://shopify/CompanyLocationStaffMemberAssignment/1",
+                    ],
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_REMOVE_COMPANY_LOCATION_STAFF,
+                {
+                    "assignment_ids":
+                        "gid://shopify/CompanyLocationStaffMemberAssignment/1",
+                },
+            )
+        assert result.ok
+        assert captured["companyLocationStaffMemberAssignmentIds"] == [
+            "gid://shopify/CompanyLocationStaffMemberAssignment/1",
+        ]
+        assert result.data["count"] == 1
+
+    # ── Welcome email ───────────────────────────────────────────
+
+    def test_welcome_requires_contact_id(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL,
+            {},
+        )
+        assert not result.ok
+
+    def test_welcome_default_email(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyContactSendWelcomeEmail": {
+                    "companyContact": {
+                        "id": "gid://shopify/CompanyContact/1",
+                        "title": "Buyer",
+                        "isMainContact": True,
+                        "locale": "en",
+                        "createdAt": "2026-04-26T00:00:00Z",
+                        "updatedAt": "2026-04-26T00:00:00Z",
+                        "customer": {
+                            "id": "gid://shopify/Customer/1",
+                            "email": "buyer@example.com",
+                            "displayName": "Ada Lovelace",
+                        },
+                        "company": {
+                            "id": "gid://shopify/Company/1",
+                            "name": "Acme",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL,
+                {
+                    "company_contact_id":
+                        "gid://shopify/CompanyContact/1",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "companyContactId":
+                "gid://shopify/CompanyContact/1",
+            "email": None,
+        }
+        c = result.data["company_contact"]
+        assert c["customer_email"] == "buyer@example.com"
+        assert c["is_main_contact"] is True
+        assert result.data["email_override_address"] == ""
+
+    def test_welcome_with_override_dict(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyContactSendWelcomeEmail": {
+                    "companyContact": {
+                        "id": "gid://shopify/CompanyContact/1",
+                        "title": "Buyer",
+                        "isMainContact": True,
+                        "customer": {
+                            "id": "gid://shopify/Customer/1",
+                            "email": "buyer@example.com",
+                            "displayName": "Ada",
+                        },
+                        "company": {
+                            "id": "gid://shopify/Company/1",
+                            "name": "Acme",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL,
+                {
+                    "company_contact_id":
+                        "gid://shopify/CompanyContact/1",
+                    "email": {
+                        "to": "personal@example.com",
+                        "subject": "Welcome to Acme on Shopify",
+                        "custom_message": "Click below to set up.",
+                    },
+                },
+            )
+        assert result.ok
+        assert captured["email"] == {
+            "to": "personal@example.com",
+            "subject": "Welcome to Acme on Shopify",
+            "customMessage": "Click below to set up.",
+        }
+        assert result.data["email_override_address"] == \
+            "personal@example.com"
+
+    def test_welcome_user_errors_fail_fast(self):
+        from core.adapters.shopify.company_location_staff import (
+            ShopifyCompanyLocationStaffAdapter,
+        )
+        a = ShopifyCompanyLocationStaffAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "companyContactSendWelcomeEmail": {
+                "companyContact": None,
+                "userErrors": [{
+                    "field": ["companyContactId"],
+                    "message": "Company contact not found",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL,
+                {
+                    "company_contact_id":
+                        "gid://shopify/CompanyContact/missing",
+                },
             )
         assert not result.ok
