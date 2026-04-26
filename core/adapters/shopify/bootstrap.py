@@ -87,6 +87,7 @@ from .order_edits import ShopifyOrderEditsAdapter
 from .order_invoice import ShopifyOrderInvoiceSendAdapter
 from .order_transactions import ShopifyOrderTransactionsAdapter
 from .order_lifecycle import ShopifyOrderLifecycleAdapter
+from .order_payment import ShopifyOrderPaymentAdapter
 from .order_risk_assessment import ShopifyOrderRiskAssessmentAdapter
 from .orders import ShopifyOrdersAdapter
 from .pages import ShopifyPagesAdapter
@@ -203,6 +204,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyFulfillmentTrackingAdapter,
     ShopifyProductMediaAdapter,
     ShopifyPriceListFixedPricesAdapter,
+    ShopifyOrderPaymentAdapter,
 )
 
 

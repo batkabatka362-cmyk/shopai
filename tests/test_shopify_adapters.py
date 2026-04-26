@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightysix_adapters(self):
+    def test_register_all_adds_eightyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 86
+        assert len(status) == 87
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -873,6 +873,7 @@ class TestShopifyBootstrap:
             "shopify_fulfillment_tracking",
             "shopify_product_media",
             "shopify_price_list_fixed_prices",
+            "shopify_order_payment",
         }
 
     def test_register_all_idempotent(self):
@@ -880,7 +881,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 86
+        assert len(get_registry()) == 87
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1161,6 +1162,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_ADD_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
         assert router.route(Capability.SHOPIFY_DELETE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
         assert router.route(Capability.SHOPIFY_UPDATE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
+        assert router.route(Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT).name == "shopify_order_payment"
+        assert router.route(Capability.SHOPIFY_VOID_TRANSACTION).name == "shopify_order_payment"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -22719,4 +22722,221 @@ class TestShopifyPriceListFixedPricesAdapter:
         assert result.data["price_list_name"] == "Wholesale Tier 2"
         assert result.data["added_count"] == 1
         assert result.data["deleted_count"] == 1
+
+
+# ── ShopifyOrderPaymentAdapter ────────────────────────────
+
+
+class TestShopifyOrderPaymentAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter()
+        assert a.name == "shopify_order_payment"
+        for cap in (
+            Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT,
+            Capability.SHOPIFY_VOID_TRANSACTION,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Capture ─────────────────────────────────
+
+    def test_capture_requires_order_id(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT, {
+            "parent_transaction_id": "gid://shopify/OrderTransaction/1",
+            "amount": 1,
+        })
+        assert not result.ok
+
+    def test_capture_requires_parent_id(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT, {
+            "order_id": "gid://shopify/Order/1",
+            "amount": 1,
+        })
+        assert not result.ok
+
+    def test_capture_requires_amount(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT, {
+            "order_id": "gid://shopify/Order/1",
+            "parent_transaction_id": "gid://shopify/OrderTransaction/1",
+        })
+        assert not result.ok
+
+    def test_capture_rejects_zero_amount(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT, {
+            "order_id": "gid://shopify/Order/1",
+            "parent_transaction_id": "gid://shopify/OrderTransaction/1",
+            "amount": 0,
+        })
+        assert not result.ok
+
+    def test_capture_happy_path(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "orderCapture": {
+                    "transaction": {
+                        "id": "gid://shopify/OrderTransaction/9",
+                        "gateway": "shopify_payments",
+                        "kind": "CAPTURE",
+                        "status": "SUCCESS",
+                        "processedAt": "2026-04-26T12:00:00Z",
+                        "test": False,
+                        "amountSet": {
+                            "shopMoney": {
+                                "amount": "19.99",
+                                "currencyCode": "USD",
+                            },
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "parent_transaction_id":
+                        "gid://shopify/OrderTransaction/8",
+                    "amount": 19.99,
+                    "currency": "usd",
+                    "final_capture": True,
+                },
+            )
+        assert result.ok
+        inp = captured["input"]
+        assert inp["id"] == "gid://shopify/Order/1"
+        assert inp["parentTransactionId"] == \
+            "gid://shopify/OrderTransaction/8"
+        assert inp["amount"] == "19.99"
+        assert inp["currency"] == "USD"
+        assert inp["finalCapture"] is True
+        assert result.data["transaction"]["kind"] == "CAPTURE"
+        assert result.data["transaction"]["amount"]["amount"] == 19.99
+
+    def test_capture_user_errors_fail_fast(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orderCapture": {
+                "transaction": None,
+                "userErrors": [{
+                    "field": ["input", "parentTransactionId"],
+                    "message": "Parent transaction not capturable",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "parent_transaction_id":
+                        "gid://shopify/OrderTransaction/8",
+                    "amount": 5,
+                },
+            )
+        assert not result.ok
+
+    # ── Void ────────────────────────────────────
+
+    def test_void_requires_parent_id(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_VOID_TRANSACTION, {})
+        assert not result.ok
+
+    def test_void_happy_path(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "transactionVoid": {
+                    "transaction": {
+                        "id": "gid://shopify/OrderTransaction/10",
+                        "kind": "VOID",
+                        "status": "SUCCESS",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_VOID_TRANSACTION,
+                {
+                    "parent_transaction_id":
+                        "gid://shopify/OrderTransaction/8",
+                },
+            )
+        assert result.ok
+        assert captured["parentTransactionId"] == \
+            "gid://shopify/OrderTransaction/8"
+        assert result.data["transaction"]["kind"] == "VOID"
+
+    def test_void_user_errors_fail_fast(self):
+        from core.adapters.shopify.order_payment import (
+            ShopifyOrderPaymentAdapter,
+        )
+        a = ShopifyOrderPaymentAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "transactionVoid": {
+                "transaction": None,
+                "userErrors": [{
+                    "field": ["parentTransactionId"],
+                    "message": "Transaction already captured",
+                    "code": "ALREADY_CAPTURED",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_VOID_TRANSACTION,
+                {
+                    "parent_transaction_id":
+                        "gid://shopify/OrderTransaction/8",
+                },
+            )
+        assert not result.ok
 

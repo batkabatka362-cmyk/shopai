@@ -353,6 +353,8 @@ class Capability(str, Enum):
     SHOPIFY_ADD_PRICE_LIST_PRICES = "shopify_add_price_list_prices"
     SHOPIFY_DELETE_PRICE_LIST_PRICES = "shopify_delete_price_list_prices"
     SHOPIFY_UPDATE_PRICE_LIST_PRICES = "shopify_update_price_list_prices"
+    SHOPIFY_CAPTURE_ORDER_PAYMENT = "shopify_capture_order_payment"
+    SHOPIFY_VOID_TRANSACTION = "shopify_void_transaction"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
