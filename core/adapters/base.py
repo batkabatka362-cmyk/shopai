@@ -328,6 +328,10 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_GIFT_CARD = "shopify_update_gift_card"
     SHOPIFY_CREDIT_GIFT_CARD = "shopify_credit_gift_card"
     SHOPIFY_DEBIT_GIFT_CARD = "shopify_debit_gift_card"
+    SHOPIFY_CREATE_COMPANY_CONTACT = "shopify_create_company_contact"
+    SHOPIFY_UPDATE_COMPANY_CONTACT = "shopify_update_company_contact"
+    SHOPIFY_DELETE_COMPANY_CONTACT = "shopify_delete_company_contact"
+    SHOPIFY_REMOVE_COMPANY_CONTACT = "shopify_remove_company_contact"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

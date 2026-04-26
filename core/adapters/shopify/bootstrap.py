@@ -36,6 +36,7 @@ from .channels import ShopifyChannelsAdapter
 from .collections import ShopifyCollectionsAdapter
 from .companies import ShopifyCompaniesAdapter
 from .company_contact_roles import ShopifyCompanyContactRolesAdapter
+from .company_contacts import ShopifyCompanyContactsAdapter
 from .company_locations import ShopifyCompanyLocationsAdapter
 from .customer_consent import ShopifyCustomerConsentAdapter
 from .customer_merge import ShopifyCustomerMergeAdapter
@@ -183,6 +184,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyMarketCRUDAdapter,
     ShopifyCustomerAddressesAdapter,
     ShopifyGiftCardCRUDAdapter,
+    ShopifyCompanyContactsAdapter,
 )
 
 

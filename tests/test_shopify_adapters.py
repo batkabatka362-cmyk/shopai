@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_seventysix_adapters(self):
+    def test_register_all_adds_seventyseven_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 76
+        assert len(status) == 77
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -863,6 +863,7 @@ class TestShopifyBootstrap:
             "shopify_market_crud",
             "shopify_customer_addresses",
             "shopify_gift_card_crud",
+            "shopify_company_contacts",
         }
 
     def test_register_all_idempotent(self):
@@ -870,7 +871,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 76
+        assert len(get_registry()) == 77
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1126,6 +1127,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_GIFT_CARD).name == "shopify_gift_card_crud"
         assert router.route(Capability.SHOPIFY_CREDIT_GIFT_CARD).name == "shopify_gift_card_crud"
         assert router.route(Capability.SHOPIFY_DEBIT_GIFT_CARD).name == "shopify_gift_card_crud"
+        assert router.route(Capability.SHOPIFY_CREATE_COMPANY_CONTACT).name == "shopify_company_contacts"
+        assert router.route(Capability.SHOPIFY_UPDATE_COMPANY_CONTACT).name == "shopify_company_contacts"
+        assert router.route(Capability.SHOPIFY_DELETE_COMPANY_CONTACT).name == "shopify_company_contacts"
+        assert router.route(Capability.SHOPIFY_REMOVE_COMPANY_CONTACT).name == "shopify_company_contacts"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -20521,4 +20526,281 @@ class TestShopifyGiftCardCRUDAdapter:
         assert captured["debitInput"]["debitAmount"] == {
             "amount": "2.50", "currencyCode": "USD",
         }
+
+
+# ── ShopifyCompanyContactsAdapter ─────────────────────────
+
+
+class TestShopifyCompanyContactsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter()
+        assert a.name == "shopify_company_contacts"
+        for cap in (
+            Capability.SHOPIFY_CREATE_COMPANY_CONTACT,
+            Capability.SHOPIFY_UPDATE_COMPANY_CONTACT,
+            Capability.SHOPIFY_DELETE_COMPANY_CONTACT,
+            Capability.SHOPIFY_REMOVE_COMPANY_CONTACT,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Input builder ───────────────────────────
+
+    def test_input_aliases_full_shape(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        out = a._build_input({
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.com",
+            "phone": "+15551234567",
+            "title": "CFO",
+            "locale": "en",
+        }, require_email=True)
+        assert out == {
+            "firstName": "Ada",
+            "lastName": "Lovelace",
+            "email": "ada@example.com",
+            "phone": "+15551234567",
+            "title": "CFO",
+            "locale": "en",
+        }
+
+    def test_input_create_requires_email(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_input(
+                {"first_name": "Ada"}, require_email=True,
+            )
+
+    def test_input_update_email_optional(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        out = a._build_input(
+            {"title": "VP Finance"}, require_email=False,
+        )
+        assert out == {"title": "VP Finance"}
+
+    # ── Create ──────────────────────────────────
+
+    def test_create_requires_company_id(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_COMPANY_CONTACT,
+            {"email": "x@y.com"},
+        )
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyContactCreate": {
+                    "companyContact": {
+                        "id": "gid://shopify/CompanyContact/1",
+                        "title": "CFO",
+                        "isMainContact": False,
+                        "company": {
+                            "id": "gid://shopify/Company/1",
+                            "name": "Acme",
+                        },
+                        "customer": {
+                            "id": "gid://shopify/Customer/1",
+                            "email": "ada@example.com",
+                            "firstName": "Ada",
+                            "lastName": "Lovelace",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_COMPANY_CONTACT,
+                {
+                    "company_id": "gid://shopify/Company/1",
+                    "email": "ada@example.com",
+                    "first_name": "Ada",
+                    "last_name": "Lovelace",
+                    "title": "CFO",
+                },
+            )
+        assert result.ok
+        assert captured["companyId"] == "gid://shopify/Company/1"
+        assert captured["input"]["email"] == "ada@example.com"
+        assert result.data["contact"]["email"] == "ada@example.com"
+        assert result.data["contact"]["company_name"] == "Acme"
+        assert result.data["contact"]["title"] == "CFO"
+
+    def test_create_user_errors_fail_fast(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "companyContactCreate": {
+                "companyContact": None,
+                "userErrors": [{
+                    "field": ["input", "email"],
+                    "message": "Email is invalid",
+                    "code": "INVALID",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_COMPANY_CONTACT,
+                {
+                    "company_id": "gid://shopify/Company/1",
+                    "email": "bogus",
+                },
+            )
+        assert not result.ok
+
+    # ── Update ──────────────────────────────────
+
+    def test_update_requires_id(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_COMPANY_CONTACT,
+            {"title": "VP"},
+        )
+        assert not result.ok
+
+    def test_update_requires_at_least_one_field(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_COMPANY_CONTACT,
+            {"id": "gid://shopify/CompanyContact/1"},
+        )
+        assert not result.ok
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "companyContactUpdate": {
+                    "companyContact": {
+                        "id": "gid://shopify/CompanyContact/1",
+                        "title": "VP Finance",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_COMPANY_CONTACT,
+                {
+                    "id": "gid://shopify/CompanyContact/1",
+                    "title": "VP Finance",
+                },
+            )
+        assert result.ok
+        assert captured["companyContactId"] == \
+            "gid://shopify/CompanyContact/1"
+        assert captured["input"]["title"] == "VP Finance"
+
+    # ── Delete ──────────────────────────────────
+
+    def test_delete_requires_id(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_DELETE_COMPANY_CONTACT, {},
+        )
+        assert not result.ok
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "companyContactDelete": {
+                "deletedCompanyContactId":
+                    "gid://shopify/CompanyContact/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_COMPANY_CONTACT,
+                {"id": "gid://shopify/CompanyContact/1"},
+            )
+        assert result.ok
+        assert result.data["deleted_id"] == \
+            "gid://shopify/CompanyContact/1"
+
+    # ── Remove from company ─────────────────────
+
+    def test_remove_requires_id(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        result = a.execute(
+            Capability.SHOPIFY_REMOVE_COMPANY_CONTACT, {},
+        )
+        assert not result.ok
+
+    def test_remove_happy_path(self):
+        from core.adapters.shopify.company_contacts import (
+            ShopifyCompanyContactsAdapter,
+        )
+        a = ShopifyCompanyContactsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "companyContactRemoveFromCompany": {
+                "removedCompanyContactId":
+                    "gid://shopify/CompanyContact/1",
+                "userErrors": [],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_REMOVE_COMPANY_CONTACT,
+                {"id": "gid://shopify/CompanyContact/1"},
+            )
+        assert result.ok
+        assert result.data["removed_id"] == \
+            "gid://shopify/CompanyContact/1"
 
