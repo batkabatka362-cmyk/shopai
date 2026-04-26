@@ -127,6 +127,7 @@ from .payments_payouts import ShopifyPaymentsPayoutsAdapter
 from .price_list_fixed_prices import ShopifyPriceListFixedPricesAdapter
 from .price_lists import ShopifyPriceListAdapter
 from .product_duplicate import ShopifyProductDuplicateAdapter
+from .product_feeds import ShopifyProductFeedsAdapter
 from .product_media import ShopifyProductMediaAdapter
 from .product_option_update import ShopifyProductOptionUpdateAdapter
 from .product_options import ShopifyProductOptionsAdapter
@@ -287,6 +288,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyCustomerPrivacyAdapter,
     ShopifyShopLocalesAdapter,
     ShopifyProductSellingPlanBindingsAdapter,
+    ShopifyProductFeedsAdapter,
 )
 
 

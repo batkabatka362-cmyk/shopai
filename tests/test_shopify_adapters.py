@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentyone_adapters(self):
+    def test_register_all_adds_onehundredtwentytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 121
+        assert len(status) == 122
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -908,6 +908,7 @@ class TestShopifyBootstrap:
             "shopify_customer_privacy",
             "shopify_shop_locales",
             "shopify_product_selling_plan_bindings",
+            "shopify_product_feeds",
         }
 
     def test_register_all_idempotent(self):
@@ -915,7 +916,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 121
+        assert len(get_registry()) == 122
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1292,6 +1293,11 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_PRODUCT_LEAVE_SELLING_PLAN_GROUPS).name == "shopify_product_selling_plan_bindings"
         assert router.route(Capability.SHOPIFY_PRODUCT_VARIANT_JOIN_SELLING_PLAN_GROUPS).name == "shopify_product_selling_plan_bindings"
         assert router.route(Capability.SHOPIFY_PRODUCT_VARIANT_LEAVE_SELLING_PLAN_GROUPS).name == "shopify_product_selling_plan_bindings"
+        assert router.route(Capability.SHOPIFY_LIST_PRODUCT_FEEDS).name == "shopify_product_feeds"
+        assert router.route(Capability.SHOPIFY_GET_PRODUCT_FEED).name == "shopify_product_feeds"
+        assert router.route(Capability.SHOPIFY_CREATE_PRODUCT_FEED).name == "shopify_product_feeds"
+        assert router.route(Capability.SHOPIFY_DELETE_PRODUCT_FEED).name == "shopify_product_feeds"
+        assert router.route(Capability.SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC).name == "shopify_product_feeds"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -32051,5 +32057,235 @@ class TestShopifyProductSellingPlanBindingsAdapter:
                         "gid://shopify/SellingPlanGroup/missing",
                     ],
                 },
+            )
+        assert not result.ok
+
+
+# ── ShopifyProductFeedsAdapter ────────────────────────────
+
+
+class TestShopifyProductFeedsAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter()
+        assert a.name == "shopify_product_feeds"
+        for cap in (
+            Capability.SHOPIFY_LIST_PRODUCT_FEEDS,
+            Capability.SHOPIFY_GET_PRODUCT_FEED,
+            Capability.SHOPIFY_CREATE_PRODUCT_FEED,
+            Capability.SHOPIFY_DELETE_PRODUCT_FEED,
+            Capability.SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_list_happy_path(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            return {
+                "productFeeds": {
+                    "pageInfo": {
+                        "hasNextPage": False, "endCursor": None,
+                    },
+                    "edges": [{
+                        "node": {
+                            "id": "gid://shopify/ProductFeed/1",
+                            "language": "EN",
+                            "country": "US",
+                            "status": "ACTIVE",
+                        },
+                    }],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_PRODUCT_FEEDS, {"limit": 25},
+            )
+        assert result.ok
+        assert result.data["count"] == 1
+        f0 = result.data["feeds"][0]
+        assert f0["language"] == "EN"
+        assert f0["country"] == "US"
+
+    def test_get_requires_id(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(Capability.SHOPIFY_GET_PRODUCT_FEED, {})
+        assert not result.ok
+
+    def test_create_requires_language(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_PRODUCT_FEED,
+            {"country": "US"},
+        )
+        assert not result.ok
+
+    def test_create_requires_country(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_PRODUCT_FEED,
+            {"language": "fr"},
+        )
+        assert not result.ok
+
+    def test_create_happy_path(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productFeedCreate": {
+                    "productFeed": {
+                        "id": "gid://shopify/ProductFeed/1",
+                        "language": "FR",
+                        "country": "CA",
+                        "status": "ACTIVE",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_PRODUCT_FEED,
+                {"language": "fr", "country": "ca"},
+            )
+        assert result.ok
+        assert captured == {
+            "input": {"language": "FR", "country": "CA"},
+        }
+        assert result.data["feed"]["country"] == "CA"
+
+    def test_delete_happy_path(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productFeedDelete": {
+                    "deletedId": "gid://shopify/ProductFeed/1",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DELETE_PRODUCT_FEED,
+                {"id": "gid://shopify/ProductFeed/1"},
+            )
+        assert result.ok
+        assert captured == {"id": "gid://shopify/ProductFeed/1"}
+        assert result.data["deleted_id"] == \
+            "gid://shopify/ProductFeed/1"
+
+    def test_full_sync_requires_id(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC,
+            {"before_updated_at": "2026-04-01T00:00:00Z"},
+        )
+        assert not result.ok
+
+    def test_full_sync_with_date_filters(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "productFullSync": {"userErrors": []},
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC,
+                {
+                    "id": "gid://shopify/ProductFeed/1",
+                    "before_updated_at": "2026-04-01T00:00:00Z",
+                    "updated_at_since": "2026-03-01T00:00:00Z",
+                },
+            )
+        assert result.ok
+        assert captured == {
+            "id": "gid://shopify/ProductFeed/1",
+            "beforeUpdatedAt": "2026-04-01T00:00:00Z",
+            "updatedAtSince": "2026-03-01T00:00:00Z",
+        }
+
+    def test_full_sync_user_errors_fail_fast(self):
+        from core.adapters.shopify.product_feeds import (
+            ShopifyProductFeedsAdapter,
+        )
+        a = ShopifyProductFeedsAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "productFullSync": {
+                "userErrors": [{
+                    "field": ["id"],
+                    "message": "Feed not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC,
+                {"id": "gid://shopify/ProductFeed/missing"},
             )
         assert not result.ok

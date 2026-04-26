@@ -449,6 +449,11 @@ class Capability(str, Enum):
     SHOPIFY_PRODUCT_LEAVE_SELLING_PLAN_GROUPS = "shopify_product_leave_selling_plan_groups"
     SHOPIFY_PRODUCT_VARIANT_JOIN_SELLING_PLAN_GROUPS = "shopify_product_variant_join_selling_plan_groups"
     SHOPIFY_PRODUCT_VARIANT_LEAVE_SELLING_PLAN_GROUPS = "shopify_product_variant_leave_selling_plan_groups"
+    SHOPIFY_LIST_PRODUCT_FEEDS = "shopify_list_product_feeds"
+    SHOPIFY_GET_PRODUCT_FEED = "shopify_get_product_feed"
+    SHOPIFY_CREATE_PRODUCT_FEED = "shopify_create_product_feed"
+    SHOPIFY_DELETE_PRODUCT_FEED = "shopify_delete_product_feed"
+    SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC = "shopify_trigger_product_full_sync"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
