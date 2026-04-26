@@ -45,7 +45,7 @@ class TestPassThroughWhenSupplied:
             {"id": "gid://shopify/Product/1", "title": "Widget"},
         ]
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
         ) as mock_router:
             result = hydrate_products(supplied)
         assert result is supplied  # same object, no copy
@@ -54,7 +54,7 @@ class TestPassThroughWhenSupplied:
     def test_supplied_orders_pass_through_without_router_call(self):
         supplied = [{"id": "gid://shopify/Order/1"}]
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
         ) as mock_router:
             result = hydrate_orders(supplied)
         assert result is supplied
@@ -87,7 +87,7 @@ class TestHydrateProductsHappyPath:
             },
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_products([])
@@ -109,7 +109,7 @@ class TestHydrateProductsHappyPath:
             ok=True, data={"products": [{"id": "gid://x"}]},
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_products(None)
@@ -121,7 +121,7 @@ class TestHydrateProductsHappyPath:
             ok=True, data={"products": []},
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             hydrate_products(
@@ -138,7 +138,7 @@ class TestHydrateProductsHappyPath:
             ok=True, data={"products": []},
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             hydrate_products([], query="   ")
@@ -161,7 +161,7 @@ class TestHydrateProductsHappyPath:
             },
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_products([])
@@ -184,7 +184,7 @@ class TestHydrateOrdersHappyPath:
             },
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_orders([])
@@ -205,7 +205,7 @@ class TestLimitClamping:
             ok=True, data={"products": []},
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             hydrate_products([])
@@ -217,7 +217,7 @@ class TestLimitClamping:
             ok=True, data={"products": []},
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             hydrate_products([], limit=50)
@@ -235,7 +235,7 @@ class TestLimitClamping:
                 ok=True, data={"products": []},
             ))
             with patch(
-                "engines.bundle.shopify_hydrator._get_router",
+                "engines._shopify_hydrator._get_router",
                 return_value=stub,
             ):
                 hydrate_products([], limit=raw)
@@ -252,7 +252,7 @@ class TestGracefulFallbacks:
 
     def test_router_unavailable_returns_empty_products(self):
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=None,
         ):
             result = hydrate_products([])
@@ -260,7 +260,7 @@ class TestGracefulFallbacks:
 
     def test_router_unavailable_returns_empty_orders(self):
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=None,
         ):
             result = hydrate_orders([])
@@ -271,7 +271,7 @@ class TestGracefulFallbacks:
             ok=False, error="scope missing",
         ))
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_products([])
@@ -283,7 +283,7 @@ class TestGracefulFallbacks:
                 raise RuntimeError("network down")
 
         with patch(
-            "engines.bundle.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=_ExplodingRouter(),
         ):
             result = hydrate_products([])

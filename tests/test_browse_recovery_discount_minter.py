@@ -77,7 +77,7 @@ class TestEmptyAndShortCircuits:
     def test_empty_offers_returns_unchanged(self):
         # No router lookup should happen at all.
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
         ) as mock_router:
             result = mint_offer_codes(
                 offers=[], intent_scores=[],
@@ -88,7 +88,7 @@ class TestEmptyAndShortCircuits:
     def test_router_unavailable_stamps_skipped_on_all(self):
         offers, intent_scores = _three_offers()
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=None,
         ):
             mint_offer_codes(
@@ -115,7 +115,7 @@ class TestLikelihoodFilter:
             data={"discount_id": "gid://shopify/DiscountCodeNode/1"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -144,7 +144,7 @@ class TestLikelihoodFilter:
             data={"discount_id": "gid://shopify/DiscountCodeNode/x"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -164,7 +164,7 @@ class TestLikelihoodFilter:
             data={"discount_id": "gid://shopify/DiscountCodeNode/x"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -187,7 +187,7 @@ class TestLikelihoodFilter:
             ok=True, data={"discount_id": "gid://x"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(offers=offers, intent_scores=[])
@@ -212,7 +212,7 @@ class TestPerOfferSkips:
             ok=True, data={"discount_id": "gid://x"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -230,7 +230,7 @@ class TestPerOfferSkips:
             ok=True, data={"discount_id": "gid://x"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -246,7 +246,7 @@ class TestPerOfferSkips:
             ok=False, error="Code already exists",
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -276,7 +276,7 @@ class TestPerOfferSkips:
 
         stub = _PartialFailRouter()
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -308,7 +308,7 @@ class TestWireShape:
             data={"discount_id": "gid://shopify/DiscountCodeNode/1"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -325,7 +325,7 @@ class TestWireShape:
             data={"discount_id": "gid://shopify/DiscountCodeNode/1"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -378,7 +378,7 @@ class TestWireShape:
                 return next(responses)
 
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=_SeqRouter(),
         ):
             mint_offer_codes(
@@ -408,7 +408,7 @@ class TestTtlOverride:
             ok=True, data={"discount_id": "gid://x"},
         ))
         with patch(
-            "engines.browse_recovery.discount_minter._get_router",
+            "engines._recovery_codes._get_router",
             return_value=stub,
         ):
             mint_offer_codes(
@@ -438,7 +438,7 @@ class TestTtlOverride:
                 ok=True, data={"discount_id": "gid://x"},
             ))
             with patch(
-                "engines.browse_recovery.discount_minter._get_router",
+                "engines._recovery_codes._get_router",
                 return_value=stub,
             ):
                 mint_offer_codes(

@@ -38,7 +38,7 @@ class TestHydrateProducts:
             {"id": "gid://shopify/Product/1", "title": "Widget"},
         ]
         with patch(
-            "engines.catalog.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
         ) as mock_router:
             result = hydrate_products(supplied)
         assert result is supplied
@@ -59,7 +59,7 @@ class TestHydrateProducts:
             },
         ))
         with patch(
-            "engines.catalog.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             result = hydrate_products([])
@@ -70,7 +70,7 @@ class TestHydrateProducts:
 
     def test_router_unavailable_returns_empty(self):
         with patch(
-            "engines.catalog.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=None,
         ):
             assert hydrate_products([]) == []
@@ -80,7 +80,7 @@ class TestHydrateProducts:
             ok=False, error="scope missing",
         ))
         with patch(
-            "engines.catalog.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             assert hydrate_products([]) == []
@@ -90,7 +90,7 @@ class TestHydrateProducts:
             ok=True, data={"products": []},
         ))
         with patch(
-            "engines.catalog.shopify_hydrator._get_router",
+            "engines._shopify_hydrator._get_router",
             return_value=stub,
         ):
             hydrate_products([], query="status:active")
