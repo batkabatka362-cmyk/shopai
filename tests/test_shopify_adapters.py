@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundrednineteen_adapters(self):
+    def test_register_all_adds_onehundredtwenty_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 119
+        assert len(status) == 120
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -906,6 +906,7 @@ class TestShopifyBootstrap:
             "shopify_discount_free_shipping_update",
             "shopify_url_redirects",
             "shopify_customer_privacy",
+            "shopify_shop_locales",
         }
 
     def test_register_all_idempotent(self):
@@ -913,7 +914,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 119
+        assert len(get_registry()) == 120
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1282,6 +1283,10 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS).name == "shopify_url_redirects"
         assert router.route(Capability.SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE).name == "shopify_customer_privacy"
         assert router.route(Capability.SHOPIFY_DATA_SALE_OPT_OUT).name == "shopify_customer_privacy"
+        assert router.route(Capability.SHOPIFY_LIST_AVAILABLE_LOCALES).name == "shopify_shop_locales"
+        assert router.route(Capability.SHOPIFY_ENABLE_SHOP_LOCALE).name == "shopify_shop_locales"
+        assert router.route(Capability.SHOPIFY_DISABLE_SHOP_LOCALE).name == "shopify_shop_locales"
+        assert router.route(Capability.SHOPIFY_UPDATE_SHOP_LOCALE).name == "shopify_shop_locales"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -31548,5 +31553,253 @@ class TestShopifyCustomerPrivacyAdapter:
             result = a.execute(
                 Capability.SHOPIFY_DATA_SALE_OPT_OUT,
                 {"email": "weird@example.com"},
+            )
+        assert not result.ok
+
+
+# ── ShopifyShopLocalesAdapter ─────────────────────────────
+
+
+class TestShopifyShopLocalesAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter()
+        assert a.name == "shopify_shop_locales"
+        for cap in (
+            Capability.SHOPIFY_LIST_AVAILABLE_LOCALES,
+            Capability.SHOPIFY_ENABLE_SHOP_LOCALE,
+            Capability.SHOPIFY_DISABLE_SHOP_LOCALE,
+            Capability.SHOPIFY_UPDATE_SHOP_LOCALE,
+        ):
+            assert cap in a.capabilities
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── List available locales ──────────────────────────────────
+
+    def test_list_available_locales_happy_path(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            return {
+                "availableLocales": [
+                    {"isoCode": "en", "name": "English"},
+                    {"isoCode": "de", "name": "German"},
+                    {"isoCode": "fr", "name": "French"},
+                ],
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_LIST_AVAILABLE_LOCALES, {},
+            )
+        assert result.ok
+        assert result.data["count"] == 3
+        assert result.data["locales"][0]["iso_code"] == "en"
+
+    # ── Enable ──────────────────────────────────────────────────
+
+    def test_enable_requires_locale(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_ENABLE_SHOP_LOCALE, {},
+        )
+        assert not result.ok
+
+    def test_enable_happy_path_normalises_region(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "shopLocaleEnable": {
+                    "shopLocale": {
+                        "locale": "fr-CA",
+                        "name": "French (Canada)",
+                        "primary": False,
+                        "published": True,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_ENABLE_SHOP_LOCALE,
+                {
+                    "locale": "FR-ca",
+                    "market_web_presence_ids": [
+                        "gid://shopify/MarketWebPresence/1",
+                    ],
+                },
+            )
+        assert result.ok
+        # locale lowercased lang + uppercased region
+        assert captured["locale"] == "fr-CA"
+        assert captured["marketWebPresenceIds"] == [
+            "gid://shopify/MarketWebPresence/1",
+        ]
+        assert result.data["locale"]["locale"] == "fr-CA"
+
+    def test_enable_user_errors_fail_fast(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "shopLocaleEnable": {
+                "shopLocale": None,
+                "userErrors": [{
+                    "field": ["locale"],
+                    "message": "Locale already enabled",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_ENABLE_SHOP_LOCALE,
+                {"locale": "de"},
+            )
+        assert not result.ok
+
+    # ── Disable ─────────────────────────────────────────────────
+
+    def test_disable_requires_locale(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_DISABLE_SHOP_LOCALE, {},
+        )
+        assert not result.ok
+
+    def test_disable_happy_path(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "shopLocaleDisable": {
+                    "locale": "de",
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_DISABLE_SHOP_LOCALE,
+                {"locale": "de"},
+            )
+        assert result.ok
+        assert captured == {"locale": "de"}
+        assert result.data["disabled_locale"] == "de"
+
+    # ── Update ──────────────────────────────────────────────────
+
+    def test_update_rejects_empty_body(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_UPDATE_SHOP_LOCALE,
+            {"locale": "de"},
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_update_happy_path_publish_flip(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "shopLocaleUpdate": {
+                    "shopLocale": {
+                        "locale": "de",
+                        "name": "Deutsch",
+                        "primary": False,
+                        "published": True,
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_LOCALE,
+                {"locale": "de", "published": True},
+            )
+        assert result.ok
+        assert captured == {
+            "locale": "de",
+            "shopLocale": {"published": True},
+        }
+        assert result.data["locale"]["published"] is True
+
+    def test_update_user_errors_fail_fast(self):
+        from core.adapters.shopify.shop_locales import (
+            ShopifyShopLocalesAdapter,
+        )
+        a = ShopifyShopLocalesAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "shopLocaleUpdate": {
+                "shopLocale": None,
+                "userErrors": [{
+                    "field": ["locale"],
+                    "message": "Locale not enabled on this shop",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_LOCALE,
+                {"locale": "ja", "published": True},
             )
         assert not result.ok

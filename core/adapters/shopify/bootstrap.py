@@ -141,6 +141,7 @@ from .segments import ShopifyCustomerSegmentsAdapter
 from .selling_plan_groups import ShopifySellingPlanGroupsAdapter
 from .shipping_packages import ShopifyShippingPackagesAdapter
 from .shop import ShopifyShopAdapter
+from .shop_locales import ShopifyShopLocalesAdapter
 from .subscription_draft import ShopifySubscriptionDraftAdapter
 from .standard_metafield_definition import (
     ShopifyStandardMetafieldDefinitionAdapter,
@@ -281,6 +282,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDiscountFreeShippingUpdateAdapter,
     ShopifyUrlRedirectsAdapter,
     ShopifyCustomerPrivacyAdapter,
+    ShopifyShopLocalesAdapter,
 )
 
 

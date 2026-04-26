@@ -441,6 +441,10 @@ class Capability(str, Enum):
     SHOPIFY_BULK_DELETE_URL_REDIRECTS = "shopify_bulk_delete_url_redirects"
     SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE = "shopify_request_customer_data_erasure"
     SHOPIFY_DATA_SALE_OPT_OUT = "shopify_data_sale_opt_out"
+    SHOPIFY_LIST_AVAILABLE_LOCALES = "shopify_list_available_locales"
+    SHOPIFY_ENABLE_SHOP_LOCALE = "shopify_enable_shop_locale"
+    SHOPIFY_DISABLE_SHOP_LOCALE = "shopify_disable_shop_locale"
+    SHOPIFY_UPDATE_SHOP_LOCALE = "shopify_update_shop_locale"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"
