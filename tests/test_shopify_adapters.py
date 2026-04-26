@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightytwo_adapters(self):
+    def test_register_all_adds_eightythree_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 82
+        assert len(status) == 83
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -869,6 +869,7 @@ class TestShopifyBootstrap:
             "shopify_order_lifecycle",
             "shopify_collection_membership",
             "shopify_inventory_adjust",
+            "shopify_order_risk_assessment",
         }
 
     def test_register_all_idempotent(self):
@@ -876,7 +877,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 82
+        assert len(get_registry()) == 83
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1148,6 +1149,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_REMOVE_PRODUCTS_FROM_COLLECTION).name == "shopify_collection_membership"
         assert router.route(Capability.SHOPIFY_REORDER_COLLECTION_PRODUCTS).name == "shopify_collection_membership"
         assert router.route(Capability.SHOPIFY_SET_INVENTORY_QUANTITIES).name == "shopify_inventory_adjust"
+        assert router.route(Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT).name == "shopify_order_risk_assessment"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -21659,4 +21661,210 @@ class TestShopifyInventoryAdjustAdapter:
         # Pattern C: defaulted referenceDocumentUri.
         assert inp["referenceDocumentUri"].startswith("shopai://")
         assert result.data["quantities_count"] == 1
+
+
+# ── ShopifyOrderRiskAssessmentAdapter ─────────────────────
+
+
+class TestShopifyOrderRiskAssessmentAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter()
+        assert a.name == "shopify_order_risk_assessment"
+        assert (
+            Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT
+            in a.capabilities
+        )
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    def test_requires_order_id(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT,
+            {
+                "risk_level": "HIGH",
+                "facts": [{
+                    "sentiment": "NEGATIVE",
+                    "description": "Velocity check failed",
+                }],
+            },
+        )
+        assert not result.ok
+
+    def test_requires_risk_level(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT,
+            {
+                "order_id": "gid://shopify/Order/1",
+                "facts": [{"sentiment": "NEUTRAL", "description": "x"}],
+            },
+        )
+        assert not result.ok
+
+    def test_rejects_invalid_risk_level(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT,
+            {
+                "order_id": "gid://shopify/Order/1",
+                "risk_level": "EXTREME",
+                "facts": [{"sentiment": "NEGATIVE", "description": "x"}],
+            },
+        )
+        assert not result.ok
+
+    def test_requires_facts(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a.execute(
+            Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT,
+            {
+                "order_id": "gid://shopify/Order/1",
+                "risk_level": "HIGH",
+            },
+        )
+        assert not result.ok
+
+    def test_rejects_invalid_sentiment(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_facts([{
+                "sentiment": "ANGRY",
+                "description": "x",
+            }])
+
+    def test_rejects_empty_description(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        with pytest.raises(AdapterValidationError):
+            a._build_facts([{
+                "sentiment": "NEUTRAL",
+                "description": "",
+            }])
+
+    def test_happy_path(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "orderRiskAssessmentCreate": {
+                    "orderRiskAssessment": {
+                        "riskLevel": "HIGH",
+                        "facts": [
+                            {
+                                "sentiment": "NEGATIVE",
+                                "description": (
+                                    "Velocity check: 11 orders in 60 min"
+                                ),
+                            },
+                        ],
+                        "provider": {
+                            "id": "gid://shopify/App/1",
+                            "title": "ShopAI",
+                        },
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT,
+                {
+                    "order_id": "gid://shopify/Order/1",
+                    "risk_level": "high",
+                    "facts": [{
+                        "sentiment": "negative",
+                        "description": (
+                            "Velocity check: 11 orders in 60 min"
+                        ),
+                    }],
+                },
+            )
+        assert result.ok
+        inp = captured["orderRiskAssessmentInput"]
+        assert inp["orderId"] == "gid://shopify/Order/1"
+        assert inp["riskLevel"] == "HIGH"
+        assert inp["facts"][0]["sentiment"] == "NEGATIVE"
+        assert result.data["assessment"]["risk_level"] == "HIGH"
+        assert result.data["assessment"]["provider_title"] == "ShopAI"
+        assert len(result.data["assessment"]["facts"]) == 1
+
+    def test_user_errors_fail_fast(self):
+        from core.adapters.shopify.order_risk_assessment import (
+            ShopifyOrderRiskAssessmentAdapter,
+        )
+        a = ShopifyOrderRiskAssessmentAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql", return_value={
+            "orderRiskAssessmentCreate": {
+                "orderRiskAssessment": None,
+                "userErrors": [{
+                    "field": ["orderId"],
+                    "message": "Order not found",
+                    "code": "NOT_FOUND",
+                }],
+            },
+        }):
+            result = a.execute(
+                Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT,
+                {
+                    "order_id": "gid://shopify/Order/9999",
+                    "risk_level": "LOW",
+                    "facts": [{
+                        "sentiment": "POSITIVE",
+                        "description": "Verified",
+                    }],
+                },
+            )
+        assert not result.ok
 
