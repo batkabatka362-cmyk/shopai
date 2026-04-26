@@ -343,6 +343,7 @@ class Capability(str, Enum):
     SHOPIFY_ADD_PRODUCTS_TO_COLLECTION = "shopify_add_products_to_collection"
     SHOPIFY_REMOVE_PRODUCTS_FROM_COLLECTION = "shopify_remove_products_from_collection"
     SHOPIFY_REORDER_COLLECTION_PRODUCTS = "shopify_reorder_collection_products"
+    SHOPIFY_SET_INVENTORY_QUANTITIES = "shopify_set_inventory_quantities"
 
     # ── Search & research ─────────────────────
     WEB_SEARCH = "web_search"

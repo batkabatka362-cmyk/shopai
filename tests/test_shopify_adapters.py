@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_eightyone_adapters(self):
+    def test_register_all_adds_eightytwo_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 81
+        assert len(status) == 82
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -868,6 +868,7 @@ class TestShopifyBootstrap:
             "shopify_discount_activate",
             "shopify_order_lifecycle",
             "shopify_collection_membership",
+            "shopify_inventory_adjust",
         }
 
     def test_register_all_idempotent(self):
@@ -875,7 +876,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 81
+        assert len(get_registry()) == 82
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1146,6 +1147,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_ADD_PRODUCTS_TO_COLLECTION).name == "shopify_collection_membership"
         assert router.route(Capability.SHOPIFY_REMOVE_PRODUCTS_FROM_COLLECTION).name == "shopify_collection_membership"
         assert router.route(Capability.SHOPIFY_REORDER_COLLECTION_PRODUCTS).name == "shopify_collection_membership"
+        assert router.route(Capability.SHOPIFY_SET_INVENTORY_QUANTITIES).name == "shopify_inventory_adjust"
 
 
 # ── ShopifyValidationsAdapter ────────────────────────────
@@ -21547,4 +21549,114 @@ class TestShopifyCollectionMembershipAdapter:
             {"id": "gid://shopify/Product/2", "newPosition": "1"},
         ]
         assert result.data["moves_count"] == 2
+
+
+# ── ShopifyInventoryAdjustAdapter ─────────────────────────
+
+
+class TestShopifyInventoryAdjustAdapter:
+    def test_metadata(self):
+        from core.adapters.shopify.inventory_adjust import (
+            ShopifyInventoryAdjustAdapter,
+        )
+        a = ShopifyInventoryAdjustAdapter()
+        assert a.name == "shopify_inventory_adjust"
+        assert (
+            Capability.SHOPIFY_SET_INVENTORY_QUANTITIES in a.capabilities
+        )
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.inventory_adjust import (
+            ShopifyInventoryAdjustAdapter,
+        )
+        a = ShopifyInventoryAdjustAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql"):
+            result = a.execute(Capability.SHOPIFY_ASSESS_RISK, {})
+        assert not result.ok
+
+    # ── Common input ────────────────────────────
+
+    def test_common_input_requires_reason(self):
+        from core.adapters.shopify.inventory_adjust import (
+            ShopifyInventoryAdjustAdapter,
+        )
+        a = ShopifyInventoryAdjustAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_common_input({"name": "available"})
+
+    def test_common_input_requires_name(self):
+        from core.adapters.shopify.inventory_adjust import (
+            ShopifyInventoryAdjustAdapter,
+        )
+        a = ShopifyInventoryAdjustAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_common_input({"reason": "correction"})
+
+    # ── Set (absolute) ──────────────────────────
+
+    def test_set_quantities_requires_quantities(self):
+        from core.adapters.shopify.inventory_adjust import (
+            ShopifyInventoryAdjustAdapter,
+        )
+        a = ShopifyInventoryAdjustAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_SET_INVENTORY_QUANTITIES, {
+            "reason": "correction", "name": "on_hand",
+        })
+        assert not result.ok
+
+    def test_set_quantities_rejects_negative(self):
+        from core.adapters.shopify.inventory_adjust import (
+            ShopifyInventoryAdjustAdapter,
+        )
+        a = ShopifyInventoryAdjustAdapter(shop_url="s", access_token="t")
+        with pytest.raises(AdapterValidationError):
+            a._build_quantities([{
+                "inventory_item_id": "gid://shopify/InventoryItem/1",
+                "location_id": "gid://shopify/Location/1",
+                "quantity": -1,
+            }])
+
+    def test_set_quantities_happy_path(self):
+        from core.adapters.shopify.inventory_adjust import (
+            ShopifyInventoryAdjustAdapter,
+        )
+        a = ShopifyInventoryAdjustAdapter(shop_url="s", access_token="t")
+        captured = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "inventorySetQuantities": {
+                    "inventoryAdjustmentGroup": {
+                        "id": "gid://shopify/InventoryAdjustmentGroup/2",
+                        "reason": "cycle_count_available",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_SET_INVENTORY_QUANTITIES,
+                {
+                    "reason": "cycle_count_available",
+                    "name": "available",
+                    "quantities": [{
+                        "inventory_item_id":
+                            "gid://shopify/InventoryItem/1",
+                        "location_id": "gid://shopify/Location/1",
+                        "quantity": 100,
+                    }],
+                },
+            )
+        assert result.ok
+        inp = captured["input"]
+        assert inp["quantities"][0] == {
+            "inventoryItemId": "gid://shopify/InventoryItem/1",
+            "locationId": "gid://shopify/Location/1",
+            "quantity": 100,
+        }
+        # Pattern C: defaulted referenceDocumentUri.
+        assert inp["referenceDocumentUri"].startswith("shopai://")
+        assert result.data["quantities_count"] == 1
 

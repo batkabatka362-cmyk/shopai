@@ -376,6 +376,13 @@ tolerate both forms when the cost is low:
   `"Can't reorder products unless collection is manually sorted"`.
   Adapter surfaces the userError verbatim — pre-checking would
   add a read round-trip on every call.
+- `inventorySetQuantities` requires either per-quantity
+  `compareQuantity` (optimistic concurrency check) OR a
+  top-level `ignoreCompareQuantity: true`. Omitting both fails
+  with `"compareQuantity argument must be given to each
+  quantity or ignored"`. Pattern C — adapter defaults to
+  `ignoreCompareQuantity=true` when the caller doesn't supply
+  per-quantity compare values.
 
 ### Pattern D-prime: oneOf input objects
 

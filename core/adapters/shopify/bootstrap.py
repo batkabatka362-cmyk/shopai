@@ -69,6 +69,7 @@ from .fulfillment_services import ShopifyFulfillmentServicesAdapter
 from .gift_card_crud import ShopifyGiftCardCRUDAdapter
 from .gift_cards import ShopifyGiftCardsAdapter
 from .inventory import ShopifyInventoryAdapter
+from .inventory_adjust import ShopifyInventoryAdjustAdapter
 from .inventory_activation import ShopifyInventoryActivationAdapter
 from .inventory_shipments import ShopifyInventoryShipmentsAdapter
 from .locations import ShopifyLocationsAdapter
@@ -193,6 +194,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyDiscountActivateAdapter,
     ShopifyOrderLifecycleAdapter,
     ShopifyCollectionMembershipAdapter,
+    ShopifyInventoryAdjustAdapter,
 )
 
 
