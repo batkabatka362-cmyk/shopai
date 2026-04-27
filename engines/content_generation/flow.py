@@ -32,6 +32,7 @@ from .quality_checker import check_quality
 from .variation_generator import generate_variations
 from .memory_reader import read_past_content
 from .memory_writer import write_content_result
+from .content_applier import apply_description
 
 
 class ContentGenerationEngine:
@@ -192,6 +193,29 @@ class ContentGenerationEngine:
             "meta_description": seo.get("meta_description", ""),
         }
 
+        # ---- Stage 10b: Description writeback (opt-in) ----
+        # When ``data.apply_content == True`` AND content_type is
+        # ``product_description``, push the generated body into
+        # SHOPIFY_UPDATE_PRODUCT.descriptionHtml. Default OFF —
+        # this overwrites existing product copy and needs explicit
+        # opt-in. Optional ``min_seo_score`` /
+        # ``min_readability_score`` floors gate on quality.
+        apply_result: dict[str, Any] | None = None
+        if data.get("apply_content") is True:
+            apply_result = apply_description(
+                product=product,
+                content_block=content_block,
+                content_type=analysis.get("content_type", content_type),
+                seo_score=seo_score,
+                readability_score=readability_score,
+                min_seo_score=float(
+                    data.get("min_apply_seo_score", 0.0),
+                ),
+                min_readability_score=float(
+                    data.get("min_apply_readability_score", 0.0),
+                ),
+            )
+
         # ---- Stage 11: Memory Writer (non-fatal) ----
         _write_result = write_content_result(
             content=content_block,
@@ -214,6 +238,7 @@ class ContentGenerationEngine:
                 "readability_score": readability_score,
                 "variations": variations,
                 "confidence": confidence,
+                "apply_result": apply_result,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
