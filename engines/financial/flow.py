@@ -22,6 +22,7 @@ from .margin_calculator import calculate_margins
 from .health_grader import grade_health
 from .memory_reader import read_past_financials
 from .memory_writer import write_financial_result
+from engines._shopify_hydrator import hydrate
 
 
 class FinancialEngine:
@@ -50,6 +51,17 @@ class FinancialEngine:
         products = data.get("products", [])
         costs_input = data.get("costs", {})
         period = str(data.get("period", "month"))
+
+        # Auto-hydrate orders from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        orders = hydrate(
+            supplied=orders if isinstance(orders, list) else [],
+            capability_name="SHOPIFY_FETCH_ORDERS",
+            list_field="orders",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not orders:
             return self._fail("Orders list is required", 0.0)

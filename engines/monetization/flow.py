@@ -20,6 +20,7 @@ from .upsell_mapper import map_upsells
 from .pricing_advisor import advise_pricing
 from .memory_reader import read_past_monetization
 from .memory_writer import write_monetization_result
+from engines._shopify_hydrator import hydrate
 
 
 class MonetizationEngine:
@@ -47,6 +48,27 @@ class MonetizationEngine:
         products = data.get("products", [])
         customers = data.get("customers", [])
         revenue_data = data.get("revenue_data", {})
+
+        # Auto-hydrate products + customers from Shopify when caller
+        # left the lists empty. Both feed downstream stages.
+        # Pre-existing failure semantics preserved: empty supplied
+        # AND empty hydrated → standard error.
+        hydrate_limit = data.get("hydrate_limit")
+        hydrate_query = data.get("hydrate_query")
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
+        customers = hydrate(
+            supplied=customers if isinstance(customers, list) else [],
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
 
         if not products:
             return self._fail("Products list is required", 0.0)

@@ -22,6 +22,7 @@ from .tracking_syncer import sync_tracking
 from .margin_optimizer import optimize_margins
 from .memory_reader import read_past_dropshipping
 from .memory_writer import write_dropshipping_result
+from engines._shopify_hydrator import hydrate
 
 
 class DropshippingEngine:
@@ -50,6 +51,17 @@ class DropshippingEngine:
         suppliers = data.get("suppliers", [])
         products = data.get("products", [])
         tracking_data = data.get("tracking_data", [])
+
+        # Auto-hydrate orders from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        orders = hydrate(
+            supplied=orders if isinstance(orders, list) else [],
+            capability_name="SHOPIFY_FETCH_ORDERS",
+            list_field="orders",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not orders:
             return self._fail("Orders list is required", 0.0)
