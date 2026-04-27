@@ -23,6 +23,7 @@ from .program_designer import design_program
 from .points_calculator import calculate_points
 from .tier_manager import manage_tiers
 from .reward_recommender import recommend_rewards
+from .discount_minter import mint_loyalty_code
 from .memory_reader import read_past_loyalty
 from .memory_writer import write_loyalty_result
 from engines._shopify_hydrator import hydrate
@@ -148,6 +149,36 @@ class LoyaltyEngine:
             )
         reward_recommendations = reward_result.get("recommendations", [])
 
+        # ---- Stage 5b: Discount-code minter (opt-in writeback) ----
+        # Convert the top discount-type reward per customer into a
+        # real Shopify discount code. Default OFF so existing
+        # callers stay in pure-recommendation mode; opt in via
+        # ``data.apply_rewards == True``.
+        minted_codes: list[dict[str, Any]] = []
+        if data.get("apply_rewards") is True:
+            for rec in reward_recommendations:
+                cid = str(rec.get("customer_id", ""))
+                if not cid:
+                    continue
+                top_discount = _pick_top_discount_reward(
+                    rec.get("recommended_rewards", []),
+                )
+                if top_discount is None:
+                    continue
+                minted = mint_loyalty_code(
+                    customer_id=cid,
+                    reward=top_discount,
+                    program_config=program_config,
+                )
+                if minted is not None:
+                    minted_codes.append({
+                        "customer_id": cid,
+                        "reward": top_discount.get("reward", ""),
+                        "code": minted.get("code", ""),
+                        "discount_id": minted.get("discount_id", ""),
+                        "ends_at": minted.get("ends_at", ""),
+                    })
+
         # ---- Stage 6: Build program health ----
         total_points = sum(int(c.get("points_balance", 0)) for c in points_calculations)
         active_count = sum(1 for c in points_calculations if int(c.get("points_balance", 0)) > 0)
@@ -181,6 +212,7 @@ class LoyaltyEngine:
                 "customer_status": tier_statuses,
                 "reward_recommendations": reward_recommendations,
                 "program_health": program_health,
+                "minted_codes": minted_codes,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
@@ -206,3 +238,20 @@ class LoyaltyEngine:
             },
             "error": reason,
         }
+
+
+def _pick_top_discount_reward(
+    rewards: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the highest-points-cost discount reward, or ``None``.
+
+    The reward_recommender returns recommendations sorted by
+    points_cost descending — pre-sorted so the first discount-type
+    entry is the most valuable one the customer can afford.
+    """
+    if not isinstance(rewards, list):
+        return None
+    for r in rewards:
+        if isinstance(r, dict) and str(r.get("type", "")).lower() == "discount":
+            return r
+    return None
