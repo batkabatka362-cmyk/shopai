@@ -218,15 +218,31 @@ def _pay_commission_dispatch(params: dict[str, Any]) -> tuple[bool, dict[str, An
 def _apply_description_dispatch(params: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     """Replay content_generation's description rewrite.
 
-    The enqueue path stores ``body_preview`` (capped at 200
-    chars) and ``body_length`` for the merchant approval page
-    summary — but NOT the full body. Replaying with only the
-    preview would write a truncated description, which is worse
-    than refusing to execute. Surface a clear error so the
-    engine output explains the limitation; a follow-up will
-    extend the enqueue payload to carry the full body when the
-    merchant opts into approval-gated description rewrites.
+    Reads the full body from ``params["body"]`` (added by
+    ``enqueue_description_for_approval``). Falls back to
+    ``body_preview`` for backwards compatibility with rows
+    queued before that change — but only when the preview
+    actually carries the entire original body
+    (``body_length <= len(body_preview)``). When the legacy
+    preview is shorter than the original body, the dispatcher
+    refuses replay rather than write a truncated description;
+    operators must re-enqueue with the upgraded payload shape.
     """
+    pid = str(params.get("product_id", "")).strip()
+    if not pid:
+        return False, {"error": "missing_product_id"}
+
+    body = str(params.get("body", "")).strip()
+    if body:
+        return _router_call(
+            "SHOPIFY_UPDATE_PRODUCT",
+            {"id": pid, "description_html": body},
+        )
+
+    # Backwards-compat: pre-follow-up rows only stored a
+    # 200-char ``body_preview``. Safe to replay only when the
+    # preview equals the original body (the original was short
+    # enough to fit under the cap).
     body_preview = str(params.get("body_preview", "")).strip()
     body_length = int(params.get("body_length", 0) or 0)
     if not body_preview:
@@ -234,17 +250,14 @@ def _apply_description_dispatch(params: dict[str, Any]) -> tuple[bool, dict[str,
     if body_length > len(body_preview):
         return False, {
             "error": (
-                "body_truncated_in_queue: enqueue stored a "
-                f"{len(body_preview)}-char preview but the original "
+                "body_truncated_in_queue: legacy row carries only "
+                f"a {len(body_preview)}-char preview but the original "
                 f"body was {body_length} chars; replaying would "
-                "truncate the description. Re-run the engine and "
-                "approve the fresh recommendation, or upgrade the "
-                "enqueue path to carry the full body."
+                "truncate. Re-enqueue with the post-follow-up "
+                "payload (full ``body`` field) and approve the fresh "
+                "recommendation."
             ),
         }
-    pid = str(params.get("product_id", "")).strip()
-    if not pid:
-        return False, {"error": "missing_product_id"}
     return _router_call(
         "SHOPIFY_UPDATE_PRODUCT",
         {"id": pid, "description_html": body_preview},

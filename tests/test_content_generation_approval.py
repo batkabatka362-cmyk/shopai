@@ -75,6 +75,57 @@ class TestEnqueueDescriptionForApproval:
         assert "0.82" in action.narrative
         # Body preview is captured for the approver.
         assert action.params["headline"] == "Best Widget Ever"
+        # Full body is also captured so the executor's dispatcher
+        # can replay verbatim (post-truncation-followup).
+        assert action.params["body"] == _content_block()["body"]
+
+    def test_long_body_stored_intact_under_50k_cap(self, isolated_queue):
+        # 5000-char body — well under the 50k cap; must be stored
+        # in full so the dispatcher can replay without truncation.
+        from engines.content_generation.content_applier import (
+            enqueue_description_for_approval,
+        )
+
+        long_body = "<p>" + ("widget " * 700) + "</p>"
+        assert len(long_body) > 200  # exceeds the preview cap
+
+        result = enqueue_description_for_approval(
+            product={"id": "gid://shopify/Product/2", "title": "Widget"},
+            content_block={"headline": "h", "body": long_body, "tone": "x"},
+            content_type="product_description",
+        )
+        assert result["error"] == "queued"
+
+        action = isolated_queue.get(result["pending_action_id"])
+        assert action is not None
+        assert action.params["body"] == long_body
+        # Preview still capped for the approval-page summary.
+        assert len(action.params["body_preview"]) == 200
+        # body_length matches the original.
+        assert action.params["body_length"] == len(long_body)
+
+    def test_oversized_body_capped_at_50k(self, isolated_queue):
+        # A 60k-char body must be capped at 50k in storage so a
+        # runaway input doesn't blow the SQLite row size.
+        from engines.content_generation.content_applier import (
+            enqueue_description_for_approval,
+        )
+
+        oversized = "x" * 60_000
+        result = enqueue_description_for_approval(
+            product={"id": "gid://shopify/Product/3"},
+            content_block={"headline": "h", "body": oversized, "tone": "x"},
+            content_type="product_description",
+        )
+        assert result["error"] == "queued"
+
+        action = isolated_queue.get(result["pending_action_id"])
+        assert action is not None
+        assert len(action.params["body"]) == 50_000
+        # body_length records the ORIGINAL length, not the
+        # capped one — so the dispatcher can flag the truncation
+        # if needed.
+        assert action.params["body_length"] == 60_000
 
     def test_non_appliable_content_type_skipped(self, isolated_queue):
         from engines.content_generation.content_applier import (
