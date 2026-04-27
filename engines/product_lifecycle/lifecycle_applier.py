@@ -200,6 +200,144 @@ def archive_declining_products(
     return results
 
 
+def enqueue_archives_for_approval(
+    lifecycle: list[dict[str, Any]],
+    *,
+    min_confidence: float = 0.0,
+    velocity_floor: float = _DEFAULT_VELOCITY_FLOOR,
+) -> list[dict[str, Any]]:
+    """Park archive proposals in the approval queue.
+
+    Per-engine alternative to :func:`archive_declining_products`
+    — selected by the flow when ``data.require_approval=True``.
+    Same triple-gate (stage / velocity / confidence) as the
+    direct path; surviving entries each enqueue one pending
+    action.
+
+    Archives are the first DESTRUCTIVE writeback wired through
+    the queue (loyalty / discount / dynamic_pricing /
+    tag_management / affiliate all created NEW state). The
+    approval gate is therefore especially valuable here — a
+    wrongly-archived product disappears from the storefront
+    until manually un-archived.
+
+    Returns the same shape as
+    :func:`archive_declining_products` plus a
+    ``pending_action_id`` field on successfully-queued entries.
+    """
+    if not isinstance(lifecycle, list) or not lifecycle:
+        return []
+
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue unavailable: %s", exc)
+        return [
+            {
+                "product_id": str(e.get("product_id", "")),
+                "archived": False,
+                "stage": str(e.get("stage", "")),
+                "velocity": _safe_float(e.get("velocity")),
+                "error": "approval_queue_unavailable",
+                "pending_action_id": None,
+            }
+            for e in lifecycle
+        ]
+
+    results: list[dict[str, Any]] = []
+    for entry in lifecycle:
+        if not isinstance(entry, dict):
+            continue
+        pid = str(entry.get("product_id", "")).strip()
+        if not pid:
+            continue
+        stage = str(entry.get("stage", "")).lower()
+        velocity = _safe_float(entry.get("velocity")) or 0.0
+
+        if stage != _ARCHIVABLE_STAGE:
+            results.append({
+                "product_id": pid,
+                "archived": False,
+                "stage": stage,
+                "velocity": velocity,
+                "error": "stage_not_archivable",
+                "pending_action_id": None,
+            })
+            continue
+
+        if velocity >= velocity_floor:
+            results.append({
+                "product_id": pid,
+                "archived": False,
+                "stage": stage,
+                "velocity": velocity,
+                "error": "velocity_above_floor",
+                "pending_action_id": None,
+            })
+            continue
+
+        confidence = _safe_float(entry.get("confidence"))
+        if confidence is not None and confidence < min_confidence:
+            results.append({
+                "product_id": pid,
+                "archived": False,
+                "stage": stage,
+                "velocity": velocity,
+                "error": "below_min_confidence",
+                "pending_action_id": None,
+            })
+            continue
+
+        narrative = (
+            f"Archive declining product {pid} "
+            f"(stage={stage}, velocity={velocity:.2f}/day"
+            + (f", confidence={confidence:.2f}" if confidence is not None else "")
+            + ") — DESTRUCTIVE, hides from storefront"
+        )
+        params = {
+            "product_id": pid,
+            "stage": stage,
+            "velocity": velocity,
+            "confidence": confidence,
+            "status": "ARCHIVED",
+        }
+
+        try:
+            action = queue.enqueue(
+                engine="product_lifecycle",
+                action_type="archive_declining_product",
+                capability="SHOPIFY_UPDATE_PRODUCT",
+                params=params,
+                narrative=narrative,
+                confidence=confidence,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "enqueue raised for %s: %s", pid, exc,
+            )
+            results.append({
+                "product_id": pid,
+                "archived": False,
+                "stage": stage,
+                "velocity": velocity,
+                "error": f"enqueue_raised: {exc}",
+                "pending_action_id": None,
+            })
+            continue
+
+        results.append({
+            "product_id": pid,
+            "archived": False,
+            "stage": stage,
+            "velocity": velocity,
+            "error": "queued",
+            "pending_action_id": action.id,
+        })
+
+    return results
+
+
 # ── Helpers ────────────────────────────────────────────────────
 
 
