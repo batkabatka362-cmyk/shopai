@@ -23,6 +23,7 @@ from .trend_projector import project_trends
 from .action_advisor import advise_actions
 from .memory_reader import read_past_lifecycles
 from .memory_writer import write_lifecycle_result
+from .lifecycle_applier import archive_declining_products
 from engines._shopify_hydrator import hydrate
 
 
@@ -147,11 +148,29 @@ class ProductLifecycleEngine:
             lifecycle.append({
                 "product_id": pid,
                 "stage": cls.get("stage", "unknown"),
+                "confidence": float(cls.get("confidence", 0.0)),
                 "velocity": vel.get("current_velocity", 0.0),
                 "projected_transition": proj.get("projected_transition", "unknown"),
                 "periods_to_transition": proj.get("periods_to_transition", 0),
                 "recommended_actions": adv.get("recommended_actions", []),
             })
+
+        # ---- Stage 6b: Archive declining products (opt-in writeback) ----
+        # For lifecycle entries flagged as ``decline`` with low
+        # velocity, archive the product via SHOPIFY_UPDATE_PRODUCT.
+        # Default OFF — this is a destructive change to product
+        # visibility and needs explicit opt-in.
+        archive_results: list[dict[str, Any]] = []
+        if data.get("apply_archives") is True:
+            archive_results = archive_declining_products(
+                lifecycle=lifecycle,
+                min_confidence=float(
+                    data.get("min_archive_confidence", 0.0),
+                ),
+                velocity_floor=float(
+                    data.get("archive_velocity_floor", 0.5),
+                ),
+            )
 
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_lifecycle_result(lifecycle=lifecycle)
@@ -163,6 +182,7 @@ class ProductLifecycleEngine:
             "status": "success",
             "data": {
                 "lifecycle": lifecycle,
+                "archive_results": archive_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
