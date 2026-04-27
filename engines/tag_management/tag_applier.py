@@ -165,6 +165,116 @@ def apply_tags(
     return results
 
 
+def enqueue_tags_for_approval(
+    assignments: list[dict[str, Any]],
+    products: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Park tag assignments in the approval queue.
+
+    Per-engine alternative to :func:`apply_tags` — selected by
+    the flow when ``data.require_approval=True``. Same upfront
+    filters (must have a product_id, a non-empty tags list, and
+    at least one genuinely-new tag after the merge); each
+    surviving assignment enqueues one pending action.
+
+    Returns the same shape as :func:`apply_tags` plus a
+    ``pending_action_id`` field on successfully-queued entries.
+    Skip semantics (``no_new_tags`` / queue-unavailable) match
+    the direct path so the engine output's ``apply_results``
+    field stays uniform across approval / direct branches.
+    """
+    if not isinstance(assignments, list) or not assignments:
+        return []
+
+    existing_by_id = _build_existing_tags_map(products)
+
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue unavailable: %s", exc)
+        return [
+            {
+                "product_id": str(a.get("product_id", "")),
+                "applied": False,
+                "tags_added": 0,
+                "merged_tags": [],
+                "error": "approval_queue_unavailable",
+                "pending_action_id": None,
+            }
+            for a in assignments
+        ]
+
+    results: list[dict[str, Any]] = []
+    for assignment in assignments:
+        if not isinstance(assignment, dict):
+            continue
+        pid = str(assignment.get("product_id", "")).strip()
+        new_tags_raw = assignment.get("tags") or []
+        if not pid or not isinstance(new_tags_raw, list):
+            continue
+
+        existing = existing_by_id.get(pid, [])
+        merged, added_count = _merge_tags(existing, new_tags_raw)
+
+        if added_count == 0:
+            results.append({
+                "product_id": pid,
+                "applied": False,
+                "tags_added": 0,
+                "merged_tags": merged,
+                "error": "no_new_tags",
+                "pending_action_id": None,
+            })
+            continue
+
+        new_only = [t for t in merged if t not in existing]
+        narrative = (
+            f"Add {added_count} tag(s) to {pid}: "
+            f"{', '.join(new_only[:5])}"
+            + (f" + {len(new_only) - 5} more" if len(new_only) > 5 else "")
+        )
+        params = {
+            "product_id": pid,
+            "merged_tags": merged,
+            "tags_added": added_count,
+            "new_tags": new_only,
+        }
+
+        try:
+            action = queue.enqueue(
+                engine="tag_management",
+                action_type="apply_tags",
+                capability="SHOPIFY_UPDATE_PRODUCT",
+                params=params,
+                narrative=narrative,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "enqueue raised for %s: %s", pid, exc,
+            )
+            results.append({
+                "product_id": pid,
+                "applied": False,
+                "tags_added": 0,
+                "merged_tags": merged,
+                "error": f"enqueue_raised: {exc}",
+                "pending_action_id": None,
+            })
+            continue
+
+        results.append({
+            "product_id": pid,
+            "applied": False,
+            "tags_added": 0,
+            "merged_tags": merged,
+            "error": "queued",
+            "pending_action_id": action.id,
+        })
+
+    return results
+
+
 # ── Helpers ────────────────────────────────────────────────────
 
 

@@ -20,7 +20,7 @@ from .tag_optimizer import optimize_tags
 from .consistency_checker import check_consistency
 from .memory_reader import read_past_tag_runs
 from .memory_writer import write_tag_result
-from .tag_applier import apply_tags
+from .tag_applier import apply_tags, enqueue_tags_for_approval
 from engines._shopify_hydrator import hydrate
 
 
@@ -86,18 +86,35 @@ class TagManagementEngine:
             return self._fail(f"Consistency check failed: {con_result.get('error')}", time.monotonic() - start)
         consistency_score = con_result.get("consistency_score", 0.0)
 
-        # ---- Stage 4b: Tag applier (opt-in writeback) ----
-        # Apply the auto-generated tag assignments to Shopify via
-        # SHOPIFY_UPDATE_PRODUCT, merging with each product's
-        # existing tags. Default OFF so existing callers stay in
-        # pure-recommendation mode; opt in via
-        # ``data.apply_tags == True``.
+        # ---- Stage 4b: Tag writeback (opt-in) ----
+        # Default OFF so existing callers stay in pure-
+        # recommendation mode. Two opt-in modes:
+        #
+        #   data.apply_tags=True + data.require_approval=False
+        #     → write merged tags immediately (legacy direct path)
+        #   data.apply_tags=True + data.require_approval=True
+        #     → enqueue each assignment to core.approval; merchant
+        #       approves via /api/pending-actions before the
+        #       SHOPIFY_UPDATE_PRODUCT call
+        #
+        # Both branches share the same upfront filters (must have
+        # a product_id, non-empty new tag list, at least one
+        # genuinely-new tag after the merge) and produce the same
+        # ``apply_results`` shape; the approval branch's entries
+        # carry ``error="queued"`` and a ``pending_action_id``
+        # instead of ``applied=True``.
         apply_results: list[dict[str, Any]] = []
         if data.get("apply_tags") is True:
-            apply_results = apply_tags(
-                assignments=tag_assignments,
-                products=products,
-            )
+            if data.get("require_approval") is True:
+                apply_results = enqueue_tags_for_approval(
+                    assignments=tag_assignments,
+                    products=products,
+                )
+            else:
+                apply_results = apply_tags(
+                    assignments=tag_assignments,
+                    products=products,
+                )
 
         _write = write_tag_result(tags=tag_assignments, consistency_score=consistency_score)
 
