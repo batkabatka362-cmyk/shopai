@@ -1037,6 +1037,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_DELETE_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_UPDATE_VARIANTS).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_LIST_ORDERS).name == "shopify_orders"
+        assert router.route(Capability.SHOPIFY_FETCH_ORDERS).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_GET_ORDER).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_UPDATE_ORDER).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_TAG_ORDER).name == "shopify_orders"
@@ -9278,6 +9279,7 @@ class TestShopifyOrdersAdapter:
         assert a.name == "shopify_orders"
         for cap in (
             Capability.SHOPIFY_LIST_ORDERS,
+            Capability.SHOPIFY_FETCH_ORDERS,
             Capability.SHOPIFY_GET_ORDER,
             Capability.SHOPIFY_UPDATE_ORDER,
             Capability.SHOPIFY_TAG_ORDER,
@@ -9285,6 +9287,33 @@ class TestShopifyOrdersAdapter:
             Capability.SHOPIFY_CLOSE_ORDER,
         ):
             assert cap in a.capabilities
+
+    def test_fetch_orders_alias_dispatches_to_list(self):
+        # SHOPIFY_FETCH_ORDERS is a sibling of SHOPIFY_LIST_ORDERS.
+        # Engine-side hydrator code consistently uses the FETCH_
+        # form (matching FETCH_CUSTOMERS / FETCH_PRODUCTS); this
+        # adapter accepts both. Fix for the silent-empty bug where
+        # all order-consuming engines fell through to their
+        # standard guard because no adapter declared FETCH_ORDERS.
+        from core.adapters.shopify.orders import ShopifyOrdersAdapter
+        a = ShopifyOrdersAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={
+            "orders": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "edges": [{"node": {
+                    "id": "gid://shopify/Order/1",
+                    "name": "#1001",
+                    "tags": [],
+                    "currencyCode": "USD",
+                }}],
+            },
+        }):
+            result = a.execute(Capability.SHOPIFY_FETCH_ORDERS, {})
+        assert result.ok
+        # Same response shape as SHOPIFY_LIST_ORDERS: data.orders
+        # is a list, hydrator can read it directly.
+        assert result.data["count"] == 1
+        assert result.data["orders"][0]["name"] == "#1001"
 
     def test_unsupported_capability_returns_failure(self):
         from core.adapters.shopify.orders import ShopifyOrdersAdapter

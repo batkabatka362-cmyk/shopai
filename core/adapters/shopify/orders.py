@@ -13,6 +13,11 @@ separated.
 Capabilities:
 
   * ``SHOPIFY_LIST_ORDERS``    — paginated list with filter/sort.
+  * ``SHOPIFY_FETCH_ORDERS``   — alias of ``SHOPIFY_LIST_ORDERS``.
+    Engine-side hydrator code consistently uses the ``FETCH_`` form
+    (matching ``SHOPIFY_FETCH_CUSTOMERS`` and ``SHOPIFY_FETCH_PRODUCTS``);
+    this adapter accepts both so the naming gap doesn't silently
+    break the auto-hydration on every order-consuming engine.
   * ``SHOPIFY_GET_ORDER``      — single order with line items + customer.
   * ``SHOPIFY_UPDATE_ORDER``   — update note / customAttributes via
     ``orderUpdate``.
@@ -223,6 +228,7 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
     name = "shopify_orders"
     capabilities = {
         Capability.SHOPIFY_LIST_ORDERS,
+        Capability.SHOPIFY_FETCH_ORDERS,
         Capability.SHOPIFY_GET_ORDER,
         Capability.SHOPIFY_UPDATE_ORDER,
         Capability.SHOPIFY_TAG_ORDER,
@@ -235,7 +241,10 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
         capability: Capability,
         params: dict[str, Any],
     ) -> Any:
-        if capability == Capability.SHOPIFY_LIST_ORDERS:
+        if capability in (
+            Capability.SHOPIFY_LIST_ORDERS,
+            Capability.SHOPIFY_FETCH_ORDERS,
+        ):
             return self._list(params)
         if capability == Capability.SHOPIFY_GET_ORDER:
             return self._get(params)
