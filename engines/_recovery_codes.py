@@ -61,6 +61,8 @@ def mint_recovery_code(
     value_kind: str,
     ttl_days: int = _DEFAULT_TTL_DAYS,
     title: str | None = None,
+    usage_limit: int | None = 1,
+    applies_once_per_customer: bool = True,
 ) -> dict[str, Any] | None:
     """Mint a one-shot Shopify discount code via the SmartRouter.
 
@@ -79,6 +81,13 @@ def mint_recovery_code(
         ttl_days: Days the code is valid. Clamped to [1, 90].
         title: Operator-facing label shown in the discount list.
             Auto-generated from ``code_prefix`` + ``value`` if None.
+        usage_limit: Max total redemptions across all customers.
+            Defaults to 1 (one-shot). Pass ``None`` for unlimited
+            (storewide promo codes).
+        applies_once_per_customer: When True, each customer can
+            only redeem once. Defaults to True (recovery semantics).
+            Pass False for evergreen promo codes that customers
+            should be able to use repeatedly.
 
     Returns:
         ``{"code", "discount_id", "ends_at", "applies_once"}`` on
@@ -117,9 +126,13 @@ def mint_recovery_code(
             .replace("+00:00", "Z"),
         "ends_at": ends_at.replace(microsecond=0).isoformat()
             .replace("+00:00", "Z"),
-        "usage_limit": 1,
-        "applies_once_per_customer": True,
+        "applies_once_per_customer": bool(applies_once_per_customer),
     }
+    if usage_limit is not None:
+        try:
+            params["usage_limit"] = max(1, int(usage_limit))
+        except (TypeError, ValueError):
+            params["usage_limit"] = 1
     if kind == "percentage":
         params["percentage"] = amount
     else:
@@ -150,7 +163,7 @@ def mint_recovery_code(
         "code": code_name,
         "discount_id": discount_id,
         "ends_at": params["ends_at"],
-        "applies_once": True,
+        "applies_once": bool(applies_once_per_customer),
     }
 
 

@@ -27,6 +27,7 @@ from .cannibalization_checker import check_cannibalization
 from .revenue_projector import project_revenue
 from .memory_reader import read_past_discounts
 from .memory_writer import write_discount_result
+from .discount_minter import mint_strategy_code
 from engines._shopify_hydrator import hydrate
 
 
@@ -231,6 +232,25 @@ class DiscountStrategyEngine:
             "net_profit_impact": float(rev_proj.get("net_profit_impact", 0.0)),
         }
 
+        # ---- Stage 10b: Discount-code minter (opt-in writeback) ----
+        # Convert the calculated strategy into a real Shopify
+        # storewide promo code. Default OFF so existing callers
+        # stay in pure-recommendation mode; opt in via
+        # ``data.apply_discount == True``. The minter applies its
+        # own safety guardrails (skips bogo / free_shipping types,
+        # blocks high cannibalization risk, configurable confidence
+        # floor).
+        minted_code: dict[str, Any] | None = None
+        if data.get("apply_discount") is True:
+            minted_code = mint_strategy_code(
+                strategy=strategy,
+                cannibalization_risk=cannibalization_risk,
+                confidence=confidence,
+                min_confidence=float(
+                    data.get("min_apply_confidence", 0.0),
+                ),
+            )
+
         # ---- Stage 11: Memory Writer (non-fatal) ----
         _write_result = write_discount_result(
             strategy=strategy,
@@ -252,6 +272,7 @@ class DiscountStrategyEngine:
                 "projected_revenue": projected_revenue,
                 "cannibalization_risk": cannibalization_risk,
                 "confidence": round(confidence, 4),
+                "minted_code": minted_code,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
