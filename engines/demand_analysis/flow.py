@@ -22,6 +22,7 @@ from .segment_decomposer import decompose_segments
 from .saturation_checker import check_saturation
 from .memory_reader import read_past_results
 from .memory_writer import write_result
+from engines._shopify_hydrator import hydrate
 
 
 class DemandAnalysisEngine:
@@ -61,6 +62,17 @@ class DemandAnalysisEngine:
         market_data = data.get("market_data", {})
         products = data.get("products", [])
         segments = data.get("segments", [])
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. products is auxiliary (market_data is gated),
+        # but feeds volume + velocity estimators.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not market_data:
             return self._fail("Market data is required", 0.0)

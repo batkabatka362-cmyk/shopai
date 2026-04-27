@@ -22,6 +22,7 @@ from .negotiation_advisor import advise_negotiation
 from .relationship_tracker import track_relationships
 from .memory_reader import read_past_results
 from .memory_writer import write_result
+from engines._shopify_hydrator import hydrate
 
 
 class SupplierEngine:
@@ -61,6 +62,17 @@ class SupplierEngine:
         suppliers = data.get("suppliers", [])
         orders = data.get("orders", [])
         quality_data = data.get("quality_data", [])
+
+        # Auto-hydrate orders from Shopify when caller left the
+        # list empty. orders is auxiliary (suppliers is gated),
+        # but feeds performance scoring + risk assessment.
+        orders = hydrate(
+            supplied=orders if isinstance(orders, list) else [],
+            capability_name="SHOPIFY_FETCH_ORDERS",
+            list_field="orders",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not suppliers:
             return self._fail("Suppliers list is required", 0.0)

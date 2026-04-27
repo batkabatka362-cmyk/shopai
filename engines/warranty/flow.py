@@ -20,6 +20,7 @@ from .cost_tracker import track_costs
 from .risk_analyzer import analyze_risk
 from .memory_reader import read_past_warranty
 from .memory_writer import write_warranty_result
+from engines._shopify_hydrator import hydrate
 
 
 class WarrantyEngine:
@@ -47,6 +48,18 @@ class WarrantyEngine:
         products = data.get("products", [])
         claims = data.get("claims", [])
         policies = data.get("policies", [])
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # OR-gate fires only if both products+claims are empty
+        # after hydration.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not products and not claims:
             return self._fail("Products or claims required", 0.0)

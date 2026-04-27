@@ -21,6 +21,7 @@ from .journey_builder import build_journey
 from .stage_analyzer import analyze_stages
 from .drop_off_detector import detect_drop_offs
 from .optimization_advisor import advise_optimizations
+from engines._shopify_hydrator import hydrate
 
 
 class CustomerJourneyEngine:
@@ -61,6 +62,17 @@ class CustomerJourneyEngine:
         events = data.get("events", [])
         touchpoints = data.get("touchpoints", [])
         conversions = data.get("conversions", [])
+
+        # Auto-hydrate customers from Shopify when caller left the
+        # list empty. customers is auxiliary (events is gated),
+        # but feeds the journey builder.
+        customers = hydrate(
+            supplied=customers if isinstance(customers, list) else [],
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not events:
             return self._fail("Events list is required", 0.0)
