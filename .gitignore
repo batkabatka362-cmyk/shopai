@@ -33,3 +33,9 @@ vault/.shopai_import_state.json
 
 # Local Shopify install OAuth helper, contains no creds but not source-controlled
 /oauth_catcher.py
+
+# Local scratch files
+.claude/
+codex.md
+codexrule.md
+codexplan.md
