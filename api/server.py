@@ -96,6 +96,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         }
 
         # /api/pending-actions/<id>/approve  /api/pending-actions/<id>/reject
+        # /api/pending-actions/<id>/execute
         if path.startswith("/api/pending-actions/") and path.count("/") == 4:
             parts = path.split("/")
             action_id, verb = parts[3], parts[4]
@@ -104,6 +105,9 @@ class ShopAIHandler(BaseHTTPRequestHandler):
                 return
             if verb == "reject":
                 self._reject_pending_action(action_id, body)
+                return
+            if verb == "execute":
+                self._execute_pending_action(action_id, body)
                 return
             self._json_response(404, {"error": f"Unknown action verb: {verb}"})
             return
@@ -484,6 +488,50 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             })
             return
         self._json_response(200, {"status": "rejected", "action": action.to_dict()})
+
+    def _execute_pending_action(self, action_id: str, body: dict) -> None:
+        """POST /api/pending-actions/<id>/execute — replay an APPROVED action.
+
+        Loads the action, refuses anything not in APPROVED state
+        (idempotent — re-executing returns the current snapshot),
+        invokes the registered dispatcher, and flips the queue
+        entry to EXECUTED or FAILED via attach_result.
+
+        Body is currently ignored; future extensions (e.g.
+        ``{"dry_run": true}``) will read from it.
+        """
+        if not _is_valid_action_id(action_id):
+            self._json_response(400, {"error": "Invalid action id"})
+            return
+        from core.approval import execute_action, get_approval_queue
+        queue = get_approval_queue()
+
+        existing = queue.get(action_id)
+        if existing is None:
+            self._json_response(404, {"error": f"Unknown action id: {action_id}"})
+            return
+        if existing.status.value != "approved":
+            self._json_response(200, {
+                "status": "noop",
+                "reason": (
+                    f"action is in '{existing.status.value}' state "
+                    "(execute requires 'approved')"
+                ),
+                "action": existing.to_dict(),
+            })
+            return
+
+        result_action = execute_action(action_id)
+        if result_action is None:
+            self._json_response(500, {
+                "error": "execute_action returned None unexpectedly",
+                "action_id": action_id,
+            })
+            return
+        self._json_response(200, {
+            "status": result_action.status.value,
+            "action": result_action.to_dict(),
+        })
 
     def _classify_intent(self, body: dict) -> None:
         """POST /api/intent — classify free-text into an engine.
