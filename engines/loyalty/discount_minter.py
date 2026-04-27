@@ -101,6 +101,66 @@ def mint_loyalty_code(
     return minted
 
 
+def enqueue_loyalty_for_approval(
+    customer_id: str,
+    reward: dict[str, Any],
+    program_config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Park a per-customer loyalty code proposal in the approval queue.
+
+    Same input shape and same upfront guardrails as
+    :func:`mint_loyalty_code`. Picked over the direct mint when the
+    flow sees ``data.require_approval == True``. No Shopify
+    mutation runs; the proposal lands in ``core.approval`` for
+    human review and the executor (follow-up PR) replays it on
+    approval.
+
+    Returns:
+        ``{"pending_action_id", "narrative", "params"}`` once
+        queued, or ``None`` when the same upfront guardrails
+        (non-discount type / unparseable percentage / queue write
+        failure) reject the proposal.
+    """
+    reward_type = str(reward.get("type", "")).lower()
+    if reward_type != "discount":
+        return None
+
+    percentage = _parse_percentage(reward.get("reward", ""))
+    if percentage is None or percentage <= 0:
+        return None
+
+    ttl_days = _resolve_ttl_days(program_config)
+    reward_text = str(reward.get("reward", ""))
+    narrative = (
+        f"Loyalty {percentage:g}% off code for customer "
+        f"{customer_id} — {ttl_days}d TTL ({reward_text})"
+    )
+    params = {
+        "customer_id": customer_id,
+        "percentage": percentage,
+        "ttl_days": ttl_days,
+        "reward_text": reward_text,
+    }
+
+    try:
+        from core.approval import get_approval_queue
+        action = get_approval_queue().enqueue(
+            engine="loyalty",
+            action_type="mint_loyalty_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=params,
+            narrative=narrative,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+    return {
+        "pending_action_id": action.id,
+        "narrative": narrative,
+        "params": params,
+    }
+
+
 # ── Per-engine helpers ────────────────────────────────────────
 
 
