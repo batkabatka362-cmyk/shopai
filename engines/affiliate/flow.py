@@ -23,7 +23,10 @@ from .commission_calculator import calculate_commissions
 from .performance_tracker import track_performance
 from .memory_reader import read_past_affiliate_runs
 from .memory_writer import write_affiliate_result
-from .commission_payer import pay_commissions
+from .commission_payer import (
+    enqueue_commissions_for_approval,
+    pay_commissions,
+)
 from engines._shopify_hydrator import hydrate
 
 
@@ -162,21 +165,41 @@ class AffiliateEngine:
             "program_roi": program_roi,
         }
 
-        # ---- Stage 6b: Commission payer (opt-in writeback) ----
-        # Issue Shopify gift cards as commission payouts. Default
-        # OFF so existing callers stay in pure-recommendation
-        # mode; opt in via ``data.apply_commissions == True``.
-        # Optional ``data.payout_currency`` overrides the default
-        # USD currency code.
+        # ---- Stage 6b: Commission payout writeback (opt-in) ----
+        # Default OFF so existing callers stay in pure-
+        # recommendation mode. Two opt-in modes:
+        #
+        #   data.apply_commissions=True + data.require_approval=False
+        #     → mint gift cards immediately (legacy direct path)
+        #   data.apply_commissions=True + data.require_approval=True
+        #     → enqueue each payout to core.approval; merchant
+        #       approves via /api/pending-actions before the
+        #       SHOPIFY_CREATE_GIFT_CARD call lands
+        #
+        # Commission payouts are higher-stakes than discount
+        # minting (real money out the door), so the queue gating
+        # is especially valuable here. Both branches share the
+        # same upfront filters (positive amount, partner present
+        # in input); a guardrail-rejected commission ends up in
+        # the same ``payout_results`` shape with
+        # ``error="non_positive_amount"`` or
+        # ``error="partner_not_in_input"`` either way.
+        # ``data.payout_currency`` overrides the default USD code.
         payout_results: list[dict[str, Any]] = []
         if data.get("apply_commissions") is True:
-            payout_results = pay_commissions(
-                commissions=commissions_due,
-                partners=partners,
-                currency=str(
-                    data.get("payout_currency", "USD"),
-                ),
-            )
+            currency = str(data.get("payout_currency", "USD"))
+            if data.get("require_approval") is True:
+                payout_results = enqueue_commissions_for_approval(
+                    commissions=commissions_due,
+                    partners=partners,
+                    currency=currency,
+                )
+            else:
+                payout_results = pay_commissions(
+                    commissions=commissions_due,
+                    partners=partners,
+                    currency=currency,
+                )
 
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_affiliate_result(
