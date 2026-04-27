@@ -23,6 +23,7 @@ from .fraud_detector import detect_fraud
 from .cost_calculator import calculate_costs
 from .memory_reader import read_past_returns
 from .memory_writer import write_returns_result
+from engines._shopify_hydrator import hydrate
 
 
 class ReturnsManagementEngine:
@@ -61,6 +62,17 @@ class ReturnsManagementEngine:
 
         returns = data.get("returns", [])
         return_policy = data.get("return_policy", {})
+
+        # Auto-hydrate returns from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        returns = hydrate(
+            supplied=returns if isinstance(returns, list) else [],
+            capability_name="SHOPIFY_LIST_RETURNS",
+            list_field="returns",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not returns:
             return self._fail("Returns list is required", 0.0)

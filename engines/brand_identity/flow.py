@@ -23,6 +23,7 @@ from .story_crafter import craft_story
 from .values_definer import define_values
 from .memory_reader import read_past_identities
 from .memory_writer import write_identity_result
+from engines._shopify_hydrator import hydrate
 
 
 class BrandIdentityEngine:
@@ -65,6 +66,17 @@ class BrandIdentityEngine:
 
         products = data.get("products", [])
         competitors = data.get("competitors", [])
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. products is auxiliary (not gated), but feeds
+        # personality profiling — empty here weakens the result.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         # ---- Stage 1: Read past identities (non-blocking) ----
         _past = read_past_identities(limit=5)
