@@ -29,6 +29,7 @@ from .elasticity_estimator import estimate_elasticity
 from .price_recommender import recommend_price
 from .memory_reader import read_past_pricing
 from .memory_writer import write_pricing_result
+from engines._shopify_hydrator import hydrate_one
 
 
 class PricingEngine:
@@ -70,6 +71,17 @@ class PricingEngine:
         platform_fees_pct = float(data.get("platform_fees_pct", 0.029))
         payment_processing_pct = float(data.get("payment_processing_pct", 0.029))
         target_margin = float(data.get("target_margin", 0.30))
+
+        # Auto-hydrate a single product from Shopify when caller
+        # left the dict empty. Pre-existing failure semantics
+        # preserved: empty supplied AND empty hydrated → standard
+        # error.
+        product = hydrate_one(
+            supplied=product if isinstance(product, dict) else {},
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            query=data.get("hydrate_query"),
+        )
 
         if not product:
             return self._fail("Product data is required", 0.0)
