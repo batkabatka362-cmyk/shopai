@@ -23,6 +23,7 @@ from .localization_checker import check_localization
 from .shipping_planner import plan_shipping
 from .memory_reader import read_past_expansions
 from .memory_writer import write_expansion_result
+from engines._shopify_hydrator import hydrate
 
 
 class InternationalExpansionEngine:
@@ -60,6 +61,19 @@ class InternationalExpansionEngine:
         products = data.get("products", [])
         target_markets = data.get("target_markets", [])
         current_currency = str(data.get("current_currency", "USD"))
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. target_markets stays caller-supplied (it's a
+        # config concept, not a Shopify resource).
+        # Pre-existing failure semantics preserved: empty supplied
+        # AND empty hydrated → standard "Product list is required".
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not products:
             return self._fail("Product list is required", 0.0)

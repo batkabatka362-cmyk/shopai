@@ -22,6 +22,7 @@ from .retention_predictor import predict_retention
 from .ltv_projector import project_ltv
 from .memory_reader import read_past_behavior_sims
 from .memory_writer import write_behavior_result
+from engines._shopify_hydrator import hydrate
 
 
 class CustomerBehaviorSimulatorEngine:
@@ -49,6 +50,19 @@ class CustomerBehaviorSimulatorEngine:
         customers = data.get("customers", [])
         proposed_actions = data.get("proposed_actions", [])
         historical_data = data.get("historical_data", {})
+
+        # Auto-hydrate customers from Shopify when caller left the
+        # list empty. proposed_actions stays caller-supplied (it's
+        # the simulation input, not a Shopify resource).
+        # Pre-existing failure semantics preserved: empty supplied
+        # AND empty hydrated → standard "Customer list is required".
+        customers = hydrate(
+            supplied=customers if isinstance(customers, list) else [],
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not customers:
             return self._fail("Customer list is required", 0.0)

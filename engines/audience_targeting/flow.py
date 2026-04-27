@@ -23,6 +23,7 @@ from .size_estimator import estimate_sizes
 from .lookalike_builder import build_lookalikes
 from .memory_reader import read_past_audiences
 from .memory_writer import write_audience_result
+from engines._shopify_hydrator import hydrate
 
 
 class AudienceTargetingEngine:
@@ -63,6 +64,27 @@ class AudienceTargetingEngine:
         orders = data.get("orders", [])
         segments = data.get("segments", [])
         campaign_goal = str(data.get("campaign_goal", "conversion"))
+
+        # Auto-hydrate customers + orders from Shopify when caller
+        # left the lists empty. Both feed downstream segmentation.
+        # Pre-existing failure semantics preserved: empty supplied
+        # AND empty hydrated → standard "Customer list is required".
+        hydrate_limit = data.get("hydrate_limit")
+        hydrate_query = data.get("hydrate_query")
+        customers = hydrate(
+            supplied=customers if isinstance(customers, list) else [],
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
+        orders = hydrate(
+            supplied=orders if isinstance(orders, list) else [],
+            capability_name="SHOPIFY_FETCH_ORDERS",
+            list_field="orders",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
 
         if not customers:
             return self._fail("Customer list is required", 0.0)

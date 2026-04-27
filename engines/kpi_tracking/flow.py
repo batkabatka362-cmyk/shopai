@@ -23,6 +23,7 @@ from .benchmark_comparator import compare_benchmarks
 from .alert_checker import check_alerts
 from .memory_reader import read_past_kpis
 from .memory_writer import write_kpi_result
+from engines._shopify_hydrator import hydrate
 
 
 class KpiTrackingEngine:
@@ -64,6 +65,27 @@ class KpiTrackingEngine:
         costs = data.get("costs", [])
         period = str(data.get("period", "30d"))
         benchmarks = data.get("benchmarks", [])
+
+        # Auto-hydrate orders + customers from Shopify when caller
+        # left both lists empty. Pre-existing failure semantics
+        # preserved: empty supplied AND empty hydrated → standard
+        # "Orders or customers data is required" error.
+        hydrate_limit = data.get("hydrate_limit")
+        hydrate_query = data.get("hydrate_query")
+        orders = hydrate(
+            supplied=orders if isinstance(orders, list) else [],
+            capability_name="SHOPIFY_FETCH_ORDERS",
+            list_field="orders",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
+        customers = hydrate(
+            supplied=customers if isinstance(customers, list) else [],
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
 
         if not orders and not customers:
             return self._fail("Orders or customers data is required", 0.0)
