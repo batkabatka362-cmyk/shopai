@@ -480,6 +480,44 @@ these as "unused-parameter" hints — they are not errors, do not
 silence them with `_`-prefix renames, the existing 60+ test stubs
 all use the unprefixed form.
 
+### Pattern I: capability-name parity between engine and adapter is silent if broken
+
+The router resolves `Capability.X` to whichever adapter declares
+support for `X`. When an engine call site references a capability
+name that exists in the enum but is not claimed by any adapter,
+the failure mode is silent: the router has no route, the
+hydrator's exception/`ok=False` path returns `[]`, and the engine
+falls through to its standard "X list is required" guard — exactly
+the failure mode auto-hydration was meant to prevent.
+
+Caught live on `SHOPIFY_FETCH_ORDERS` (PR #40): 14+ engine flows
+called the `FETCH_` form (matching `SHOPIFY_FETCH_CUSTOMERS` and
+`SHOPIFY_FETCH_PRODUCTS` precedent) but the orders adapter only
+declared `SHOPIFY_LIST_ORDERS`. The Phase 5 hydrator roll-out
+appeared to work in unit tests (mocked routers) but was a no-op
+in production for every order-consuming engine.
+
+Discovered via this audit, in case it's useful for the next pass:
+
+```bash
+# Find every capability used by engine hydrators...
+grep -rh 'capability_name="SHOPIFY_' engines/ |
+  grep -oE "SHOPIFY_[A-Z_]+" | sort -u
+
+# ...and confirm each has at least one adapter claiming it.
+for cap in $(...); do
+  grep -l "Capability\.$cap" core/adapters/shopify/*.py | wc -l
+done
+```
+
+Naming inconsistency to be aware of: `customers.py` uses
+`SHOPIFY_FETCH_CUSTOMERS` (no `LIST_` form in the enum), `orders.py`
+now claims both `LIST_ORDERS` and `FETCH_ORDERS`, `products.py`
+uses `SHOPIFY_LIST_PRODUCTS` (with `inventory.py` separately
+claiming `SHOPIFY_FETCH_PRODUCTS`). Engines should match whatever
+the adapter actually declares; the audit above is the cheapest
+verification.
+
 ## Current branch state
 
 Branch: `claude/shopify-api-integration-oQzce` → PR #22.
@@ -501,13 +539,39 @@ Phase 3 (Tier 3) — **complete**:
 - `c05d890` ShopifyAnalyticsAdapter (schema-correct, gated by
   protected-data approval)
 
-Phase 4 (long tail) — **next**:
-- ShopifyTranslationsAdapter
-- ShopifyCustomerSegmentsAdapter (the existing
-  `SHOPIFY_QUERY_SEGMENT` capability has no adapter yet)
-- ShopifyRefundsAdapter (deliberately deferred from Returns)
-- ShopifyPaymentCustomizationsAdapter
-- ShopifyDeliveryCustomizationsAdapter
+Phase 4 (long tail) — **complete**:
+
+- ShopifyTranslationsAdapter (`translations.py`)
+- ShopifyCustomerSegmentsAdapter (`segments.py` +
+  `customer_segment_write.py` — covers `SHOPIFY_QUERY_SEGMENT`,
+  `SHOPIFY_CREATE_SEGMENT`, `SHOPIFY_UPDATE_CUSTOMER_SEGMENT`,
+  `SHOPIFY_DELETE_CUSTOMER_SEGMENT`)
+- ShopifyRefundsAdapter (`refunds.py`)
+- ShopifyPaymentCustomizationsAdapter (`customizations.py`)
+- ShopifyDeliveryCustomizationsAdapter (`customizations.py`)
+
+Adapter coverage is now ~99.2% of the enum (379/382 capabilities
+wired). Stragglers: `SHOPIFY_APP`, `SHOPIFY_NATIVE` (placeholders).
+
+Phase 5 (engine-side hydrators) — **complete**:
+Systematic roll-out of `engines._shopify_hydrator.hydrate()` across
+the engine layer. 51 engines now auto-fetch their primary input
+list from Shopify when the caller leaves it empty, instead of
+failing with the standard "X list is required" guard. PR #29
+extracted the shared core; PRs #30–#39 wired engines in 10 batches:
+batch1 (5), batch2 (5), batch3 (5), batch4 (5), batch5 (5),
+batch6 (5), batch7 (5), batch8 (5), batch9 (3), batch10 (3 +
+`hydrate_one` variant for singular-dict inputs). PR #40 fixed a
+critical capability-name parity bug (see Pattern I below). Plus
+6 engines wired pre-batch1: `bundle`, `browse_recovery`, `catalog`,
+`churn_prediction`, `cohort_analysis`, `cart_recovery`. Only
+`product_research` remains unwired — function-based pipeline,
+intentional skip.
+
+The engine-layer pattern lives at
+`engines/_shopify_hydrator.py` with `hydrate()` (list-shape) and
+`hydrate_one()` (singular-dict). Per-engine wrappers are now thin
+— they just pick the right `capability_name` and `list_field`.
 
 ## Reading order for a fresh session
 
