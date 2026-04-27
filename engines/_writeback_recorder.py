@@ -34,12 +34,29 @@ clamped [1.0, 5.0].
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
 from utils.logger import get_logger
 
 logger = get_logger("engines.writeback_recorder")
+
+
+# Test-environment guard. Under pytest, every recorder call would
+# fan out to MemoryIntelligence + DataArchitecture + LearningLoop
+# and write rows to the real on-disk SQLite databases — including
+# the synthetic ``adapter_failed: scope_missing`` and
+# ``adapter_raised: network_down`` failures that unit tests
+# inject. Those entries then fed the failure-intelligence pipeline
+# and produced bogus avoidance rules.
+#
+# pytest sets ``PYTEST_CURRENT_TEST`` automatically for every test
+# (and clears it between tests). When that env var is present, the
+# recorder no-ops — preserving the production behaviour, gating
+# test pollution, and not requiring a per-test monkeypatch.
+def _is_test_environment() -> bool:
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
 def record_writeback(
@@ -83,6 +100,9 @@ def record_writeback(
         already happened on Shopify and the engine pipeline must
         keep running.
     """
+    if _is_test_environment():
+        return
+
     score = _compute_score(success=success, metrics=metrics)
     result_data: dict[str, Any] = {
         "success": bool(success),

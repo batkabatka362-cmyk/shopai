@@ -91,6 +91,11 @@ def apply_tag_assignments(
             _stamp_skipped(assignment, "no tags to apply")
             continue
 
+        recorder_params = {
+            "product_id": product_id,
+            "tag_count": len(cleaned_tags),
+        }
+
         try:
             result = router.execute(capability, {
                 "id": product_id,
@@ -99,6 +104,12 @@ def apply_tag_assignments(
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "tag apply raised for %s: %s", product_id, exc,
+            )
+            _record_writeback(
+                action_type="catalog_apply_tags",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_raised: {exc}",
             )
             _stamp_skipped(
                 assignment, f"adapter raised: {exc}",
@@ -110,13 +121,55 @@ def apply_tag_assignments(
             logger.debug(
                 "tag apply failed for %s: %s", product_id, err,
             )
+            _record_writeback(
+                action_type="catalog_apply_tags",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_failed: {err}",
+            )
             _stamp_skipped(assignment, err)
             continue
 
+        _record_writeback(
+            action_type="catalog_apply_tags",
+            params=recorder_params,
+            success=True,
+        )
         assignment["applied"] = True
         assignment["apply_error"] = ""
 
     return assignments
+
+
+def _record_writeback(
+    *,
+    action_type: str,
+    params: dict[str, Any],
+    success: bool,
+    error: str | None = None,
+) -> None:
+    """Best-effort feed of catalog tag writes to the autonomous-loop
+    recorder (Phase 8). Wrapped in its own helper so the import is
+    lazy — keeps catalog usable in environments where the
+    learning-loop infra isn't bootstrapped (the recorder itself is
+    already graceful, but the import path may not be available in
+    every test fixture).
+    """
+    try:
+        from engines._writeback_recorder import record_writeback
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        record_writeback(
+            engine="catalog",
+            action_type=action_type,
+            capability="SHOPIFY_ADD_TAGS",
+            params=params,
+            success=success,
+            error=error,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ── Helpers ────────────────────────────────────────────────────
