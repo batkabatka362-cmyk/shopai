@@ -196,6 +196,134 @@ def apply_price_changes(
     return results
 
 
+def enqueue_price_changes_for_approval(
+    adjustments: list[dict[str, Any]],
+    products: list[dict[str, Any]],
+    *,
+    require_approved: bool = True,
+) -> list[dict[str, Any]]:
+    """Park approved price adjustments in the approval queue.
+
+    Per-engine alternative to :func:`apply_price_changes` —
+    selected by the flow when ``data.require_approval=True``.
+    Same upfront filters (must have a product_id, valid
+    new_price, change_validator approval, and a non-empty
+    variant list); each surviving adjustment enqueues one
+    pending action.
+
+    Returns the same shape as :func:`apply_price_changes` but
+    with ``applied=False`` and ``error="queued"`` plus an extra
+    ``pending_action_id`` field on successfully-queued entries.
+    Skip semantics (``not_approved`` / ``no_variants_in_input`` /
+    ``router_unavailable``) match the direct path so the engine's
+    downstream consumers don't need to special-case the approval
+    branch.
+    """
+    if not isinstance(adjustments, list) or not adjustments:
+        return []
+
+    variants_by_product = _build_variants_map(products)
+
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue unavailable: %s", exc)
+        return [
+            {
+                "product_id": str(a.get("product_id", "")),
+                "applied": False,
+                "variants_updated": 0,
+                "new_price": _safe_float(a.get("new_price")),
+                "error": "approval_queue_unavailable",
+                "pending_action_id": None,
+            }
+            for a in adjustments
+        ]
+
+    results: list[dict[str, Any]] = []
+    for adj in adjustments:
+        if not isinstance(adj, dict):
+            continue
+        pid = str(adj.get("product_id", "")).strip()
+        new_price = _safe_float(adj.get("new_price"))
+        if not pid or new_price is None:
+            continue
+
+        if require_approved and not _is_approved(adj):
+            results.append({
+                "product_id": pid,
+                "applied": False,
+                "variants_updated": 0,
+                "new_price": new_price,
+                "error": "not_approved",
+                "pending_action_id": None,
+            })
+            continue
+
+        variant_ids = variants_by_product.get(pid) or []
+        if not variant_ids:
+            results.append({
+                "product_id": pid,
+                "applied": False,
+                "variants_updated": 0,
+                "new_price": new_price,
+                "error": "no_variants_in_input",
+                "pending_action_id": None,
+            })
+            continue
+
+        change_pct = _safe_float(adj.get("change_pct"))
+        reason = str(adj.get("reason", ""))[:160]
+        narrative = (
+            f"Set product {pid} price → ${new_price:.2f} "
+            f"({len(variant_ids)} variants"
+            + (f", {change_pct:+.1f}%" if change_pct is not None else "")
+            + (f", reason: {reason}" if reason else "")
+            + ")"
+        )
+        params = {
+            "product_id": pid,
+            "new_price": new_price,
+            "variant_ids": variant_ids,
+            "change_pct": change_pct,
+            "reason": reason,
+        }
+
+        try:
+            action = queue.enqueue(
+                engine="dynamic_pricing",
+                action_type="apply_price_change",
+                capability="SHOPIFY_UPDATE_VARIANTS",
+                params=params,
+                narrative=narrative,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "enqueue raised for %s: %s", pid, exc,
+            )
+            results.append({
+                "product_id": pid,
+                "applied": False,
+                "variants_updated": 0,
+                "new_price": new_price,
+                "error": f"enqueue_raised: {exc}",
+                "pending_action_id": None,
+            })
+            continue
+
+        results.append({
+            "product_id": pid,
+            "applied": False,
+            "variants_updated": 0,
+            "new_price": new_price,
+            "error": "queued",
+            "pending_action_id": action.id,
+        })
+
+    return results
+
+
 # ── Helpers ────────────────────────────────────────────────────
 
 
