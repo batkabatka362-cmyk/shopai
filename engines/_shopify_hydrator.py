@@ -122,6 +122,48 @@ def hydrate(
     return [i for i in items if isinstance(i, dict)]
 
 
+def hydrate_one(
+    *,
+    supplied: dict[str, Any] | None,
+    capability_name: str,
+    list_field: str,
+    query: str | None = None,
+    extra_params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Pass-through if supplied (non-empty dict); else fetch one item.
+
+    Singular-input variant of :func:`hydrate`. Some engines take a
+    ``data.product`` (dict) rather than ``data.products`` (list);
+    this helper calls the same Capability with ``limit=1`` and
+    returns the first item, or an empty dict.
+
+    Args:
+        supplied: The dict the caller passed (e.g. ``data.product``).
+            If non-empty (truthy), returned unchanged.
+        capability_name: Same as :func:`hydrate`.
+        list_field: Same as :func:`hydrate` — the key holding the
+            normalised list in the adapter response.
+        query: Optional Shopify search filter.
+        extra_params: Optional extra keys to merge into the call.
+
+    Returns:
+        The supplied dict unchanged, OR the first auto-fetched item,
+        OR ``{}`` on any failure mode.
+    """
+    if isinstance(supplied, dict) and supplied:
+        return supplied
+
+    items = hydrate(
+        supplied=[],
+        capability_name=capability_name,
+        list_field=list_field,
+        limit=1,
+        query=query,
+        extra_params=extra_params,
+    )
+    return items[0] if items else {}
+
+
 # ── Helpers (also exported for direct use by per-engine wrappers) ──
 
 

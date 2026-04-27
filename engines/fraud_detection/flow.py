@@ -31,6 +31,7 @@ from .decision_maker import make_decision
 from .alert_generator import generate_alert
 from .memory_reader import read_fraud_history, read_past_orders
 from .memory_writer import write_fraud_decision
+from engines._shopify_hydrator import hydrate_one
 
 
 class FraudDetectionEngine:
@@ -68,6 +69,17 @@ class FraudDetectionEngine:
             return self._fail("Input 'data' must be a dict", 0.0)
 
         order = data.get("order", {})
+
+        # Auto-hydrate a single order from Shopify when caller left
+        # the dict empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        order = hydrate_one(
+            supplied=order if isinstance(order, dict) else {},
+            capability_name="SHOPIFY_FETCH_ORDERS",
+            list_field="orders",
+            query=data.get("hydrate_query"),
+        )
+
         if not isinstance(order, dict) or not order:
             return self._fail("Order data is required", 0.0)
 
