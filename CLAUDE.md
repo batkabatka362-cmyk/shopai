@@ -628,17 +628,60 @@ The pattern stabilised across the five wireups:
   (mint helpers, token derivation) lives in
   `engines/_recovery_codes.py`.
 
-**Known integration gap.** Phase 6 writebacks call
-`router.execute(...)` directly, bypassing `execution/smart_executor.py`.
-This means actions don't go through the autonomous loop's
-learning feedback (`MemoryIntelligence`, `DataArchitecture`,
-`LearningLoop`). The system can mint a 10% loyalty code but
-won't learn whether that code drove redemptions. Future
-integration: route Phase 6 writebacks through `SmartExecutor`
-so action→predicted→actual→score→memory becomes the unified
-write path. Tracked as Phase 8 work — Phase 7 was scoped to
-wiring more engines (Phase 6's pattern × more recommender
-engines: product_optimization, search_optimization, etc.).
+Phase 7 (more engine writebacks) — **in progress**:
+Same pattern as Phase 6 applied to additional recommender
+engines. So far:
+
+- PR #49 — `product_lifecycle` archives declining products
+  via `SHOPIFY_UPDATE_PRODUCT` (status=ARCHIVED). First
+  destructive writeback; needed stricter safety gates
+  (stage + velocity + confidence). Engine output now also
+  carries `confidence: float` so the writer can gate on it
+  without re-running the classifier.
+
+Future Phase 7 candidates: `inventory` (INVENTORY_ADJUST),
+`wholesale_b2b` (CREATE_DISCOUNT B2B-scoped),
+`product_optimization` (multi-modal UPDATE_PRODUCT),
+`search_optimization` (UPDATE_PRODUCT seo fields — needs the
+products adapter extended first).
+
+Phase 8 (autonomous-loop integration) — **complete**:
+Closes the gap that Phase 6 / 7 exposed. Engine writebacks
+were calling `router.execute(...)` directly, bypassing the
+autonomous loop's feedback systems (`MemoryIntelligence`,
+`DataArchitecture`, `LearningLoop`). System could mint a 10%
+loyalty code but never learned whether that code drove
+redemptions.
+
+The bridge lives at `engines/_writeback_recorder.py` —
+`record_writeback(engine, action_type, capability, params,
+success, error, metrics)`. Each writer calls it AFTER its
+`router.execute` so the action+result fans out to:
+
+- `MemoryIntelligence.create_from_decision` — categorized
+  decision memory with success/failure tags + auto-pruning.
+- `DataArchitecture.record_action` + `attach_result` — fills
+  the action→result domain (96% target attach rate).
+- `MemoryIntelligence.record_failure` — auto-fires when score
+  ≤ 2.0; the failure-intelligence pipeline auto-generates
+  avoidance rules after 3+ similar failures.
+- `LearningLoop.learn` — pattern detection feed.
+
+Score computation mirrors `SmartExecutor._score_outcome` for
+consistency: base 3.0, +1.0 success, -1.5 error, ±0.5 revenue
+impact, +0.3 profitable, clamped [1.0, 5.0].
+
+Wired into all 6 existing writers (loyalty, discount_strategy,
+dynamic_pricing, tag_management, affiliate, product_lifecycle).
+Graceful degradation: if any of the three systems is
+unavailable / raises, the recorder no-ops silently. The
+writeback already happened on Shopify; recording must not
+propagate failures.
+
+**Pattern for new Phase 7 / 8 wireups.** Call
+`record_writeback(...)` immediately after each successful or
+failed `router.execute`. The recorder takes care of routing
+to the right learning system.
 
 ## Reading order for a fresh session
 
