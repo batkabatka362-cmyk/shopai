@@ -518,6 +518,64 @@ claiming `SHOPIFY_FETCH_PRODUCTS`). Engines should match whatever
 the adapter actually declares; the audit above is the cheapest
 verification.
 
+### Pattern J: feedback systems must short-circuit under pytest
+
+`engines/_writeback_recorder.py` (Phase 8) fans every writeback into
+three persistent stores — MemoryIntelligence, DataArchitecture,
+LearningLoop — all of which back to **on-disk SQLite**. When a unit
+test exercises an applier that calls `record_writeback`, those
+three stores receive the synthetic test payload exactly as if it
+were a production action. The data lingers in the dev DB, and the
+failure-intelligence pipeline (auto-generates avoidance rules at
+3+ similar failures) starts emitting rules derived from test
+fixtures.
+
+Caught live on Phase 6/7 appliers: `failure_analysis` table held
+entries like `[dynamic_pricing] adapter_failed: scope_missing: 3`
+and `[loyalty] network blip` that came straight out of the test
+suite's fail-path mocks. Engines making real-world decisions could
+have started avoiding `scope_missing` as if it were a recurring
+production class.
+
+The bug class is general — any module that lazy-imports a global
+singleton and writes to it during normal operation will get hit
+the moment a test runs that module's code path. Mocking the
+fan-out targets in *every* test that touches an applier is brittle;
+the right cut is at the recorder boundary.
+
+Fix (PR #54):
+
+```python
+import os
+
+def _is_test_environment() -> bool:
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+def record_writeback(*, ...):
+    if _is_test_environment():
+        return
+    # ... fan out to MemoryIntelligence + DataArchitecture + LearningLoop
+```
+
+Tests that need to verify recorder behaviour install an autouse
+fixture that patches `_is_test_environment` to return `False`,
+turning the guard back off for that test only:
+
+```python
+@pytest.fixture(autouse=True)
+def _disable_test_env_guard():
+    with patch(
+        "engines._writeback_recorder._is_test_environment",
+        return_value=False,
+    ):
+        yield
+```
+
+Anything new that calls a real persistent store from inside an
+adapter or engine (analytics, audit log, telemetry sink) needs the
+same gate — assume the test suite WILL exercise that path and
+WILL leave residue otherwise.
+
 ## Current branch state
 
 Branch: `claude/shopify-api-integration-oQzce` → PR #22.
