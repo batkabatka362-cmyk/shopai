@@ -1,0 +1,163 @@
+"""Replay APPROVED actions through their engine appliers.
+
+Closes the loop the approval queue (PR #57) and the nine engine
+wireups (PR #59 / #60 / #61 / #63 / #64 / #65 / #66 / #67 / #68)
+opened. Pre-executor an APPROVED action just sits in the queue
+— the merchant clicked approve but nothing actually executes.
+
+This module provides the missing handoff:
+
+    enqueue (engine)  →  pending
+    approve (api)     →  approved
+    execute (executor) → executed | failed       ← here
+
+Design:
+
+  * A registry maps ``action_type`` → callable that takes the
+    parked ``params`` dict and returns ``(success, result_dict)``.
+  * Each registration lives in :mod:`core.approval.dispatchers`
+    next to a tiny per-action adapter function — keeps the
+    executor itself dispatcher-agnostic.
+  * ``execute_action(action_id)`` loads the action, refuses
+    anything not in ``APPROVED`` state (idempotent — a second
+    execute returns the current snapshot without re-running),
+    invokes the dispatcher, and calls
+    :meth:`ApprovalQueue.attach_result` to flip status to
+    ``EXECUTED`` or ``FAILED``.
+  * Dispatcher exceptions are caught — a runaway dispatcher
+    must not leak. Failure surfaces as ``status=FAILED`` with
+    the exception text in ``result.error``.
+
+The dispatchers all live behind lazy imports inside their
+register functions so this module stays cheap to import — same
+pattern the engines use to keep ``record_writeback`` lightweight.
+"""
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from utils.logger import get_logger
+
+from core.approval.queue import (
+    ApprovalAction,
+    ApprovalStatus,
+    get_approval_queue,
+)
+
+logger = get_logger("core.approval.executor")
+
+# action_type → (params: dict) -> (success: bool, result: dict)
+DispatcherFn = Callable[[dict[str, Any]], tuple[bool, dict[str, Any]]]
+_DISPATCHERS: dict[str, DispatcherFn] = {}
+
+
+def register_dispatcher(action_type: str) -> Callable[[DispatcherFn], DispatcherFn]:
+    """Decorator: bind a dispatcher to an ``action_type``.
+
+    Usage::
+
+        @register_dispatcher("apply_tags")
+        def _apply_tags_dispatcher(params: dict) -> tuple[bool, dict]:
+            ...
+
+    Re-registration overwrites silently (test fixtures may need
+    to substitute stubs).
+    """
+    def decorator(fn: DispatcherFn) -> DispatcherFn:
+        _DISPATCHERS[action_type] = fn
+        return fn
+    return decorator
+
+
+def list_registered_action_types() -> list[str]:
+    """Snapshot of action_types the executor can dispatch.
+
+    Used by the API status endpoint and by tests that want to
+    verify the registry is fully wired.
+    """
+    return sorted(_DISPATCHERS.keys())
+
+
+def execute_action(action_id: str) -> ApprovalAction | None:
+    """Replay an APPROVED action through its registered dispatcher.
+
+    Args:
+        action_id: id of the queued action.
+
+    Returns:
+        Updated :class:`ApprovalAction` reflecting EXECUTED /
+        FAILED state, or ``None`` if the id is unknown or the
+        action isn't in APPROVED state. Callers can treat
+        ``None`` as a no-op (idempotent — re-executing an
+        already-resolved action returns ``None``, the original
+        state is preserved).
+    """
+    # Trigger dispatcher registration on first call. Cheap — the
+    # module just appends to ``_DISPATCHERS``.
+    _ensure_dispatchers_loaded()
+
+    queue = get_approval_queue()
+    action = queue.get(action_id)
+    if action is None:
+        logger.debug("execute_action no-op: id %s not found", action_id)
+        return None
+    if action.status != ApprovalStatus.APPROVED:
+        logger.debug(
+            "execute_action no-op: %s is in %s state",
+            action_id, action.status.value,
+        )
+        return None
+
+    dispatcher = _DISPATCHERS.get(action.action_type)
+    if dispatcher is None:
+        return queue.attach_result(
+            action_id,
+            success=False,
+            result={
+                "error": (
+                    f"no executor registered for action_type="
+                    f"{action.action_type}"
+                ),
+            },
+        )
+
+    try:
+        success, result = dispatcher(action.params)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "dispatcher %s raised for %s: %s",
+            action.action_type, action_id, exc,
+        )
+        success = False
+        result = {"error": f"dispatcher_raised: {exc}"}
+
+    return queue.attach_result(
+        action_id,
+        success=bool(success),
+        result=result if isinstance(result, dict) else {},
+    )
+
+
+_dispatchers_loaded = False
+
+
+def _ensure_dispatchers_loaded() -> None:
+    """Lazy-import :mod:`core.approval.dispatchers` once.
+
+    Keeps the module-load cost of ``core.approval`` minimal —
+    importing ``dispatchers`` pulls in every engine applier
+    helper, which transitively loads adapter capability tables
+    and SmartRouter init paths.
+    """
+    global _dispatchers_loaded
+    if _dispatchers_loaded:
+        return
+    try:
+        from core.approval import dispatchers as _  # noqa: F401
+        _dispatchers_loaded = True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "dispatcher registry import failed: %s "
+            "(execute_action will fall back to per-action error)",
+            exc,
+        )
