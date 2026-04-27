@@ -22,6 +22,7 @@ from .budget_allocator import allocate_budget
 from .timeline_creator import create_timeline
 from .memory_reader import read_past_campaigns
 from .memory_writer import write_campaign_result
+from engines._shopify_hydrator import hydrate
 
 
 class CampaignStrategyEngine:
@@ -52,6 +53,17 @@ class CampaignStrategyEngine:
         products = data.get("products", [])
         channels = data.get("channels", [])
         duration_days = int(data.get("duration_days", 30))
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. products is auxiliary (not gated), but feeds
+        # downstream campaign strategy enrichment.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not goal:
             return self._fail("Campaign goal is required", 0.0)

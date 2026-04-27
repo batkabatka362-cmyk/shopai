@@ -22,6 +22,7 @@ from .strength_mapper import map_strengths
 from .share_estimator import estimate_share
 from .memory_reader import read_past_results
 from .memory_writer import write_result
+from engines._shopify_hydrator import hydrate
 
 
 class CompetitionAnalyzerEngine:
@@ -61,6 +62,17 @@ class CompetitionAnalyzerEngine:
         competitors = data.get("competitors", [])
         products = data.get("products", [])
         market_data = data.get("market_data", {})
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. products is auxiliary (competitors is gated),
+        # but feeds price comparison + positioning analysis.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not competitors:
             return self._fail("Competitors list is required", 0.0)

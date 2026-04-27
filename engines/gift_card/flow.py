@@ -20,6 +20,7 @@ from .breakage_estimator import estimate_breakage
 from .promotion_planner import plan_promotions
 from .memory_reader import read_past_gift_card
 from .memory_writer import write_gift_card_result
+from engines._shopify_hydrator import hydrate
 
 
 class GiftCardEngine:
@@ -47,6 +48,17 @@ class GiftCardEngine:
         gift_cards = data.get("gift_cards", [])
         redemptions = data.get("redemptions", [])
         program_config = data.get("program_config", {})
+
+        # Auto-hydrate gift_cards from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        gift_cards = hydrate(
+            supplied=gift_cards if isinstance(gift_cards, list) else [],
+            capability_name="SHOPIFY_LIST_GIFT_CARDS",
+            list_field="gift_cards",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not gift_cards:
             return self._fail("Gift cards list is required", 0.0)
