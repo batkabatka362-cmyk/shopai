@@ -20,6 +20,17 @@ from api.validation import (
 
 logger = get_logger("api.server")
 
+# Approval action ids are minted by ``core.approval.queue.enqueue``
+# as ``appr_<ms-epoch>_<8-hex>``. The allowed character set is
+# ``[A-Za-z0-9_]`` and the length cap rejects path-injection
+# attempts (no slashes, dots, or query bleed into the SQL lookup).
+import re as _re
+_ACTION_ID_RE = _re.compile(r"^[A-Za-z0-9_]{8,80}$")
+
+
+def _is_valid_action_id(action_id: str) -> bool:
+    return bool(action_id and _ACTION_ID_RE.match(action_id))
+
 
 class ShopAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for ShopAI API."""
@@ -40,6 +51,8 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/experience": self._get_experience,
             "/api/webhooks": self._list_webhooks,
             "/api/stores": self._list_stores,
+            "/api/pending-actions": self._list_pending_actions,
+            "/api/pending-actions/stats": self._pending_actions_stats,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -48,6 +61,11 @@ class ShopAIHandler(BaseHTTPRequestHandler):
                 self._json_response(400, {"error": err})
                 return
             self._engine_info(engine_name)
+            return
+
+        if path.startswith("/api/pending-actions/") and path.count("/") == 3:
+            action_id = path.split("/")[-1]
+            self._get_pending_action(action_id, params)
             return
 
         handler = routes.get(path)
@@ -75,6 +93,19 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/auto/cycle": self._auto_cycle,
             "/api/store/sync": self._store_sync,
         }
+
+        # /api/pending-actions/<id>/approve  /api/pending-actions/<id>/reject
+        if path.startswith("/api/pending-actions/") and path.count("/") == 4:
+            parts = path.split("/")
+            action_id, verb = parts[3], parts[4]
+            if verb == "approve":
+                self._approve_pending_action(action_id, body)
+                return
+            if verb == "reject":
+                self._reject_pending_action(action_id, body)
+                return
+            self._json_response(404, {"error": f"Unknown action verb: {verb}"})
+            return
 
         handler = routes.get(path)
         if handler:
@@ -161,6 +192,66 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.warning("store listing failed: %s", exc)
             self._json_response(200, {"stores": [], "error": str(exc)})
+
+    def _list_pending_actions(self) -> None:
+        """GET /api/pending-actions — open queue for the merchant.
+
+        Optional query params:
+          ?engine=<name> — filter to a single engine namespace
+          ?limit=<int>   — page size (default 100, max 500)
+        """
+        from urllib.parse import urlparse, parse_qs
+        from core.approval import get_approval_queue
+
+        params = parse_qs(urlparse(self.path).query)
+        engine = params.get("engine", [None])[0]
+        if engine:
+            engine, err = validate_safe_name(engine, "engine")
+            if err:
+                self._json_response(400, {"error": err})
+                return
+        try:
+            limit = int(params.get("limit", ["100"])[0])
+        except ValueError:
+            limit = 100
+        limit = max(1, min(500, limit))
+
+        try:
+            queue = get_approval_queue()
+            actions = queue.list_pending(engine=engine, limit=limit)
+            self._json_response(200, {
+                "count": len(actions),
+                "actions": [a.to_dict() for a in actions],
+            })
+        except Exception as exc:
+            logger.warning("list pending actions failed: %s", exc)
+            self._json_response(500, {"error": str(exc)})
+
+    def _pending_actions_stats(self) -> None:
+        """GET /api/pending-actions/stats — counts per status."""
+        from core.approval import get_approval_queue
+        try:
+            self._json_response(200, get_approval_queue().stats())
+        except Exception as exc:
+            logger.warning("approval queue stats failed: %s", exc)
+            self._json_response(500, {"error": str(exc)})
+
+    def _get_pending_action(self, action_id: str, _params: dict) -> None:
+        """GET /api/pending-actions/<id> — fetch a single action."""
+        if action_id in ("stats",):
+            # Routed elsewhere; defensive guard if dispatch ever
+            # changes shape.
+            self._pending_actions_stats()
+            return
+        if not _is_valid_action_id(action_id):
+            self._json_response(400, {"error": "Invalid action id"})
+            return
+        from core.approval import get_approval_queue
+        action = get_approval_queue().get(action_id)
+        if action is None:
+            self._json_response(404, {"error": f"Unknown action id: {action_id}"})
+            return
+        self._json_response(200, action.to_dict())
 
     # --- POST handlers ---
 
@@ -314,6 +405,63 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.warning("store sync failed for %s: %s", store_id, exc)
             self._json_response(500, {"error": str(exc)})
+
+    def _approve_pending_action(self, action_id: str, body: dict) -> None:
+        """POST /api/pending-actions/<id>/approve — sign off on a pending action.
+
+        Body (optional): ``{"by": "<operator>", "reason": "<note>"}``.
+        Idempotent: re-approving an already-resolved action returns
+        the current state without error.
+        """
+        if not _is_valid_action_id(action_id):
+            self._json_response(400, {"error": "Invalid action id"})
+            return
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+        decided_by = str(body.get("by") or body.get("decided_by") or "")[:80]
+        reason = str(body.get("reason") or "")[:500]
+
+        action = queue.approve(
+            action_id, decided_by=decided_by, reason=reason,
+        )
+        if action is None:
+            existing = queue.get(action_id)
+            if existing is None:
+                self._json_response(404, {"error": f"Unknown action id: {action_id}"})
+                return
+            self._json_response(200, {
+                "status": "noop",
+                "reason": f"action already in '{existing.status.value}' state",
+                "action": existing.to_dict(),
+            })
+            return
+        self._json_response(200, {"status": "approved", "action": action.to_dict()})
+
+    def _reject_pending_action(self, action_id: str, body: dict) -> None:
+        """POST /api/pending-actions/<id>/reject — block a pending action."""
+        if not _is_valid_action_id(action_id):
+            self._json_response(400, {"error": "Invalid action id"})
+            return
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+        decided_by = str(body.get("by") or body.get("decided_by") or "")[:80]
+        reason = str(body.get("reason") or "")[:500]
+
+        action = queue.reject(
+            action_id, decided_by=decided_by, reason=reason,
+        )
+        if action is None:
+            existing = queue.get(action_id)
+            if existing is None:
+                self._json_response(404, {"error": f"Unknown action id: {action_id}"})
+                return
+            self._json_response(200, {
+                "status": "noop",
+                "reason": f"action already in '{existing.status.value}' state",
+                "action": existing.to_dict(),
+            })
+            return
+        self._json_response(200, {"status": "rejected", "action": action.to_dict()})
 
     def _agent_run(self, body: dict) -> None:
         """Run a task through an agent."""
