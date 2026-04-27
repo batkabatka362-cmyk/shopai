@@ -29,6 +29,8 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from engines._writeback_recorder import record_writeback
+
 logger = get_logger("engines.tag_management.applier")
 
 
@@ -95,6 +97,12 @@ def apply_tags(
             })
             continue
 
+        recorder_params = {
+            "product_id": pid,
+            "tags_added": added_count,
+            "total_tags": len(merged),
+        }
+
         try:
             result = router.execute(
                 capability,
@@ -102,6 +110,14 @@ def apply_tags(
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("apply_tags raised for %s: %s", pid, exc)
+            record_writeback(
+                engine="tag_management",
+                action_type="apply_tags",
+                capability="SHOPIFY_UPDATE_PRODUCT",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_raised: {exc}",
+            )
             results.append({
                 "product_id": pid,
                 "applied": False,
@@ -114,6 +130,14 @@ def apply_tags(
         if not getattr(result, "ok", False):
             err = getattr(result, "error", "unknown")
             logger.debug("apply_tags failed for %s: %s", pid, err)
+            record_writeback(
+                engine="tag_management",
+                action_type="apply_tags",
+                capability="SHOPIFY_UPDATE_PRODUCT",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_failed: {err}",
+            )
             results.append({
                 "product_id": pid,
                 "applied": False,
@@ -123,6 +147,13 @@ def apply_tags(
             })
             continue
 
+        record_writeback(
+            engine="tag_management",
+            action_type="apply_tags",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            params=recorder_params,
+            success=True,
+        )
         results.append({
             "product_id": pid,
             "applied": True,

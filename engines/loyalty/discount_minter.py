@@ -22,6 +22,7 @@ import re
 from typing import Any
 
 from engines._recovery_codes import mint_recovery_code as _mint
+from engines._writeback_recorder import record_writeback
 
 
 # Code-name prefix. Distinguishes loyalty rewards from recovery
@@ -73,7 +74,7 @@ def mint_loyalty_code(
         f"Loyalty reward: {percentage:g}% off"
     )
 
-    return _mint(
+    minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
         value=percentage,
@@ -81,6 +82,23 @@ def mint_loyalty_code(
         ttl_days=ttl_days,
         title=title,
     )
+
+    # Phase 8: feed the autonomous learning loop so the system
+    # can later correlate minted loyalty codes with redemption.
+    record_writeback(
+        engine="loyalty",
+        action_type="mint_loyalty_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params={
+            "customer_id": customer_id,
+            "percentage": percentage,
+            "ttl_days": ttl_days,
+        },
+        success=minted is not None,
+        error=None if minted is not None else "mint_returned_none",
+    )
+
+    return minted
 
 
 # ── Per-engine helpers ────────────────────────────────────────

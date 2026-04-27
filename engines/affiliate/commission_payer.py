@@ -36,6 +36,8 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from engines._writeback_recorder import record_writeback
+
 logger = get_logger("engines.affiliate.payer")
 
 
@@ -129,11 +131,25 @@ def pay_commissions(
             currency=currency,
         )
 
+        recorder_params = {
+            "partner_id": pid,
+            "amount": amount,
+            "currency": currency,
+        }
+
         try:
             result = router.execute(capability, params)
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "pay_commissions raised for %s: %s", pid, exc,
+            )
+            record_writeback(
+                engine="affiliate",
+                action_type="pay_commission",
+                capability="SHOPIFY_CREATE_GIFT_CARD",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_raised: {exc}",
             )
             results.append({
                 "partner_id": pid,
@@ -150,6 +166,14 @@ def pay_commissions(
             logger.debug(
                 "pay_commissions failed for %s: %s", pid, err,
             )
+            record_writeback(
+                engine="affiliate",
+                action_type="pay_commission",
+                capability="SHOPIFY_CREATE_GIFT_CARD",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_failed: {err}",
+            )
             results.append({
                 "partner_id": pid,
                 "paid": False,
@@ -160,6 +184,13 @@ def pay_commissions(
             })
             continue
 
+        record_writeback(
+            engine="affiliate",
+            action_type="pay_commission",
+            capability="SHOPIFY_CREATE_GIFT_CARD",
+            params=recorder_params,
+            success=True,
+        )
         data = getattr(result, "data", {}) or {}
         gift_card = data.get("gift_card") or {}
         results.append({

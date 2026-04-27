@@ -35,6 +35,8 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from engines._writeback_recorder import record_writeback
+
 logger = get_logger("engines.dynamic_pricing.applier")
 
 
@@ -122,6 +124,12 @@ def apply_price_changes(
             {"id": vid, "price": price_str} for vid in variant_ids
         ]
 
+        recorder_params = {
+            "product_id": pid,
+            "new_price": new_price,
+            "variant_count": len(variant_ids),
+        }
+
         try:
             result = router.execute(
                 capability,
@@ -130,6 +138,14 @@ def apply_price_changes(
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "apply_price_changes raised for %s: %s", pid, exc,
+            )
+            record_writeback(
+                engine="dynamic_pricing",
+                action_type="apply_price_change",
+                capability="SHOPIFY_UPDATE_VARIANTS",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_raised: {exc}",
             )
             results.append({
                 "product_id": pid,
@@ -145,6 +161,14 @@ def apply_price_changes(
             logger.debug(
                 "apply_price_changes failed for %s: %s", pid, err,
             )
+            record_writeback(
+                engine="dynamic_pricing",
+                action_type="apply_price_change",
+                capability="SHOPIFY_UPDATE_VARIANTS",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_failed: {err}",
+            )
             results.append({
                 "product_id": pid,
                 "applied": False,
@@ -154,6 +178,13 @@ def apply_price_changes(
             })
             continue
 
+        record_writeback(
+            engine="dynamic_pricing",
+            action_type="apply_price_change",
+            capability="SHOPIFY_UPDATE_VARIANTS",
+            params=recorder_params,
+            success=True,
+        )
         results.append({
             "product_id": pid,
             "applied": True,

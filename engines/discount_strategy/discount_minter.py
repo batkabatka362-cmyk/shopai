@@ -36,6 +36,7 @@ from __future__ import annotations
 from typing import Any
 
 from engines._recovery_codes import mint_recovery_code as _mint
+from engines._writeback_recorder import record_writeback
 
 
 # Code-name prefix. Distinguishes storewide promos from
@@ -105,7 +106,7 @@ def mint_strategy_code(
 
     title = f"Storewide promo: {percentage:g}% off ({audience})"
 
-    return _mint(
+    minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
         value=percentage,
@@ -116,6 +117,25 @@ def mint_strategy_code(
         usage_limit=None,
         applies_once_per_customer=False,
     )
+
+    # Phase 8: feed the autonomous learning loop so the system
+    # can correlate storewide promos with revenue impact later.
+    record_writeback(
+        engine="discount_strategy",
+        action_type="mint_strategy_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params={
+            "audience": audience,
+            "percentage": percentage,
+            "ttl_days": ttl_days,
+            "cannibalization_risk": cannibalization_risk,
+            "confidence": confidence,
+        },
+        success=minted is not None,
+        error=None if minted is not None else "mint_returned_none",
+    )
+
+    return minted
 
 
 # ── Per-engine helpers ────────────────────────────────────────

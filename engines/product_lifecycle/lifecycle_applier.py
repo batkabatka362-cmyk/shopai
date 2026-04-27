@@ -28,6 +28,8 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from engines._writeback_recorder import record_writeback
+
 logger = get_logger("engines.product_lifecycle.applier")
 
 
@@ -126,6 +128,12 @@ def archive_declining_products(
             })
             continue
 
+        recorder_params = {
+            "product_id": pid,
+            "stage": stage,
+            "velocity": velocity,
+        }
+
         try:
             result = router.execute(
                 capability,
@@ -134,6 +142,14 @@ def archive_declining_products(
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "archive_declining_products raised for %s: %s", pid, exc,
+            )
+            record_writeback(
+                engine="product_lifecycle",
+                action_type="archive_declining_product",
+                capability="SHOPIFY_UPDATE_PRODUCT",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_raised: {exc}",
             )
             results.append({
                 "product_id": pid,
@@ -149,6 +165,14 @@ def archive_declining_products(
             logger.debug(
                 "archive_declining_products failed for %s: %s", pid, err,
             )
+            record_writeback(
+                engine="product_lifecycle",
+                action_type="archive_declining_product",
+                capability="SHOPIFY_UPDATE_PRODUCT",
+                params=recorder_params,
+                success=False,
+                error=f"adapter_failed: {err}",
+            )
             results.append({
                 "product_id": pid,
                 "archived": False,
@@ -158,6 +182,13 @@ def archive_declining_products(
             })
             continue
 
+        record_writeback(
+            engine="product_lifecycle",
+            action_type="archive_declining_product",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            params=recorder_params,
+            success=True,
+        )
         results.append({
             "product_id": pid,
             "archived": True,
