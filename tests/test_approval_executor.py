@@ -443,11 +443,21 @@ class TestMintDispatchers:
 
 
 class TestApplyDescriptionGuard:
+    """Backwards-compat path — params with only body_preview.
 
-    def test_truncated_body_refuses_replay(self, loaded_dispatchers):
-        # body_length > len(body_preview) → enqueue truncated;
-        # dispatcher refuses to replay rather than write a partial
-        # description.
+    Pre-follow-up rows in production queues only carry
+    ``body_preview`` (capped at 200 chars). The dispatcher must
+    still replay them safely when the original body fit under
+    the cap, and must refuse when the preview was a truncation
+    of a larger body.
+    """
+
+    def test_legacy_truncated_body_refuses_replay(
+        self, loaded_dispatchers,
+    ):
+        # body_length > len(body_preview) AND no full ``body``
+        # field → legacy queue row, original was truncated.
+        # Refuse rather than write partial.
         success, result = _DISPATCHERS["apply_description"]({
             "product_id": "p1",
             "body_length": 5000,
@@ -456,7 +466,9 @@ class TestApplyDescriptionGuard:
         assert success is False
         assert "body_truncated_in_queue" in result["error"]
 
-    def test_short_body_replays(self, loaded_dispatchers):
+    def test_legacy_short_body_replays_from_preview(
+        self, loaded_dispatchers,
+    ):
         captured: dict = {}
 
         def _capture(cap_name, params):
@@ -467,6 +479,7 @@ class TestApplyDescriptionGuard:
             "core.approval.dispatchers._router_call",
             side_effect=_capture,
         ):
+            # Legacy row, original body fit in preview.
             success, _ = _DISPATCHERS["apply_description"]({
                 "product_id": "p1",
                 "body_length": 50,
@@ -476,3 +489,72 @@ class TestApplyDescriptionGuard:
         assert success is True
         assert captured["params"]["id"] == "p1"
         assert captured["params"]["description_html"] == "x" * 50
+
+
+class TestApplyDescriptionFullBody:
+    """Post-follow-up path — params carry full ``body`` field.
+
+    The enqueue path now stores the full body alongside the
+    200-char ``body_preview`` (used by the merchant approval
+    page summary). The dispatcher prefers the full body, so a
+    long original description replays verbatim.
+    """
+
+    def test_full_body_replayed_verbatim(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _capture(cap_name, params):
+            captured["params"] = params
+            return True, {}
+
+        long_body = "<p>" + ("widget " * 700) + "</p>"
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_capture,
+        ):
+            success, _ = _DISPATCHERS["apply_description"]({
+                "product_id": "p1",
+                "body": long_body,
+                "body_preview": long_body[:200],
+                "body_length": len(long_body),
+            })
+
+        assert success is True
+        assert captured["params"]["id"] == "p1"
+        # Full body sent to Shopify, not the 200-char preview.
+        assert captured["params"]["description_html"] == long_body
+        assert len(captured["params"]["description_html"]) > 200
+
+    def test_full_body_preferred_over_preview(self, loaded_dispatchers):
+        # When both ``body`` and ``body_preview`` are present, the
+        # dispatcher must pick ``body`` (the full one) so the
+        # backwards-compat preview-replay branch never accidentally
+        # fires on a post-follow-up row.
+        captured: dict = {}
+
+        def _capture(cap_name, params):
+            captured["params"] = params
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_capture,
+        ):
+            _DISPATCHERS["apply_description"]({
+                "product_id": "p1",
+                "body": "FULL BODY",
+                "body_preview": "PREVIEW",
+                "body_length": 9,
+            })
+
+        assert captured["params"]["description_html"] == "FULL BODY"
+
+    def test_full_body_missing_product_id_skipped(
+        self, loaded_dispatchers,
+    ):
+        success, result = _DISPATCHERS["apply_description"]({
+            "body": "x" * 1000,
+            "body_length": 1000,
+        })
+        assert success is False
+        assert result["error"] == "missing_product_id"

@@ -238,10 +238,19 @@ def enqueue_description_for_approval(
         + f", SEO {seo_score:.2f}, readability {readability_score:.2f})"
         + " — DESTRUCTIVE, overwrites existing copy"
     )
+    # Store the FULL body so the executor can replay verbatim
+    # (cap at 50_000 chars to keep the SQLite row size bounded —
+    # well above any realistic product description). The 200-char
+    # preview is kept as a separate field so the merchant approval
+    # page can render a quick summary without loading the whole
+    # body. Pre-fix ``body_preview`` was the only stored body and
+    # the executor's dispatcher refused replay when the original
+    # was longer than 200 chars.
     params = {
         "product_id": product_id,
         "body_length": body_length,
         "headline": headline,
+        "body": body[:50_000],
         "body_preview": body[:200],
         "seo_score": seo_score,
         "readability_score": readability_score,
