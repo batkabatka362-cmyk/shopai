@@ -27,7 +27,7 @@ from .cannibalization_checker import check_cannibalization
 from .revenue_projector import project_revenue
 from .memory_reader import read_past_discounts
 from .memory_writer import write_discount_result
-from .discount_minter import mint_strategy_code
+from .discount_minter import enqueue_strategy_for_approval, mint_strategy_code
 from engines._shopify_hydrator import hydrate
 
 
@@ -232,24 +232,38 @@ class DiscountStrategyEngine:
             "net_profit_impact": float(rev_proj.get("net_profit_impact", 0.0)),
         }
 
-        # ---- Stage 10b: Discount-code minter (opt-in writeback) ----
-        # Convert the calculated strategy into a real Shopify
-        # storewide promo code. Default OFF so existing callers
-        # stay in pure-recommendation mode; opt in via
-        # ``data.apply_discount == True``. The minter applies its
-        # own safety guardrails (skips bogo / free_shipping types,
-        # blocks high cannibalization risk, configurable confidence
-        # floor).
+        # ---- Stage 10b: Discount-code writeback (opt-in) ----
+        # Default OFF so existing callers stay in pure-
+        # recommendation mode. Two opt-in modes:
+        #
+        #   data.apply_discount=True + data.require_approval=False
+        #     → mint immediately (legacy behavior)
+        #   data.apply_discount=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves via
+        #       /api/pending-actions before any Shopify mutation
+        #
+        # Both paths share the same upfront guardrails (mintable
+        # type / depth / cannibalization risk / confidence floor),
+        # so a guardrail-rejected strategy returns None either
+        # way and the caller can't tell which path was taken.
         minted_code: dict[str, Any] | None = None
+        pending_action: dict[str, Any] | None = None
         if data.get("apply_discount") is True:
-            minted_code = mint_strategy_code(
-                strategy=strategy,
-                cannibalization_risk=cannibalization_risk,
-                confidence=confidence,
-                min_confidence=float(
-                    data.get("min_apply_confidence", 0.0),
-                ),
-            )
+            min_confidence = float(data.get("min_apply_confidence", 0.0))
+            if data.get("require_approval") is True:
+                pending_action = enqueue_strategy_for_approval(
+                    strategy=strategy,
+                    cannibalization_risk=cannibalization_risk,
+                    confidence=confidence,
+                    min_confidence=min_confidence,
+                )
+            else:
+                minted_code = mint_strategy_code(
+                    strategy=strategy,
+                    cannibalization_risk=cannibalization_risk,
+                    confidence=confidence,
+                    min_confidence=min_confidence,
+                )
 
         # ---- Stage 11: Memory Writer (non-fatal) ----
         _write_result = write_discount_result(
@@ -273,6 +287,7 @@ class DiscountStrategyEngine:
                 "cannibalization_risk": cannibalization_risk,
                 "confidence": round(confidence, 4),
                 "minted_code": minted_code,
+                "pending_action": pending_action,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
