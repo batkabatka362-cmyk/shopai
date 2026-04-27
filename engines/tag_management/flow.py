@@ -20,6 +20,7 @@ from .tag_optimizer import optimize_tags
 from .consistency_checker import check_consistency
 from .memory_reader import read_past_tag_runs
 from .memory_writer import write_tag_result
+from .tag_applier import apply_tags
 from engines._shopify_hydrator import hydrate
 
 
@@ -85,6 +86,19 @@ class TagManagementEngine:
             return self._fail(f"Consistency check failed: {con_result.get('error')}", time.monotonic() - start)
         consistency_score = con_result.get("consistency_score", 0.0)
 
+        # ---- Stage 4b: Tag applier (opt-in writeback) ----
+        # Apply the auto-generated tag assignments to Shopify via
+        # SHOPIFY_UPDATE_PRODUCT, merging with each product's
+        # existing tags. Default OFF so existing callers stay in
+        # pure-recommendation mode; opt in via
+        # ``data.apply_tags == True``.
+        apply_results: list[dict[str, Any]] = []
+        if data.get("apply_tags") is True:
+            apply_results = apply_tags(
+                assignments=tag_assignments,
+                products=products,
+            )
+
         _write = write_tag_result(tags=tag_assignments, consistency_score=consistency_score)
 
         elapsed = time.monotonic() - start
@@ -95,6 +109,7 @@ class TagManagementEngine:
                 "taxonomy_updates": taxonomy_updates,
                 "optimization_suggestions": optimization_suggestions,
                 "consistency_score": consistency_score,
+                "apply_results": apply_results,
             },
             "meta": {"engine": self.ENGINE_NAME, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "elapsed_seconds": round(elapsed, 3)},
             "error": None,
