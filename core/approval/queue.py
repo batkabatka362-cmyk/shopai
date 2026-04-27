@@ -373,8 +373,8 @@ def reset_approval_queue() -> None:
         if _INSTANCE is not None:
             try:
                 _INSTANCE._conn.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("approval queue close failed: %s", exc)
         _INSTANCE = None
 
 
