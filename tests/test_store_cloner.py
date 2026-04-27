@@ -49,11 +49,23 @@ class TestExtractConfigParallel:
         assert config["discounts"] == []
 
     def test_runs_in_parallel(self, monkeypatch):
-        """Three 100ms calls should finish in ~100ms, not ~300ms."""
+        """Three 300ms calls should finish in ~300ms parallel, not ~900ms.
+
+        Per-call sleep bumped from 100ms → 300ms and threshold from
+        0.25s → 0.60s to give slow CI runners headroom while still
+        catching the regression case where parallelism breaks
+        completely (sequential 0.9s > 0.6s threshold).
+
+        Earlier 100ms / 0.25s combo was too tight: the parallel-
+        completion window was only 0.15s wide, so even a moderately
+        loaded CI runner could push the parallel run past 0.25s
+        and trigger a flaky failure that had nothing to do with
+        actual concurrency loss. The PR #46 incident.
+        """
         cloner = _make_cloner()
 
         def slow_get(shop_url, path, h):
-            time.sleep(0.1)
+            time.sleep(0.3)
             if path == "pages.json":
                 return {"pages": []}
             if path == "smart_collections.json":
@@ -64,8 +76,10 @@ class TestExtractConfigParallel:
         t0 = time.monotonic()
         cloner._extract_config("src.myshopify.com", "tok")
         elapsed = time.monotonic() - t0
-        # Sequential would be ~300ms; parallel should be close to 100ms.
-        assert elapsed < 0.25, f"not parallel enough: {elapsed:.3f}s"
+        # Sequential would be ~900ms; parallel should be ~300ms.
+        # 0.60s threshold gives 300ms of jitter headroom while
+        # still catching the no-parallelism regression.
+        assert elapsed < 0.60, f"not parallel enough: {elapsed:.3f}s"
 
 
 class TestClonePagesParallel:
@@ -107,10 +121,14 @@ class TestClonePagesParallel:
         assert cloner._clone_pages(pages, "t.myshopify.com", "tok") == 2
 
     def test_runs_in_parallel(self, monkeypatch):
+        # Same flake-resilience treatment as the extract_config
+        # test above: bump per-call sleep + threshold so slow CI
+        # runners don't trip the assertion when parallelism is
+        # actually working.
         cloner = _make_cloner()
 
         def slow_post(shop_url, path, h, payload):
-            time.sleep(0.1)
+            time.sleep(0.3)
             return {"page": {"id": 1}}
 
         monkeypatch.setattr(cloner, "_api_post", slow_post)
@@ -119,8 +137,10 @@ class TestClonePagesParallel:
         count = cloner._clone_pages(pages, "t.myshopify.com", "tok")
         elapsed = time.monotonic() - t0
         assert count == 5
-        # Sequential: 500ms. Parallel with 5 workers: ~100ms.
-        assert elapsed < 0.25, f"not parallel enough: {elapsed:.3f}s"
+        # Sequential: 1500ms. Parallel with 5 workers: ~300ms.
+        # 0.60s threshold catches the regression while tolerating
+        # ~300ms of CI jitter.
+        assert elapsed < 0.60, f"not parallel enough: {elapsed:.3f}s"
 
 
 class TestCloneDiscountsParallel:
