@@ -23,6 +23,7 @@ from .content_scorer import score_content
 from .sitemap_builder import build_sitemap
 from .memory_reader import read_past_optimizations
 from .memory_writer import write_optimization_result
+from engines._shopify_hydrator import hydrate
 
 
 class SearchOptimizationEngine:
@@ -63,6 +64,17 @@ class SearchOptimizationEngine:
         search_queries = data.get("search_queries", [])
         current_meta = data.get("current_meta", [])
         competitors = data.get("competitors", [])
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not products:
             return self._fail("Products list is required", 0.0)

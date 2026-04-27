@@ -20,6 +20,7 @@ from .tag_optimizer import optimize_tags
 from .consistency_checker import check_consistency
 from .memory_reader import read_past_tag_runs
 from .memory_writer import write_tag_result
+from engines._shopify_hydrator import hydrate
 
 
 class TagManagementEngine:
@@ -47,6 +48,17 @@ class TagManagementEngine:
         products = data.get("products", [])
         existing_tags = data.get("existing_tags", [])
         taxonomy = data.get("taxonomy", {})
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not products:
             return self._fail("Products list is required", 0.0)
