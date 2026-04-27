@@ -224,6 +224,32 @@ class ApprovalQueue:
                 ).fetchall()
         return [_row_to_action(r) for r in rows]
 
+    def list_executed(
+        self, *, engine: str | None = None, limit: int = 500,
+    ) -> list[ApprovalAction]:
+        """Return EXECUTED actions newest-first.
+
+        Used by the webhook feedback bridge to match incoming
+        Shopify events (orders, refunds) against engine actions
+        that already landed on the live store.
+        """
+        with _LOCK:
+            if engine:
+                rows = self._conn.execute(
+                    """SELECT * FROM pending_actions
+                       WHERE status = ? AND engine = ?
+                       ORDER BY decided_at DESC LIMIT ?""",
+                    (ApprovalStatus.EXECUTED.value, engine, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT * FROM pending_actions
+                       WHERE status = ?
+                       ORDER BY decided_at DESC LIMIT ?""",
+                    (ApprovalStatus.EXECUTED.value, limit),
+                ).fetchall()
+        return [_row_to_action(r) for r in rows]
+
     def approve(
         self,
         action_id: str,
