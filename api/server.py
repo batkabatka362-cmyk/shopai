@@ -92,6 +92,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/workflow": self._run_workflow,
             "/api/auto/cycle": self._auto_cycle,
             "/api/store/sync": self._store_sync,
+            "/api/intent": self._classify_intent,
         }
 
         # /api/pending-actions/<id>/approve  /api/pending-actions/<id>/reject
@@ -483,6 +484,50 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             })
             return
         self._json_response(200, {"status": "rejected", "action": action.to_dict()})
+
+    def _classify_intent(self, body: dict) -> None:
+        """POST /api/intent — classify free-text into an engine.
+
+        Body: ``{"text": "increase my margins", "language": "auto"}``
+        Returns the :class:`IntentResult` plus a suggested
+        ``next_step`` string the caller can use to construct a
+        follow-up ``/api/task`` request when the match is high
+        enough.
+        """
+        from core.brain.intent_router import (
+            classify_intent, list_supported_engines,
+        )
+
+        text = body.get("text") or body.get("query") or ""
+        language = str(body.get("language") or "auto")[:8]
+        if not isinstance(text, str) or not text.strip():
+            self._json_response(400, {
+                "error": "Missing 'text' field",
+                "hint": "POST {\"text\": \"<your request>\"}",
+                "supported_engines": list_supported_engines(),
+            })
+            return
+
+        result = classify_intent(text, language=language)
+        payload = result.to_dict()
+        if result.engine is not None:
+            # Any above-floor match earns a routing suggestion;
+            # confidence in the payload tells the caller how
+            # much to trust it.
+            payload["next_step"] = (
+                f"POST /api/task with task_type='{result.engine}' "
+                f"and the relevant params"
+            )
+            if result.confidence < 0.4:
+                payload["next_step"] += " (low confidence — verify before executing)"
+        else:
+            payload["next_step"] = (
+                "rephrase the request with a specific verb + noun "
+                "(e.g. 'create a 10% promo code', 'archive declining "
+                "products') or pick from supported_engines"
+            )
+            payload["supported_engines"] = list_supported_engines()
+        self._json_response(200, payload)
 
     def _agent_run(self, body: dict) -> None:
         """Run a task through an agent."""
