@@ -32,6 +32,7 @@ from .impact_estimator import estimate_impact
 from .change_validator import validate_change
 from .memory_reader import read_recent_changes
 from .memory_writer import write_pricing_change
+from engines._shopify_hydrator import hydrate
 
 
 class DynamicPricingEngine:
@@ -69,7 +70,19 @@ class DynamicPricingEngine:
             return self._fail("Input 'data' must be a dict", 0.0)
 
         products = data.get("products", [])
-        if not isinstance(products, list) or not products:
+        if not isinstance(products, list):
+            products = []
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        products = hydrate(
+            supplied=products,
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
+        if not products:
             return self._fail("At least one product is required", 0.0)
 
         market_signals = data.get("market_signals", {})

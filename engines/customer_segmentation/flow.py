@@ -33,6 +33,7 @@ from .segment_builder import build_segments
 from .strategy_mapper import map_strategies
 from .memory_reader import read_past_segmentations
 from .memory_writer import write_segmentation_result
+from engines._shopify_hydrator import hydrate
 
 
 class CustomerSegmentationEngine:
@@ -70,7 +71,19 @@ class CustomerSegmentationEngine:
             return self._fail("Input 'data' must be a dict", 0.0)
 
         customers = data.get("customers", [])
-        if not isinstance(customers, list) or not customers:
+        if not isinstance(customers, list):
+            customers = []
+        # Auto-hydrate customers from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        customers = hydrate(
+            supplied=customers,
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
+        if not customers:
             return self._fail("No customer data provided", 0.0)
 
         # ---- Stage 1: Read past segmentations (non-blocking) ----
