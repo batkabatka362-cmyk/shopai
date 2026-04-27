@@ -35,6 +35,7 @@ from .performance_predictor import predict_performance
 from .campaign_assembler import assemble_campaign
 from .memory_writer import write_to_memory
 from .memory_reader import find_past_campaigns
+from engines._shopify_hydrator import hydrate
 
 
 class EmailMarketingEngine:
@@ -86,6 +87,23 @@ class EmailMarketingEngine:
         audience_segments: list[str] = parsed["audience_segments"]
         store_name: str = parsed["store_name"]
         discount: dict[str, Any] = parsed["discount"]
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. products is auxiliary (audience_segments is
+        # gated), but feeds content planning + subject/body
+        # generation. Re-read hydrate kwargs from raw input since
+        # _validate_input doesn't carry them through.
+        raw_data = (
+            input_payload.get("data", {})
+            if isinstance(input_payload, dict) else {}
+        )
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=raw_data.get("hydrate_limit"),
+            query=raw_data.get("hydrate_query"),
+        )
 
         # Stage 0.5: Check memory for past campaigns
         prior = find_past_campaigns(goal, min_confidence=0.3, max_results=3)
