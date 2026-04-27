@@ -23,6 +23,7 @@ from .content_scorer import score_content
 from .sitemap_builder import build_sitemap
 from .memory_reader import read_past_optimizations
 from .memory_writer import write_optimization_result
+from .seo_applier import apply_meta
 from engines._shopify_hydrator import hydrate
 
 
@@ -133,6 +134,19 @@ class SearchOptimizationEngine:
             )
         sitemap = sitemap_result.get("sitemap", [])
 
+        # ---- Stage 5b: SEO meta applier (opt-in writeback) ----
+        # Push the proposed meta titles + descriptions into Shopify
+        # via SHOPIFY_UPDATE_PRODUCT.seo. Default OFF — opt in via
+        # ``data.apply_seo == True``. The current_meta input
+        # doubles as the diff base: recommendations matching the
+        # current value short-circuit (no API call).
+        apply_results: list[dict[str, Any]] = []
+        if data.get("apply_seo") is True:
+            apply_results = apply_meta(
+                recommendations=meta_recommendations,
+                current_meta=current_meta,
+            )
+
         # ---- Stage 6: Memory Writer (non-fatal) ----
         _write_result = write_optimization_result(
             keyword_analysis=keyword_analysis,
@@ -151,6 +165,7 @@ class SearchOptimizationEngine:
                 "meta_recommendations": meta_recommendations,
                 "content_scores": content_scores,
                 "sitemap": sitemap,
+                "apply_results": apply_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
