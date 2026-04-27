@@ -9178,6 +9178,64 @@ class TestShopifyProductsAdapter:
         assert result.data["product"]["title"] == "Renamed"
         assert captured["input"]["id"] == "gid://shopify/Product/1"
 
+    def test_update_accepts_seo_fields(self):
+        # Phase 7.3 — extend the friendly form with SEO support
+        # (search_optimization engine uses these flat keys; Shopify
+        # nests them under ``seo: { title, description }``).
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"productUpdate": {
+                "product": {"id": v["input"]["id"], "title": "X"},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_UPDATE_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "seo_title": "Best Widget for Camping",
+                "seo_description": "Durable widget — top pick.",
+            })
+        assert result.ok
+        # Friendly form → nested Shopify SEOInput.
+        assert captured["input"]["seo"] == {
+            "title": "Best Widget for Camping",
+            "description": "Durable widget — top pick.",
+        }
+
+    def test_update_seo_title_only(self):
+        # Just one SEO field is fine — the other goes unset.
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"productUpdate": {
+                "product": {"id": v["input"]["id"], "title": "X"},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(Capability.SHOPIFY_UPDATE_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "seo_title": "Just the title",
+            })
+        assert captured["input"]["seo"] == {"title": "Just the title"}
+
+    def test_update_invalid_seo_title_rejected(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_UPDATE_PRODUCT, {
+            "id": "gid://shopify/Product/1",
+            "seo_title": ["not", "a", "string"],
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
     # ── Delete ───────────────────────────────────
 
     def test_delete_requires_id(self):

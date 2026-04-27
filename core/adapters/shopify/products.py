@@ -514,6 +514,31 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
                 )
             out["handle"] = handle.strip()
 
+        # SEO fields. Shopify's ProductInput has a nested
+        # ``seo: SEOInput { title, description }`` shape; the
+        # friendly form accepts the flat ``seo_title`` /
+        # ``seo_description`` keys (matches search_optimization
+        # engine output).
+        seo_title = params.get("seo_title")
+        seo_description = params.get("seo_description")
+        if seo_title is not None or seo_description is not None:
+            seo: dict[str, Any] = {}
+            if seo_title is not None:
+                if not isinstance(seo_title, str):
+                    raise AdapterValidationError(
+                        self.name, "'seo_title' must be a string",
+                    )
+                seo["title"] = seo_title.strip()
+            if seo_description is not None:
+                if not isinstance(seo_description, str):
+                    raise AdapterValidationError(
+                        self.name,
+                        "'seo_description' must be a string",
+                    )
+                seo["description"] = seo_description.strip()
+            if seo:
+                out["seo"] = seo
+
         return out
 
     def _build_variant_input(
