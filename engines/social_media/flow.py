@@ -37,6 +37,7 @@ from .performance_analyzer import analyze_performance
 from .trend_tracker import track_trends
 from .memory_writer import write_to_memory
 from .memory_reader import find_past_performance
+from engines._shopify_hydrator import hydrate
 
 
 class SocialMediaEngine:
@@ -89,6 +90,23 @@ class SocialMediaEngine:
         goal: str = parsed["goal"]
         posting_frequency: str = parsed["posting_frequency"]
         brand_voice: str = str(brand.get("voice", "professional")).strip()
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. products is auxiliary (platforms+brand are
+        # gated), but feeds content calendar + post creator. Re-
+        # read hydrate kwargs from raw input since _validate_input
+        # doesn't carry them through.
+        raw_data = (
+            input_payload.get("data", {})
+            if isinstance(input_payload, dict) else {}
+        )
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=raw_data.get("hydrate_limit"),
+            query=raw_data.get("hydrate_query"),
+        )
 
         # Stage 0.5: Check memory for past performance
         prior = find_past_performance(goal, min_confidence=0.3, max_results=3)

@@ -23,6 +23,7 @@ from .navigation_builder import build_navigation
 from .mobile_optimizer import optimize_mobile
 from .memory_reader import read_past_designs
 from .memory_writer import write_design_result
+from engines._shopify_hydrator import hydrate
 
 
 class StoreDesignEngine:
@@ -62,6 +63,17 @@ class StoreDesignEngine:
         brand = data.get("brand", {})
         products = data.get("products", [])
         analytics = data.get("analytics", {})
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. products is auxiliary (brand is gated), but
+        # feeds layout / color / navigation builders.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not isinstance(brand, dict):
             return self._fail("Brand info is required", 0.0)
