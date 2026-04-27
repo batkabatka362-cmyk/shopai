@@ -22,6 +22,7 @@ from .ratio_tracker import track_ratio
 from .alert_manager import manage_alerts
 from .memory_reader import read_past_ltv_cac
 from .memory_writer import write_ltv_cac_result
+from engines._shopify_hydrator import hydrate
 
 
 class LtvCacDashboardEngine:
@@ -50,6 +51,27 @@ class LtvCacDashboardEngine:
         orders = data.get("orders", [])
         marketing_spend = data.get("marketing_spend", [])
         channels = data.get("channels", [])
+
+        # Auto-hydrate customers + orders from Shopify when caller
+        # left both lists empty. Pre-existing failure semantics
+        # preserved: empty supplied AND empty hydrated → standard
+        # "Customers or orders list is required" error.
+        hydrate_limit = data.get("hydrate_limit")
+        hydrate_query = data.get("hydrate_query")
+        customers = hydrate(
+            supplied=customers if isinstance(customers, list) else [],
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
+        orders = hydrate(
+            supplied=orders if isinstance(orders, list) else [],
+            capability_name="SHOPIFY_FETCH_ORDERS",
+            list_field="orders",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
 
         if not customers and not orders:
             return self._fail("Customers or orders list is required", 0.0)
