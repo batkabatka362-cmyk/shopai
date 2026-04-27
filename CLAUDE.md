@@ -573,6 +573,73 @@ The engine-layer pattern lives at
 `hydrate_one()` (singular-dict). Per-engine wrappers are now thin
 — they just pick the right `capability_name` and `list_field`.
 
+Phase 6 (engine-side writebacks) — **complete**:
+Phase 5 closed the *read* loop (engines auto-fetch input data).
+Phase 6 closes the *write* loop — recommender engines now
+perform actual Shopify mutations when explicitly opted in. Five
+engines, five PRs:
+
+- PR #43 — `loyalty` mints per-customer discount codes from
+  tier rewards. Wraps `engines._recovery_codes.mint_recovery_code`
+  in `engines/loyalty/discount_minter.py`. Opt-in via
+  `data.apply_rewards = True`.
+- PR #44 — `discount_strategy` mints storewide promo codes
+  (multi-use, customer-reusable). This required extending
+  `mint_recovery_code` with `usage_limit` / `applies_once_per_customer`
+  params (defaults preserved → all earlier minters unchanged).
+  Wraps in `engines/discount_strategy/discount_minter.py`. Opt-in
+  via `data.apply_discount = True`. Three safety guardrails:
+  type must be `percentage_off`, `cannibalization_risk != "high"`,
+  configurable confidence floor.
+- PR #45 — `tag_management` applies auto-generated tags via
+  `SHOPIFY_UPDATE_PRODUCT` with a MERGED tag list (existing +
+  new, dedup case-insensitive). Critical because productUpdate
+  REPLACES tags — passing only new would wipe existing.
+  `engines/tag_management/tag_applier.py`. Opt-in via
+  `data.apply_tags = True`.
+- PR #46 — `dynamic_pricing` applies approved price adjustments
+  via `SHOPIFY_UPDATE_VARIANTS`. The change_validator stage
+  already gates each adjustment's `approved` flag; the writer
+  re-checks it. Required adding `approved` to the engine's
+  per-product output. `engines/dynamic_pricing/price_applier.py`.
+  Known limitation: hydrator-fetched products from
+  `SHOPIFY_LIST_PRODUCTS` don't include variants — callers
+  wanting writeback need to pre-fetch via `SHOPIFY_GET_PRODUCT`.
+- PR #47 — `affiliate` pays commissions as Shopify gift cards
+  (different shape — gift cards, not discount codes — since
+  affiliate output is a payment OWED). Joins commissions to
+  the partners list for email / customer_id lookup, calls
+  `SHOPIFY_CREATE_GIFT_CARD` with `initial_value=commission_amount`.
+  `engines/affiliate/commission_payer.py`. Opt-in via
+  `data.apply_commissions = True`.
+
+The pattern stabilised across the five wireups:
+
+- Default OFF — `data.apply_X = True` opts in. Existing
+  callers keep their pure-recommendation behavior.
+- Output gains a results field (`minted_codes` / `apply_results`
+  / `payout_results`) — empty list when not opted in.
+- Each writer documents 5+ skip modes (router unavailable,
+  validation gate, no variants in input, partner not in input,
+  adapter rejection, adapter raise) so the engine output
+  explains what was written and what was skipped, not just
+  a top-level success/failure.
+- Per-engine helpers stay thin (~150-250 lines); shared logic
+  (mint helpers, token derivation) lives in
+  `engines/_recovery_codes.py`.
+
+**Known integration gap.** Phase 6 writebacks call
+`router.execute(...)` directly, bypassing `execution/smart_executor.py`.
+This means actions don't go through the autonomous loop's
+learning feedback (`MemoryIntelligence`, `DataArchitecture`,
+`LearningLoop`). The system can mint a 10% loyalty code but
+won't learn whether that code drove redemptions. Future
+integration: route Phase 6 writebacks through `SmartExecutor`
+so action→predicted→actual→score→memory becomes the unified
+write path. Tracked as Phase 8 work — Phase 7 was scoped to
+wiring more engines (Phase 6's pattern × more recommender
+engines: product_optimization, search_optimization, etc.).
+
 ## Reading order for a fresh session
 
 1. This file.
