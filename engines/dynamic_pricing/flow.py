@@ -32,6 +32,7 @@ from .impact_estimator import estimate_impact
 from .change_validator import validate_change
 from .memory_reader import read_recent_changes
 from .memory_writer import write_pricing_change
+from .price_applier import apply_price_changes
 from engines._shopify_hydrator import hydrate
 
 
@@ -107,6 +108,23 @@ class DynamicPricingEngine:
             if change_pcts else 0.0
         )
 
+        # ---- Apply price changes (opt-in writeback) ----
+        # Convert approved adjustments into actual Shopify variant
+        # price updates. Default OFF so existing callers stay in
+        # pure-recommendation mode; opt in via
+        # ``data.apply_changes == True``. The applier requires the
+        # input products to carry their ``variants`` list (with
+        # variant GIDs) — hydrator-fetched products from
+        # SHOPIFY_LIST_PRODUCTS DON'T include variants by default,
+        # so callers wanting writeback should pre-fetch via
+        # SHOPIFY_GET_PRODUCT or supply pre-enriched products.
+        apply_results: list[dict[str, Any]] = []
+        if data.get("apply_changes") is True:
+            apply_results = apply_price_changes(
+                adjustments=adjustments,
+                products=products,
+            )
+
         elapsed = time.monotonic() - start
 
         return {
@@ -118,6 +136,7 @@ class DynamicPricingEngine:
                     "avg_change_pct": avg_change_pct,
                     "estimated_revenue_impact": round(total_revenue_impact, 2),
                 },
+                "apply_results": apply_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
@@ -242,6 +261,7 @@ class DynamicPricingEngine:
                 "new_price": round(new_price, 2),
                 "change_pct": round(change_pct, 2),
                 "reason": reason,
+                "approved": bool(approved),
             },
             "revenue_impact": revenue_change,
         }
