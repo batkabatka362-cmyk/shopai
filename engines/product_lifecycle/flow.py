@@ -23,7 +23,10 @@ from .trend_projector import project_trends
 from .action_advisor import advise_actions
 from .memory_reader import read_past_lifecycles
 from .memory_writer import write_lifecycle_result
-from .lifecycle_applier import archive_declining_products
+from .lifecycle_applier import (
+    archive_declining_products,
+    enqueue_archives_for_approval,
+)
 from engines._shopify_hydrator import hydrate
 
 
@@ -156,21 +159,36 @@ class ProductLifecycleEngine:
             })
 
         # ---- Stage 6b: Archive declining products (opt-in writeback) ----
-        # For lifecycle entries flagged as ``decline`` with low
-        # velocity, archive the product via SHOPIFY_UPDATE_PRODUCT.
-        # Default OFF — this is a destructive change to product
-        # visibility and needs explicit opt-in.
+        # First DESTRUCTIVE writeback wired through the approval
+        # queue. Default OFF; two opt-in modes:
+        #
+        #   data.apply_archives=True + data.require_approval=False
+        #     → archive immediately (legacy direct path)
+        #   data.apply_archives=True + data.require_approval=True
+        #     → enqueue each archive proposal to core.approval;
+        #       merchant approves via /api/pending-actions before
+        #       any product visibility change
+        #
+        # Both branches share the same triple-gate (stage / velocity
+        # / confidence). A wrongly-archived product hides from the
+        # storefront until manually un-archived, so the queue gating
+        # is especially valuable for this engine.
         archive_results: list[dict[str, Any]] = []
         if data.get("apply_archives") is True:
-            archive_results = archive_declining_products(
-                lifecycle=lifecycle,
-                min_confidence=float(
-                    data.get("min_archive_confidence", 0.0),
-                ),
-                velocity_floor=float(
-                    data.get("archive_velocity_floor", 0.5),
-                ),
-            )
+            min_conf = float(data.get("min_archive_confidence", 0.0))
+            vel_floor = float(data.get("archive_velocity_floor", 0.5))
+            if data.get("require_approval") is True:
+                archive_results = enqueue_archives_for_approval(
+                    lifecycle=lifecycle,
+                    min_confidence=min_conf,
+                    velocity_floor=vel_floor,
+                )
+            else:
+                archive_results = archive_declining_products(
+                    lifecycle=lifecycle,
+                    min_confidence=min_conf,
+                    velocity_floor=vel_floor,
+                )
 
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_lifecycle_result(lifecycle=lifecycle)
