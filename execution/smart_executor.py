@@ -50,6 +50,7 @@ class SmartExecutor:
         self._data_arch = None
         self._learning_loop = None
         self._ab_testing = None
+        self._promotion_tracker = None
         self._execution_log: list[dict[str, Any]] = []
         self._simulation_count = 0
         self._live_count = 0
@@ -79,6 +80,18 @@ class SmartExecutor:
                 self._ab_testing = get_ab_testing()
             except Exception:
                 pass
+        if not self._promotion_tracker:
+            try:
+                from execution.promotion_tracker import (
+                    get_promotion_tracker,
+                )
+                self._promotion_tracker = get_promotion_tracker()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "promotion_tracker init failed: %s "
+                    "(falling back to base risk-rule mode selection)",
+                    exc,
+                )
 
     # == MAIN EXECUTION ============================================
 
@@ -196,7 +209,38 @@ class SmartExecutor:
 
     def _determine_mode(self, action_type: str, confidence: float,
                         memory: dict) -> str:
-        """Determine execution mode based on risk, confidence, and history."""
+        """Pick execution mode from risk, confidence, history, and the
+        :class:`PromotionTracker` ladder.
+
+        The risk-rule pass below produces a *base* mode derived from
+        risk level + confidence + past memory. The promotion tracker
+        produces an independent *earned* tier built from consecutive
+        successful executions of THIS action type.
+
+        Final mode = ``min(base, earned)`` along the
+        ``simulate < dry_run < live`` ladder. The tracker can never
+        push past the base — a high-risk action without a
+        confidence floor stays in ``simulate`` even after 100
+        successes — but it *can* pull ``dry_run`` up to ``live``
+        once trust accumulates.
+        """
+        base = self._base_mode_from_risk(
+            action_type, confidence, memory,
+        )
+        earned = (
+            self._promotion_tracker.current_tier(action_type)
+            if self._promotion_tracker is not None
+            else "simulate"
+        )
+        return _min_tier(base, earned)
+
+    def _base_mode_from_risk(
+        self, action_type: str, confidence: float, memory: dict,
+    ) -> str:
+        """Risk-aware ceiling — the original mode-determination
+        rules carved out as a helper so the tracker can compose
+        with them.
+        """
         risk_info = RISK_LEVELS.get(action_type, ("medium", 0.7))
         risk_level = risk_info[0]
         min_confidence = risk_info[1]
@@ -209,29 +253,37 @@ class SmartExecutor:
         if memory.get("total_memories", 0) == 0:
             return "simulate"
 
-        # Rule 3: High risk → simulate unless very confident with history
+        # Rule 3: High risk → ceiling is dry_run; needs 3+ memory
+        # successes plus confidence above the action-specific floor.
         if risk_level == "high":
             past_successes = len(memory.get("best_events", []))
             if past_successes < 3 or confidence < min_confidence:
                 return "simulate"
-            return "dry_run"  # Even high-risk with history gets dry_run, not live
+            return "dry_run"
 
         # Rule 4: Past failures for this action → simulate
         failures = memory.get("failures", [])
-        recent_failures = [f for f in failures if f.get("action") == action_type]
+        recent_failures = [
+            f for f in failures if f.get("action") == action_type
+        ]
         if recent_failures:
             return "simulate"
 
-        # Rule 5: Medium risk with good confidence
+        # Rule 5: Medium risk with good confidence — ceiling
+        # depends on past success count.
         if risk_level == "medium" and confidence >= min_confidence:
             past_successes = len(memory.get("best_events", []))
             if past_successes >= 3:
-                return "dry_run"
-            return "simulate"
+                # Ceiling lifts to live once history accumulates;
+                # the promotion tracker gates the actual transition.
+                return "live"
+            return "dry_run"
 
-        # Rule 6: Low risk with any confidence
+        # Rule 6: Low risk with any confidence — ceiling lifts to
+        # live; the promotion tracker still requires consecutive
+        # successes before LIVE actually fires.
         if risk_level == "low" and confidence >= min_confidence:
-            return "simulate"  # Even low risk starts with simulate
+            return "live"
 
         return "simulate"
 
@@ -493,6 +545,22 @@ class SmartExecutor:
                 score=score,
             )
 
+        # Feed the promotion ladder. Pure simulations (mode ==
+        # "simulate") don't drive promotions — they're synthetic
+        # by definition; only DRY_RUN validations and LIVE writes
+        # earn trust. A score of 1.0-2.0 is a failure regardless of
+        # mode and resets the ladder.
+        if self._promotion_tracker is not None and action_type:
+            try:
+                if score <= 2.0:
+                    self._promotion_tracker.record_failure(action_type)
+                elif mode in ("dry_run", "live") and actual.get("success"):
+                    self._promotion_tracker.record_success(action_type)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "promotion_tracker outcome record failed: %s", exc,
+                )
+
     # == STATS =====================================================
 
     def get_stats(self) -> dict[str, Any]:
@@ -510,6 +578,25 @@ class SmartExecutor:
             },
             "by_type": {},
         }
+
+
+# Tier-ladder helper used by ``_determine_mode``. Kept at module
+# scope (rather than as a method) so the rule logic is easy to
+# unit-test in isolation.
+_TIER_RANK = {"simulate": 0, "dry_run": 1, "live": 2}
+
+
+def _min_tier(a: str, b: str) -> str:
+    """Return the more conservative of two tier strings.
+
+    The risk-rule pass and the promotion tracker each compute a
+    tier; the executor picks the lower (more cautious) of the
+    two. Unknown labels collapse to ``simulate`` so a typo can't
+    accidentally promote.
+    """
+    ra = _TIER_RANK.get(a, 0)
+    rb = _TIER_RANK.get(b, 0)
+    return a if ra <= rb else b
 
 
 # Singleton
