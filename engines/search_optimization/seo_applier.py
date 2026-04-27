@@ -190,6 +190,130 @@ def apply_meta(
     return results
 
 
+def enqueue_meta_for_approval(
+    recommendations: list[dict[str, Any]],
+    current_meta: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Park SEO meta recommendations in the approval queue.
+
+    Per-engine alternative to :func:`apply_meta` — selected by
+    the flow when ``data.require_approval=True``. Same upfront
+    filters (must have a product_id, at least one of
+    title/description must differ from the current value);
+    surviving recommendations each enqueue one pending action.
+
+    Returns the same shape as :func:`apply_meta` plus a
+    ``pending_action_id`` field on successfully-queued entries.
+    Skip semantics match the direct path so the engine output's
+    downstream consumers don't need to special-case the approval
+    branch.
+    """
+    if not isinstance(recommendations, list) or not recommendations:
+        return []
+
+    current_by_id = _index_current_meta(current_meta)
+
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue unavailable: %s", exc)
+        return [
+            {
+                "product_id": str(r.get("product_id", "")),
+                "applied": False,
+                "title_updated": False,
+                "description_updated": False,
+                "error": "approval_queue_unavailable",
+                "pending_action_id": None,
+            }
+            for r in recommendations
+        ]
+
+    results: list[dict[str, Any]] = []
+    for rec in recommendations:
+        if not isinstance(rec, dict):
+            continue
+        pid = str(rec.get("product_id", "")).strip()
+        if not pid:
+            continue
+
+        proposed_title = str(rec.get("title", "")).strip()
+        proposed_desc = str(rec.get("description", "")).strip()
+
+        current = current_by_id.get(pid, {})
+        title_updated = (
+            bool(proposed_title)
+            and proposed_title != str(current.get("title", "")).strip()
+        )
+        desc_updated = (
+            bool(proposed_desc)
+            and proposed_desc !=
+            str(current.get("description", "")).strip()
+        )
+
+        if not title_updated and not desc_updated:
+            results.append({
+                "product_id": pid,
+                "applied": False,
+                "title_updated": False,
+                "description_updated": False,
+                "error": "no_changes",
+                "pending_action_id": None,
+            })
+            continue
+
+        change_parts = []
+        if title_updated:
+            change_parts.append(f"title → \"{proposed_title[:60]}\"")
+        if desc_updated:
+            desc_preview = proposed_desc[:80]
+            change_parts.append(f"description → \"{desc_preview}\"")
+        narrative = (
+            f"Update SEO meta for {pid}: " + "; ".join(change_parts)
+        )
+        params = {
+            "product_id": pid,
+            "title_updated": title_updated,
+            "description_updated": desc_updated,
+            "proposed_title": proposed_title if title_updated else None,
+            "proposed_description": proposed_desc if desc_updated else None,
+        }
+
+        try:
+            action = queue.enqueue(
+                engine="search_optimization",
+                action_type="apply_seo_meta",
+                capability="SHOPIFY_UPDATE_PRODUCT",
+                params=params,
+                narrative=narrative,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "enqueue raised for %s: %s", pid, exc,
+            )
+            results.append({
+                "product_id": pid,
+                "applied": False,
+                "title_updated": False,
+                "description_updated": False,
+                "error": f"enqueue_raised: {exc}",
+                "pending_action_id": None,
+            })
+            continue
+
+        results.append({
+            "product_id": pid,
+            "applied": False,
+            "title_updated": title_updated,
+            "description_updated": desc_updated,
+            "error": "queued",
+            "pending_action_id": action.id,
+        })
+
+    return results
+
+
 # ── Helpers ────────────────────────────────────────────────────
 
 
