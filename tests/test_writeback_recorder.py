@@ -12,12 +12,29 @@ Coverage:
      happy path, gracefully no-ops when each system is
      unavailable, never raises.
   3. Failure pathway — score ≤ 2.0 triggers ``record_failure``.
+
+Note on the test-environment guard:
+The recorder short-circuits when ``PYTEST_CURRENT_TEST`` is set
+(production-only path) — see the docstring on
+``_is_test_environment``. The tests below patch that guard to
+return False so the fan-out behaviour is exercised under pytest.
 """
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _disable_test_env_guard():
+    """Bypass the production-only ``PYTEST_CURRENT_TEST`` short-circuit
+    so recorder tests can verify the actual fan-out path."""
+    with patch(
+        "engines._writeback_recorder._is_test_environment",
+        return_value=False,
+    ):
+        yield
 
 
 # ─── _compute_score ──────────────────────────────────────────────
@@ -216,6 +233,55 @@ class TestRecordWritebackFanout:
 
 
 # ─── Graceful no-op when systems are unavailable ─────────────────
+
+
+class TestEnvironmentGuard:
+    """The PYTEST_CURRENT_TEST short-circuit is the boundary
+    between unit-test pollution and real production recording.
+    These tests run WITHOUT the autouse fixture's bypass."""
+
+    def test_pytest_env_var_short_circuits_fan_out(
+        self, monkeypatch,
+    ):
+        # Re-enable the guard for this one test.
+        monkeypatch.setattr(
+            "engines._writeback_recorder._is_test_environment",
+            lambda: True,
+        )
+
+        from engines._writeback_recorder import record_writeback
+
+        mock_intel = MagicMock()
+        mock_arch = MagicMock()
+        mock_loop = MagicMock()
+
+        with patch(
+            "engines._writeback_recorder._get_memory_intel",
+            return_value=mock_intel,
+        ), patch(
+            "engines._writeback_recorder._get_data_arch",
+            return_value=mock_arch,
+        ), patch(
+            "engines._writeback_recorder._get_learning_loop",
+            return_value=mock_loop,
+        ):
+            record_writeback(
+                engine="loyalty",
+                action_type="mint_loyalty_code",
+                capability="SHOPIFY_CREATE_DISCOUNT",
+                params={},
+                success=False,
+                error="adapter_failed: scope_missing",
+            )
+
+        # Critical: NONE of the three systems received the
+        # synthetic test failure. This is what prevents test
+        # fixtures from accumulating in failure_analysis +
+        # auto-generating bogus avoidance rules.
+        mock_intel.create_from_decision.assert_not_called()
+        mock_intel.record_failure.assert_not_called()
+        mock_arch.record_action.assert_not_called()
+        mock_loop.learn.assert_not_called()
 
 
 class TestGracefulNoOp:
