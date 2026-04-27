@@ -23,7 +23,7 @@ from .program_designer import design_program
 from .points_calculator import calculate_points
 from .tier_manager import manage_tiers
 from .reward_recommender import recommend_rewards
-from .discount_minter import mint_loyalty_code
+from .discount_minter import enqueue_loyalty_for_approval, mint_loyalty_code
 from .memory_reader import read_past_loyalty
 from .memory_writer import write_loyalty_result
 from engines._shopify_hydrator import hydrate
@@ -149,13 +149,23 @@ class LoyaltyEngine:
             )
         reward_recommendations = reward_result.get("recommendations", [])
 
-        # ---- Stage 5b: Discount-code minter (opt-in writeback) ----
-        # Convert the top discount-type reward per customer into a
-        # real Shopify discount code. Default OFF so existing
-        # callers stay in pure-recommendation mode; opt in via
-        # ``data.apply_rewards == True``.
+        # ---- Stage 5b: Discount-code writeback (opt-in) ----
+        # Default OFF so existing callers stay in pure-
+        # recommendation mode. Two opt-in modes:
+        #
+        #   data.apply_rewards=True + data.require_approval=False
+        #     → mint immediately (legacy behaviour)
+        #   data.apply_rewards=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves via
+        #       /api/pending-actions before any Shopify mutation
+        #
+        # Both paths share the same upfront guardrails (discount
+        # type / parseable percentage); a guardrail-rejected
+        # proposal is silently skipped either way.
         minted_codes: list[dict[str, Any]] = []
+        pending_actions: list[dict[str, Any]] = []
         if data.get("apply_rewards") is True:
+            require_approval = data.get("require_approval") is True
             for rec in reward_recommendations:
                 cid = str(rec.get("customer_id", ""))
                 if not cid:
@@ -164,6 +174,20 @@ class LoyaltyEngine:
                     rec.get("recommended_rewards", []),
                 )
                 if top_discount is None:
+                    continue
+                if require_approval:
+                    queued = enqueue_loyalty_for_approval(
+                        customer_id=cid,
+                        reward=top_discount,
+                        program_config=program_config,
+                    )
+                    if queued is not None:
+                        pending_actions.append({
+                            "customer_id": cid,
+                            "reward": top_discount.get("reward", ""),
+                            "pending_action_id": queued["pending_action_id"],
+                            "narrative": queued["narrative"],
+                        })
                     continue
                 minted = mint_loyalty_code(
                     customer_id=cid,
@@ -213,6 +237,7 @@ class LoyaltyEngine:
                 "reward_recommendations": reward_recommendations,
                 "program_health": program_health,
                 "minted_codes": minted_codes,
+                "pending_actions": pending_actions,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
