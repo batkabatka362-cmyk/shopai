@@ -23,6 +23,7 @@ from .lead_time_estimator import estimate_lead_times
 from .restock_recommender import recommend_restocks
 from .memory_reader import read_past_predictions
 from .memory_writer import write_prediction_result
+from engines._shopify_hydrator import hydrate
 
 
 class StockPredictionEngine:
@@ -63,6 +64,17 @@ class StockPredictionEngine:
         orders_history = data.get("orders_history", [])
         suppliers = data.get("suppliers", [])
         current_stock = data.get("current_stock", {})
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
 
         if not products:
             return self._fail("Product list is required", 0.0)

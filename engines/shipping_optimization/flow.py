@@ -30,6 +30,7 @@ from .zone_mapper import map_zones
 from .strategy_recommender import recommend_strategy
 from .memory_reader import read_past_shipping, compute_input_hash
 from .memory_writer import write_shipping_result
+from engines._shopify_hydrator import hydrate
 
 
 class ShippingOptimizationEngine:
@@ -67,6 +68,18 @@ class ShippingOptimizationEngine:
             return self._fail("Input 'data' must be a dict", 0.0)
 
         products = data.get("products", [])
+
+        # Auto-hydrate products from Shopify when caller left the
+        # list empty. Pre-existing failure semantics preserved:
+        # empty supplied AND empty hydrated → standard error.
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=data.get("hydrate_limit"),
+            query=data.get("hydrate_query"),
+        )
+
         if not products:
             return self._fail("At least one product is required", 0.0)
 
