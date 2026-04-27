@@ -32,7 +32,10 @@ from .quality_checker import check_quality
 from .variation_generator import generate_variations
 from .memory_reader import read_past_content
 from .memory_writer import write_content_result
-from .content_applier import apply_description
+from .content_applier import (
+    apply_description,
+    enqueue_description_for_approval,
+)
 
 
 class ContentGenerationEngine:
@@ -196,25 +199,38 @@ class ContentGenerationEngine:
         # ---- Stage 10b: Description writeback (opt-in) ----
         # When ``data.apply_content == True`` AND content_type is
         # ``product_description``, push the generated body into
-        # SHOPIFY_UPDATE_PRODUCT.descriptionHtml. Default OFF —
-        # this overwrites existing product copy and needs explicit
-        # opt-in. Optional ``min_seo_score`` /
-        # ``min_readability_score`` floors gate on quality.
+        # SHOPIFY_UPDATE_PRODUCT.descriptionHtml. Two opt-in modes:
+        #
+        #   data.apply_content=True + data.require_approval=False
+        #     → write description immediately (legacy direct path)
+        #   data.apply_content=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves via
+        #       /api/pending-actions before the
+        #       SHOPIFY_UPDATE_PRODUCT.descriptionHtml call lands
+        #
+        # Description rewrites are DESTRUCTIVE — they overwrite
+        # existing copy without an automatic backup. Optional
+        # ``min_apply_seo_score`` / ``min_apply_readability_score``
+        # floors gate on quality identically in both branches.
         apply_result: dict[str, Any] | None = None
         if data.get("apply_content") is True:
-            apply_result = apply_description(
-                product=product,
-                content_block=content_block,
-                content_type=analysis.get("content_type", content_type),
-                seo_score=seo_score,
-                readability_score=readability_score,
-                min_seo_score=float(
+            apply_kwargs = {
+                "product": product,
+                "content_block": content_block,
+                "content_type": analysis.get("content_type", content_type),
+                "seo_score": seo_score,
+                "readability_score": readability_score,
+                "min_seo_score": float(
                     data.get("min_apply_seo_score", 0.0),
                 ),
-                min_readability_score=float(
+                "min_readability_score": float(
                     data.get("min_apply_readability_score", 0.0),
                 ),
-            )
+            }
+            if data.get("require_approval") is True:
+                apply_result = enqueue_description_for_approval(**apply_kwargs)
+            else:
+                apply_result = apply_description(**apply_kwargs)
 
         # ---- Stage 11: Memory Writer (non-fatal) ----
         _write_result = write_content_result(

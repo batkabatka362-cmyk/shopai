@@ -168,6 +168,105 @@ def apply_description(
     return base_result
 
 
+def enqueue_description_for_approval(
+    *,
+    product: dict[str, Any],
+    content_block: dict[str, Any],
+    content_type: str,
+    seo_score: float = 0.0,
+    readability_score: float = 0.0,
+    min_seo_score: float = 0.0,
+    min_readability_score: float = 0.0,
+) -> dict[str, Any]:
+    """Park a generated description in the approval queue.
+
+    Per-engine alternative to :func:`apply_description` —
+    selected by the flow when ``data.require_approval=True``.
+    Same upfront filters as the direct path; on success returns
+    ``{product_id, applied=False, body_length, error="queued",
+    pending_action_id}``. The merchant's approval page will see
+    a body-length / SEO / readability summary in the narrative
+    so they can sanity-check without scrolling through the full
+    HTML.
+
+    Description rewrites overwrite existing copy, so the
+    queue gating is especially valuable here — a regrettable
+    rewrite is hard to roll back without the merchant's
+    pre-existing description handy.
+    """
+    product_id = str(product.get("id", "")).strip()
+    body = str(content_block.get("body", "")).strip()
+    body_length = len(body)
+
+    base_result: dict[str, Any] = {
+        "product_id": product_id,
+        "applied": False,
+        "body_length": body_length,
+        "error": None,
+        "pending_action_id": None,
+    }
+
+    if content_type not in _APPLIABLE_CONTENT_TYPES:
+        base_result["error"] = "content_type_not_appliable"
+        return base_result
+    if not product_id:
+        base_result["error"] = "product_id_missing"
+        return base_result
+    if not body:
+        base_result["error"] = "body_empty"
+        return base_result
+    if seo_score < min_seo_score:
+        base_result["error"] = "below_min_seo_score"
+        return base_result
+    if readability_score < min_readability_score:
+        base_result["error"] = "below_min_readability_score"
+        return base_result
+
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue unavailable: %s", exc)
+        base_result["error"] = "approval_queue_unavailable"
+        return base_result
+
+    headline = str(content_block.get("headline", "")).strip()
+    narrative = (
+        f"Rewrite description for {product_id} "
+        f"({body_length} chars"
+        + (f", headline: \"{headline[:60]}\"" if headline else "")
+        + f", SEO {seo_score:.2f}, readability {readability_score:.2f})"
+        + " — DESTRUCTIVE, overwrites existing copy"
+    )
+    params = {
+        "product_id": product_id,
+        "body_length": body_length,
+        "headline": headline,
+        "body_preview": body[:200],
+        "seo_score": seo_score,
+        "readability_score": readability_score,
+    }
+
+    try:
+        action = queue.enqueue(
+            engine="content_generation",
+            action_type="apply_description",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            params=params,
+            narrative=narrative,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "enqueue raised for %s: %s", product_id, exc,
+        )
+        base_result["error"] = f"enqueue_raised: {exc}"
+        return base_result
+
+    base_result["error"] = "queued"
+    base_result["pending_action_id"] = action.id
+    return base_result
+
+
 # ── Helpers ────────────────────────────────────────────────────
 
 
