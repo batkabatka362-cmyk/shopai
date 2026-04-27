@@ -21,7 +21,10 @@ from .catalog_validator import validate_catalog
 from .memory_reader import read_past_catalogs
 from .memory_writer import write_catalog_result
 from .shopify_hydrator import hydrate_products
-from .shopify_applier import apply_tag_assignments
+from .shopify_applier import (
+    apply_tag_assignments,
+    enqueue_tag_assignments_for_approval,
+)
 
 
 class CatalogEngine:
@@ -81,18 +84,32 @@ class CatalogEngine:
             return self._fail(f"Tag assignment failed: {tag_result.get('error')}", time.monotonic() - start)
         tag_assignments = tag_result.get("assignments", [])
 
-        # Stage 3.5: Push tag assignments to Shopify (opt-in via
-        # data.apply_tags=True). When opt-in is off, every
-        # assignment is stamped applied=False with a "disabled by
-        # caller" reason — recommendations still flow through the
-        # output. When opt-in is on, mutates each assignment with
-        # applied/apply_error fields based on the
-        # SHOPIFY_ADD_TAGS result. Per-assignment graceful
-        # fallback — one product's failure doesn't stop the rest.
-        tag_assignments = apply_tag_assignments(
-            tag_assignments,
-            apply=bool(data.get("apply_tags", False)),
-        )
+        # Stage 3.5: Push tag assignments to Shopify (opt-in).
+        # Three paths:
+        #
+        #   data.apply_tags=False (default) → all stamped
+        #     "apply disabled by caller" (no API call, no queue)
+        #   data.apply_tags=True + data.require_approval=False
+        #     → SHOPIFY_ADD_TAGS immediately (legacy direct path)
+        #   data.apply_tags=True + data.require_approval=True
+        #     → enqueue each assignment to core.approval; merchant
+        #       approves via /api/pending-actions before any
+        #       SHOPIFY_ADD_TAGS call lands
+        #
+        # All three paths mutate the assignments in place so the
+        # engine output's ``tag_assignments`` shape stays uniform;
+        # the queue path additionally stamps a ``pending_action_id``.
+        # Per-assignment graceful fallback — one product's failure
+        # doesn't stop the rest.
+        apply_flag = bool(data.get("apply_tags", False))
+        if apply_flag and data.get("require_approval") is True:
+            tag_assignments = enqueue_tag_assignments_for_approval(
+                tag_assignments, apply=apply_flag,
+            )
+        else:
+            tag_assignments = apply_tag_assignments(
+                tag_assignments, apply=apply_flag,
+            )
 
         val_result = validate_catalog(products=products, categories=organized_cats, tag_assignments=tag_assignments)
         if val_result.get("status") == "error":

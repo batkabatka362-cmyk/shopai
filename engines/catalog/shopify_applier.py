@@ -141,6 +141,99 @@ def apply_tag_assignments(
     return assignments
 
 
+def enqueue_tag_assignments_for_approval(
+    assignments: list[dict[str, Any]],
+    *,
+    apply: bool = False,
+) -> list[dict[str, Any]]:
+    """Park catalog tag assignments in the approval queue.
+
+    Per-engine alternative to :func:`apply_tag_assignments` —
+    selected by the flow when ``data.require_approval=True``.
+    The catalog applier mutates assignments in place (rather than
+    returning a separate result list), so this enqueue function
+    keeps that contract: each parked assignment is stamped with
+    ``applied=False``, ``apply_error="queued"``, and a
+    ``pending_action_id`` for the merchant approval flow.
+
+    Skip semantics match the direct path so the engine output
+    looks identical regardless of which branch ran:
+      * ``apply=False`` (master switch off) → all stamped
+        ``"apply disabled by caller"`` (no queue entry).
+      * Missing product_id / no tags → stamped accordingly.
+      * Approval queue unavailable → all stamped
+        ``"approval queue unavailable"``.
+    """
+    if not assignments:
+        return assignments
+
+    if not apply:
+        for assignment in assignments:
+            _stamp_skipped(assignment, "apply disabled by caller")
+        return assignments
+
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue unavailable: %s", exc)
+        for assignment in assignments:
+            _stamp_skipped(assignment, "approval queue unavailable")
+        return assignments
+
+    for assignment in assignments:
+        product_id = str(assignment.get("product_id", "")).strip()
+        if not product_id:
+            _stamp_skipped(assignment, "missing product_id")
+            continue
+        tags = assignment.get("tags")
+        if not isinstance(tags, list) or not tags:
+            _stamp_skipped(assignment, "no tags to apply")
+            continue
+        cleaned_tags = [
+            str(t).strip() for t in tags
+            if isinstance(t, str) and t.strip()
+        ]
+        if not cleaned_tags:
+            _stamp_skipped(assignment, "no tags to apply")
+            continue
+
+        narrative = (
+            f"Add {len(cleaned_tags)} tag(s) to {product_id}: "
+            f"{', '.join(cleaned_tags[:5])}"
+            + (f" + {len(cleaned_tags) - 5} more"
+               if len(cleaned_tags) > 5 else "")
+        )
+        params = {
+            "product_id": product_id,
+            "tags": cleaned_tags,
+            "tag_count": len(cleaned_tags),
+        }
+
+        try:
+            action = queue.enqueue(
+                engine="catalog",
+                action_type="catalog_apply_tags",
+                capability="SHOPIFY_ADD_TAGS",
+                params=params,
+                narrative=narrative,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "enqueue raised for %s: %s", product_id, exc,
+            )
+            _stamp_skipped(
+                assignment, f"enqueue raised: {exc}",
+            )
+            continue
+
+        assignment["applied"] = False
+        assignment["apply_error"] = "queued"
+        assignment["pending_action_id"] = action.id
+
+    return assignments
+
+
 def _record_writeback(
     *,
     action_type: str,
@@ -157,7 +250,8 @@ def _record_writeback(
     """
     try:
         from engines._writeback_recorder import record_writeback
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("recorder import failed: %s", exc)
         return
     try:
         record_writeback(
@@ -168,8 +262,8 @@ def _record_writeback(
             success=success,
             error=error,
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("recorder call failed: %s", exc)
 
 
 # ── Helpers ────────────────────────────────────────────────────
