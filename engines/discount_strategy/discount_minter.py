@@ -13,6 +13,16 @@ Without this stage, the discount-strategy engine recommends "15%
 off, 24 hours, all customers" but no actual storewide promo code
 exists in Shopify — the merchant has to mint one manually.
 
+Two writeback modes (caller picks via flow.py):
+
+  * ``mint_strategy_code`` (default) — direct mint. Adapter runs,
+    code lands on Shopify immediately.
+  * ``enqueue_strategy_for_approval`` — park the proposal in the
+    approval queue (``core.approval``). Merchant lists / approves /
+    rejects via ``/api/pending-actions``; a follow-up executor
+    will pick approved entries up and call mint on the same
+    parameters.
+
 Returns ``None`` (so the pipeline keeps running with no minted
 code) when:
 
@@ -136,6 +146,85 @@ def mint_strategy_code(
     )
 
     return minted
+
+
+def enqueue_strategy_for_approval(
+    strategy: dict[str, Any],
+    cannibalization_risk: str = "",
+    confidence: float = 0.0,
+    *,
+    min_confidence: float = 0.0,
+) -> dict[str, Any] | None:
+    """Enqueue the proposed code to the approval queue.
+
+    Same input shape and same upfront guardrails as
+    :func:`mint_strategy_code` — this is the "stage instead of
+    execute" alternative the flow picks when the merchant set
+    ``data.require_approval = True``. No Shopify mutation runs;
+    the action lands in ``core.approval`` for human review.
+
+    Returns:
+        ``{"pending_action_id", "narrative", "params"}`` once
+        the proposal is queued, or ``None`` when the same
+        upfront guardrails (mintable type / depth / risk /
+        confidence floor) reject the proposal. The skip
+        semantics match the direct-mint path so the flow's
+        downstream logic doesn't have to special-case approval
+        rejections.
+    """
+    strategy_type = str(strategy.get("type", "")).lower()
+    if strategy_type not in _MINTABLE_TYPES:
+        return None
+    if str(cannibalization_risk).lower() in _BLOCKED_RISKS:
+        return None
+    if float(confidence or 0.0) < float(min_confidence or 0.0):
+        return None
+
+    percentage = _depth_to_percentage(strategy.get("depth_pct"))
+    if percentage is None or percentage <= 0:
+        return None
+
+    audience = str(strategy.get("target_audience", "all")).strip()
+    duration_hours = strategy.get("duration_hours")
+    ttl_days = _hours_to_ttl_days(duration_hours)
+
+    narrative = (
+        f"Storewide {percentage:g}% off promo for '{audience}' — "
+        f"{ttl_days}d TTL, cannibalization risk={cannibalization_risk or 'unknown'}, "
+        f"confidence={confidence:.2f}"
+    )
+
+    params = {
+        "strategy_type": strategy_type,
+        "percentage": percentage,
+        "audience": audience,
+        "ttl_days": ttl_days,
+        "duration_hours": duration_hours,
+        "cannibalization_risk": cannibalization_risk,
+        "confidence": confidence,
+    }
+
+    try:
+        from core.approval import get_approval_queue
+        action = get_approval_queue().enqueue(
+            engine="discount_strategy",
+            action_type="mint_strategy_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=params,
+            narrative=narrative,
+            confidence=confidence,
+        )
+    except Exception:  # noqa: BLE001
+        # Approval queue is best-effort — if the SQLite write
+        # blew up we degrade to "no action" (same shape as a
+        # guardrail rejection) rather than crashing the engine.
+        return None
+
+    return {
+        "pending_action_id": action.id,
+        "narrative": narrative,
+        "params": params,
+    }
 
 
 # ── Per-engine helpers ────────────────────────────────────────

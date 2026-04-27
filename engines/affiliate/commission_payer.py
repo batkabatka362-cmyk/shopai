@@ -205,6 +205,132 @@ def pay_commissions(
     return results
 
 
+def enqueue_commissions_for_approval(
+    commissions: list[dict[str, Any]],
+    partners: list[dict[str, Any]],
+    *,
+    currency: str = "USD",
+) -> list[dict[str, Any]]:
+    """Park commission payouts in the approval queue.
+
+    Per-engine alternative to :func:`pay_commissions` — selected
+    by the flow when ``data.require_approval=True``. Same upfront
+    filters (positive amount, partner present in input). Each
+    surviving commission enqueues one pending action.
+
+    Returns the same shape as :func:`pay_commissions` plus a
+    ``pending_action_id`` field on successfully-queued entries.
+    Commission payouts are higher-stakes than discount minting
+    (real money out the door), so the queue gating matters more
+    here than for any of the other appliers.
+    """
+    if not isinstance(commissions, list) or not commissions:
+        return []
+
+    partner_map = _build_partner_map(partners)
+
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue unavailable: %s", exc)
+        return [
+            {
+                "partner_id": str(c.get("partner_id", "")),
+                "paid": False,
+                "amount": _safe_float(c.get("commission_amount")),
+                "gift_card_id": "",
+                "code": "",
+                "error": "approval_queue_unavailable",
+                "pending_action_id": None,
+            }
+            for c in commissions
+        ]
+
+    results: list[dict[str, Any]] = []
+    for commission in commissions:
+        if not isinstance(commission, dict):
+            continue
+        pid = str(commission.get("partner_id", "")).strip()
+        amount = _safe_float(commission.get("commission_amount"))
+        if not pid or amount is None:
+            continue
+        if amount <= 0:
+            results.append({
+                "partner_id": pid,
+                "paid": False,
+                "amount": amount,
+                "gift_card_id": "",
+                "code": "",
+                "error": "non_positive_amount",
+                "pending_action_id": None,
+            })
+            continue
+
+        partner = partner_map.get(pid)
+        if not partner:
+            results.append({
+                "partner_id": pid,
+                "paid": False,
+                "amount": amount,
+                "gift_card_id": "",
+                "code": "",
+                "error": "partner_not_in_input",
+                "pending_action_id": None,
+            })
+            continue
+
+        gift_params = _build_gift_card_params(
+            commission=commission,
+            partner=partner,
+            currency=currency,
+        )
+        partner_name = (
+            partner.get("name") or commission.get("name") or pid
+        )
+        narrative = (
+            f"Pay ${amount:.2f} {currency} to {partner_name} "
+            f"(period sales: ${commission.get('period_sales', 0)} × "
+            f"{commission.get('commission_rate', 0)}%) "
+            f"as Shopify gift card"
+        )
+
+        try:
+            action = queue.enqueue(
+                engine="affiliate",
+                action_type="pay_commission",
+                capability="SHOPIFY_CREATE_GIFT_CARD",
+                params=gift_params,
+                narrative=narrative,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "enqueue raised for %s: %s", pid, exc,
+            )
+            results.append({
+                "partner_id": pid,
+                "paid": False,
+                "amount": amount,
+                "gift_card_id": "",
+                "code": "",
+                "error": f"enqueue_raised: {exc}",
+                "pending_action_id": None,
+            })
+            continue
+
+        results.append({
+            "partner_id": pid,
+            "paid": False,
+            "amount": amount,
+            "gift_card_id": "",
+            "code": "",
+            "error": "queued",
+            "pending_action_id": action.id,
+        })
+
+    return results
+
+
 # ── Helpers ────────────────────────────────────────────────────
 
 

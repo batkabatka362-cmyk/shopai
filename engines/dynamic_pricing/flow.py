@@ -32,7 +32,10 @@ from .impact_estimator import estimate_impact
 from .change_validator import validate_change
 from .memory_reader import read_recent_changes
 from .memory_writer import write_pricing_change
-from .price_applier import apply_price_changes
+from .price_applier import (
+    apply_price_changes,
+    enqueue_price_changes_for_approval,
+)
 from engines._shopify_hydrator import hydrate
 
 
@@ -109,21 +112,38 @@ class DynamicPricingEngine:
         )
 
         # ---- Apply price changes (opt-in writeback) ----
-        # Convert approved adjustments into actual Shopify variant
-        # price updates. Default OFF so existing callers stay in
-        # pure-recommendation mode; opt in via
-        # ``data.apply_changes == True``. The applier requires the
-        # input products to carry their ``variants`` list (with
-        # variant GIDs) — hydrator-fetched products from
-        # SHOPIFY_LIST_PRODUCTS DON'T include variants by default,
-        # so callers wanting writeback should pre-fetch via
-        # SHOPIFY_GET_PRODUCT or supply pre-enriched products.
+        # Default OFF so existing callers stay in pure-
+        # recommendation mode. Two opt-in modes:
+        #
+        #   data.apply_changes=True + data.require_approval=False
+        #     → write variants immediately (legacy behaviour)
+        #   data.apply_changes=True + data.require_approval=True
+        #     → enqueue each adjustment to core.approval; merchant
+        #       approves via /api/pending-actions before the
+        #       SHOPIFY_UPDATE_VARIANTS call
+        #
+        # The applier requires the input products to carry their
+        # ``variants`` list (with variant GIDs) — hydrator-fetched
+        # products from SHOPIFY_LIST_PRODUCTS DON'T include variants
+        # by default, so callers wanting writeback should pre-fetch
+        # via SHOPIFY_GET_PRODUCT or supply pre-enriched products.
+        # Both branches share the same upfront filters
+        # (approval gate, variants present), so the engine output's
+        # ``apply_results`` shape is identical except the approval
+        # branch's entries carry ``error="queued"`` and a
+        # ``pending_action_id`` instead of ``applied=True``.
         apply_results: list[dict[str, Any]] = []
         if data.get("apply_changes") is True:
-            apply_results = apply_price_changes(
-                adjustments=adjustments,
-                products=products,
-            )
+            if data.get("require_approval") is True:
+                apply_results = enqueue_price_changes_for_approval(
+                    adjustments=adjustments,
+                    products=products,
+                )
+            else:
+                apply_results = apply_price_changes(
+                    adjustments=adjustments,
+                    products=products,
+                )
 
         elapsed = time.monotonic() - start
 
