@@ -272,7 +272,10 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             return
 
         result = self.orchestrator.submit_task(task_type, params)
-        self._json_response(200, result)
+        from core.brain.api_narrative import enrich_response
+        self._json_response(
+            200, enrich_response(result, task_type=task_type, params=params),
+        )
 
     def _run_chain(self, body: dict) -> None:
         chain_name, err = validate_safe_name(body.get("chain"), "chain")
@@ -286,10 +289,14 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             return
 
         from core.chaining import ChainRegistry
+        from core.brain.api_narrative import enrich_response
         try:
             registry = ChainRegistry()
             result = registry.run(chain_name, data)
-            self._json_response(200, result)
+            self._json_response(
+                200,
+                enrich_response(result, task_type=f"chain:{chain_name}", params=data),
+            )
         except KeyError as exc:
             self._json_response(404, {"error": str(exc)})
 
@@ -380,14 +387,28 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         try:
             from data_pipeline.store.store_manager import StoreManager
             from core.autonomous.controller import AutonomousController
+            from core.brain.api_narrative import enrich_response
             sm = StoreManager()
             controller = AutonomousController(sm, auto_approve=bool(body.get("auto_approve", False)))
             controller.initialize()
             result = controller.run_cycle(store_id)
-            self._json_response(200, result)
+            self._json_response(
+                200,
+                enrich_response(result, task_type="auto_cycle", params={"store_id": store_id}),
+            )
         except Exception as exc:
             logger.warning("cycle run failed for %s: %s", store_id, exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {
+                "status": "error",
+                "error": str(exc),
+                "narrative": (
+                    f"auto_cycle failed for store_id={store_id}: {exc}"
+                ),
+                "next_action": (
+                    "verify the store is registered (POST /api/store/sync) "
+                    "and Shopify credentials are valid"
+                ),
+            })
 
     def _store_sync(self, body: dict) -> None:
         """Sync store data from Shopify."""
@@ -485,7 +506,11 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             return
 
         result = self.orchestrator.agent_run(agent, task, data)
-        self._json_response(200, result)
+        from core.brain.api_narrative import enrich_response
+        self._json_response(
+            200,
+            enrich_response(result, task_type=f"agent:{agent}:{task}", params=data),
+        )
 
     def _run_workflow(self, body: dict) -> None:
         """Run a named workflow."""
@@ -504,7 +529,11 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             return
 
         result = self.orchestrator.run_workflow(workflow, data)
-        self._json_response(200, result)
+        from core.brain.api_narrative import enrich_response
+        self._json_response(
+            200,
+            enrich_response(result, task_type=f"workflow:{workflow}", params=data),
+        )
 
     # --- Helpers ---
 
