@@ -20,6 +20,7 @@ from .conversion_optimizer import optimize_conversion
 from .social_proof_builder import build_social_proof
 from .memory_reader import read_past_wishlist
 from .memory_writer import write_wishlist_result
+from engines._shopify_hydrator import hydrate
 
 
 class WishlistEngine:
@@ -47,6 +48,26 @@ class WishlistEngine:
         wishlists = data.get("wishlists", [])
         products = data.get("products", [])
         customers = data.get("customers", [])
+
+        # Auto-hydrate products + customers from Shopify when caller
+        # left the lists empty. Both are auxiliary (wishlists is
+        # gated), but feed downstream analysis + social proof.
+        hydrate_limit = data.get("hydrate_limit")
+        hydrate_query = data.get("hydrate_query")
+        products = hydrate(
+            supplied=products if isinstance(products, list) else [],
+            capability_name="SHOPIFY_LIST_PRODUCTS",
+            list_field="products",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
+        customers = hydrate(
+            supplied=customers if isinstance(customers, list) else [],
+            capability_name="SHOPIFY_FETCH_CUSTOMERS",
+            list_field="customers",
+            limit=hydrate_limit,
+            query=hydrate_query,
+        )
 
         if not wishlists:
             return self._fail("Wishlists list is required", 0.0)
