@@ -174,11 +174,16 @@ mutation productUpdate($input: ProductInput!) {{
     userErrors {{
       field
       message
-      code
     }}
   }}
 }}
 """.strip()
+# Pattern F (CLAUDE.md): productUpdate.userErrors is the typed
+# `UserError` (no code field), not the broader `UserErrors`.
+# Confirmed live 2026-05-15 against ts0efe-ih dev store: a
+# `code` selection here returns "Field 'code' doesn't exist on
+# type 'UserError'" and rolls back the mutation. productCreate
+# still uses `UserErrors` with code — per-mutation, not per-resource.
 
 
 _DELETE_PRODUCT_MUTATION = """
