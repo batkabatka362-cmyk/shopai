@@ -361,6 +361,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show what would approve without writing",
     )
 
+    approvals_audit = approvals_sub.add_parser(
+        "audit",
+        help="Audit dispatcher coverage vs engine enqueue sites",
+    )
+    approvals_audit.add_argument(
+        "--engines-root", default="engines",
+        help="Path to engines directory (default: engines)",
+    )
+
     # ── Pipeline commands ────────────────────────────────────
     pipeline = sub.add_parser("pipeline", help="Run a data pipeline")
     pipeline.add_argument("pipeline_name", choices=["product", "marketing", "analytics"])
@@ -1872,6 +1881,9 @@ def _cmd_approvals(args) -> None:
     if verb == "approve-all":
         _cmd_approvals_approve_all(args)
         return
+    if verb == "audit":
+        _cmd_approvals_audit(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -1881,7 +1893,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals reject      <action_id> [--reason ...] [--by ...]\n"
         "  shopai approvals execute     <action_id>\n"
         "  shopai approvals sweep       [--older-than 7d] [--dry-run]\n"
-        "  shopai approvals approve-all [--engine NAME] [--min-confidence 0.X] [--execute] [--dry-run]"
+        "  shopai approvals approve-all [--engine NAME] [--min-confidence 0.X] [--execute] [--dry-run]\n"
+        "  shopai approvals audit       [--engines-root PATH]"
     )
     sys.exit(1)
 
@@ -2093,6 +2106,66 @@ def _cmd_approvals_approve_all(args) -> None:
     )
     if failed_ids:
         print(f"  Skipped (state changed): {len(failed_ids)}")
+
+
+def _cmd_approvals_audit(args) -> None:
+    """Dispatcher coverage audit — flags Pattern K gaps.
+
+    Cross-references action_types enqueued in engines/ against the
+    registered dispatcher table. Exits 1 if any missing — useful as
+    a CI guard so a new engine writeback without a matching
+    dispatcher fails the build instead of failing silently at
+    execute time.
+    """
+    from pathlib import Path
+
+    from core.approval.coverage_audit import EnqueueCall, audit_coverage
+
+    report = audit_coverage(Path(args.engines_root))
+
+    print(
+        f"Dispatcher coverage audit ({args.engines_root})"
+    )
+    print(
+        f"  Engine enqueue sites:  {len(report.enqueued)}"
+    )
+    print(
+        f"  Registered dispatchers: {len(report.registered)}"
+    )
+    print(
+        f"  Missing: {len(report.missing)}    "
+        f"Orphaned: {len(report.orphaned)}"
+    )
+
+    if report.missing:
+        print()
+        print("Missing dispatchers (Pattern K — silent execute failures):")
+        # Group by action_type so each gap lists its call sites
+        by_type: dict[str, list[EnqueueCall]] = {}
+        for site in report.enqueued:
+            if site.action_type in report.missing:
+                by_type.setdefault(site.action_type, []).append(site)
+        for action_type in sorted(by_type):
+            print(f"  {action_type}")
+            for s in by_type[action_type]:
+                print(f"    {s.file_path}:{s.line}")
+
+    if report.orphaned:
+        print()
+        print("Orphaned dispatchers (no engine enqueues these):")
+        for o in report.orphaned:
+            print(f"  {o}")
+
+    if report.has_gaps:
+        print()
+        print(
+            "Audit failed: register dispatchers for the missing action_types "
+            "in core/approval/dispatchers.py."
+        )
+        sys.exit(1)
+
+    print()
+    print("Coverage OK — all enqueued action_types have dispatchers.")
 
 
 def _parse_age_spec(spec: str) -> float | None:
