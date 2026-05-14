@@ -225,9 +225,21 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         try:
             queue = get_approval_queue()
             actions = queue.list_pending(engine=engine, limit=limit)
+            try:
+                from core.knowledge import enrich_action_dict
+                enriched = [
+                    enrich_action_dict(a.to_dict()) for a in actions
+                ]
+            except Exception as exc:  # noqa: BLE001
+                # NotesStore is best-effort — never block the
+                # action list on knowledge-layer issues.
+                logger.debug(
+                    "operator-context enrichment failed: %s", exc,
+                )
+                enriched = [a.to_dict() for a in actions]
             self._json_response(200, {
-                "count": len(actions),
-                "actions": [a.to_dict() for a in actions],
+                "count": len(enriched),
+                "actions": enriched,
             })
         except Exception as exc:
             logger.warning("list pending actions failed: %s", exc)
@@ -305,7 +317,15 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         if action is None:
             self._json_response(404, {"error": f"Unknown action id: {action_id}"})
             return
-        self._json_response(200, action.to_dict())
+        payload = action.to_dict()
+        try:
+            from core.knowledge import enrich_action_dict
+            payload = enrich_action_dict(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "operator-context enrichment failed: %s", exc,
+            )
+        self._json_response(200, payload)
 
     # --- POST handlers ---
 
