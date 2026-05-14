@@ -155,6 +155,27 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--store", default="", help="Store ID")
     run_p.add_argument("--params", type=str, default="{}", help="JSON params")
 
+    suggest_p = sub.add_parser(
+        "suggest",
+        help="Recommend which engines to run next (goal × effectiveness)",
+    )
+    suggest_p.add_argument(
+        "--goal", default=None,
+        help="Active goal override (default: current goal from GoalManager)",
+    )
+    suggest_p.add_argument(
+        "--limit", type=int, default=5,
+        help="Number of primary recommendations to display (default: 5)",
+    )
+    suggest_p.add_argument(
+        "--no-alternatives", action="store_true",
+        help="Skip the cross-goal alternatives section",
+    )
+    suggest_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw JSON payload instead of the table view",
+    )
+
     # ── Action commands ──────────────────────────────────────
     action_p = sub.add_parser("actions", help="Manage AI actions")
     action_sub = action_p.add_subparsers(dest="action_cmd")
@@ -1067,6 +1088,54 @@ def _cmd_run(args) -> None:
     print(json.dumps(result, indent=2, default=str))
 
 
+def _cmd_suggest(args) -> None:
+    """Goal × effectiveness → ranked engine recommendations.
+
+    Two output formats:
+      * Table (default) — human-readable rendering of the primary
+        recommendations + optional alternatives.
+      * JSON (``--json``) — raw ``RecommendationResult.to_dict()``
+        for piping into other tools.
+    """
+    from core.brain.engine_recommender import recommend_engines
+
+    result = recommend_engines(
+        goal=args.goal,
+        limit=args.limit,
+        include_alternatives=not args.no_alternatives,
+    )
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, default=str))
+        return
+
+    print(f"Active goal: {result.active_goal}")
+    if result.explanation:
+        print(f"  {result.explanation}")
+    print()
+
+    if result.primary:
+        print(f"Top picks (goal={result.active_goal}):")
+        print(f"  {'rank':<4}  {'engine':<28} {'priority':<10} {'effectiveness':<14}")
+        for i, r in enumerate(result.primary, 1):
+            print(
+                f"  {i:<4}  {r.engine:<28} "
+                f"{r.priority:<10.2f} {r.effectiveness:<14.2f}"
+            )
+    else:
+        print(f"No engines mapped to goal {result.active_goal!r}.")
+
+    if result.alternatives and not args.no_alternatives:
+        print()
+        print("Alternatives (other goals — manual override):")
+        print(f"  {'engine':<28} {'goal':<22} {'effectiveness':<14}")
+        for r in result.alternatives:
+            print(
+                f"  {r.engine:<28} {r.goal:<22} "
+                f"{r.effectiveness:<14.2f}"
+            )
+
+
 # ── Action Commands ──────────────────────────────────────────
 
 def _cmd_actions(args) -> None:
@@ -1481,6 +1550,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "run":
         _cmd_run(args)
+        return
+
+    if args.command == "suggest":
+        _cmd_suggest(args)
         return
 
     if args.command == "actions":

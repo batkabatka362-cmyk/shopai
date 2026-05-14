@@ -53,6 +53,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/stores": self._list_stores,
             "/api/pending-actions": self._list_pending_actions,
             "/api/pending-actions/stats": self._pending_actions_stats,
+            "/api/recommendations": self._list_recommendations,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -239,6 +240,54 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, get_approval_queue().stats())
         except Exception as exc:
             logger.warning("approval queue stats failed: %s", exc)
+            self._json_response(500, {"error": str(exc)})
+
+    def _list_recommendations(self) -> None:
+        """GET /api/recommendations — orchestration-brain v1 surface.
+
+        Joins the active goal + per-goal effectiveness EMA with the
+        engine→goal map to rank which engines the merchant should
+        run next. Pure read; nothing persists.
+
+        Query params (all optional):
+          ?goal=<name>      — explicit goal override (defaults to
+                              GoalManager.get_current_goal()).
+          ?limit=<int>      — page size for primary list (default 10,
+                              clamped to 1-50).
+          ?alternatives=0   — drop the cross-goal alternatives bucket
+                              from the response for a compact payload.
+
+        Returns ``RecommendationResult.to_dict()``.
+        """
+        from urllib.parse import urlparse, parse_qs
+        from core.brain.engine_recommender import recommend_engines
+
+        params = parse_qs(urlparse(self.path).query)
+        goal = params.get("goal", [None])[0]
+        if goal:
+            goal, err = validate_safe_name(goal, "goal")
+            if err:
+                self._json_response(400, {"error": err})
+                return
+        try:
+            limit = int(params.get("limit", ["10"])[0])
+        except ValueError:
+            limit = 10
+        limit = max(1, min(50, limit))
+
+        # alternatives=0 / false disables the bucket
+        alt_param = params.get("alternatives", ["1"])[0].lower()
+        include_alternatives = alt_param not in {"0", "false", "no"}
+
+        try:
+            result = recommend_engines(
+                goal=goal,
+                limit=limit,
+                include_alternatives=include_alternatives,
+            )
+            self._json_response(200, result.to_dict())
+        except Exception as exc:
+            logger.warning("recommendations failed: %s", exc)
             self._json_response(500, {"error": str(exc)})
 
     def _get_pending_action(self, action_id: str, _params: dict) -> None:
