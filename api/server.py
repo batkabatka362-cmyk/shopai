@@ -78,6 +78,18 @@ def _engine_brain_stack(engine_name: str) -> dict[str, Any]:
     return payload
 
 
+def _truthy_param(raw: Any) -> bool:
+    """``parse_qs`` returns each query param as a list. Treat
+    ``?by_goal=1`` / ``=true`` / ``=yes`` / ``=on`` as opt-in;
+    everything else (absent, =0, =false) as opt-out.
+    """
+    if not raw:
+        return False
+    if isinstance(raw, list):
+        raw = raw[0] if raw else ""
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 class ShopAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for ShopAI API."""
 
@@ -193,8 +205,62 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         self._json_response(200, status)
 
     def _list_engines(self) -> None:
+        """GET /api/engines — list registered engines.
+
+        Query params:
+          - ``by_goal=1`` — group engines by their primary brain-stack
+            goal (parity with ``shopai engines --by-goal``). Returns
+            ``{count, engines, by_goal: {<goal>: [engine, ...]}}`` so
+            ungrouped callers still get the ``engines`` array
+            unchanged.
+          - ``unmapped=1`` — return ONLY engines absent from
+            ``ENGINE_GOAL_MAP`` (parity with
+            ``shopai engines --unmapped``). Useful for finding
+            data-quality gaps where engine outcomes don't attribute
+            to any goal.
+        """
         from engines.registry import list_engines, engine_count
-        self._json_response(200, {"count": engine_count(), "engines": list_engines()})
+
+        params = parse_qs(urlparse(self.path).query)
+        engines = list_engines()
+
+        if _truthy_param(params.get("unmapped")):
+            try:
+                from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("engine_goal_map unavailable: %s", exc)
+                ENGINE_GOAL_MAP = {}
+            unmapped = [e for e in engines if e not in ENGINE_GOAL_MAP]
+            self._json_response(200, {
+                "count": len(unmapped),
+                "total": len(engines),
+                "engines": unmapped,
+            })
+            return
+
+        if _truthy_param(params.get("by_goal")):
+            try:
+                from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("engine_goal_map unavailable: %s", exc)
+                ENGINE_GOAL_MAP = {}
+            grouped: dict[str, list[str]] = {}
+            for name in engines:
+                goal = ENGINE_GOAL_MAP.get(name, "unmapped")
+                grouped.setdefault(goal, []).append(name)
+            self._json_response(200, {
+                "count": engine_count(),
+                "engines": engines,
+                "by_goal": {
+                    g: sorted(grouped[g]) for g in sorted(grouped)
+                },
+            })
+            return
+
+        self._json_response(200, {
+            "count": engine_count(),
+            "engines": engines,
+        })
 
     def _list_chains(self) -> None:
         from core.chaining import ChainRegistry
