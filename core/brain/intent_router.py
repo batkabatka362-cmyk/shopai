@@ -221,6 +221,155 @@ _INTENT_INDEX: dict[str, list[tuple[float, str]]] = {
         (1.5, "bulk discount"), (1.5, "trade pricing"),
         (1.2, "wholesale"), (1.2, "b2b"),
     ],
+    # ── Coverage expansion (PR #74) — 25 additional engines ─
+    "accounting": [
+        (1.5, "profit and loss"), (1.5, "p and l"), (1.5, "p&l"),
+        (1.5, "balance sheet"), (1.5, "monthly report"),
+        (1.5, "financial report"), (1.2, "accounting"),
+        (1.2, "ledger"), (1.0, "books"),
+    ],
+    "cash_flow": [
+        (1.5, "cash flow"), (1.5, "cash reserves"),
+        (1.5, "working capital"), (1.5, "money in money out"),
+        (1.2, "liquidity"), (1.2, "burn rate"),
+    ],
+    "campaign_strategy": [
+        (1.5, "marketing campaign"), (1.5, "campaign plan"),
+        (1.5, "ad campaign"), (1.5, "launch campaign"),
+        (1.2, "campaign"), (1.0, "marketing plan"),
+    ],
+    "email_marketing": [
+        (1.5, "email blast"), (1.5, "email campaign"),
+        (1.5, "newsletter"), (1.5, "drip campaign"),
+        (1.5, "automated email"), (1.2, "email"),
+        (1.0, "mailing"),
+    ],
+    "catalog": [
+        (1.5, "product catalog"), (1.5, "organize catalog"),
+        (1.5, "category structure"), (1.5, "product collection"),
+        (1.2, "catalog"), (1.0, "categories"),
+    ],
+    "chatbot": [
+        (1.5, "live chat"), (1.5, "chatbot"),
+        (1.5, "ai assistant"), (1.5, "support bot"),
+        (1.2, "messenger"), (1.0, "automated reply"),
+    ],
+    "customer_service": [
+        (1.5, "customer support"), (1.5, "support ticket"),
+        (1.5, "help desk"), (1.5, "service request"),
+        (1.2, "customer service"), (1.0, "ticket"),
+    ],
+    "customer_segmentation": [
+        (1.5, "customer segment"), (1.5, "segment customers"),
+        (1.5, "customer group"), (1.5, "audience segment"),
+        (1.2, "segmentation"), (1.0, "buyer persona"),
+    ],
+    "competitor_monitor": [
+        (1.5, "monitor competitor"), (1.5, "track competitor"),
+        (1.5, "watch rival"), (1.5, "competitor alert"),
+        (1.2, "competitive intel"),
+    ],
+    "conversion_tracking": [
+        (1.5, "conversion rate"), (1.5, "track conversion"),
+        (1.5, "funnel analysis"), (1.5, "conversion funnel"),
+        (1.2, "conversions"), (1.0, "ctr"),
+    ],
+    "dropshipping": [
+        (1.5, "dropship supplier"), (1.5, "dropshipping"),
+        (1.5, "fulfilled by supplier"), (1.5, "no inventory"),
+        (1.2, "third party fulfillment"),
+    ],
+    "forecasting": [
+        (1.5, "sales forecast"), (1.5, "demand forecast"),
+        (1.5, "predict sales"), (1.5, "revenue projection"),
+        (1.2, "forecast"), (1.0, "predict"),
+    ],
+    "gift_card": [
+        (1.5, "gift card"), (1.5, "store credit"),
+        (1.5, "voucher"), (1.5, "issue gift card"),
+        (1.2, "gift voucher"),
+    ],
+    "image_optimization": [
+        (1.5, "optimize images"), (1.5, "compress photos"),
+        (1.5, "resize image"), (1.5, "image quality"),
+        (1.2, "image optimization"), (1.0, "photos"),
+    ],
+    "landing_page": [
+        (1.5, "landing page"), (1.5, "campaign page"),
+        (1.5, "lead capture page"), (1.5, "promo page"),
+        (1.2, "landing"),
+    ],
+    "ltv_cac_dashboard": [
+        (1.5, "lifetime value"), (1.5, "customer ltv"),
+        (1.5, "ltv cac"), (1.5, "cac payback"),
+        (1.5, "acquisition cost"), (1.2, "ltv"), (1.2, "cac"),
+    ],
+    "market_research": [
+        (1.5, "market research"), (1.5, "industry analysis"),
+        (1.5, "market size"), (1.5, "tam sam som"),
+        (1.2, "market analysis"),
+    ],
+    "nps_engine": [
+        (1.5, "nps score"), (1.5, "net promoter"),
+        (1.5, "satisfaction survey"), (1.5, "csat"),
+        (1.2, "nps"), (1.0, "survey"),
+    ],
+    "order_management": [
+        (1.5, "manage orders"), (1.5, "order status"),
+        (1.5, "order fulfillment"), (1.5, "order processing"),
+        (1.5, "order management"), (1.2, "fulfillment"),
+    ],
+    "payment_optimization": [
+        (1.5, "payment method"), (1.5, "checkout payment"),
+        (1.5, "payment options"), (1.5, "payment processor"),
+        (1.2, "payments"),
+    ],
+    "product_research": [
+        (1.5, "find products"), (1.5, "winning products"),
+        (1.5, "product discovery"), (1.5, "trending products"),
+        (1.2, "product research"),
+    ],
+    "profit_optimization": [
+        (1.5, "boost profit"), (1.5, "profit margin"),
+        (1.5, "increase profit"), (1.5, "improve profitability"),
+        (1.5, "profit optimization"), (1.2, "profitability"),
+        # Mongolian
+        (1.5, "ашгийг өсгөх"), (1.5, "ашгийг нэмэх"),
+    ],
+    "returns_management": [
+        (1.5, "manage returns"), (1.5, "return policy"),
+        (1.5, "rma process"), (1.5, "return label"),
+        (1.2, "returns"), (1.0, "refund"),
+    ],
+    "review_management": [
+        (1.5, "product review"), (1.5, "review moderation"),
+        (1.5, "respond to reviews"), (1.5, "rating management"),
+        (1.2, "reviews"), (1.0, "ratings"),
+    ],
+    "social_media": [
+        (1.5, "social media"), (1.5, "instagram post"),
+        (1.5, "facebook post"), (1.5, "tiktok content"),
+        (1.5, "social campaign"), (1.2, "social"),
+    ],
+    "subscription": [
+        (1.5, "subscription"), (1.5, "recurring billing"),
+        (1.5, "subscription box"), (1.5, "monthly plan"),
+        (1.2, "subscriber"), (1.0, "recurring"),
+    ],
+    "trend_detection": [
+        (1.5, "trending products"), (1.5, "trend detection"),
+        (1.5, "viral product"), (1.5, "hot products"),
+        (1.2, "trends"), (1.0, "viral"),
+    ],
+    "wishlist": [
+        (1.5, "wishlist"), (1.5, "save for later"),
+        (1.5, "wish list"), (1.2, "favorites"),
+    ],
+    "workflow_builder": [
+        (1.5, "automate workflow"), (1.5, "build automation"),
+        (1.5, "workflow builder"), (1.5, "automation rule"),
+        (1.2, "workflow"), (1.0, "automation"),
+    ],
 }
 
 _PHRASE_NORMALISE = re.compile(r"[^\w\s%]", re.UNICODE)

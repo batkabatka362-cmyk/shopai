@@ -203,6 +203,67 @@ class TestSupportedEngines:
         ]:
             assert required in engines
 
+    def test_coverage_expansion_engines_listed(self):
+        """PR #74 added 25 engines beyond the original 24. Lock the
+        floor in so a future refactor that drops the expansion
+        gets caught by tests."""
+        engines = set(list_supported_engines())
+        assert len(engines) >= 50, (
+            f"intent index should cover ≥50 engines, has {len(engines)}"
+        )
+        for required in [
+            "accounting", "cash_flow", "campaign_strategy",
+            "email_marketing", "catalog", "chatbot",
+            "customer_service", "customer_segmentation",
+            "competitor_monitor", "conversion_tracking",
+            "dropshipping", "forecasting", "gift_card",
+            "image_optimization", "landing_page",
+            "ltv_cac_dashboard", "market_research", "nps_engine",
+            "order_management", "payment_optimization",
+            "product_research", "profit_optimization",
+            "returns_management", "review_management",
+            "social_media", "subscription", "trend_detection",
+            "wishlist", "workflow_builder",
+        ]:
+            assert required in engines, (
+                f"{required} should be in expanded coverage but isn't"
+            )
+
+
+# ─── coverage expansion routing ─────────────────────────────────
+
+
+class TestExpandedCoverageRouting:
+    """Smoke-test that the new engines actually get matched on
+    common merchant phrasings. Each case picks a phrase the
+    expansion was specifically built to handle.
+    """
+
+    @pytest.mark.parametrize("text, expected", [
+        ("show me my P&L for last month", "accounting"),
+        ("how is my cash flow", "cash_flow"),
+        ("build a marketing campaign for spring",
+         "campaign_strategy"),
+        ("send an email blast to all customers", "email_marketing"),
+        ("add live chat to my store", "chatbot"),
+        ("segment my customers by spend", "customer_segmentation"),
+        ("forecast next quarter sales", "forecasting"),
+        ("issue a gift card", "gift_card"),
+        ("show LTV and CAC", "ltv_cac_dashboard"),
+        ("manage product returns", "returns_management"),
+        ("automate my workflows", "workflow_builder"),
+        ("subscription box pricing", "subscription"),
+        ("optimize images on my store", "image_optimization"),
+        ("moderate product reviews", "review_management"),
+        ("post to social media", "social_media"),
+    ])
+    def test_expansion_phrases_route_correctly(self, text, expected):
+        result = classify_intent(text)
+        assert result.engine == expected, (
+            f"Expected '{expected}' for {text!r}, got "
+            f"'{result.engine}' (confidence {result.confidence:.2f})"
+        )
+
 
 # ─── input safety ───────────────────────────────────────────────
 
