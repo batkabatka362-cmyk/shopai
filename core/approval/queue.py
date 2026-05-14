@@ -684,6 +684,30 @@ def reset_approval_queue() -> None:
         _INSTANCE = None
 
 
+def parse_age_spec(spec: str) -> float | None:
+    """Parse an age spec like ``"7d"``, ``"30m"``, ``"24h"``, ``"60s"``
+    into seconds. Bare integers are treated as seconds. Returns
+    ``None`` on malformed input.
+
+    Shared between CLI (``shopai approvals sweep``) and HTTP
+    (``POST /api/approvals/sweep``) so both surfaces accept the
+    same human-friendly age strings.
+    """
+    if not spec:
+        return None
+    spec = spec.strip().lower()
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if spec[-1] in multipliers:
+        try:
+            return float(spec[:-1]) * multipliers[spec[-1]]
+        except ValueError:
+            return None
+    try:
+        return float(spec)
+    except ValueError:
+        return None
+
+
 def _safe_json(payload: Any) -> str:
     try:
         return json.dumps(payload, default=str)

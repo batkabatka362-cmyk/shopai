@@ -2636,24 +2636,13 @@ def _cmd_approvals_audit(args) -> None:
 
 
 def _parse_age_spec(spec: str) -> float | None:
-    """Parse e.g. ``"7d"``, ``"30m"``, ``"24h"``, ``"60s"`` →
-    seconds. Returns ``None`` on malformed input.
+    """Thin shim delegating to ``core.approval.queue.parse_age_spec``.
 
-    Bare integers are treated as seconds (so ``"3600"`` → ``3600``).
+    Kept for backward compat with existing tests that import this
+    by name; new callers should use the public function directly.
     """
-    if not spec:
-        return None
-    spec = spec.strip().lower()
-    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    if spec[-1] in multipliers:
-        try:
-            return float(spec[:-1]) * multipliers[spec[-1]]
-        except ValueError:
-            return None
-    try:
-        return float(spec)
-    except ValueError:
-        return None
+    from core.approval.queue import parse_age_spec
+    return parse_age_spec(spec)
 
 
 def _run_execute(action_id: str) -> None:
