@@ -160,6 +160,25 @@ class ApprovalQueue:
                     ON pending_actions(status, proposed_at);
                 CREATE INDEX IF NOT EXISTS idx_pending_engine
                     ON pending_actions(engine, status);
+
+                -- Downstream business outcomes for each executed
+                -- action (one row per Shopify webhook that matched
+                -- the action's minted code or other linkable id).
+                -- Append-only — multiple outcomes per action are
+                -- expected (one mint → many redemptions, plus any
+                -- refunds).
+                CREATE TABLE IF NOT EXISTS action_outcomes (
+                    rowid         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_id     TEXT NOT NULL,
+                    topic         TEXT NOT NULL,
+                    polarity      TEXT NOT NULL,
+                    metrics_json  TEXT,
+                    source_event  TEXT,
+                    recorded_at   REAL NOT NULL,
+                    FOREIGN KEY (action_id) REFERENCES pending_actions(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_outcomes_action
+                    ON action_outcomes(action_id, recorded_at);
             """)
             self._conn.commit()
 
@@ -390,6 +409,101 @@ class ApprovalQueue:
                 "result": result or {},
             })
         return action
+
+    def record_outcome(
+        self,
+        action_id: str,
+        *,
+        topic: str,
+        polarity: str = "neutral",
+        metrics: dict[str, Any] | None = None,
+        source_event: str | None = None,
+    ) -> bool:
+        """Annotate an action with a downstream business outcome.
+
+        Called by the webhook-feedback bridge after it matches a
+        Shopify event (orders/create, refunds/create, ...) back to
+        the action that minted the discount code. Lets operators see
+        "this action drove $X" when they ``shopai approvals show``
+        the executed action.
+
+        Args:
+            action_id: The action this outcome belongs to.
+            topic: Shopify webhook topic ("orders/create", ...).
+            polarity: "positive", "negative", or "neutral" (matches
+                the bridge's polarity mapping).
+            metrics: Optional dict of business numbers (revenue,
+                refund_amount, etc.) — surfaced verbatim on read.
+            source_event: Optional Shopify event id for trace-back.
+
+        Returns:
+            True if the outcome row was inserted; False on no-op
+            (unknown action id — outcomes for unknown actions are
+            silently dropped rather than orphan-inserted).
+        """
+        if not isinstance(action_id, str) or not action_id:
+            return False
+        if not isinstance(topic, str) or not topic:
+            return False
+        if polarity not in ("positive", "negative", "neutral"):
+            polarity = "neutral"
+
+        with _LOCK:
+            # Verify action exists — orphan outcomes are useless and
+            # would mask data bugs.
+            exists = self._conn.execute(
+                "SELECT 1 FROM pending_actions WHERE id = ? LIMIT 1",
+                (action_id,),
+            ).fetchone()
+            if not exists:
+                logger.debug(
+                    "record_outcome no-op: unknown action %s",
+                    action_id,
+                )
+                return False
+            self._conn.execute(
+                """INSERT INTO action_outcomes
+                   (action_id, topic, polarity, metrics_json,
+                    source_event, recorded_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    action_id, topic, polarity,
+                    _safe_json(metrics or {}),
+                    source_event, time.time(),
+                ),
+            )
+            self._conn.commit()
+        logger.info(
+            "outcome recorded: action=%s topic=%s polarity=%s",
+            action_id, topic, polarity,
+        )
+        return True
+
+    def get_outcomes(self, action_id: str) -> list[dict[str, Any]]:
+        """Return all outcome rows for an action, oldest-first.
+
+        Each row is a dict with topic / polarity / metrics /
+        source_event / recorded_at. Empty list when nothing has
+        downstream-matched yet (most actions, in steady state).
+        """
+        if not isinstance(action_id, str) or not action_id:
+            return []
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT topic, polarity, metrics_json,
+                          source_event, recorded_at
+                   FROM action_outcomes
+                   WHERE action_id = ?
+                   ORDER BY recorded_at ASC""",
+                (action_id,),
+            ).fetchall()
+        return [{
+            "topic": r["topic"],
+            "polarity": r["polarity"],
+            "metrics": _safe_loads(r["metrics_json"]),
+            "source_event": r["source_event"],
+            "recorded_at": r["recorded_at"],
+        } for r in rows]
 
     def stats(self) -> dict[str, int]:
         """Counts per status — used by the API status endpoint."""
