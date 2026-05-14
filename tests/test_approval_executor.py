@@ -57,9 +57,21 @@ def loaded_dispatchers():
 
 class TestRegistry:
 
-    def test_all_nine_action_types_register(self, loaded_dispatchers):
+    def test_all_action_types_register(self, loaded_dispatchers):
+        """Every engine's enqueued ``action_type`` MUST have a
+        matching dispatcher — otherwise approval succeeds but
+        execution returns ``no executor registered``.
+
+        End-to-end live verification 2026-05-15 against the
+        ts0efe-ih dev store caught a 12-dispatcher gap (the 1C
+        wirebacks PRs #75-#86 added enqueue helpers without
+        wiring dispatchers). The fix added the missing
+        dispatchers; this test asserts the full set so a future
+        engine wireup can't silently regress.
+        """
         types = set(list_registered_action_types())
         assert types == {
+            # Original 9 (PR #69 capstone)
             "mint_strategy_code",
             "mint_loyalty_code",
             "apply_price_change",
@@ -69,6 +81,19 @@ class TestRegistry:
             "apply_description",
             "apply_seo_meta",
             "catalog_apply_tags",
+            # 1C wireup-queue dispatchers (this PR)
+            "mint_cart_recovery_code",     # PR #75
+            "mint_browse_recovery_code",   # PR #76
+            "apply_inventory_tags",        # PR #77
+            "mint_wholesale_code",         # PR #78
+            "tag_return_decision",         # PR #79
+            "apply_shipping_strategy",     # PR #80
+            "mint_campaign_code",          # PR #81
+            "apply_strategic_price",       # PR #82
+            "apply_segment_tag",           # PR #83
+            "apply_bundle_product",        # PR #84
+            "apply_landing_page",          # PR #85
+            "apply_legal_document",        # PR #86
         }
 
     def test_dispatchers_are_callables(self, loaded_dispatchers):
@@ -206,6 +231,7 @@ class TestExecuteActionLifecycle:
 class TestPerDispatcherValidation:
 
     @pytest.mark.parametrize("action_type, bad_params", [
+        # ─ Original 9 ─
         ("apply_tags", {}),  # missing product_id + tags
         ("apply_tags", {"product_id": "p1", "merged_tags": []}),
         ("catalog_apply_tags", {"product_id": "", "tags": ["x"]}),
@@ -221,6 +247,29 @@ class TestPerDispatcherValidation:
         ("mint_loyalty_code", {"customer_id": "c1"}),  # no percentage
         ("mint_strategy_code", {}),
         ("apply_description", {}),
+        # ─ 12 new dispatchers (1C wireup queue) ─
+        ("mint_cart_recovery_code", {}),  # missing token + value
+        ("mint_cart_recovery_code", {"token": "t"}),  # value missing
+        ("mint_cart_recovery_code", {"token": "t", "value": "abc"}),  # bad value
+        ("mint_browse_recovery_code", {}),
+        ("mint_campaign_code", {}),
+        ("mint_wholesale_code", {}),
+        ("apply_inventory_tags", {}),  # no product_id + merged_tags
+        ("apply_inventory_tags", {"product_id": "p1", "merged_tags": []}),
+        ("apply_segment_tag", {}),  # no customer + tag
+        ("apply_segment_tag", {"customer_id": "c1"}),  # no tag
+        ("apply_bundle_product", {}),  # no adapter_params
+        ("apply_bundle_product", {"adapter_params": {}}),  # empty
+        ("apply_landing_page", {}),
+        ("apply_legal_document", {}),
+        ("apply_shipping_strategy", {}),
+        ("apply_strategic_price", {}),
+        ("apply_strategic_price", {"product_id": "p1", "new_price": 10}),
+        ("apply_strategic_price", {"product_id": "p1", "new_price": "abc",
+                                    "variant_ids": ["v1"]}),
+        ("tag_return_decision", {}),
+        ("tag_return_decision", {"order_id": "o1"}),  # no tags
+        ("tag_return_decision", {"order_id": "o1", "tags": []}),
     ])
     def test_missing_params_surface_structured_error(
         self, action_type, bad_params, loaded_dispatchers,
@@ -558,3 +607,274 @@ class TestApplyDescriptionFullBody:
         })
         assert success is False
         assert result["error"] == "missing_product_id"
+
+
+# ─── 1C wireup-queue dispatchers (PRs #75-#86) ─────────────────
+
+
+class TestOneCDispatchers:
+    """Per-dispatcher happy-path forwarding for the 12
+    dispatchers added after end-to-end live verification caught
+    them missing. Each test mocks ``_router_call`` (for the
+    route-through dispatchers) or ``mint_recovery_code`` (for
+    the four mint variants) and asserts the dispatcher rebuilt
+    the right friendly params shape from the parked queue
+    entry."""
+
+    def test_mint_cart_recovery_uses_RECOVER_prefix(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return {"code": "RECOVER-x", "discount_id": "1",
+                    "ends_at": "2099", "applies_once": True}
+
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            side_effect=_capture,
+        ):
+            success, result = _DISPATCHERS["mint_cart_recovery_code"]({
+                "token": "cust_acme",
+                "value": 10,
+                "value_kind": "percentage",
+                "ttl_days": 7,
+                "code_prefix": "RECOVER",
+            })
+        assert success is True
+        assert captured["code_prefix"] == "RECOVER"
+        assert captured["usage_limit"] == 1
+        assert captured["applies_once_per_customer"] is True
+
+    def test_mint_browse_recovery_uses_BROWSE_prefix(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            side_effect=lambda **kw: captured.update(kw) or {
+                "code": "x", "discount_id": "1",
+                "ends_at": "x", "applies_once": True,
+            },
+        ):
+            success, _ = _DISPATCHERS["mint_browse_recovery_code"]({
+                "token": "user_xyz",
+                "value": 15,
+                "code_prefix": "BROWSE",
+            })
+        assert success is True
+        assert captured["code_prefix"] == "BROWSE"
+
+    def test_mint_campaign_code_uses_multi_use_flags(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            side_effect=lambda **kw: captured.update(kw) or {
+                "code": "x", "discount_id": "1",
+                "ends_at": "x", "applies_once": False,
+            },
+        ):
+            success, _ = _DISPATCHERS["mint_campaign_code"]({
+                "token": "spring",
+                "value": 12,
+                "code_prefix": "EMAIL",
+                "ttl_days": 30,
+            })
+        assert success is True
+        # Multi-use (no limit, reusable per customer)
+        assert captured["usage_limit"] is None
+        assert captured["applies_once_per_customer"] is False
+
+    def test_mint_wholesale_uses_WHOLESALE_prefix(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            side_effect=lambda **kw: captured.update(kw) or {
+                "code": "x", "discount_id": "1",
+                "ends_at": "x", "applies_once": True,
+            },
+        ):
+            _DISPATCHERS["mint_wholesale_code"]({
+                "token": "cust_acme",
+                "value": 15,
+                "code_prefix": "WHOLESALE",
+                "ttl_days": 14,
+            })
+        assert captured["code_prefix"] == "WHOLESALE"
+        # Wholesale TTL flows through from params
+        assert captured["ttl_days"] == 14
+
+    def test_apply_inventory_tags_forwards_merged_list(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+
+        def _capture(cap, params):
+            captured["cap"] = cap
+            captured["params"] = params
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_capture,
+        ):
+            _DISPATCHERS["apply_inventory_tags"]({
+                "product_id": "gid://shopify/Product/1",
+                "merged_tags": ["a", "shopai-stockout-imminent"],
+                "state_tags": ["shopai-stockout-imminent"],
+                "tags_added": 1,
+            })
+        assert captured["cap"] == "SHOPIFY_UPDATE_PRODUCT"
+        assert captured["params"]["tags"] == (
+            ["a", "shopai-stockout-imminent"]
+        )
+
+    def test_apply_segment_tag_forwards_tagsAdd_shape(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=lambda c, p: (captured.update(
+                cap=c, params=p,
+            ) or (True, {})),
+        ):
+            _DISPATCHERS["apply_segment_tag"]({
+                "customer_id": "gid://shopify/Customer/1",
+                "tag": "shopai-segment-vip-champions",
+                "segment": "VIP Champions",
+            })
+        assert captured["cap"] == "SHOPIFY_TAG_CUSTOMER"
+        assert captured["params"]["tags"] == [
+            "shopai-segment-vip-champions",
+        ]
+
+    def test_apply_bundle_product_forwards_adapter_params(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=lambda c, p: (captured.update(
+                cap=c, params=p,
+            ) or (True, {})),
+        ):
+            _DISPATCHERS["apply_bundle_product"]({
+                "adapter_params": {
+                    "title": "Bundle: A + B",
+                    "status": "DRAFT",
+                    "product_type": "Bundle",
+                    "tags": ["shopai-bundle"],
+                    "body_html": "<p>test</p>",
+                },
+            })
+        assert captured["cap"] == "SHOPIFY_CREATE_PRODUCT"
+        assert captured["params"]["status"] == "DRAFT"
+
+    def test_apply_landing_page_forwards_adapter_params(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=lambda c, p: (captured.update(
+                cap=c, params=p,
+            ) or (True, {})),
+        ):
+            _DISPATCHERS["apply_landing_page"]({
+                "adapter_params": {
+                    "title": "Test page",
+                    "body_html": "<h1>x</h1>",
+                    "is_published": False,
+                },
+            })
+        assert captured["cap"] == "SHOPIFY_CREATE_PAGE"
+        assert captured["params"]["is_published"] is False
+
+    def test_apply_legal_document_forwards_adapter_params(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=lambda c, p: (captured.update(
+                cap=c, params=p,
+            ) or (True, {})),
+        ):
+            _DISPATCHERS["apply_legal_document"]({
+                "adapter_params": {
+                    "title": "Privacy Policy",
+                    "body_html": "<article>x</article>",
+                    "is_published": False,
+                },
+            })
+        assert captured["cap"] == "SHOPIFY_CREATE_PAGE"
+
+    def test_apply_shipping_strategy_forwards_adapter_params(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=lambda c, p: (captured.update(
+                cap=c, params=p,
+            ) or (True, {})),
+        ):
+            _DISPATCHERS["apply_shipping_strategy"]({
+                "adapter_params": {
+                    "title": "Free shipping over $75",
+                    "starts_at": "2026-05-15T00:00:00Z",
+                    "ends_at": "2026-06-15T00:00:00Z",
+                    "minimum_subtotal": 75.0,
+                },
+            })
+        assert captured["cap"] == (
+            "SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING"
+        )
+
+    def test_apply_strategic_price_rebuilds_variant_payload(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=lambda c, p: (captured.update(
+                cap=c, params=p,
+            ) or (True, {})),
+        ):
+            _DISPATCHERS["apply_strategic_price"]({
+                "product_id": "gid://shopify/Product/1",
+                "new_price": 24.99,
+                "variant_ids": [
+                    "gid://shopify/ProductVariant/1",
+                    "gid://shopify/ProductVariant/2",
+                ],
+            })
+        assert captured["cap"] == "SHOPIFY_UPDATE_VARIANTS"
+        # Money string rounded to 2 decimals
+        assert captured["params"]["variants"][0]["price"] == "24.99"
+        assert len(captured["params"]["variants"]) == 2
+
+    def test_tag_return_decision_forwards_order_tag(
+        self, loaded_dispatchers,
+    ):
+        captured = {}
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=lambda c, p: (captured.update(
+                cap=c, params=p,
+            ) or (True, {})),
+        ):
+            _DISPATCHERS["tag_return_decision"]({
+                "order_id": "gid://shopify/Order/1",
+                "tags": ["shopai-return-approved"],
+            })
+        assert captured["cap"] == "SHOPIFY_TAG_ORDER"
+        assert captured["params"]["tags"] == [
+            "shopai-return-approved",
+        ]
