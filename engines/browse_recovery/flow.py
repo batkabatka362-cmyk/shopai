@@ -22,7 +22,10 @@ from typing import Any
 from .session_analyzer import analyze_sessions
 from .intent_scorer import score_intent
 from .offer_builder import build_offers
-from .discount_minter import mint_offer_codes
+from .discount_minter import (
+    enqueue_offer_codes_for_approval,
+    mint_offer_codes,
+)
 from .sequence_planner import plan_sequences
 from .memory_reader import read_past_recoveries
 from .memory_writer import write_recovery_result
@@ -103,19 +106,46 @@ class BrowseRecoveryEngine:
             )
         offers = offer_result.get("offers", [])
 
-        # ---- Stage 4.5: Mint Shopify discount codes (when adapter
-        # wired). For high/medium-intent abandoners, the calculated
-        # discount_pct becomes a real Shopify code via
-        # Capability.SHOPIFY_CREATE_DISCOUNT. Each offer is mutated
-        # in place to add code/discount_id/ends_at/minted fields.
-        # Low-intent offers + router-unavailable cases keep
-        # discount_pct + minted=False so downstream consumers can
-        # detect "no real code, send a generic come-back message".
-        offers = mint_offer_codes(
-            offers=offers,
-            intent_scores=intent_scores,
-            store=data.get("store"),
-        )
+        # ---- Stage 4.5: Mint or enqueue Shopify discount codes
+        # (opt-in). Pre-fix this stage unconditionally minted every
+        # high/medium-intent offer whenever the router was available
+        # — out of line with the audit-driven opt-in pattern used
+        # by the other writeback engines. Safer default below now
+        # requires explicit opt-in via ``data.apply_recovery=True``;
+        # legacy callers that relied on auto-mint must flip the
+        # flag to keep the old behaviour.
+        #
+        #   data.apply_recovery=True + data.require_approval=False
+        #     → mint immediately (legacy direct path, opt-in)
+        #   data.apply_recovery=True + data.require_approval=True
+        #     → enqueue per-offer to core.approval; each pending
+        #       action awaits merchant approval before the
+        #       SHOPIFY_CREATE_DISCOUNT mutation lands
+        #   data.apply_recovery=False (default)
+        #     → all offers stamped minted=False + empty code fields,
+        #       same shape downstream consumers already handle
+        #       (generic come-back message fallback)
+        if data.get("apply_recovery") is True:
+            if data.get("require_approval") is True:
+                offers = enqueue_offer_codes_for_approval(
+                    offers=offers,
+                    intent_scores=intent_scores,
+                    store=data.get("store"),
+                )
+            else:
+                offers = mint_offer_codes(
+                    offers=offers,
+                    intent_scores=intent_scores,
+                    store=data.get("store"),
+                )
+        else:
+            # Stamp every offer as not-minted so the engine output
+            # shape stays consistent across all three branches.
+            for offer in offers:
+                offer.setdefault("code", "")
+                offer.setdefault("discount_id", "")
+                offer.setdefault("ends_at", "")
+                offer.setdefault("minted", False)
 
         # ---- Stage 5: Sequence Planner ----
         sequence_result = plan_sequences(

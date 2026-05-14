@@ -485,6 +485,10 @@ class TestFlowIntegration:
                     {"id": "pid_1", "title": "Widget", "price": 50},
                 ],
                 "store": {"recovery_code_ttl_days": 7},
+                # Stage 4.5 defaults to OFF post the audit-driven
+                # opt-in rollout. These tests exercise the direct-
+                # mint path explicitly.
+                "apply_recovery": True,
             },
         }
 
