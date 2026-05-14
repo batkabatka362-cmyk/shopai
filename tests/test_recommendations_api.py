@@ -222,3 +222,155 @@ class TestSuggestCLI:
             "No engines mapped" in proc.stdout
             or "no engines map" in proc.stdout
         )
+
+
+# ─── shopai suggest — operator-note enrichment ────────────────
+
+
+def _load_cli_module():
+    """Import cli.py as a module so we can unit-test its helpers
+    without invoking argparse."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("shopai_cli", "cli.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestSuggestNoteHelper:
+    """Unit-test ``_suggest_collect_operator_notes`` without
+    spinning up a subprocess. Lighter than the subprocess
+    integration test and lets us cover failure-isolation modes."""
+
+    def _make_rec(self, *engines):
+        from core.brain.engine_recommender import RecommendationResult, EngineRecommendation
+        primary = [
+            EngineRecommendation(
+                engine=e, goal="g", alignment=1.0,
+                effectiveness=0.5, priority=0.75, reason="t",
+            )
+            for e in engines
+        ]
+        return RecommendationResult(active_goal="g", primary=primary)
+
+    def test_empty_when_no_notes(self, tmp_path, monkeypatch):
+        from core.knowledge import NotesStore
+        import core.knowledge.notes_store as ns_mod
+        monkeypatch.setattr(
+            ns_mod, "_DEFAULT_STORE",
+            NotesStore(tmp_path / "notes.json"),
+        )
+        cli_mod = _load_cli_module()
+        result = self._make_rec("cart_recovery", "loyalty")
+        assert cli_mod._suggest_collect_operator_notes(result) == {}
+
+    def test_populates_when_notes_exist(self, tmp_path, monkeypatch):
+        from core.knowledge import NotesStore
+        import core.knowledge.notes_store as ns_mod
+        store = NotesStore(tmp_path / "notes.json")
+        store.set_engine_notes("cart_recovery", "live: under 10%")
+        store.set_engine_notes("loyalty", "tier-based")
+        monkeypatch.setattr(ns_mod, "_DEFAULT_STORE", store)
+
+        cli_mod = _load_cli_module()
+        result = self._make_rec(
+            "cart_recovery", "loyalty", "browse_recovery",
+        )
+        notes = cli_mod._suggest_collect_operator_notes(result)
+        assert notes["cart_recovery"]["note"] == "live: under 10%"
+        assert notes["loyalty"]["note"] == "tier-based"
+        # browse_recovery has no note → absent (not None)
+        assert "browse_recovery" not in notes
+
+    def test_knowledge_import_failure_returns_empty(self):
+        from unittest.mock import patch
+        cli_mod = _load_cli_module()
+        result = self._make_rec("cart_recovery")
+        with patch(
+            "core.knowledge.get_operator_context",
+            side_effect=RuntimeError("io"),
+        ):
+            # Per-engine raise is caught; dict ends up empty
+            assert cli_mod._suggest_collect_operator_notes(result) == {}
+
+
+class TestSuggestIntegration:
+    """End-to-end via subprocess. Uses the real default-store
+    file so a setup/teardown writes + cleans the artifact.
+    Skipped if the data/ dir isn't writeable."""
+
+    def test_inline_note_appears_in_table_view(self):
+        from core.knowledge import get_default_store
+        store = get_default_store()
+        # Save initial state so the test doesn't clobber real notes
+        existing = store.all_engine_notes()
+        store.set_engine_notes(
+            "discount_strategy",
+            "test marker: keep depth under 15%",
+        )
+        try:
+            # Wider limit so discount_strategy lands in the
+            # primary list (tied-priority engines sort
+            # alphabetically; discount_strategy is past the
+            # first few).
+            proc = _run_cli(
+                "suggest", "--goal", "maximize_profit", "--limit", "10",
+            )
+            assert proc.returncode == 0, proc.stderr
+            # Inline note line under the engine row
+            assert "test marker: keep depth under 15%" in proc.stdout
+            # Note appears under the discount_strategy row, not at top
+            ds_idx = proc.stdout.find("discount_strategy")
+            note_idx = proc.stdout.find("test marker:")
+            assert 0 <= ds_idx < note_idx
+        finally:
+            # Restore: clear and put back any prior entries
+            store.clear()
+            for name, entry in existing.items():
+                if isinstance(entry, dict):
+                    store.set_engine_notes(
+                        name, entry.get("notes", ""),
+                        source_path=entry.get("source_path", ""),
+                    )
+
+    def test_json_output_includes_operator_context_field(self):
+        from core.knowledge import get_default_store
+        store = get_default_store()
+        existing = store.all_engine_notes()
+        store.set_engine_notes(
+            "discount_strategy", "test marker for json mode",
+        )
+        try:
+            # Use a wider limit so discount_strategy is in the
+            # primary list (engines with tied priority sort
+            # alphabetically; discount_strategy is past the first
+            # few).
+            proc = _run_cli(
+                "suggest", "--goal", "maximize_profit",
+                "--limit", "10", "--json",
+            )
+            assert proc.returncode == 0, proc.stderr
+            payload = json.loads(proc.stdout)
+            primary = payload["primary"]
+            # Every primary entry has operator_context field (None
+            # or dict)
+            for entry in primary:
+                assert "operator_context" in entry
+            # The one with a note has the dict
+            notes_found = [
+                e for e in primary
+                if e.get("engine") == "discount_strategy"
+                and e.get("operator_context")
+            ]
+            assert notes_found
+            assert "test marker for json mode" in (
+                notes_found[0]["operator_context"]["note"]
+            )
+        finally:
+            store.clear()
+            for name, entry in existing.items():
+                if isinstance(entry, dict):
+                    store.set_engine_notes(
+                        name, entry.get("notes", ""),
+                        source_path=entry.get("source_path", ""),
+                    )
