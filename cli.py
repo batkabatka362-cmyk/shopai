@@ -176,6 +176,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw JSON payload instead of the table view",
     )
 
+    knowledge_p = sub.add_parser(
+        "knowledge",
+        help="Knowledge-vault export (Obsidian-compatible Markdown)",
+    )
+    knowledge_sub = knowledge_p.add_subparsers(dest="knowledge_action")
+    knowledge_export = knowledge_sub.add_parser(
+        "export",
+        help="Dump ShopAI state to a directory as Markdown",
+    )
+    knowledge_export.add_argument(
+        "target", help="Vault directory (created if missing)",
+    )
+    knowledge_export.add_argument(
+        "--decision-limit", type=int, default=200,
+        help="Max decisions exported (default: 200, newest first)",
+    )
+
     # ── Action commands ──────────────────────────────────────
     action_p = sub.add_parser("actions", help="Manage AI actions")
     action_sub = action_p.add_subparsers(dest="action_cmd")
@@ -1136,6 +1153,40 @@ def _cmd_suggest(args) -> None:
             )
 
 
+def _cmd_knowledge(args) -> None:
+    """Knowledge-vault subcommand router.
+
+    Currently the only supported action is ``export``, which dumps
+    ShopAI state to an Obsidian-compatible Markdown vault. The
+    sub-parser shape leaves room for future ``import`` or ``sync``
+    verbs without churning the top-level CLI.
+    """
+    if args.knowledge_action != "export":
+        print(
+            "Usage: shopai knowledge export <path> "
+            "[--decision-limit N]"
+        )
+        sys.exit(1)
+
+    from core.knowledge import ObsidianExporter
+
+    exporter = ObsidianExporter(
+        target_dir=args.target,
+        decision_limit=args.decision_limit,
+    )
+    summary = exporter.export()
+    print(f"Vault exported to: {exporter.target_dir}")
+    print(f"  engines:   {summary.engines}")
+    print(f"  goals:     {summary.goals}")
+    print(f"  decisions: {summary.decisions}")
+    if summary.skipped:
+        print("  skipped:")
+        for s in summary.skipped:
+            print(f"    - {s}")
+    if not summary.overview_written:
+        print("  overview.md: NOT written (see skipped)")
+
+
 # ── Action Commands ──────────────────────────────────────────
 
 def _cmd_actions(args) -> None:
@@ -1554,6 +1605,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "suggest":
         _cmd_suggest(args)
+        return
+
+    if args.command == "knowledge":
+        _cmd_knowledge(args)
         return
 
     if args.command == "actions":
