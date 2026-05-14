@@ -450,6 +450,32 @@ class ApprovalQueue:
         )
         return expired
 
+    def stats_by_engine(self) -> dict[str, dict[str, int]]:
+        """Counts per engine x status. Used by ``shopai approvals
+        stats --by-engine`` and the API endpoint that surfaces
+        per-engine triage signal (which engines have growing
+        rejection / expiry rates).
+
+        Returns a nested dict ``{engine: {status: count}}``. Engines
+        with no queue activity are absent; each present engine has
+        an entry per :class:`ApprovalStatus` (zeros included).
+        """
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT engine, status, COUNT(*) as n
+                   FROM pending_actions
+                   GROUP BY engine, status""",
+            ).fetchall()
+
+        all_statuses = [s.value for s in ApprovalStatus]
+        out: dict[str, dict[str, int]] = {}
+        for r in rows:
+            engine = r["engine"]
+            if engine not in out:
+                out[engine] = {s: 0 for s in all_statuses}
+            out[engine][r["status"]] = int(r["n"])
+        return out
+
     def stats(self) -> dict[str, int]:
         """Counts per status — used by the API status endpoint."""
         with _LOCK:
