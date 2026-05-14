@@ -140,6 +140,14 @@ class InsightDigest:
         if engine_counts:
             stats.top_engine = engine_counts.most_common(1)[0][0]
 
+        # Operator notes — surface anything persisted via the
+        # importer. Highlights the engines/goals the operator
+        # has actually annotated so the digest doesn't get
+        # cluttered when there's nothing to say.
+        engine_notes, goal_notes = self._operator_notes(
+            recommendations, active_goal, stats,
+        )
+
         # Compose
         lines: list[str] = []
         lines += self._render_header()
@@ -148,6 +156,10 @@ class InsightDigest:
         lines += self._render_goal_table(goal_table)
         lines += self._render_decisions(decisions)
         lines += self._render_engine_activity(engine_counts)
+        if engine_notes or goal_notes:
+            lines += self._render_operator_notes(
+                engine_notes, goal_notes,
+            )
         if stats.skipped:
             lines += self._render_skipped(stats.skipped)
         return "\n".join(lines), stats
@@ -447,6 +459,93 @@ class InsightDigest:
         out.append("")
         return out
 
+    def _operator_notes(
+        self,
+        recommendations: list[Any],
+        active_goal: str,
+        stats: DigestStats,
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        """Pull persisted operator notes that are relevant RIGHT NOW.
+
+        Two filters keep the section signal-dense:
+          * **Engine notes** — only for engines that appear in the
+            current top-recommendations list. Notes on engines that
+            won't run anyway are noise.
+          * **Goal notes** — only for the active goal. The leaderboard
+            already shows every goal; commentary lives next to the
+            one the system is optimising for.
+
+        Returns ``(engine_notes, goal_notes)`` — each a list of
+        ``(name, text)`` tuples. Empty when the notes store is
+        unavailable or has nothing relevant.
+        """
+        try:
+            from core.knowledge.notes_store import get_default_store
+            store = get_default_store()
+        except Exception as exc:  # noqa: BLE001
+            stats.skipped.append(f"operator_notes: {exc}")
+            return [], []
+
+        try:
+            engine_map = store.all_engine_notes()
+            goal_map = store.all_goal_notes()
+        except Exception as exc:  # noqa: BLE001
+            stats.skipped.append(f"operator_notes_read: {exc}")
+            return [], []
+
+        # Filter engine notes to current recommendation names
+        rec_engines = [
+            getattr(r, "engine", "") for r in recommendations
+        ]
+        engine_notes: list[tuple[str, str]] = []
+        for engine in rec_engines:
+            entry = engine_map.get(engine)
+            if not isinstance(entry, dict):
+                continue
+            text = str(entry.get("notes", "") or "").strip()
+            if text:
+                engine_notes.append((engine, text))
+
+        # Active-goal note (singular — at most one)
+        goal_notes: list[tuple[str, str]] = []
+        goal_entry = goal_map.get(active_goal)
+        if isinstance(goal_entry, dict):
+            text = str(goal_entry.get("notes", "") or "").strip()
+            if text:
+                goal_notes.append((active_goal, text))
+
+        return engine_notes, goal_notes
+
+    def _render_operator_notes(
+        self,
+        engine_notes: list[tuple[str, str]],
+        goal_notes: list[tuple[str, str]],
+    ) -> list[str]:
+        out = ["## Operator notes (from your vault)", ""]
+        if goal_notes:
+            out.append("### Active goal")
+            out.append("")
+            for goal, text in goal_notes:
+                out.append(f"**[[{goal}]]**")
+                out.append("")
+                out += _indent_quote(text)
+                out.append("")
+        if engine_notes:
+            out.append("### Engines in your top recommendations")
+            out.append("")
+            for engine, text in engine_notes:
+                out.append(f"**[[{engine}]]**")
+                out.append("")
+                out += _indent_quote(text)
+                out.append("")
+        out.append(
+            "_Notes captured via `shopai knowledge import`. "
+            "Update them by editing the matching vault page and "
+            "re-importing._"
+        )
+        out.append("")
+        return out
+
     # ── Internal ──────────────────────────────────────────────
 
     def _resolve_default_manager(self) -> Any | None:
@@ -456,3 +555,14 @@ class InsightDigest:
         except Exception as exc:  # noqa: BLE001
             logger.debug("default manager unavailable: %s", exc)
             return None
+
+
+def _indent_quote(text: str) -> list[str]:
+    """Render ``text`` as a Markdown block-quote.
+
+    Used by the operator-notes section so the operator's prose is
+    visually distinguished from the surrounding auto-generated
+    tables.
+    """
+    return [f"> {line}" if line else ">"
+            for line in text.splitlines()]
