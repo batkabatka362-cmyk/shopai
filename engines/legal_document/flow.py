@@ -21,6 +21,10 @@ from .template_selector import select_templates
 from .content_generator import generate_content
 from .compliance_validator import validate_compliance
 from .formatter import format_documents
+from .page_applier import (
+    apply_legal_documents,
+    enqueue_legal_documents_for_approval,
+)
 from .memory_reader import read_past_documents
 from .memory_writer import write_document_result
 
@@ -124,6 +128,34 @@ class LegalDocumentEngine:
             missing_sections=missing_sections,
         )
 
+        # ---- Stage 6.5: Legal-page writeback (opt-in) ----
+        # Default OFF — existing callers keep their pure-
+        # recommendation contract. Two opt-in modes mirror the
+        # established Phase 6/7 pattern:
+        #
+        #   data.apply_legal_docs=True + data.require_approval=False
+        #     → SHOPIFY_CREATE_PAGE immediately per document
+        #   data.apply_legal_docs=True + data.require_approval=True
+        #     → enqueue per-document to core.approval; merchant
+        #       approves before each mutation lands
+        #
+        # Pages land as UNPUBLISHED — legal copy goes LIVE the
+        # moment it's published and a typo in a privacy policy
+        # is a compliance risk. Staged gives the merchant a
+        # review pass before exposure.
+        page_apply_results: list[dict[str, Any]] = []
+        if data.get("apply_legal_docs") is True:
+            if data.get("require_approval") is True:
+                page_apply_results = enqueue_legal_documents_for_approval(
+                    documents=formatted_documents,
+                    compliance_check=compliance_check,
+                )
+            else:
+                page_apply_results = apply_legal_documents(
+                    documents=formatted_documents,
+                    compliance_check=compliance_check,
+                )
+
         # ---- Stage 7: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -133,6 +165,11 @@ class LegalDocumentEngine:
                 "documents": formatted_documents,
                 "compliance_check": compliance_check,
                 "missing_sections": missing_sections,
+                # Stage 6.5 output. Empty list when default-
+                # off; one entry per legal-doc otherwise
+                # (carries pending_action_id when the approval-
+                # queue branch fired).
+                "page_apply_results": page_apply_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
