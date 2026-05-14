@@ -227,6 +227,18 @@ class ShopifyWebhookHandler:
             except Exception as exc:  # noqa: BLE001
                 logger.error("Custom handler failed for %s: %s", topic, exc)
 
+        # Feed the LearningLoop via the WebhookFeedbackBridge
+        # (audit #5). Best-effort: a bridge / loop failure must
+        # not interrupt the webhook response — the event is
+        # already in the merchant's store and the engines have
+        # already been triggered above.
+        try:
+            from core.feedback import get_webhook_feedback_bridge
+            bridge = get_webhook_feedback_bridge()
+            bridge.handle_event(topic, payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("webhook feedback bridge raised: %s", exc)
+
         event.processed = True
         event.results = results
 

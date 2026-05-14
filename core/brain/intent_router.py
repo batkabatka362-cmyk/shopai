@@ -470,6 +470,21 @@ def classify_intent(
             matched[engine] = engine_matched
 
     if not scores:
+        # Zero rule matches — try the LLM fallback before
+        # surrendering. Same opt-in semantics as the
+        # below-floor branch below.
+        llm_result = _try_llm_fallback(text)
+        if llm_result is not None:
+            return IntentResult(
+                engine=llm_result.engine,
+                confidence=llm_result.confidence,
+                source="llm",
+                explanation=llm_result.reasoning or (
+                    "LLM-classified after rule-based pass had "
+                    "no keyword match"
+                ),
+            )
+
         return IntentResult(
             engine=None, confidence=0.0,
             source="rules",
@@ -499,6 +514,27 @@ def classify_intent(
     top_engine, top_confidence = normalised[0]
 
     if top_confidence < _NO_MATCH_FLOOR:
+        # Rule-based pass gave up. Try the LLM fallback before
+        # surrendering. The fallback is opt-in by deployment
+        # (only fires when ANTHROPIC_API_KEY is set + the SDK
+        # is importable) so production code without a key
+        # behaves exactly as before.
+        llm_result = _try_llm_fallback(text)
+        if llm_result is not None:
+            return IntentResult(
+                engine=llm_result.engine,
+                confidence=llm_result.confidence,
+                alternatives=[
+                    (e, c) for e, c in normalised[:_ALTERNATIVES_RETURNED]
+                ],
+                source="llm",
+                explanation=llm_result.reasoning or (
+                    f"LLM-classified after rule-based fallback "
+                    f"(rules best: '{top_engine}' at "
+                    f"{top_confidence:.2f})"
+                ),
+            )
+
         return IntentResult(
             engine=None,
             confidence=top_confidence,
@@ -527,6 +563,36 @@ def classify_intent(
         ),
         matched_keywords=matched[top_engine],
     )
+
+
+def _try_llm_fallback(text: str):
+    """Best-effort LLM classification when the rule-based pass
+    yielded a below-floor match.
+
+    Lazy-imports :mod:`core.brain.intent_llm` so a missing
+    Anthropic SDK can't break the rule-based hot path. Returns
+    ``LLMIntentResult`` on success, ``None`` on any failure
+    (key missing / SDK absent / network / parse).
+    """
+    try:
+        from core.brain.intent_llm import llm_classify
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("intent_llm import failed: %s", exc)
+        return None
+
+    phrase_hints = {
+        engine: [phrase for _, phrase in phrases][:6]
+        for engine, phrases in _INTENT_INDEX.items()
+    }
+    try:
+        return llm_classify(
+            text,
+            candidate_engines=list(_INTENT_INDEX.keys()),
+            phrase_hints=phrase_hints,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("llm_classify raised: %s", exc)
+        return None
 
 
 def list_supported_engines() -> list[str]:
