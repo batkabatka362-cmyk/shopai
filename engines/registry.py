@@ -289,6 +289,19 @@ def get_engine(name: str) -> "BaseEngine | None":
         )
         return None
 
+    # Attach the engine-completion hook emitter. Patches
+    # ``engine.run`` in-place so every consumer that resolves
+    # through the registry fires ``engine.<name>.completed`` and
+    # ``engine.completed`` events on each run. Idempotent and
+    # silently degrades if the hooks module is unavailable.
+    try:
+        from core.hooks import attach_completion_emitter
+        attach_completion_emitter(engine, name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "hooks attach skipped for %s: %s", name, exc,
+        )
+
     with _cache_lock:
         # Re-check inside the lock so two concurrent loaders agree
         # on which instance wins.
