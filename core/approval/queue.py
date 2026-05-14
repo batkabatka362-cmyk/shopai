@@ -410,6 +410,65 @@ class ApprovalQueue:
             })
         return action
 
+    def expire_stale(self, *, max_age_seconds: float) -> list[ApprovalAction]:
+        """Bulk-transition PENDING actions older than ``max_age_seconds``
+        to EXPIRED. Returns the list of just-expired actions (newest
+        first), or ``[]`` if nothing matched.
+
+        Emits ``approval.expired`` for each transition. The lifecycle
+        docstring at the top of this module flagged EXPIRED as "TTL
+        only, not auto-applied in v1"; this method is the v2 sweep —
+        callers (a cron, the CLI ``approvals sweep`` verb) decide when
+        to invoke it.
+        """
+        cutoff = time.time() - max_age_seconds
+        now = time.time()
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT * FROM pending_actions
+                   WHERE status = ? AND proposed_at < ?
+                   ORDER BY proposed_at ASC""",
+                (ApprovalStatus.PENDING.value, cutoff),
+            ).fetchall()
+            if not rows:
+                return []
+            ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            self._conn.execute(
+                f"""UPDATE pending_actions
+                   SET status = ?, decided_at = ?,
+                       decision_reason = ?
+                   WHERE id IN ({placeholders})""",
+                (
+                    ApprovalStatus.EXPIRED.value,
+                    now,
+                    f"ttl_exceeded ({int(max_age_seconds)}s)",
+                    *ids,
+                ),
+            )
+            self._conn.commit()
+            new_rows = self._conn.execute(
+                f"""SELECT * FROM pending_actions
+                   WHERE id IN ({placeholders})
+                   ORDER BY decided_at DESC""",
+                ids,
+            ).fetchall()
+
+        expired = [_row_to_action(r) for r in new_rows]
+        for a in expired:
+            _emit_hook("approval.expired", {
+                "action_id": a.id,
+                "engine": a.engine,
+                "action_type": a.action_type,
+                "capability": a.capability,
+                "age_seconds": int(now - a.proposed_at),
+            })
+        logger.info(
+            "expire_stale: %d PENDING actions older than %ds → EXPIRED",
+            len(expired), int(max_age_seconds),
+        )
+        return expired
+
     def record_outcome(
         self,
         action_id: str,
