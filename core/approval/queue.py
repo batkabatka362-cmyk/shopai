@@ -449,13 +449,15 @@ class ApprovalQueue:
             polarity = "neutral"
 
         with _LOCK:
-            # Verify action exists — orphan outcomes are useless and
-            # would mask data bugs.
-            exists = self._conn.execute(
-                "SELECT 1 FROM pending_actions WHERE id = ? LIMIT 1",
+            # Look up engine/action_type for the hook payload AND
+            # verify action exists (orphan outcomes are useless and
+            # would mask data bugs).
+            row = self._conn.execute(
+                """SELECT engine, action_type
+                   FROM pending_actions WHERE id = ? LIMIT 1""",
                 (action_id,),
             ).fetchone()
-            if not exists:
+            if not row:
                 logger.debug(
                     "record_outcome no-op: unknown action %s",
                     action_id,
@@ -477,6 +479,18 @@ class ApprovalQueue:
             "outcome recorded: action=%s topic=%s polarity=%s",
             action_id, topic, polarity,
         )
+        # Fan out so goal feedback (and any other consumer) can
+        # refine the brain stack's effectiveness EMA with the real
+        # downstream signal — not just "the mutation succeeded".
+        _emit_hook("approval.outcome.recorded", {
+            "action_id": action_id,
+            "engine": row["engine"],
+            "action_type": row["action_type"],
+            "topic": topic,
+            "polarity": polarity,
+            "metrics": dict(metrics or {}),
+            "source_event": source_event,
+        })
         return True
 
     def get_outcomes(self, action_id: str) -> list[dict[str, Any]]:
