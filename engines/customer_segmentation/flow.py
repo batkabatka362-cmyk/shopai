@@ -31,6 +31,10 @@ from .value_scorer import score_values
 from .churn_predictor import predict_churn
 from .segment_builder import build_segments
 from .strategy_mapper import map_strategies
+from .customer_applier import (
+    apply_segment_tags,
+    enqueue_segment_tags_for_approval,
+)
 from .memory_reader import read_past_segmentations
 from .memory_writer import write_segmentation_result
 from engines._shopify_hydrator import hydrate
@@ -174,6 +178,32 @@ class CustomerSegmentationEngine:
         # Strategy mapper returns updated segments with strategy field set
         final_segments = strategy_result.get("segments", segments)
 
+        # ---- Stage 9.5: Segment-tag writeback (opt-in) ----
+        # Default OFF — existing callers keep their pure-
+        # recommendation contract. Two opt-in modes mirror the
+        # established Phase 6/7 pattern:
+        #
+        #   data.apply_segment_tags=True + data.require_approval=False
+        #     → SHOPIFY_TAG_CUSTOMER immediately per customer
+        #   data.apply_segment_tags=True + data.require_approval=True
+        #     → enqueue per-customer to core.approval; merchant
+        #       approves before each mutation lands
+        #
+        # Both paths share the same upfront filters: skip blank
+        # customer ids and skip the ``Unclassified`` fallback
+        # bucket. Per-customer results so the engine output is
+        # explicit about what was written and what was skipped.
+        segment_apply_results: list[dict[str, Any]] = []
+        if data.get("apply_segment_tags") is True:
+            if data.get("require_approval") is True:
+                segment_apply_results = enqueue_segment_tags_for_approval(
+                    segments=final_segments,
+                )
+            else:
+                segment_apply_results = apply_segment_tags(
+                    segments=final_segments,
+                )
+
         # ---- Stage 10: Memory Writer (non-fatal) ----
         _write_result = write_segmentation_result(
             segments=final_segments,
@@ -194,6 +224,11 @@ class CustomerSegmentationEngine:
                 "high_value_count": high_value_count,
                 "at_risk_count": at_risk_count,
                 "churn_predictions": churn_predictions,
+                # Stage 9.5 output. Empty list when the opt-in
+                # flag is off; one entry per customer otherwise
+                # (carries pending_action_id when the approval-
+                # queue branch fired).
+                "segment_apply_results": segment_apply_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
