@@ -193,6 +193,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max decisions exported (default: 200, newest first)",
     )
 
+    knowledge_digest = knowledge_sub.add_parser(
+        "digest",
+        help="Render a one-page insight digest (briefing)",
+    )
+    knowledge_digest.add_argument(
+        "--since", dest="since_days", type=int, default=7,
+        help="Window in days for the recent-activity section (default: 7)",
+    )
+    knowledge_digest.add_argument(
+        "--limit", dest="decision_limit", type=int, default=20,
+        help="Max decisions to list (default: 20)",
+    )
+    knowledge_digest.add_argument(
+        "--out", default="",
+        help="Write to this path (default: stdout)",
+    )
+
     # ── Action commands ──────────────────────────────────────
     action_p = sub.add_parser("actions", help="Manage AI actions")
     action_sub = action_p.add_subparsers(dest="action_cmd")
@@ -1156,18 +1173,27 @@ def _cmd_suggest(args) -> None:
 def _cmd_knowledge(args) -> None:
     """Knowledge-vault subcommand router.
 
-    Currently the only supported action is ``export``, which dumps
-    ShopAI state to an Obsidian-compatible Markdown vault. The
-    sub-parser shape leaves room for future ``import`` or ``sync``
-    verbs without churning the top-level CLI.
+    Verbs:
+      * ``export`` — dump ShopAI state to an Obsidian-compatible
+        Markdown vault.
+      * ``digest`` — render a one-page insight briefing.
     """
-    if args.knowledge_action != "export":
-        print(
-            "Usage: shopai knowledge export <path> "
-            "[--decision-limit N]"
-        )
-        sys.exit(1)
+    if args.knowledge_action == "export":
+        _cmd_knowledge_export(args)
+        return
+    if args.knowledge_action == "digest":
+        _cmd_knowledge_digest(args)
+        return
+    print(
+        "Usage:\n"
+        "  shopai knowledge export <path> [--decision-limit N]\n"
+        "  shopai knowledge digest [--since N] [--limit M] "
+        "[--out PATH]"
+    )
+    sys.exit(1)
 
+
+def _cmd_knowledge_export(args) -> None:
     from core.knowledge import ObsidianExporter
 
     exporter = ObsidianExporter(
@@ -1185,6 +1211,30 @@ def _cmd_knowledge(args) -> None:
             print(f"    - {s}")
     if not summary.overview_written:
         print("  overview.md: NOT written (see skipped)")
+
+
+def _cmd_knowledge_digest(args) -> None:
+    from core.knowledge import InsightDigest
+
+    digest = InsightDigest(
+        since_days=args.since_days,
+        decision_limit=args.decision_limit,
+    )
+    if args.out:
+        stats = digest.write_to(args.out)
+        print(f"Digest written to: {args.out}")
+        print(
+            f"  active_goal:    {stats.active_goal}\n"
+            f"  decisions in window: {stats.decisions_window}\n"
+            f"  cumulative executed/failed: "
+            f"{stats.decisions_total_executed}/"
+            f"{stats.decisions_total_failed}"
+        )
+        if stats.top_engine:
+            print(f"  top engine in window: {stats.top_engine}")
+    else:
+        markdown, _stats = digest.render()
+        print(markdown)
 
 
 # ── Action Commands ──────────────────────────────────────────
