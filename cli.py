@@ -271,7 +271,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── System commands ──────────────────────────────────────
     sub.add_parser("health", help="System health check")
-    sub.add_parser("status", help="Full system status")
+    status_p = sub.add_parser("status", help="Full system status")
+    status_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw status JSON instead of the table view",
+    )
     sub.add_parser("setup", help="Interactive setup wizard")
     sub.add_parser("start", help="Start the orchestrator")
     sub.add_parser("stop", help="Stop the orchestrator")
@@ -1530,36 +1534,97 @@ def _cmd_health() -> None:
     print(f"Status:  {'ALL OK' if all_ok else 'SOME FAILURES'}")
 
 
-def _cmd_status() -> None:
+def _build_status_dict() -> dict:
+    """Gather the status payload as a structured dict.
+
+    Shared between ``_cmd_status`` (renders the table) and any
+    caller that wants the raw JSON (--json flag, monitoring
+    pipes, future API endpoints).
+    """
     from engines.registry import engine_count
+    from data_pipeline.store.sync_service import SyncService
+
     sm = _get_store_manager()
     stores = sm.list_stores()
-
-    print("ShopAI System Status\n")
-    print(f"  Engines:  {engine_count()}")
-    print(f"  Stores:   {len(stores)}")
-    print(f"  Active:   {sm.active_store_id or 'none'}")
-    print()
-
-    if stores:
-        print("Store Data:")
-        for s in stores:
-            stats = sm.get_stats(s["store_id"])
-            active = " *" if s.get("is_active") else ""
-            print(f"  {s['store_id']}{active}: {stats['products']}p / {stats['orders']}o / {stats['customers']}c / ${stats['total_revenue']:,.0f}")
-    print()
-
-    # Sync status
-    from data_pipeline.store.sync_service import SyncService
     sync = SyncService(sm)
     sync_status = sync.get_status()
-    print(f"  Auto-sync: {'running' if sync_status['auto_sync_running'] else 'stopped'}")
-    for si in sync_status["stores"]:
+
+    store_payload = []
+    for s in stores:
+        stats = sm.get_stats(s["store_id"])
+        store_payload.append({
+            "store_id": s["store_id"],
+            "active": bool(s.get("is_active")),
+            "products": stats.get("products", 0),
+            "orders": stats.get("orders", 0),
+            "customers": stats.get("customers", 0),
+            "total_revenue": stats.get("total_revenue", 0.0),
+        })
+
+    now = time.time()
+    sync_stores = []
+    for si in sync_status.get("stores", []):
         last = si.get("last_sync")
-        if last:
-            age = time.time() - last
-            ago = f"{int(age)}s ago" if age < 60 else f"{int(age/60)}m ago" if age < 3600 else f"{int(age/3600)}h ago"
-            print(f"    {si['store_id']}: last sync {ago} ({si['last_status']})")
+        sync_stores.append({
+            "store_id": si.get("store_id"),
+            "last_sync": last,
+            "last_sync_age_seconds": (now - last) if last else None,
+            "last_status": si.get("last_status"),
+        })
+
+    return {
+        "engines": engine_count(),
+        "stores_count": len(stores),
+        "active_store": sm.active_store_id or None,
+        "stores": store_payload,
+        "auto_sync_running": bool(
+            sync_status.get("auto_sync_running"),
+        ),
+        "sync_stores": sync_stores,
+    }
+
+
+def _cmd_status(args=None) -> None:
+    if args is not None and getattr(args, "json", False):
+        payload = _build_status_dict()
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    payload = _build_status_dict()
+
+    print("ShopAI System Status\n")
+    print(f"  Engines:  {payload['engines']}")
+    print(f"  Stores:   {payload['stores_count']}")
+    print(f"  Active:   {payload['active_store'] or 'none'}")
+    print()
+
+    if payload["stores"]:
+        print("Store Data:")
+        for s in payload["stores"]:
+            active = " *" if s["active"] else ""
+            print(
+                f"  {s['store_id']}{active}: {s['products']}p / "
+                f"{s['orders']}o / {s['customers']}c / "
+                f"${s['total_revenue']:,.0f}"
+            )
+    print()
+
+    print(
+        f"  Auto-sync: "
+        f"{'running' if payload['auto_sync_running'] else 'stopped'}"
+    )
+    for si in payload["sync_stores"]:
+        age = si.get("last_sync_age_seconds")
+        if age is not None:
+            ago = (
+                f"{int(age)}s ago" if age < 60
+                else f"{int(age/60)}m ago" if age < 3600
+                else f"{int(age/3600)}h ago"
+            )
+            print(
+                f"    {si['store_id']}: last sync {ago} "
+                f"({si['last_status']})"
+            )
         else:
             print(f"    {si['store_id']}: never synced")
 
@@ -1799,7 +1864,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "status":
-        _cmd_status()
+        _cmd_status(args)
         return
 
     if args.command == "setup":
