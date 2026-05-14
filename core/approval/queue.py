@@ -50,6 +50,26 @@ from utils.logger import get_logger
 
 logger = get_logger("core.approval.queue")
 
+
+def _emit_hook(event_name: str, payload: dict[str, Any]) -> None:
+    """Fan ``event_name`` out through the hooks dispatcher.
+
+    Lazy-import so a missing / broken hooks module can't crash
+    the queue's hot path. The hooks system has its own test-mode
+    bypass and per-handler isolation, so we just delegate.
+    """
+    try:
+        from core.hooks import emit as _emit
+    except Exception as exc:  # noqa: BLE001
+        # Hooks layer not importable for some reason — silently
+        # skip. The queue's persistence already happened.
+        logger.debug("hooks import failed: %s", exc)
+        return
+    try:
+        _emit(event_name, payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("hook emit raised for %s: %s", event_name, exc)
+
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "approval_queue.db"
 _LOCK = threading.RLock()
 _INSTANCE: "ApprovalQueue | None" = None
@@ -181,7 +201,7 @@ class ApprovalQueue:
             "approval enqueued: %s engine=%s action=%s",
             action_id, engine, action_type,
         )
-        return ApprovalAction(
+        action = ApprovalAction(
             id=action_id, engine=engine, action_type=action_type,
             capability=capability, params=params,
             narrative=narrative, confidence=confidence,
@@ -189,6 +209,15 @@ class ApprovalQueue:
             decided_at=None, decided_by=None, decision_reason=None,
             result=None,
         )
+        _emit_hook("approval.queued", {
+            "action_id": action_id,
+            "engine": engine,
+            "action_type": action_type,
+            "capability": capability,
+            "narrative": narrative,
+            "confidence": confidence,
+        })
+        return action
 
     def get(self, action_id: str) -> ApprovalAction | None:
         """Fetch a single action by id, regardless of status."""
@@ -261,14 +290,25 @@ class ApprovalQueue:
 
         Returns the updated :class:`ApprovalAction`, or ``None``
         when the id is unknown or already resolved (idempotent).
+        Emits ``approval.approved`` hook on a real transition.
         """
-        return self._transition(
+        action = self._transition(
             action_id,
             from_status=ApprovalStatus.PENDING,
             to_status=ApprovalStatus.APPROVED,
             decided_by=decided_by,
             reason=reason,
         )
+        if action is not None:
+            _emit_hook("approval.approved", {
+                "action_id": action.id,
+                "engine": action.engine,
+                "action_type": action.action_type,
+                "capability": action.capability,
+                "decided_by": decided_by,
+                "reason": reason,
+            })
+        return action
 
     def reject(
         self,
@@ -278,14 +318,26 @@ class ApprovalQueue:
         reason: str = "",
     ) -> ApprovalAction | None:
         """Mark a pending action rejected. Same idempotency contract
-        as :meth:`approve`."""
-        return self._transition(
+        as :meth:`approve`. Emits ``approval.rejected`` hook on a
+        real transition.
+        """
+        action = self._transition(
             action_id,
             from_status=ApprovalStatus.PENDING,
             to_status=ApprovalStatus.REJECTED,
             decided_by=decided_by,
             reason=reason,
         )
+        if action is not None:
+            _emit_hook("approval.rejected", {
+                "action_id": action.id,
+                "engine": action.engine,
+                "action_type": action.action_type,
+                "capability": action.capability,
+                "decided_by": decided_by,
+                "reason": reason,
+            })
+        return action
 
     def attach_result(
         self,
@@ -299,6 +351,8 @@ class ApprovalQueue:
         Flips status APPROVED → EXECUTED on success or APPROVED →
         FAILED on failure. The follow-up PR wires this into the
         engine appliers so merchant-approved writebacks land here.
+        Emits ``approval.executed`` or ``approval.failed`` hook on
+        a real transition.
         """
         target = ApprovalStatus.EXECUTED if success else ApprovalStatus.FAILED
         with _LOCK:
@@ -322,7 +376,20 @@ class ApprovalQueue:
             new_row = self._conn.execute(
                 "SELECT * FROM pending_actions WHERE id = ?", (action_id,),
             ).fetchone()
-        return _row_to_action(new_row) if new_row else None
+        action = _row_to_action(new_row) if new_row else None
+        if action is not None:
+            hook_name = (
+                "approval.executed" if success else "approval.failed"
+            )
+            _emit_hook(hook_name, {
+                "action_id": action.id,
+                "engine": action.engine,
+                "action_type": action.action_type,
+                "capability": action.capability,
+                "success": success,
+                "result": result or {},
+            })
+        return action
 
     def stats(self) -> dict[str, int]:
         """Counts per status — used by the API status endpoint."""
