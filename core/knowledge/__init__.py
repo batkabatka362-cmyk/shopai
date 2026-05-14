@@ -1,15 +1,30 @@
 """Knowledge layer — bridges ShopAI state into external review tools.
 
-First citizen: Obsidian-compatible Markdown vault export. The user's
-17-day plan calls for an Obsidian + NotebookLM memory layer; this
-module is the export bridge that produces the Markdown surface.
+The 17-day plan's step 2 calls for an Obsidian + NotebookLM memory
+layer. This package is the bridge:
+
+  * :class:`ObsidianExporter` — dump ShopAI state to a Markdown vault.
+  * :class:`InsightDigest` — render a one-page rolling briefing.
+  * :class:`ObsidianImporter` — read operator notes back into the
+    persistent :class:`NotesStore`.
+
+Round trip: export → operator annotates in Obsidian → import →
+``get_default_store().get_engine_notes("cart_recovery")`` returns
+the operator's prose, ready to surface in engine output / digest
+/ future RAG prompts.
 """
 from core.knowledge.digest import DigestStats, InsightDigest
 from core.knowledge.exporter import ExportSummary, ObsidianExporter
+from core.knowledge.importer import ImportSummary, ObsidianImporter
+from core.knowledge.notes_store import NotesStore, get_default_store
 
 __all__ = [
     "DigestStats",
     "ExportSummary",
+    "ImportSummary",
     "InsightDigest",
+    "NotesStore",
     "ObsidianExporter",
+    "ObsidianImporter",
+    "get_default_store",
 ]

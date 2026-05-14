@@ -210,6 +210,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write to this path (default: stdout)",
     )
 
+    knowledge_import = knowledge_sub.add_parser(
+        "import",
+        help="Read operator notes back from a vault into ShopAI",
+    )
+    knowledge_import.add_argument(
+        "source", help="Vault directory to scan",
+    )
+
+    knowledge_notes = knowledge_sub.add_parser(
+        "notes",
+        help="Inspect the persisted operator-notes store",
+    )
+    knowledge_notes.add_argument(
+        "kind", nargs="?", choices=["engine", "goal"],
+        default=None,
+        help="Filter by kind (default: list both)",
+    )
+    knowledge_notes.add_argument(
+        "name", nargs="?", default=None,
+        help="Show notes for a specific engine / goal name",
+    )
+
     # ── Action commands ──────────────────────────────────────
     action_p = sub.add_parser("actions", help="Manage AI actions")
     action_sub = action_p.add_subparsers(dest="action_cmd")
@@ -1177,6 +1199,8 @@ def _cmd_knowledge(args) -> None:
       * ``export`` — dump ShopAI state to an Obsidian-compatible
         Markdown vault.
       * ``digest`` — render a one-page insight briefing.
+      * ``import`` — read operator notes back from the vault.
+      * ``notes`` — inspect the persisted operator-notes store.
     """
     if args.knowledge_action == "export":
         _cmd_knowledge_export(args)
@@ -1184,11 +1208,19 @@ def _cmd_knowledge(args) -> None:
     if args.knowledge_action == "digest":
         _cmd_knowledge_digest(args)
         return
+    if args.knowledge_action == "import":
+        _cmd_knowledge_import(args)
+        return
+    if args.knowledge_action == "notes":
+        _cmd_knowledge_notes(args)
+        return
     print(
         "Usage:\n"
         "  shopai knowledge export <path> [--decision-limit N]\n"
         "  shopai knowledge digest [--since N] [--limit M] "
-        "[--out PATH]"
+        "[--out PATH]\n"
+        "  shopai knowledge import <path>\n"
+        "  shopai knowledge notes [engine|goal] [name]"
     )
     sys.exit(1)
 
@@ -1235,6 +1267,91 @@ def _cmd_knowledge_digest(args) -> None:
     else:
         markdown, _stats = digest.render()
         print(markdown)
+
+
+def _cmd_knowledge_import(args) -> None:
+    """Walk the supplied vault and persist operator notes."""
+    from core.knowledge import ObsidianImporter
+
+    importer = ObsidianImporter()
+    summary = importer.import_vault(args.source)
+    print(f"Vault scanned: {args.source}")
+    print(f"  files scanned:    {summary.files_scanned}")
+    print(f"  files skipped:    {summary.files_skipped}")
+    print(f"  engines imported: {summary.engines_imported}")
+    print(f"  goals imported:   {summary.goals_imported}")
+    if summary.skipped:
+        print("  diagnostics:")
+        for s in summary.skipped[:10]:
+            print(f"    - {s}")
+        if len(summary.skipped) > 10:
+            print(f"    ...and {len(summary.skipped) - 10} more")
+    print(f"  notes file: {importer.store.path}")
+
+
+def _cmd_knowledge_notes(args) -> None:
+    """Inspect the persisted operator-notes store.
+
+    No args: list every (kind, name) with a one-line preview.
+    ``engine``/``goal`` only: filter to that kind.
+    ``engine cart_recovery``: print the full body for that entry.
+    """
+    from core.knowledge import get_default_store
+
+    store = get_default_store()
+    engines = store.all_engine_notes()
+    goals = store.all_goal_notes()
+
+    kind = getattr(args, "kind", None)
+    name = getattr(args, "name", None)
+
+    if kind == "engine" and name:
+        text = store.get_engine_notes(name)
+        if not text:
+            print(f"No notes for engine {name!r}.")
+            return
+        print(f"# engine: {name}\n")
+        print(text)
+        return
+    if kind == "goal" and name:
+        text = store.get_goal_notes(name)
+        if not text:
+            print(f"No notes for goal {name!r}.")
+            return
+        print(f"# goal: {name}\n")
+        print(text)
+        return
+
+    show_engines = kind in (None, "engine")
+    show_goals = kind in (None, "goal")
+    meta = store.meta()
+    if meta:
+        last = meta.get("last_import_at")
+        src = meta.get("last_import_source", "")
+        print(f"Notes file: {store.path}")
+        print(
+            f"  last import: {last} from {src}  "
+            f"({meta.get('imported_count', 0)} entries)"
+        )
+        print()
+
+    def _preview(text: str) -> str:
+        first = (text or "").strip().splitlines()
+        return first[0][:80] if first else ""
+
+    if show_engines:
+        print(f"Engines ({len(engines)}):")
+        if not engines:
+            print("  _(none — run 'shopai knowledge import <vault>')_")
+        for engine, entry in sorted(engines.items()):
+            print(f"  - {engine:30s}  {_preview(entry.get('notes', ''))}")
+        print()
+    if show_goals:
+        print(f"Goals ({len(goals)}):")
+        if not goals:
+            print("  _(none)_")
+        for goal, entry in sorted(goals.items()):
+            print(f"  - {goal:30s}  {_preview(entry.get('notes', ''))}")
 
 
 # ── Action Commands ──────────────────────────────────────────
