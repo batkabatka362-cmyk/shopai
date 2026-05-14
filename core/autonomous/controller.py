@@ -94,6 +94,36 @@ def _apply_cognitive_boost(
     return boosted
 
 
+def _bootstrap_brain_stack() -> bool:
+    """Attach goal-feedback handlers to the approval-queue hooks.
+
+    Idempotent — re-calling is a no-op when already registered.
+    Best-effort: a missing goals layer is logged at debug, does
+    not raise. The autonomous loop continues to work without the
+    brain-stack edge (no EMA updates), it just doesn't *learn*
+    until something else attaches.
+
+    Lives at module level so tests can call it directly to verify
+    the wiring without spinning up an AutonomousController.
+    """
+    try:
+        from core.goals.goal_feedback import register_goal_feedback
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "brain stack bootstrap: goal_feedback unavailable: %s",
+            exc,
+        )
+        return False
+    try:
+        return bool(register_goal_feedback())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "brain stack bootstrap: register_goal_feedback raised: %s",
+            exc,
+        )
+        return False
+
+
 class AutonomousController:
     """Self-improving autonomous e-commerce controller."""
 
@@ -182,6 +212,19 @@ class AutonomousController:
         if not self._store_manager:
             from data_pipeline.store.store_manager import StoreManager
             self._store_manager = StoreManager()
+
+        # Wire the brain-stack feedback edge BEFORE any engine
+        # cycle runs. Engines emit ``approval.executed`` /
+        # ``approval.failed`` / ``approval.outcome.recorded`` hooks
+        # that drive GoalManager's per-goal EMA — and ultimately
+        # what the recommender prioritises in subsequent cycles.
+        # Without this bootstrap, the handlers only attach the
+        # first time some other path lazy-imports ``core.approval``
+        # (an engine writeback, a CLI verb, an API call), which
+        # means the FIRST cycle's hooks fire into a void. The
+        # registration is idempotent — re-calling on each
+        # initialize() is safe.
+        _bootstrap_brain_stack()
 
         from data_pipeline.store.data_provider import DataProvider
         from execution.action_executor import ActionExecutor, DecisionExecutor
