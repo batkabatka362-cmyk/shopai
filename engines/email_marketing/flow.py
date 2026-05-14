@@ -33,6 +33,10 @@ from .send_time_optimizer import optimize_send_time
 from .ab_variant_builder import build_ab_variants
 from .performance_predictor import predict_performance
 from .campaign_assembler import assemble_campaign
+from .discount_minter import (
+    enqueue_campaign_for_approval,
+    mint_campaign_code,
+)
 from .memory_writer import write_to_memory
 from .memory_reader import find_past_campaigns
 from engines._shopify_hydrator import hydrate
@@ -197,6 +201,42 @@ class EmailMarketingEngine:
                 elapsed=time.monotonic() - start,
             )
 
+        # Stage 8.5: Campaign discount-code writeback (opt-in).
+        # Pre-fix the engine's discount input was reflected in
+        # body copy as a string ("Save 10%") but no actual Shopify
+        # code existed — the merchant had to mint one manually and
+        # re-paste it into the email body. Default OFF; same two
+        # opt-in modes as Phase 6/7:
+        #
+        #   data.apply_email_campaign=True + data.require_approval=False
+        #     → mint immediately
+        #   data.apply_email_campaign=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves before
+        #       the SHOPIFY_CREATE_DISCOUNT mutation lands
+        #
+        # Both paths share the same upfront guard (recognised
+        # discount type + positive value); when discount is empty
+        # or zero, both helpers return None and the output keeps
+        # campaign-only shape.
+        minted_code: dict[str, Any] | None = None
+        pending_action: dict[str, Any] | None = None
+        store_cfg = raw_data.get("store", {}) if isinstance(
+            raw_data.get("store"), dict,
+        ) else {}
+        if raw_data.get("apply_email_campaign") is True:
+            if raw_data.get("require_approval") is True:
+                pending_action = enqueue_campaign_for_approval(
+                    goal=goal,
+                    discount=discount,
+                    store=store_cfg,
+                )
+            else:
+                minted_code = mint_campaign_code(
+                    goal=goal,
+                    discount=discount,
+                    store=store_cfg,
+                )
+
         # Stage 9: Build final output
         elapsed = time.monotonic() - start
 
@@ -205,6 +245,12 @@ class EmailMarketingEngine:
             "data": {
                 "campaign": assembly_result["campaign"],
                 "confidence": assembly_result.get("confidence", 0.0),
+                # Stage 8.5 output — mutually exclusive: one or
+                # the other is populated when the opt-in flags
+                # routed through a path; both ``None`` when
+                # default-off or discount empty / unrecognised.
+                "minted_code": minted_code,
+                "pending_action": pending_action,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

@@ -21,6 +21,10 @@ from .page_generator import generate_page
 from .headline_optimizer import optimize_headlines
 from .cta_optimizer import optimize_ctas
 from .performance_scorer import score_performance
+from .page_applier import (
+    apply_landing_page,
+    enqueue_landing_page_for_approval,
+)
 from .memory_reader import read_past_pages
 from .memory_writer import write_page_result
 
@@ -162,6 +166,44 @@ class LandingPageEngine:
             estimated_conversion=estimated_conversion,
         )
 
+        # ---- Stage 7.5: Landing-page writeback (opt-in) ----
+        # Default OFF — existing callers keep their pure-
+        # recommendation contract. Two opt-in modes mirror the
+        # established Phase 6/7 pattern:
+        #
+        #   data.apply_landing_page=True + data.require_approval=False
+        #     → SHOPIFY_CREATE_PAGE immediately (unpublished)
+        #   data.apply_landing_page=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves before
+        #       the mutation lands
+        #
+        # The page lands as UNPUBLISHED (is_published=False) so
+        # the merchant reviews the staged page in admin before
+        # exposing it to live traffic — auto-publishing AI copy
+        # to the storefront would be too aggressive a default.
+        page_apply_result: dict[str, Any] | None = None
+        page_pending_action: dict[str, Any] | None = None
+        store_cfg = data.get("store", {}) if isinstance(
+            data.get("store"), dict,
+        ) else {}
+        if data.get("apply_landing_page") is True:
+            if data.get("require_approval") is True:
+                page_pending_action = enqueue_landing_page_for_approval(
+                    pages=pages,
+                    best_variant=best_variant,
+                    estimated_conversion=estimated_conversion,
+                    campaign=campaign,
+                    store=store_cfg,
+                )
+            else:
+                page_apply_result = apply_landing_page(
+                    pages=pages,
+                    best_variant=best_variant,
+                    estimated_conversion=estimated_conversion,
+                    campaign=campaign,
+                    store=store_cfg,
+                )
+
         # ---- Stage 8: Return output ----
         elapsed = time.monotonic() - start
 
@@ -171,6 +213,12 @@ class LandingPageEngine:
                 "pages": pages,
                 "best_variant": best_variant,
                 "estimated_conversion": estimated_conversion,
+                # Stage 7.5 output — mutually exclusive: one or
+                # the other is populated when the opt-in flags
+                # routed through a path; both ``None`` when
+                # default-off or guardrails rejected.
+                "page_apply_result": page_apply_result,
+                "page_pending_action": page_pending_action,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

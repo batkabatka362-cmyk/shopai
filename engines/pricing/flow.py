@@ -27,6 +27,10 @@ from .margin_validator import validate_margin
 from .psychology_optimizer import optimize_psychology
 from .elasticity_estimator import estimate_elasticity
 from .price_recommender import recommend_price
+from .price_applier import (
+    apply_strategic_price,
+    enqueue_strategic_price_for_approval,
+)
 from .memory_reader import read_past_pricing
 from .memory_writer import write_pricing_result
 from engines._shopify_hydrator import hydrate_one
@@ -220,6 +224,42 @@ class PricingEngine:
             confidence=float(recommendation.get("confidence", 0.0)),
         )
 
+        # ---- Stage 10.5: Strategic-price writeback (opt-in) ----
+        # Default OFF — existing callers keep the pure-
+        # recommendation contract. Two opt-in modes mirror the
+        # Phase 6/7 pattern:
+        #
+        #   data.apply_strategic_price=True + data.require_approval=False
+        #     → push price via SHOPIFY_UPDATE_VARIANTS immediately
+        #   data.apply_strategic_price=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves before
+        #       the mutation lands
+        #
+        # Both paths share the same upfront guards (positive
+        # recommended_price, confidence floor, product has
+        # variants). Known limitation matches dynamic_pricing's:
+        # hydrator-fetched products from SHOPIFY_LIST_PRODUCTS
+        # don't include variants, so callers wanting writeback
+        # need to pre-fetch with SHOPIFY_GET_PRODUCT.
+        price_apply_result: dict[str, Any] | None = None
+        price_pending_action: dict[str, Any] | None = None
+        store_cfg = data.get("store", {}) if isinstance(
+            data.get("store"), dict,
+        ) else {}
+        if data.get("apply_strategic_price") is True:
+            if data.get("require_approval") is True:
+                price_pending_action = enqueue_strategic_price_for_approval(
+                    product=product,
+                    recommendation=recommendation,
+                    store=store_cfg,
+                )
+            else:
+                price_apply_result = apply_strategic_price(
+                    product=product,
+                    recommendation=recommendation,
+                    store=store_cfg,
+                )
+
         # ---- Stage 11: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -242,6 +282,12 @@ class PricingEngine:
                 },
                 "confidence": float(recommendation.get("confidence", 0.0)),
                 "rationale": recommendation.get("rationale", ""),
+                # Stage 10.5 output — mutually exclusive: one
+                # or the other is populated when the opt-in
+                # flags routed through a path; both ``None`` when
+                # default-off or guardrails rejected.
+                "price_apply_result": price_apply_result,
+                "price_pending_action": price_pending_action,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
