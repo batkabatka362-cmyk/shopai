@@ -374,6 +374,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to engines directory (default: engines)",
     )
 
+    approvals_recent = approvals_sub.add_parser(
+        "recent",
+        help="List recent actions filtered by status (operator triage)",
+    )
+    approvals_recent.add_argument(
+        "status",
+        choices=["pending", "approved", "rejected",
+                 "executed", "failed", "expired"],
+        help="Status to filter on",
+    )
+    approvals_recent.add_argument(
+        "--engine", default=None,
+        help="Restrict to one engine namespace",
+    )
+    approvals_recent.add_argument(
+        "--limit", type=int, default=10,
+        help="Page size (default: 10)",
+    )
+
     # ── Pipeline commands ────────────────────────────────────
     pipeline = sub.add_parser("pipeline", help="Run a data pipeline")
     pipeline.add_argument("pipeline_name", choices=["product", "marketing", "analytics"])
@@ -1896,17 +1915,21 @@ def _cmd_approvals(args) -> None:
     if verb == "audit":
         _cmd_approvals_audit(args)
         return
+    if verb == "recent":
+        _cmd_approvals_recent(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
-        "  shopai approvals stats\n"
+        "  shopai approvals stats       [--by-engine]\n"
         "  shopai approvals show        <action_id>\n"
         "  shopai approvals approve     <action_id> [--reason ...] [--by ...] [--execute]\n"
         "  shopai approvals reject      <action_id> [--reason ...] [--by ...]\n"
         "  shopai approvals execute     <action_id>\n"
         "  shopai approvals sweep       [--older-than 7d] [--dry-run]\n"
         "  shopai approvals approve-all [--engine NAME] [--min-confidence 0.X] [--execute] [--dry-run]\n"
-        "  shopai approvals audit       [--engines-root PATH]"
+        "  shopai approvals audit       [--engines-root PATH]\n"
+        "  shopai approvals recent      <status> [--engine NAME] [--limit N]"
     )
     sys.exit(1)
 
@@ -2146,6 +2169,53 @@ def _cmd_approvals_approve_all(args) -> None:
     )
     if failed_ids:
         print(f"  Skipped (state changed): {len(failed_ids)}")
+
+
+def _cmd_approvals_recent(args) -> None:
+    """List recent actions by status — operator triage feed.
+
+    PENDING is shown oldest-first (review queue order); everything
+    else is shown newest-first (recent activity).
+    """
+    import time as _time
+
+    from core.approval.queue import ApprovalStatus, get_approval_queue
+
+    try:
+        status = ApprovalStatus(args.status)
+    except ValueError:
+        print(f"Unknown status: {args.status}")
+        sys.exit(1)
+
+    queue = get_approval_queue()
+    actions = queue.list_by_status(
+        status, engine=args.engine, limit=args.limit,
+    )
+    if not actions:
+        suffix = f" for engine '{args.engine}'" if args.engine else ""
+        print(f"No {status.value.upper()} actions{suffix}.")
+        return
+
+    print(f"Recent {status.value.upper()} actions ({len(actions)}):")
+    now = _time.time()
+    for a in actions:
+        timestamp = a.decided_at if status != ApprovalStatus.PENDING else (
+            a.proposed_at
+        )
+        ago = _format_age(now - timestamp) if timestamp else "?"
+        label = f"{a.engine}/{a.action_type}"
+        if len(label) > 40:
+            label = label[:37] + "..."
+        line = f"  {a.id[:18]:<18} {label:<40} {ago}"
+        # For FAILED/REJECTED, also surface the reason or error
+        if status == ApprovalStatus.FAILED and a.result:
+            err = a.result.get("error") or a.result.get("status", "?")
+            line += f"  err={err}"
+        elif status == ApprovalStatus.REJECTED and a.decision_reason:
+            line += f"  reason={a.decision_reason}"
+        elif status == ApprovalStatus.EXPIRED and a.decision_reason:
+            line += f"  ({a.decision_reason})"
+        print(line)
 
 
 def _cmd_approvals_audit(args) -> None:

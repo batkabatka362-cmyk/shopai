@@ -253,6 +253,46 @@ class ApprovalQueue:
                 ).fetchall()
         return [_row_to_action(r) for r in rows]
 
+    def list_by_status(
+        self,
+        status: "ApprovalStatus",
+        *,
+        engine: str | None = None,
+        limit: int = 500,
+    ) -> list[ApprovalAction]:
+        """Return actions in a given status, newest-first by decision
+        time (falling back to proposed_at for PENDING which has no
+        decision yet).
+
+        Generalisation of :meth:`list_pending` / :meth:`list_executed`
+        for operator triage queries — "show me the last 5 FAILED
+        actions" / "what expired this week?" — where the existing
+        pair didn't cover REJECTED / FAILED / EXPIRED.
+        """
+        order_by = (
+            "proposed_at" if status == ApprovalStatus.PENDING
+            else "decided_at"
+        )
+        # Sort PENDING oldest-first (review queue), everything else
+        # newest-first (recent activity feed).
+        direction = "ASC" if status == ApprovalStatus.PENDING else "DESC"
+        with _LOCK:
+            if engine:
+                rows = self._conn.execute(
+                    f"""SELECT * FROM pending_actions
+                       WHERE status = ? AND engine = ?
+                       ORDER BY {order_by} {direction} LIMIT ?""",
+                    (status.value, engine, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    f"""SELECT * FROM pending_actions
+                       WHERE status = ?
+                       ORDER BY {order_by} {direction} LIMIT ?""",
+                    (status.value, limit),
+                ).fetchall()
+        return [_row_to_action(r) for r in rows]
+
     def list_executed(
         self, *, engine: str | None = None, limit: int = 500,
     ) -> list[ApprovalAction]:
