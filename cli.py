@@ -232,6 +232,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show notes for a specific engine / goal name",
     )
 
+    knowledge_set = knowledge_sub.add_parser(
+        "set-notes",
+        help="Add / update an operator note for an engine or goal",
+    )
+    knowledge_set.add_argument(
+        "kind", choices=["engine", "goal"],
+        help="Which kind of note to set",
+    )
+    knowledge_set.add_argument(
+        "name",
+        help="Engine name (cart_recovery) or goal name (grow_customers)",
+    )
+    knowledge_set_body = knowledge_set.add_mutually_exclusive_group(
+        required=True,
+    )
+    knowledge_set_body.add_argument(
+        "--text",
+        help="Note body inline (use '-' to read from stdin)",
+    )
+    knowledge_set_body.add_argument(
+        "--from-file",
+        help="Path to a file whose contents become the note body",
+    )
+
     # ── Action commands ──────────────────────────────────────
     action_p = sub.add_parser("actions", help="Manage AI actions")
     action_sub = action_p.add_subparsers(dest="action_cmd")
@@ -1214,15 +1238,70 @@ def _cmd_knowledge(args) -> None:
     if args.knowledge_action == "notes":
         _cmd_knowledge_notes(args)
         return
+    if args.knowledge_action == "set-notes":
+        _cmd_knowledge_set_notes(args)
+        return
     print(
         "Usage:\n"
-        "  shopai knowledge export <path> [--decision-limit N]\n"
-        "  shopai knowledge digest [--since N] [--limit M] "
+        "  shopai knowledge export    <path> [--decision-limit N]\n"
+        "  shopai knowledge digest    [--since N] [--limit M] "
         "[--out PATH]\n"
-        "  shopai knowledge import <path>\n"
-        "  shopai knowledge notes [engine|goal] [name]"
+        "  shopai knowledge import    <path>\n"
+        "  shopai knowledge notes     [engine|goal] [name]\n"
+        "  shopai knowledge set-notes <engine|goal> <name> "
+        "(--text TEXT | --from-file PATH)"
     )
     sys.exit(1)
+
+
+def _cmd_knowledge_set_notes(args) -> None:
+    """Add / update an operator note for an engine or goal.
+
+    Two body sources:
+      * ``--text "..."`` inline
+      * ``--text -`` reads body from stdin
+      * ``--from-file path`` reads body from a file
+
+    Notes persist to ``data/operator_notes.json`` via NotesStore.
+    Downstream consumers (digest, knowledge export, action review
+    enrichment) read the same file — operator commentary surfaces
+    without re-running the import flow.
+    """
+    kind = args.kind  # "engine" or "goal" (argparse-validated)
+    name = (args.name or "").strip()
+    if not name:
+        print("Error: name is required")
+        sys.exit(1)
+
+    body = ""
+    if args.text is not None:
+        if args.text == "-":
+            body = sys.stdin.read()
+        else:
+            body = args.text
+    elif args.from_file:
+        try:
+            with open(args.from_file, encoding="utf-8") as f:
+                body = f.read()
+        except OSError as exc:
+            print(f"Error: could not read {args.from_file}: {exc}")
+            sys.exit(1)
+
+    body = body.strip()
+    if not body:
+        print("Error: note body is empty")
+        sys.exit(1)
+
+    from core.knowledge import get_default_store
+
+    store = get_default_store()
+    if kind == "engine":
+        store.set_engine_notes(name, body, source_path="cli")
+    else:
+        store.set_goal_notes(name, body, source_path="cli")
+
+    preview = body.splitlines()[0][:60] if body.splitlines() else ""
+    print(f"Saved {kind} note for {name!r}: {preview}{'...' if len(body) > 60 else ''}")
 
 
 def _cmd_knowledge_export(args) -> None:
