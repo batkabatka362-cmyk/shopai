@@ -28,6 +28,10 @@ from .delivery_estimator import estimate_delivery
 from .cost_allocator import allocate_costs
 from .zone_mapper import map_zones
 from .strategy_recommender import recommend_strategy
+from .shipping_applier import (
+    apply_shipping_strategy,
+    enqueue_shipping_for_approval,
+)
 from .memory_reader import read_past_shipping, compute_input_hash
 from .memory_writer import write_shipping_result
 from engines._shopify_hydrator import hydrate
@@ -185,6 +189,41 @@ class ShippingOptimizationEngine:
         recommendation = strategy_result.get("recommendation", {})
         estimated_savings = float(strategy_result.get("estimated_savings_monthly", 0.0))
 
+        # ---- Stage 8.5: Free-shipping writeback (opt-in) ----
+        # Default OFF — recommender output stays advisory for
+        # callers that haven't migrated. Opt-in matches the
+        # established Phase 6/7 pattern:
+        #
+        #   data.apply_shipping_strategy=True + data.require_approval=False
+        #     → mint immediately (SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING)
+        #   data.apply_shipping_strategy=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves before
+        #       the mutation lands
+        #
+        # Both paths share the same upfront guardrails: strategy
+        # winner is ``free_over_threshold`` (other three strategies
+        # need multi-zone delivery-profile config that's merchant-
+        # specific and dangerous to auto-apply), positive threshold,
+        # confidence above floor.
+        shipping_apply_result: dict[str, Any] | None = None
+        shipping_pending_action: dict[str, Any] | None = None
+        store_cfg = data.get("store", {}) if isinstance(
+            data.get("store"), dict,
+        ) else {}
+        if data.get("apply_shipping_strategy") is True:
+            if data.get("require_approval") is True:
+                shipping_pending_action = enqueue_shipping_for_approval(
+                    recommendation=recommendation,
+                    estimated_savings_monthly=estimated_savings,
+                    store=store_cfg,
+                )
+            else:
+                shipping_apply_result = apply_shipping_strategy(
+                    recommendation=recommendation,
+                    estimated_savings_monthly=estimated_savings,
+                    store=store_cfg,
+                )
+
         # ---- Stage 9: Memory Writer (non-fatal) ----
         _write = write_shipping_result(
             recommended_strategy=recommendation,
@@ -220,6 +259,12 @@ class ShippingOptimizationEngine:
                 "zone_distribution": zone_result.get("distribution", []),
                 "cost_allocations": allocation_result.get("allocations", []),
                 "confidence": float(recommendation.get("confidence", 0.0)),
+                # Stage 8.5 output — mutually exclusive: one or the
+                # other is populated when the opt-in flags routed
+                # through a path; both ``None`` when default-off or
+                # when the strategy winner isn't free_over_threshold.
+                "shipping_apply_result": shipping_apply_result,
+                "shipping_pending_action": shipping_pending_action,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
