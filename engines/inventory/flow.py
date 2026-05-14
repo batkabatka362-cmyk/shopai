@@ -28,6 +28,10 @@ from .stockout_predictor import predict_stockouts
 from .allocation_planner import plan_allocation
 from .alert_generator import generate_alerts
 from .cost_tracker import compute_costs
+from .inventory_applier import (
+    apply_inventory_tags,
+    enqueue_inventory_tags_for_approval,
+)
 from .memory_reader import read_past_inventory
 from .memory_writer import write_inventory_result
 from engines._shopify_hydrator import hydrate
@@ -223,6 +227,42 @@ class InventoryEngine:
             cost_summary=cost_summary,
         )
 
+        # ---- Stage 10.5: Inventory state-tag writeback (opt-in) ----
+        # Default OFF so existing callers stay in pure-recommendation
+        # mode. Two opt-in modes:
+        #
+        #   data.apply_inventory_tags=True + data.require_approval=False
+        #     → SHOPIFY_UPDATE_PRODUCT.tags immediately per flagged SKU
+        #   data.apply_inventory_tags=True + data.require_approval=True
+        #     → enqueue each tag-update proposal to core.approval;
+        #       merchant approves via /api/pending-actions before
+        #       the mutation lands
+        #
+        # Both paths share the same upstream filters (stockout risk
+        # imminent / needs_reorder flag / classification dead /
+        # overstocked) and the same tag merge dedup. A SKU that
+        # already carries every relevant state tag short-circuits
+        # with ``no_new_tags`` either way.
+        tag_apply_results: list[dict[str, Any]] = []
+        sku_analyses_for_tags = stock_analysis.get(
+            "sku_analyses", sku_analyses,
+        )
+        if data.get("apply_inventory_tags") is True:
+            if data.get("require_approval") is True:
+                tag_apply_results = enqueue_inventory_tags_for_approval(
+                    products=products,
+                    stockout_risks=stockout_risks,
+                    reorder_calculations=reorder_calculations,
+                    stock_analyses=sku_analyses_for_tags,
+                )
+            else:
+                tag_apply_results = apply_inventory_tags(
+                    products=products,
+                    stockout_risks=stockout_risks,
+                    reorder_calculations=reorder_calculations,
+                    stock_analyses=sku_analyses_for_tags,
+                )
+
         # ---- Stage 11: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -245,6 +285,11 @@ class InventoryEngine:
                 "stockout_risks": stockout_risks,
                 "alerts": alerts,
                 "cost_summary": cost_summary,
+                # Stage 10.5 output. Empty list when the opt-in
+                # flag is off; one entry per flagged SKU otherwise
+                # (carries pending_action_id when the approval-
+                # queue branch fired).
+                "tag_apply_results": tag_apply_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
