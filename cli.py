@@ -319,6 +319,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     approvals_execute.add_argument("action_id", help="Action ID")
 
+    approvals_sweep = approvals_sub.add_parser(
+        "sweep",
+        help="Expire PENDING actions older than --older-than",
+    )
+    approvals_sweep.add_argument(
+        "--older-than", default="7d",
+        help="Age threshold (e.g. 60s, 30m, 24h, 7d). Default: 7d.",
+    )
+    approvals_sweep.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would expire without writing",
+    )
+
     # ── Pipeline commands ────────────────────────────────────
     pipeline = sub.add_parser("pipeline", help="Run a data pipeline")
     pipeline.add_argument("pipeline_name", choices=["product", "marketing", "analytics"])
@@ -1824,6 +1837,9 @@ def _cmd_approvals(args) -> None:
     if verb == "execute":
         _cmd_approvals_execute(args)
         return
+    if verb == "sweep":
+        _cmd_approvals_sweep(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending  [--engine NAME] [--limit N]\n"
@@ -1831,7 +1847,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals show     <action_id>\n"
         "  shopai approvals approve  <action_id> [--reason ...] [--by ...] [--execute]\n"
         "  shopai approvals reject   <action_id> [--reason ...] [--by ...]\n"
-        "  shopai approvals execute  <action_id>"
+        "  shopai approvals execute  <action_id>\n"
+        "  shopai approvals sweep    [--older-than 7d] [--dry-run]"
     )
     sys.exit(1)
 
@@ -1920,6 +1937,77 @@ def _cmd_approvals_reject(args) -> None:
 
 def _cmd_approvals_execute(args) -> None:
     _run_execute(args.action_id)
+
+
+def _cmd_approvals_sweep(args) -> None:
+    max_age = _parse_age_spec(args.older_than)
+    if max_age is None:
+        print(
+            f"Invalid --older-than value: {args.older_than!r} "
+            "(expected e.g. 60s, 30m, 24h, 7d)"
+        )
+        sys.exit(1)
+
+    from core.approval.queue import (
+        ApprovalStatus, get_approval_queue,
+    )
+    queue = get_approval_queue()
+
+    if args.dry_run:
+        # Inspect without writing — list PENDING actions older than cutoff
+        cutoff = time.time() - max_age
+        candidates = [
+            a for a in queue.list_pending(limit=10_000)
+            if a.proposed_at < cutoff
+        ]
+        if not candidates:
+            print(
+                f"Dry run: no PENDING actions older than {args.older_than}."
+            )
+            return
+        print(
+            f"Dry run: {len(candidates)} action(s) would expire "
+            f"(older than {args.older_than}):"
+        )
+        for a in candidates:
+            age = int(time.time() - a.proposed_at)
+            print(
+                f"  {a.id} {a.engine}/{a.action_type} "
+                f"(age {_format_age(age)})"
+            )
+        return
+
+    expired = queue.expire_stale(max_age_seconds=max_age)
+    if not expired:
+        print(
+            f"Sweep complete: no PENDING actions older than "
+            f"{args.older_than}."
+        )
+        return
+    print(f"Sweep complete: {len(expired)} action(s) expired.")
+    for a in expired:
+        print(f"  {a.id} {a.engine}/{a.action_type}")
+
+
+def _parse_age_spec(spec: str) -> float | None:
+    """Parse e.g. ``"7d"``, ``"30m"``, ``"24h"``, ``"60s"`` →
+    seconds. Returns ``None`` on malformed input.
+
+    Bare integers are treated as seconds (so ``"3600"`` → ``3600``).
+    """
+    if not spec:
+        return None
+    spec = spec.strip().lower()
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if spec[-1] in multipliers:
+        try:
+            return float(spec[:-1]) * multipliers[spec[-1]]
+        except ValueError:
+            return None
+    try:
+        return float(spec)
+    except ValueError:
+        return None
 
 
 def _run_execute(action_id: str) -> None:
