@@ -157,6 +157,18 @@ class TestProductionWarnings:
 class TestLogFile:
     def test_unwritable_parent_errors(self, monkeypatch, tmp_path):
         # Make a dir, remove write permission, then try to use a path inside
+        # Windows POSIX permission bits are largely advisory and
+        # ``chmod(0o555)`` doesn't make a directory truly
+        # unwritable for the current user — the W_OK check would
+        # pass and the test would falsely report broken behavior.
+        # Skip on Windows where the OS-level constraint isn't
+        # there; the actual config-schema W_OK check is still
+        # exercised by the Linux/macOS CI runs.
+        if not hasattr(os, "geteuid"):
+            pytest.skip(
+                "POSIX permission bits not enforced on this platform "
+                "(no os.geteuid → likely Windows)"
+            )
         readonly = tmp_path / "readonly"
         readonly.mkdir()
         readonly.chmod(0o555)
@@ -164,7 +176,8 @@ class TestLogFile:
             monkeypatch.setenv("SHOPAI_LOG_FILE", str(readonly / "app.log"))
             from infrastructure.config.schema import validate_config
             result = validate_config()
-            # Running as root bypasses the permission check; skip in that case.
+            # Running as root bypasses the permission check; skip
+            # in that case.
             if os.geteuid() == 0:
                 pytest.skip("running as root — W_OK check is bypassed")
             assert not result.ok()
