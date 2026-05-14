@@ -158,11 +158,17 @@ mutation productCreate($input: ProductInput!) {{
     userErrors {{
       field
       message
-      code
     }}
   }}
 }}
 """.strip()
+# Pattern F (CLAUDE.md): productCreate.userErrors is ALSO the
+# typed `UserError` (no code field) as of 2026-05-15 live
+# verification against ts0efe-ih. My PR #93 commit message
+# claimed productCreate "still uses UserErrors with code" —
+# that was wrong; live verification proved both productCreate
+# AND productUpdate moved to typed UserError. The Shopify
+# Mutation Catalog drift on the Product family is now full.
 
 
 _UPDATE_PRODUCT_MUTATION = f"""
