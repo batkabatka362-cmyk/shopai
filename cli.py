@@ -107,6 +107,15 @@ def build_parser() -> argparse.ArgumentParser:
     db_sub = db_p.add_subparsers(dest="db_action")
     db_sub.add_parser("status", help="Show schema version for every DB")
     db_sub.add_parser("migrate", help="Apply pending migrations to all DBs")
+    db_backup = db_sub.add_parser(
+        "backup",
+        help="Snapshot data/ to a tar.gz (operator safety net)",
+    )
+    db_backup.add_argument(
+        "--out",
+        default=None,
+        help="Output path. Default: shopai-backup-<UTC timestamp>.tar.gz",
+    )
 
     # ── Config commands ──────────────────────────────────────
     config_p = sub.add_parser("config", help="Inspect / validate configuration")
@@ -522,6 +531,63 @@ def _cmd_db_migrate() -> None:
     print("Running pending migrations...")
     _import_registered_dbs()
     _cmd_db_status()
+
+
+def _cmd_db_backup(out_path: str | None) -> None:
+    """Snapshot the entire ``data/`` directory to a tar.gz.
+
+    Default output filename:
+      ``shopai-backup-YYYYMMDD-HHMMSS.tar.gz`` (UTC)
+
+    The backup is operator-side safety: before a risky upgrade,
+    schema migration, or "let me try something with auto-approve",
+    capture a one-shot snapshot. ``tar -xzf <file>`` restores
+    the data/ directory verbatim.
+
+    Files actively being written (a live ``approval_queue.db``
+    with open SQLite handles) may capture a partially-consistent
+    snapshot. The right answer for hot backup is per-DB
+    ``BACKUP TO`` semantics, but that's a future PR — this is
+    "cold-ish" backup, good enough for the operator who's about
+    to make a config change.
+    """
+    import datetime
+    import tarfile
+    from pathlib import Path
+
+    data_dir = Path("data")
+    if not data_dir.exists():
+        print(f"Error: no data directory at {data_dir.resolve()}")
+        sys.exit(1)
+
+    if out_path is None:
+        ts = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        out_path = f"shopai-backup-{ts}.tar.gz"
+    out_file = Path(out_path)
+
+    # Refuse to overwrite an existing file silently — operators
+    # might mistype and clobber a prior snapshot.
+    if out_file.exists():
+        print(
+            f"Error: {out_file} already exists. "
+            "Pick a different --out path or remove the existing file."
+        )
+        sys.exit(1)
+
+    try:
+        with tarfile.open(out_file, "w:gz") as tar:
+            tar.add(data_dir, arcname="data")
+    except OSError as exc:
+        print(f"Error: backup failed: {exc}")
+        sys.exit(1)
+
+    size_bytes = out_file.stat().st_size
+    if size_bytes < 1024 * 1024:
+        size = f"{size_bytes / 1024:.1f}KB"
+    else:
+        size = f"{size_bytes / (1024 * 1024):.1f}MB"
+    print(f"Backup written: {out_file} ({size})")
+    print(f"Restore with: tar -xzf {out_file}")
 
 
 # ── Config Commands ──────────────────────────────────────────
@@ -1723,8 +1789,10 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_db_status()
         elif args.db_action == "migrate":
             _cmd_db_migrate()
+        elif args.db_action == "backup":
+            _cmd_db_backup(getattr(args, "out", None))
         else:
-            print("Usage: shopai db {status|migrate}")
+            print("Usage: shopai db {status|migrate|backup}")
         return
 
     if args.command == "config":
