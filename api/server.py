@@ -54,6 +54,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/pending-actions": self._list_pending_actions,
             "/api/pending-actions/stats": self._pending_actions_stats,
             "/api/recommendations": self._list_recommendations,
+            "/api/goal": self._get_goal,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -170,6 +171,52 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.warning("engine info failed: %s", exc)
             self._json_response(500, {"error": str(exc)})
+
+    def _get_goal(self) -> None:
+        """GET /api/goal — brain-stack goal state.
+
+        Parity with ``shopai goal show``: returns the currently
+        selected goal plus per-goal effectiveness EMA + sample
+        counts.
+
+        Best-effort: a missing goals layer returns
+        ``{current: null, stats: {}}`` rather than 500ing.
+        """
+        try:
+            from core.goals.goal_feedback import _default_manager
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("goal_feedback unavailable: %s", exc)
+            self._json_response(200, {
+                "current": None,
+                "stats": {},
+                "error": "goal_feedback module unavailable",
+            })
+            return
+
+        manager = _default_manager()
+        if manager is None:
+            self._json_response(200, {
+                "current": None,
+                "stats": {},
+                "error": "goal manager not configured",
+            })
+            return
+
+        try:
+            current = manager.get_current_goal()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("get_current_goal raised: %s", exc)
+            current = None
+        try:
+            stats = manager.get_effectiveness_stats()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("get_effectiveness_stats raised: %s", exc)
+            stats = {}
+
+        self._json_response(200, {
+            "current": current,
+            "stats": stats,
+        })
 
     def _get_experience(self) -> None:
         try:
