@@ -310,13 +310,24 @@ class InsightDigest:
         if mgr is not None:
             try:
                 eff = float(mgr.get_effectiveness(goal))
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # Manager exists but couldn't return a value for
+                # this goal (unknown goal name, broken backing
+                # store, etc.). Degrade silently to neutral
+                # default — the rendered marker will reflect
+                # "no_data" via the samples-zero check below.
+                logger.debug(
+                    "active_goal effectiveness lookup failed: %s", exc,
+                )
             try:
                 stats = mgr.get_effectiveness_stats() or {}
                 samples = int((stats.get(goal) or {}).get("n", 0))
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # Same fallback path — samples stays 0 which is
+                # the truthful default when we couldn't read it.
+                logger.debug(
+                    "active_goal stats lookup failed: %s", exc,
+                )
         marker = "no_data" if samples == 0 else f"{eff:.3f}"
         return [
             "## Active goal",
