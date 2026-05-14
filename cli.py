@@ -176,6 +176,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw JSON payload instead of the table view",
     )
 
+    goal_p = sub.add_parser(
+        "goal",
+        help="Inspect / manage brain-stack goal state (EMA, persistence)",
+    )
+    goal_sub = goal_p.add_subparsers(dest="goal_action")
+    goal_sub.add_parser(
+        "show", help="Show current goal + per-goal effectiveness EMA",
+    )
+    goal_reset = goal_sub.add_parser(
+        "reset", help="Clear per-goal EMA stats (wipes the learned signal)",
+    )
+    goal_reset.add_argument(
+        "--yes", action="store_true",
+        help="Skip the confirmation prompt",
+    )
+
     knowledge_p = sub.add_parser(
         "knowledge",
         help="Knowledge-vault export (Obsidian-compatible Markdown)",
@@ -1144,6 +1160,105 @@ def _cmd_run(args) -> None:
     print(json.dumps(result, indent=2, default=str))
 
 
+def _cmd_goal(args) -> None:
+    """Dispatcher for ``shopai goal {show, reset}``."""
+    action = getattr(args, "goal_action", None)
+    if action == "show":
+        _cmd_goal_show()
+        return
+    if action == "reset":
+        _cmd_goal_reset(args)
+        return
+    print(
+        "Usage:\n"
+        "  shopai goal show\n"
+        "  shopai goal reset [--yes]"
+    )
+    sys.exit(1)
+
+
+def _cmd_goal_show() -> None:
+    """Current goal + per-goal effectiveness EMA snapshot."""
+    try:
+        from core.goals.goal_feedback import _default_manager
+    except Exception as exc:
+        print(f"Error: goal manager unavailable: {exc}")
+        sys.exit(1)
+
+    manager = _default_manager()
+    if manager is None:
+        print("Goal manager not configured.")
+        sys.exit(1)
+
+    current = manager.get_current_goal()
+    stats = manager.get_effectiveness_stats()
+
+    print(f"Current goal:   {current}")
+    print()
+    if not stats:
+        print(
+            "Per-goal EMA: (no recorded outcomes yet — all goals "
+            "use the neutral default of 0.50)"
+        )
+        return
+
+    print("Per-goal EMA (effectiveness × sample count):")
+    col = 10
+    print(
+        f"  {'goal':<24}{'EMA':>{col}}{'samples':>{col}}"
+    )
+    print(f"  {'-' * (24 + col * 2)}")
+    # Sort by EMA descending — most-effective goals at the top
+    rows = sorted(
+        stats.items(),
+        key=lambda kv: kv[1]["effectiveness"],
+        reverse=True,
+    )
+    for goal, s in rows:
+        print(
+            f"  {goal:<24}{s['effectiveness']:>{col}.2f}"
+            f"{s['n']:>{col}d}"
+        )
+
+
+def _cmd_goal_reset(args) -> None:
+    """Clear the persisted per-goal EMA state. Refuses without
+    --yes so an accidental wipe doesn't trash learned signal."""
+    if not getattr(args, "yes", False):
+        print(
+            "Reset will wipe per-goal EMA stats (the brain stack's "
+            "learned signal). Re-run with --yes to confirm:"
+        )
+        print("  shopai goal reset --yes")
+        sys.exit(1)
+
+    from pathlib import Path
+
+    try:
+        from core.goals.goal_manager import _DEFAULT_STATE_PATH
+        from core.goals.goal_feedback import _default_manager
+    except Exception as exc:
+        print(f"Error: goal manager unavailable: {exc}")
+        sys.exit(1)
+
+    manager = _default_manager()
+    if manager is not None:
+        with manager._lock:
+            manager._goal_stats.clear()
+        # Force a re-save which writes the now-empty dict
+        manager._save_state()
+
+    state_path = Path(_DEFAULT_STATE_PATH)
+    if state_path.exists():
+        try:
+            state_path.unlink()
+        except OSError as exc:
+            print(
+                f"Warning: could not remove {state_path}: {exc}"
+            )
+    print("Per-goal EMA stats cleared.")
+
+
 def _cmd_suggest(args) -> None:
     """Goal × effectiveness → ranked engine recommendations.
 
@@ -1768,6 +1883,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "run":
         _cmd_run(args)
+        return
+
+    if args.command == "goal":
+        _cmd_goal(args)
         return
 
     if args.command == "suggest":
