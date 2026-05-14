@@ -1632,6 +1632,102 @@ def _cmd_status() -> None:
             print(f"    {si['store_id']}: last sync {ago} ({si['last_status']})")
         else:
             print(f"    {si['store_id']}: never synced")
+    print()
+
+    _print_approval_status()
+    _print_goal_status()
+
+
+def _format_age(seconds: float) -> str:
+    if seconds < 60:
+        return f"{int(seconds)}s ago"
+    if seconds < 3600:
+        return f"{int(seconds / 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds / 3600)}h ago"
+    return f"{int(seconds / 86400)}d ago"
+
+
+def _print_approval_status() -> None:
+    """Approval-queue depth + last few decisions.
+
+    The autonomous loop's middle layer: engines enqueue here, operators
+    decide, executor replays. Empty / all-resolved is the steady state;
+    a growing pending bucket means the loop is starved.
+    """
+    try:
+        from core.approval.queue import get_approval_queue
+        queue = get_approval_queue()
+        stats = queue.stats()
+        recent = queue.list_executed(limit=3)
+    except Exception as exc:
+        logger.debug("approval queue unavailable for status: %s", exc)
+        return
+
+    print("Approval Queue:")
+    print(
+        f"  pending: {stats.get('pending', 0):<4} "
+        f"approved: {stats.get('approved', 0):<4} "
+        f"executed: {stats.get('executed', 0):<4}"
+    )
+    print(
+        f"  rejected: {stats.get('rejected', 0):<3} "
+        f"failed:   {stats.get('failed', 0):<4} "
+        f"expired:  {stats.get('expired', 0):<4}"
+    )
+
+    # Recent decisions — most-recent EXECUTED actions
+    if recent:
+        print("\n  Recent decisions:")
+        now = time.time()
+        for a in recent:
+            decided = a.decided_at or a.created_at
+            ago = _format_age(now - decided) if decided else "?"
+            label = f"{a.engine}/{a.action_type}"
+            if len(label) > 36:
+                label = label[:33] + "..."
+            print(
+                f"    {a.id[:18]:<18} {label:<36} "
+                f"{a.status.value.upper():<9} {ago}"
+            )
+    print()
+
+
+def _print_goal_status() -> None:
+    """Active business goal + top-priority engines.
+
+    Wired through the brain stack (PR #90/#91/#92): the goal manager's
+    per-engine EMA shifts as actions execute → goal_feedback hook
+    runs → effectiveness moves → recommender reprioritizes. Showing
+    the top picks here surfaces what the autonomous loop *thinks* the
+    next-best work is.
+    """
+    try:
+        from core.brain.engine_recommender import recommend_engines
+    except Exception as exc:
+        logger.debug("engine recommender unavailable: %s", exc)
+        return
+
+    try:
+        result = recommend_engines(
+            goal=None, limit=5, include_alternatives=False,
+        )
+    except Exception as exc:
+        logger.debug("engine recommendation failed: %s", exc)
+        return
+
+    print(f"Active Goal: {result.active_goal}")
+    if not result.primary:
+        print("  (no engines mapped — set a goal via shopai mind)")
+        print()
+        return
+    print("  Top picks:")
+    for i, rec in enumerate(result.primary, 1):
+        print(
+            f"    {i}. {rec.engine:<22} priority {rec.priority:.2f} "
+            f"(effectiveness {rec.effectiveness:.2f})"
+        )
+    print()
 
 
 def _cmd_setup() -> None:
