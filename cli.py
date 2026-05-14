@@ -145,7 +145,17 @@ def build_parser() -> argparse.ArgumentParser:
     mind_sub.add_parser("llm-status", help="Show LLM provider availability and stats")
 
     # ── Engine commands ──────────────────────────────────────
-    sub.add_parser("engines", help="List all registered engines")
+    engines_p = sub.add_parser(
+        "engines", help="List all registered engines",
+    )
+    engines_p.add_argument(
+        "--by-goal", action="store_true",
+        help="Group engines by their primary brain-stack goal",
+    )
+    engines_p.add_argument(
+        "--unmapped", action="store_true",
+        help="Show only engines without a primary-goal mapping",
+    )
 
     eng_info = sub.add_parser("engine-info", help="Show engine details")
     eng_info.add_argument("engine_name", help="Engine name")
@@ -1098,9 +1108,53 @@ def _cmd_sync(args) -> None:
 
 # ── Engine Commands ──────────────────────────────────────────
 
-def _cmd_engines() -> None:
+def _cmd_engines(*, by_goal: bool = False, unmapped: bool = False) -> None:
     from engines.registry import engine_count, list_engines
+
     engines = list_engines()
+
+    if unmapped:
+        # Show only engines absent from ENGINE_GOAL_MAP.
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+        without_goal = [
+            name for name in engines if name not in ENGINE_GOAL_MAP
+        ]
+        if not without_goal:
+            print("All registered engines have a primary-goal mapping.")
+            return
+        print(
+            f"Unmapped engines ({len(without_goal)} of "
+            f"{len(engines)} registered):"
+        )
+        for i, name in enumerate(without_goal, 1):
+            print(f"  {i:3d}. {name}")
+        return
+
+    if by_goal:
+        # Group by primary goal. Engines not in ENGINE_GOAL_MAP land
+        # under "unmapped" so the operator can see what's not yet
+        # attributable to brain-stack EMA.
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+
+        by: dict[str, list[str]] = {}
+        for name in engines:
+            goal = ENGINE_GOAL_MAP.get(name, "unmapped")
+            by.setdefault(goal, []).append(name)
+
+        # Stable order: known goals alphabetical, "unmapped" last.
+        ordered_goals = sorted(g for g in by if g != "unmapped")
+        if "unmapped" in by:
+            ordered_goals.append("unmapped")
+
+        print(f"Registered engines: {engine_count()} (grouped by goal)\n")
+        for goal in ordered_goals:
+            engines_for = by[goal]
+            print(f"{goal} ({len(engines_for)}):")
+            for name in sorted(engines_for):
+                print(f"  {name}")
+            print()
+        return
+
     print(f"Registered engines: {engine_count()}\n")
     for i, name in enumerate(engines, 1):
         print(f"  {i:3d}. {name}")
@@ -1759,7 +1813,10 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "engines":
-        _cmd_engines()
+        _cmd_engines(
+            by_goal=getattr(args, "by_goal", False),
+            unmapped=getattr(args, "unmapped", False),
+        )
         return
 
     if args.command == "engine-info":
