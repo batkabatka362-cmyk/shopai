@@ -29,7 +29,10 @@ from .cart_analyzer import analyze_cart
 from .abandonment_classifier import classify_abandonment
 from .recovery_strategy_selector import select_recovery_strategy
 from .incentive_calculator import calculate_incentive
-from .discount_minter import mint_recovery_code
+from .discount_minter import (
+    enqueue_recovery_for_approval,
+    mint_recovery_code,
+)
 from .message_builder import build_message
 from .timing_optimizer import optimize_timing
 from .channel_selector import select_channel
@@ -85,6 +88,7 @@ class CartRecoveryEngine:
         cart: dict[str, Any] = parsed["cart"]
         customer: dict[str, Any] = parsed["customer"]
         store: dict[str, Any] = parsed["store"]
+        data: dict[str, Any] = parsed["data"]
 
         # Stage 0.5: Check memory for past recovery attempts
         prior = find_past_recoveries(
@@ -133,17 +137,37 @@ class CartRecoveryEngine:
             )
         incentive = incentive_result["incentive"]
 
-        # Stage 4.5: Mint Shopify discount code (when adapter wired).
-        # The calculated incentive is a recommendation — without an
-        # actual code in Shopify, the recovery email can't honor the
-        # offer at checkout. mint_recovery_code calls
-        # Capability.SHOPIFY_CREATE_DISCOUNT via the SmartRouter and
-        # returns {code, discount_id, ends_at, applies_once} on
-        # success, or None when the router is unavailable / the
-        # incentive isn't mintable / the adapter call failed. Either
-        # way the pipeline continues — None just means downstream
-        # falls back to the merchant's evergreen recovery code.
-        recovery_code = mint_recovery_code(incentive, customer, store)
+        # Stage 4.5: Mint or enqueue Shopify discount code (opt-in).
+        # Pre-fix this stage unconditionally minted a code on every
+        # cycle whenever the router was available — out of line with
+        # the audit-driven opt-in pattern used by the other nine
+        # writeback engines (loyalty, discount_strategy, etc.). The
+        # safer default below requires explicit opt-in via
+        # ``data.apply_recovery=True``; legacy callers that relied on
+        # auto-mint must now flip that flag to keep the old
+        # behaviour.
+        #
+        #   data.apply_recovery=True + data.require_approval=False
+        #     → mint immediately (legacy direct path, opt-in)
+        #   data.apply_recovery=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves via
+        #       /api/pending-actions before the
+        #       SHOPIFY_CREATE_DISCOUNT mutation lands
+        #   data.apply_recovery=False (default)
+        #     → no Shopify write; downstream falls back to the
+        #       merchant's evergreen recovery code (same shape
+        #       legacy callers saw when the router was unavailable)
+        recovery_code: dict[str, Any] | None = None
+        pending_action: dict[str, Any] | None = None
+        if data.get("apply_recovery") is True:
+            if data.get("require_approval") is True:
+                pending_action = enqueue_recovery_for_approval(
+                    incentive, customer, store,
+                )
+            else:
+                recovery_code = mint_recovery_code(
+                    incentive, customer, store,
+                )
 
         # Stage 5: Message Builder (model: LLaMA)
         message_result = build_message(
@@ -238,6 +262,12 @@ class CartRecoveryEngine:
                 "channel": channel_selection.get("channel", "email"),
                 "recovery_probability": value_estimate.get("recovery_probability", 0.0),
                 "expected_revenue": value_estimate.get("expected_revenue", 0.0),
+                # Approval-queue branch. ``pending_action`` is set
+                # (with id + narrative + params) when
+                # ``data.require_approval`` routed Stage 4.5 to the
+                # queue. ``recovery_code`` and ``pending_action`` are
+                # mutually exclusive — one or the other, never both.
+                "pending_action": pending_action,
                 "confidence": value_estimate.get("confidence", 0.0),
             },
             "meta": {
@@ -326,6 +356,10 @@ class CartRecoveryEngine:
             "cart": cart,
             "customer": customer,
             "store": store,
+            # Surface the raw ``data`` block too so flow stages can
+            # read opt-in flags (``apply_recovery``,
+            # ``require_approval``) without re-parsing the envelope.
+            "data": data,
         }
 
     # ------------------------------------------------------------------

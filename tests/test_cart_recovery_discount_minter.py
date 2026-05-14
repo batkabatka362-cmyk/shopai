@@ -340,6 +340,10 @@ class TestFlowSurfacesMintedCode:
                 "avg_margin": 0.40,
                 "free_shipping_threshold": 75.0,
             },
+            # Stage 4.5 defaults to OFF post the audit-driven
+            # opt-in rollout. These tests exercise the direct-mint
+            # path explicitly.
+            "apply_recovery": True,
         }
 
     def test_minted_code_appears_in_output(self):

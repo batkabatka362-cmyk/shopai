@@ -85,6 +85,79 @@ def mint_recovery_code(
     )
 
 
+def enqueue_recovery_for_approval(
+    incentive: dict[str, Any],
+    customer: dict[str, Any],
+    store: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Park a recovery-code proposal in the approval queue.
+
+    Per-engine alternative to :func:`mint_recovery_code` —
+    selected by the flow when ``data.require_approval=True``.
+    Same upfront filters (must be a percentage/amount incentive,
+    positive value); on success returns ``{"pending_action_id",
+    "narrative", "params"}`` for the engine output. The merchant's
+    approval page sees a single-line summary so they can sanity-
+    check before the code lands on Shopify.
+
+    Returns:
+        ``{"pending_action_id", "narrative", "params"}`` once
+        queued, or ``None`` on guardrail rejection / queue write
+        failure — same skip semantics as the direct-mint path.
+    """
+    incentive_type = str(incentive.get("type", "")).lower()
+    if incentive_type not in _MINTABLE_TYPES:
+        return None
+
+    try:
+        value = float(incentive.get("value", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+
+    token = _build_token(customer)
+    ttl_days = _resolve_ttl_days(store)
+
+    customer_id = (
+        customer.get("id")
+        or customer.get("customer_id")
+        or customer.get("email")
+        or "anon"
+    )
+    suffix = "% off" if incentive_type == "percentage" else " off"
+    narrative = (
+        f"Cart recovery code for {customer_id}: "
+        f"{value:g}{suffix} ({ttl_days}d TTL)"
+    )
+    params = {
+        "token": token,
+        "value": value,
+        "value_kind": incentive_type,
+        "ttl_days": ttl_days,
+        "customer_id": str(customer_id),
+        "code_prefix": _CODE_PREFIX,
+    }
+
+    try:
+        from core.approval import get_approval_queue
+        action = get_approval_queue().enqueue(
+            engine="cart_recovery",
+            action_type="mint_cart_recovery_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=params,
+            narrative=narrative,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+    return {
+        "pending_action_id": action.id,
+        "narrative": narrative,
+        "params": params,
+    }
+
+
 # ── Per-engine helpers ────────────────────────────────────────
 
 
