@@ -32,6 +32,18 @@ def _is_valid_action_id(action_id: str) -> bool:
     return bool(action_id and _ACTION_ID_RE.match(action_id))
 
 
+def _truthy_param(raw: Any) -> bool:
+    """parse_qs returns each query param as a list. Treat
+    ``?include_outcomes=1`` / ``=true`` / ``=yes`` as opt-in;
+    everything else (absent, =0, =false) as opt-out.
+    """
+    if not raw:
+        return False
+    if isinstance(raw, list):
+        raw = raw[0] if raw else ""
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 class ShopAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for ShopAI API."""
 
@@ -303,7 +315,15 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(500, {"error": str(exc)})
 
     def _get_pending_action(self, action_id: str, _params: dict) -> None:
-        """GET /api/pending-actions/<id> — fetch a single action."""
+        """GET /api/pending-actions/<id> — fetch a single action.
+
+        Query params:
+          - ``include_outcomes=1`` — also embed the downstream
+            outcomes array (webhook redemptions / refunds the
+            feedback bridge has matched back to this action).
+            Default off; the outcomes table can be large for
+            high-volume actions and most callers don't need it.
+        """
         if action_id in ("stats",):
             # Routed elsewhere; defensive guard if dispatch ever
             # changes shape.
@@ -313,7 +333,8 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(400, {"error": "Invalid action id"})
             return
         from core.approval import get_approval_queue
-        action = get_approval_queue().get(action_id)
+        queue = get_approval_queue()
+        action = queue.get(action_id)
         if action is None:
             self._json_response(404, {"error": f"Unknown action id: {action_id}"})
             return
@@ -325,6 +346,14 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             logger.debug(
                 "operator-context enrichment failed: %s", exc,
             )
+
+        if _truthy_param(_params.get("include_outcomes")):
+            try:
+                payload["outcomes"] = queue.get_outcomes(action_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("outcome lookup failed: %s", exc)
+                payload["outcomes"] = []
+
         self._json_response(200, payload)
 
     # --- POST handlers ---
