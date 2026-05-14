@@ -16,6 +16,10 @@ the operator's prose, ready to surface in engine output / digest
 from core.knowledge.digest import DigestStats, InsightDigest
 from core.knowledge.exporter import ExportSummary, ObsidianExporter
 from core.knowledge.importer import ImportSummary, ObsidianImporter
+from core.knowledge.narrative_enricher import (
+    enrich_action_dict,
+    get_operator_context,
+)
 from core.knowledge.notes_store import NotesStore, get_default_store
 
 __all__ = [
@@ -26,5 +30,7 @@ __all__ = [
     "NotesStore",
     "ObsidianExporter",
     "ObsidianImporter",
+    "enrich_action_dict",
     "get_default_store",
+    "get_operator_context",
 ]
