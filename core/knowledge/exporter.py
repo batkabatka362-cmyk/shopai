@@ -163,17 +163,109 @@ class ObsidianExporter:
     # ── Per-category writers ──────────────────────────────────
 
     def _export_engines(self) -> int:
-        """One Markdown file per entry in ``ENGINE_GOAL_MAP``."""
+        """One Markdown file per entry in ``ENGINE_GOAL_MAP``.
+
+        Pre-computes three signal streams once per export so each
+        engine page can render its enrichment block without N
+        independent queue / store queries:
+
+          * ``decisions_by_engine`` — recent approvals grouped by
+            engine name, newest first, capped per-engine.
+          * ``goal_stats`` — ``GoalManager`` effectiveness +
+            sample counts for every goal at once.
+          * ``notes_by_engine`` — operator's persisted commentary
+            from the NotesStore.
+
+        Source-failure isolated: a missing approval DB or store
+        records nothing — the per-engine page degrades to the
+        bare placeholder it had pre-enrichment.
+        """
         from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+
+        decisions_by_engine = self._collect_decisions_by_engine()
+        goal_stats = self._collect_goal_stats()
+        notes_by_engine = self._collect_engine_notes()
 
         engines_dir = self.target_dir / "engines"
         self._ensure_dir(engines_dir)
         count = 0
         for engine, goal in sorted(ENGINE_GOAL_MAP.items()):
-            body = self._render_engine(engine, goal)
+            body = self._render_engine(
+                engine,
+                goal,
+                recent_decisions=decisions_by_engine.get(engine, []),
+                goal_effectiveness=goal_stats.get(goal),
+                persisted_notes=notes_by_engine.get(engine, ""),
+            )
             self._write(engines_dir / f"{engine}.md", body)
             count += 1
         return count
+
+    # ── Signal collectors (called once per export) ─────────────
+
+    def _collect_decisions_by_engine(
+        self,
+    ) -> dict[str, list[Any]]:
+        """Group recent executed approvals by engine.
+
+        Pulls a wide window (500) then trims per-engine to the
+        five most recent. Newest-first ordering matches the way
+        the engine page renders them.
+        """
+        try:
+            from core.approval import get_approval_queue
+            queue = get_approval_queue()
+            history = queue.list_executed(limit=500) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("decisions collection failed: %s", exc)
+            return {}
+
+        per_engine: dict[str, list[Any]] = {}
+        for action in history:
+            engine = getattr(action, "engine", "") or ""
+            if not engine:
+                continue
+            bucket = per_engine.setdefault(engine, [])
+            if len(bucket) < 5:
+                bucket.append(action)
+        return per_engine
+
+    def _collect_goal_stats(self) -> dict[str, dict[str, Any]]:
+        """Snapshot every goal's EMA + sample count in one call."""
+        mgr = self.goal_manager or self._resolve_default_manager()
+        if mgr is None:
+            return {}
+        try:
+            stats = mgr.get_effectiveness_stats() or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("goal stats collection failed: %s", exc)
+            return {}
+        return {
+            goal: dict(entry) for goal, entry in stats.items()
+            if isinstance(entry, dict)
+        }
+
+    def _collect_engine_notes(self) -> dict[str, str]:
+        """Pull persisted operator notes keyed by engine name.
+
+        Returns ``{engine: text}`` — empty when the NotesStore
+        is unavailable or has no entries.
+        """
+        try:
+            from core.knowledge.notes_store import get_default_store
+            store = get_default_store()
+            raw = store.all_engine_notes()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("notes collection failed: %s", exc)
+            return {}
+        out: dict[str, str] = {}
+        for engine, entry in raw.items():
+            if not isinstance(entry, dict):
+                continue
+            text = str(entry.get("notes", "") or "").strip()
+            if text:
+                out[engine] = text
+        return out
 
     def _export_goals(self) -> int:
         """One Markdown file per canonical goal.
@@ -230,7 +322,23 @@ class ObsidianExporter:
 
     # ── Renderers ─────────────────────────────────────────────
 
-    def _render_engine(self, engine: str, goal: str) -> str:
+    def _render_engine(
+        self,
+        engine: str,
+        goal: str,
+        *,
+        recent_decisions: list[Any] | None = None,
+        goal_effectiveness: dict[str, Any] | None = None,
+        persisted_notes: str = "",
+    ) -> str:
+        """Render one engine page.
+
+        The kwargs come from the pre-computed signals in
+        :meth:`_export_engines`. All three are optional so this
+        renderer remains usable from tests that want a plain
+        page without seeding the queue / manager / store.
+        """
+        recent_decisions = recent_decisions or []
         lines = [
             "---",
             f"name: {engine}",
@@ -250,6 +358,84 @@ class ObsidianExporter:
             f"[[{goal}]]. Engine code lives at "
             f"`engines/{engine}/flow.py`.",
             "",
+        ]
+
+        # Performance block — only when we have a real EMA reading
+        # (i.e. the manager has recorded outcomes for the goal).
+        # Skip when stats are missing so the page doesn't lie
+        # about precision.
+        if isinstance(goal_effectiveness, dict):
+            eff = goal_effectiveness.get("effectiveness")
+            samples = goal_effectiveness.get("n", 0)
+            if eff is not None and isinstance(samples, int):
+                lines += [
+                    "## Performance",
+                    "",
+                    f"- Primary goal: [[{goal}]]",
+                    f"- Goal effectiveness EMA: {float(eff):.3f}",
+                    f"- Samples: {samples} outcome event(s)",
+                    f"- Executed approvals for this engine: "
+                    f"{len(recent_decisions)} in recent window",
+                    "",
+                ]
+
+        # Recent decisions block — bullet-list, most recent first
+        if recent_decisions:
+            lines += [
+                "## Recent activity",
+                "",
+            ]
+            for action in recent_decisions:
+                action_type = getattr(action, "action_type", "")
+                decided_at = getattr(action, "decided_at", 0) or 0
+                ts = (
+                    time.strftime(
+                        "%Y-%m-%d %H:%M", time.gmtime(decided_at),
+                    )
+                    if isinstance(decided_at, (int, float))
+                    and decided_at > 0
+                    else "—"
+                )
+                status = getattr(action, "status", None)
+                status_value = (
+                    status.value
+                    if hasattr(status, "value")
+                    else str(status or "")
+                )
+                narrative = (
+                    getattr(action, "narrative", "") or ""
+                )
+                lines.append(
+                    f"- **{ts}** · `{action_type}` · "
+                    f"_{status_value}_"
+                )
+                if narrative:
+                    short = narrative[:140]
+                    if len(narrative) > 140:
+                        short += "…"
+                    lines.append(f"    - {short}")
+            lines.append("")
+
+        # Persisted operator notes — surface what the operator
+        # has previously written, distinct from the empty
+        # placeholder section below.
+        if persisted_notes:
+            lines += [
+                "## Persisted operator notes",
+                "",
+            ]
+            for line in persisted_notes.splitlines():
+                lines.append(f"> {line}" if line else ">")
+            lines.append("")
+            lines.append(
+                "_Imported from a previous "
+                "`shopai knowledge import` pass. "
+                "Update by editing the section below and "
+                "re-importing._"
+            )
+            lines.append("")
+
+        lines += [
             "## Operator notes",
             "",
             "_Add your own observations below. This block is "

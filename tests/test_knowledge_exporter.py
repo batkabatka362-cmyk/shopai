@@ -295,7 +295,12 @@ class TestDecisionPages:
     def test_decision_limit_respected(
         self, vault, fresh_manager,
     ):
-        # Confirm the limit flows through to list_executed
+        # Confirm the decisions/ export uses ``decision_limit``.
+        # The enrichment pass on engine pages also calls
+        # ``list_executed`` (with a wider 500-limit window to
+        # group per-engine recent activity), so we only assert
+        # that the decisions/ call happened — not that it was
+        # the ONLY call.
         fake_queue = MagicMock()
         fake_queue.list_executed.return_value = []
         with patch(
@@ -306,7 +311,7 @@ class TestDecisionPages:
                 vault, goal_manager=fresh_manager,
                 decision_limit=50,
             ).export()
-        fake_queue.list_executed.assert_called_once_with(limit=50)
+        fake_queue.list_executed.assert_any_call(limit=50)
 
     def test_filename_sanitises_engine_and_id(
         self, vault, fresh_manager,
