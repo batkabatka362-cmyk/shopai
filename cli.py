@@ -249,6 +249,76 @@ def build_parser() -> argparse.ArgumentParser:
     reject_p.add_argument("action_id", help="Action ID to reject")
     reject_p.add_argument("--reason", default="", help="Rejection reason")
 
+    # ── Approvals (modern ApprovalQueue, distinct from legacy `actions`) ─
+    #
+    # ``actions ...`` above wires the legacy ``ActionExecutor`` (older
+    # in-memory action store). The modern path is the SQLite-backed
+    # ``ApprovalQueue`` (PR #57) — engines enqueue via
+    # ``data.apply_X=True + data.require_approval=True``; merchants
+    # decide via /api/pending-actions or these CLI surfaces; the
+    # executor (PR #69 + #102) replays via registered dispatchers.
+    approvals_p = sub.add_parser(
+        "approvals",
+        help="Modern approval-queue commands (ApprovalQueue + executor)",
+    )
+    approvals_sub = approvals_p.add_subparsers(dest="approvals_cmd")
+
+    approvals_pending = approvals_sub.add_parser(
+        "pending", help="List pending approval-queue actions",
+    )
+    approvals_pending.add_argument(
+        "--engine", default=None,
+        help="Filter to a single engine namespace",
+    )
+    approvals_pending.add_argument(
+        "--limit", type=int, default=20,
+        help="Page size (default: 20)",
+    )
+
+    approvals_sub.add_parser(
+        "stats", help="Per-status counts in the approval queue",
+    )
+
+    approvals_show = approvals_sub.add_parser(
+        "show", help="Show full detail for one action",
+    )
+    approvals_show.add_argument("action_id", help="Action ID")
+
+    approvals_approve = approvals_sub.add_parser(
+        "approve",
+        help="Approve a pending action (optionally auto-execute)",
+    )
+    approvals_approve.add_argument("action_id", help="Action ID")
+    approvals_approve.add_argument(
+        "--reason", default="",
+        help="Operator note attached to the decision",
+    )
+    approvals_approve.add_argument(
+        "--by", default="operator",
+        help="Operator name attributed to the decision",
+    )
+    approvals_approve.add_argument(
+        "--execute", action="store_true",
+        help="Immediately run the executor on the approved action",
+    )
+
+    approvals_reject = approvals_sub.add_parser(
+        "reject", help="Reject a pending action",
+    )
+    approvals_reject.add_argument("action_id", help="Action ID")
+    approvals_reject.add_argument(
+        "--reason", default="", help="Rejection reason",
+    )
+    approvals_reject.add_argument(
+        "--by", default="operator",
+        help="Operator name attributed to the decision",
+    )
+
+    approvals_execute = approvals_sub.add_parser(
+        "execute", help="Execute an already-approved action",
+    )
+    approvals_execute.add_argument("action_id", help="Action ID")
+
     # ── Pipeline commands ────────────────────────────────────
     pipeline = sub.add_parser("pipeline", help="Run a data pipeline")
     pipeline.add_argument("pipeline_name", choices=["product", "marketing", "analytics"])
@@ -1629,6 +1699,147 @@ def _cmd_setup() -> None:
     print("And run: python cli.py setup")
 
 
+# ── Approval queue (modern path: ApprovalQueue + executor) ──
+
+
+def _cmd_approvals(args) -> None:
+    """Dispatch ``shopai approvals <verb>`` subcommands.
+
+    Wraps the same SQLite-backed ApprovalQueue + executor the
+    API endpoints use, so CLI and HTTP surfaces share decisions
+    automatically (no separate state).
+    """
+    verb = getattr(args, "approvals_cmd", None)
+    if verb == "pending":
+        _cmd_approvals_pending(args)
+        return
+    if verb == "stats":
+        _cmd_approvals_stats(args)
+        return
+    if verb == "show":
+        _cmd_approvals_show(args)
+        return
+    if verb == "approve":
+        _cmd_approvals_approve(args)
+        return
+    if verb == "reject":
+        _cmd_approvals_reject(args)
+        return
+    if verb == "execute":
+        _cmd_approvals_execute(args)
+        return
+    print(
+        "Usage:\n"
+        "  shopai approvals pending  [--engine NAME] [--limit N]\n"
+        "  shopai approvals stats\n"
+        "  shopai approvals show     <action_id>\n"
+        "  shopai approvals approve  <action_id> [--reason ...] [--by ...] [--execute]\n"
+        "  shopai approvals reject   <action_id> [--reason ...] [--by ...]\n"
+        "  shopai approvals execute  <action_id>"
+    )
+    sys.exit(1)
+
+
+def _cmd_approvals_pending(args) -> None:
+    from core.approval import get_approval_queue
+    queue = get_approval_queue()
+    actions = queue.list_pending(engine=args.engine, limit=args.limit)
+    if not actions:
+        if args.engine:
+            print(f"No pending actions for engine {args.engine!r}.")
+        else:
+            print("No pending actions.")
+        return
+    print(f"Pending actions ({len(actions)}):")
+    for a in actions:
+        narrative = (a.narrative or "")[:80]
+        conf = (
+            f" conf={a.confidence:.2f}"
+            if isinstance(a.confidence, (int, float))
+            else ""
+        )
+        print(f"  [{a.id}] {a.engine}/{a.action_type}{conf}")
+        if narrative:
+            print(f"      {narrative}")
+
+
+def _cmd_approvals_stats(args) -> None:
+    from core.approval import get_approval_queue
+    stats = get_approval_queue().stats()
+    print("Approval queue stats:")
+    for status, count in sorted(stats.items()):
+        print(f"  {status:<10} {count}")
+
+
+def _cmd_approvals_show(args) -> None:
+    from core.approval import get_approval_queue
+    action = get_approval_queue().get(args.action_id)
+    if action is None:
+        print(f"Unknown action id: {args.action_id}")
+        sys.exit(1)
+    payload = action.to_dict()
+    try:
+        from core.knowledge import enrich_action_dict
+        payload = enrich_action_dict(payload)
+    except Exception:  # noqa: BLE001
+        # Knowledge layer optional — degrade silently
+        pass
+    print(json.dumps(payload, indent=2, default=str))
+
+
+def _cmd_approvals_approve(args) -> None:
+    from core.approval import get_approval_queue
+    queue = get_approval_queue()
+    action = queue.approve(
+        args.action_id,
+        decided_by=args.by,
+        reason=args.reason,
+    )
+    if action is None:
+        print(
+            f"Cannot approve {args.action_id} "
+            "(unknown or already resolved)."
+        )
+        sys.exit(1)
+    print(f"Approved: {action.id} ({action.engine}/{action.action_type})")
+    if args.execute:
+        _run_execute(args.action_id)
+
+
+def _cmd_approvals_reject(args) -> None:
+    from core.approval import get_approval_queue
+    action = get_approval_queue().reject(
+        args.action_id,
+        decided_by=args.by,
+        reason=args.reason,
+    )
+    if action is None:
+        print(
+            f"Cannot reject {args.action_id} "
+            "(unknown or already resolved)."
+        )
+        sys.exit(1)
+    print(f"Rejected: {action.id} ({action.engine}/{action.action_type})")
+
+
+def _cmd_approvals_execute(args) -> None:
+    _run_execute(args.action_id)
+
+
+def _run_execute(action_id: str) -> None:
+    from core.approval.executor import execute_action
+    result = execute_action(action_id)
+    if result is None:
+        print(
+            f"Execute no-op: {action_id} "
+            "(unknown, not approved, or already resolved)."
+        )
+        sys.exit(1)
+    print(f"Executed: {action_id} -> {result.status.value}")
+    if result.result:
+        print(json.dumps(result.result, indent=2, default=str))
+
+
 def _cmd_pipeline(pipeline_name: str, input_path: str) -> None:
     with open(input_path) as f:
         data = json.load(f)
@@ -1780,6 +1991,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "actions":
         _cmd_actions(args)
+        return
+
+    if args.command == "approvals":
+        _cmd_approvals(args)
         return
 
     if args.command == "auto":
