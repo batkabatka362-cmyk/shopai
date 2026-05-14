@@ -20,6 +20,10 @@ from .tier_builder import build_tiers
 from .account_manager import manage_accounts
 from .volume_calculator import calculate_volume_discounts
 from .order_processor import process_orders
+from .discount_minter import (
+    enqueue_wholesale_for_approval,
+    mint_wholesale_code,
+)
 from .memory_reader import read_past_wholesale
 from .memory_writer import write_wholesale_result
 from engines._shopify_hydrator import hydrate
@@ -93,6 +97,39 @@ class WholesaleB2bEngine:
         processed_orders = order_result.get("processed_orders", [])
         credit_terms = order_result.get("credit_terms", [])
 
+        # Stage 4.5: Wholesale discount-code writeback (opt-in).
+        # Pre-fix the engine's volume_discounts data was advisory —
+        # the merchant had to manually mint a Shopify code per
+        # wholesale order. Default OFF; two opt-in modes match the
+        # established Phase 6/7 pattern:
+        #
+        #   data.apply_wholesale_discount=True + data.require_approval=False
+        #     → mint immediately
+        #   data.apply_wholesale_discount=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves before
+        #       the SHOPIFY_CREATE_DISCOUNT mutation lands
+        #
+        # Both paths share the same upfront guardrails (best
+        # discount_pct > 0, customer_id present).
+        minted_code: dict[str, Any] | None = None
+        pending_action: dict[str, Any] | None = None
+        store_cfg = data.get("store", {}) if isinstance(
+            data.get("store"), dict,
+        ) else {}
+        if data.get("apply_wholesale_discount") is True:
+            if data.get("require_approval") is True:
+                pending_action = enqueue_wholesale_for_approval(
+                    order=order,
+                    volume_discounts=volume_discounts,
+                    store=store_cfg,
+                )
+            else:
+                minted_code = mint_wholesale_code(
+                    order=order,
+                    volume_discounts=volume_discounts,
+                    store=store_cfg,
+                )
+
         # Stage 5: Memory Writer (non-fatal)
         _write_result = write_wholesale_result(
             tiers=tiers, account_status=account_status,
@@ -109,6 +146,11 @@ class WholesaleB2bEngine:
                 "volume_discounts": volume_discounts,
                 "processed_orders": processed_orders,
                 "credit_terms": credit_terms,
+                # Stage 4.5 output — mutually exclusive: one or the
+                # other is populated when the opt-in flags routed
+                # through a path; both ``None`` when default-off.
+                "minted_code": minted_code,
+                "pending_action": pending_action,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
