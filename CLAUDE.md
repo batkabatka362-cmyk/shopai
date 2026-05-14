@@ -359,6 +359,14 @@ tolerate both forms when the cost is low:
 - `productDelete` and `productDuplicate` userErrors are typed
   `UserError` (no `code`) — same Pattern F. Most product
   mutations DO use `UserErrors` (with code), so check per-mutation.
+- **2026-05-15 update**: `productCreate` and `productUpdate` ALSO
+  migrated to typed `UserError`. Live verification on ts0efe-ih
+  caught both with "Field 'code' doesn't exist on type 'UserError'".
+  Fixed in PR #93 (productUpdate) and PR #94 (productCreate). With
+  these merged the **entire Product mutation family** is now
+  consistent on typed UserError (create / update / delete /
+  duplicate all lack `code`). Adapter PRs touching new product
+  mutations should expect the same pattern.
 - `orderCancel` returns `orderCancelUserErrors` (NOT the
   standard `userErrors` key) of type `OrderCancelUserError`
   (has `code`). The base `_check_user_errors` helper looks for
@@ -575,6 +583,56 @@ Anything new that calls a real persistent store from inside an
 adapter or engine (analytics, audit log, telemetry sink) needs the
 same gate — assume the test suite WILL exercise that path and
 WILL leave residue otherwise.
+
+### Pattern K: approval-queue dispatcher coverage is silent if broken
+
+The approval queue accepts an arbitrary ``action_type`` string at
+``enqueue`` time. The executor dispatches by looking up
+``_DISPATCHERS[action_type]`` and runs whatever's registered.
+When **no dispatcher is registered for an action_type**, the
+queue still happily accepts the enqueue, the merchant still
+approves it cleanly, and only at execute time does the system
+return ``"no executor registered for action_type=mint_X"`` and
+flip status to FAILED.
+
+Failure mode is silent in production:
+
+1. Engine flow opts into approval-queue path with
+   ``data.apply_X=True + data.require_approval=True``.
+2. ``enqueue_X_for_approval`` parks the action — success.
+3. Merchant clicks Approve in the UI — success
+   (``approval.approved`` hook fires).
+4. Executor calls ``execute_action`` — returns
+   ``status=FAILED, error="no executor registered"``.
+5. UI may not surface this clearly — merchant thinks the action
+   ran; in reality nothing landed on Shopify.
+
+**Caught live 2026-05-15** running a full end-to-end test of
+cart_recovery. 12 of 21 action_types had no dispatcher — every
+1C wireup (PRs #75-#86) plus customer_segmentation / bundle /
+landing_page / legal_document. Fixed in PR #102.
+
+**When adding a new engine wireup, also add the dispatcher.**
+The checklist (added to the per-engine wireup procedure):
+
+- [ ] ``engines/<engine>/X_applier.py`` direct + enqueue helpers.
+- [ ] Per-engine flow Stage gates on ``data.apply_X`` /
+      ``data.require_approval``.
+- [ ] ``@register_dispatcher("<action_type>")`` in
+      ``core/approval/dispatchers.py`` matching the action_type
+      string the enqueue helper passes.
+- [ ] Updated set in
+      ``tests/test_approval_executor.py::TestRegistry``.
+- [ ] Live verification: full chain
+      ``engine.run(apply_X=True, require_approval=True)`` →
+      ``queue.approve`` → ``execute_action`` → confirm Shopify
+      side-effect.
+
+Test guard:
+``test_approval_executor.py::TestRegistry::test_all_action_types_register``
+asserts a hard-coded full set. Adding a new action_type without
+updating that set fails CI immediately. Same gate pattern as the
+bootstrap engine-count test.
 
 ## Current branch state
 
