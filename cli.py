@@ -1164,16 +1164,66 @@ def _cmd_engine_info(engine_name: str) -> None:
     from engines.registry import get_engine
     try:
         engine = get_engine(engine_name)
-        name = getattr(engine, "ENGINE_NAME", getattr(engine, "engine_name", engine_name))
-        print(f"Engine: {name}")
-        print(f"Class:  {engine.__class__.__name__}")
-        if hasattr(engine, "required_input_fields"):
-            print(f"Inputs: {engine.required_input_fields}")
-        if hasattr(engine, "required_output_fields"):
-            print(f"Outputs: {engine.required_output_fields}")
     except KeyError:
         print(f"Unknown engine: {engine_name}")
         sys.exit(1)
+    if engine is None:
+        print(f"Unknown engine: {engine_name}")
+        sys.exit(1)
+
+    name = getattr(engine, "ENGINE_NAME", getattr(engine, "engine_name", engine_name))
+    print(f"Engine: {name}")
+    print(f"Class:  {engine.__class__.__name__}")
+    if hasattr(engine, "required_input_fields"):
+        print(f"Inputs: {engine.required_input_fields}")
+    if hasattr(engine, "required_output_fields"):
+        print(f"Outputs: {engine.required_output_fields}")
+
+    _print_engine_brain_stack(engine_name)
+
+
+def _print_engine_brain_stack(engine_name: str) -> None:
+    """Render the engine's brain-stack attribution + effectiveness.
+
+    Best-effort: any failure (goal map missing, manager unavailable)
+    skips its line rather than crashing engine-info.
+    """
+    try:
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+    except Exception as exc:
+        logger.debug("engine_goal_map import failed: %s", exc)
+        return
+
+    goal = ENGINE_GOAL_MAP.get(engine_name)
+    print()
+    print("Brain stack:")
+    if goal is None:
+        print("  Goal:           (unmapped — engine actions don't attribute to any goal)")
+        return
+    print(f"  Goal:           {goal}")
+
+    # Pull current per-goal effectiveness from the default
+    # GoalManager. Lazy-import so a broken goals layer doesn't
+    # break engine-info.
+    try:
+        from core.goals.goal_manager import GoalManager
+    except Exception as exc:
+        logger.debug("GoalManager import failed: %s", exc)
+        return
+    try:
+        manager = GoalManager()
+        stats = manager.get_effectiveness_stats()
+    except Exception as exc:
+        logger.debug("effectiveness stats lookup failed: %s", exc)
+        return
+
+    goal_stats = stats.get(goal, {})
+    ema = goal_stats.get("ema")
+    samples = goal_stats.get("n", 0)
+    if ema is None:
+        print("  Effectiveness:  0.50 (default — no recorded outcomes yet)")
+    else:
+        print(f"  Effectiveness:  {ema:.2f} (over {samples} recorded outcomes)")
 
 
 def _cmd_run(args) -> None:
