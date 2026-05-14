@@ -21,6 +21,10 @@ from .affinity_analyzer import analyze_affinity
 from .bundle_generator import generate_bundles
 from .price_optimizer import optimize_prices
 from .cannibalization_checker import check_cannibalization
+from .bundle_applier import (
+    apply_bundle_product,
+    enqueue_bundle_for_approval,
+)
 from .memory_reader import read_past_bundles
 from .memory_writer import write_bundle_result
 from .shopify_hydrator import hydrate_products, hydrate_orders
@@ -140,10 +144,18 @@ class BundleEngine:
         cannibalization_risk = cannibal_result.get("results", [])
 
         # ---- Stage 6: Assemble output bundles ----
+        # Carry ``product_ids`` and ``bundle_id`` through to the
+        # output so downstream consumers (the Stage 6.5 applier,
+        # the executor's bundle dispatcher) can resolve component
+        # ids without re-running the optimizer. ``products`` (the
+        # titles list) is preserved for backwards compat.
         bundles: list[dict[str, Any]] = []
         for opt in optimized:
             bundles.append({
+                "bundle_id": opt.get("bundle_id", ""),
                 "products": opt.get("product_titles", []),
+                "product_ids": opt.get("product_ids", []),
+                "product_titles": opt.get("product_titles", []),
                 "bundle_price": opt.get("bundle_price", 0.0),
                 "savings_pct": opt.get("savings_pct", 0.0),
                 "estimated_uplift": opt.get("estimated_uplift", 0.0),
@@ -151,6 +163,42 @@ class BundleEngine:
             })
 
         best_bundle = bundles[0] if bundles else None
+
+        # ---- Stage 6.5: Bundle-product writeback (opt-in) ----
+        # Default OFF — existing callers keep their pure-
+        # recommendation contract. Two opt-in modes mirror the
+        # established Phase 6/7 pattern:
+        #
+        #   data.apply_bundle=True + data.require_approval=False
+        #     → SHOPIFY_CREATE_PRODUCT immediately
+        #   data.apply_bundle=True + data.require_approval=True
+        #     → enqueue to core.approval; merchant approves before
+        #       the mutation lands
+        #
+        # Both paths share the same upfront guards (>=2 components,
+        # positive savings, cannibalization recommendation isn't
+        # "reconsider_bundle"). The product is created as DRAFT —
+        # component-tracking via the Shopify Bundles app isn't in
+        # the adapter layer yet, so the merchant finishes the
+        # wiring before publishing.
+        bundle_apply_result: dict[str, Any] | None = None
+        bundle_pending_action: dict[str, Any] | None = None
+        store_cfg = data.get("store", {}) if isinstance(
+            data.get("store"), dict,
+        ) else {}
+        if data.get("apply_bundle") is True:
+            if data.get("require_approval") is True:
+                bundle_pending_action = enqueue_bundle_for_approval(
+                    best_bundle=best_bundle,
+                    cannibalization_risk=cannibalization_risk,
+                    store=store_cfg,
+                )
+            else:
+                bundle_apply_result = apply_bundle_product(
+                    best_bundle=best_bundle,
+                    cannibalization_risk=cannibalization_risk,
+                    store=store_cfg,
+                )
 
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_bundle_result(
@@ -168,6 +216,12 @@ class BundleEngine:
                 "bundles": bundles,
                 "best_bundle": best_bundle,
                 "cannibalization_risk": cannibalization_risk,
+                # Stage 6.5 output — mutually exclusive: one or
+                # the other is populated when the opt-in flags
+                # routed through a path; both ``None`` when
+                # default-off or guardrails rejected.
+                "bundle_apply_result": bundle_apply_result,
+                "bundle_pending_action": bundle_pending_action,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

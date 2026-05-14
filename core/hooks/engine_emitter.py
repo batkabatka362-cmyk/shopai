@@ -124,8 +124,18 @@ def attach_completion_emitter(engine: Any, engine_name: str) -> Any:
 
     try:
         setattr(engine, _PATCHED_FLAG, True)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # Same slot-based / immutable class case as the run
+        # patcher above. The run wrapper is already in place; we
+        # just can't tag the sentinel, which means a *second*
+        # call to attach_completion_emitter on this instance
+        # would patch ``run`` a second time and produce double
+        # emits. Operationally rare (registry caches), but log
+        # so it's diagnosable if it ever fires.
+        logger.debug(
+            "completion-emit flag attach failed for %s: %s",
+            engine_name, exc,
+        )
     return engine
 
 

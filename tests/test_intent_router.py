@@ -74,6 +74,13 @@ class TestEnglishIntents:
 
 
 class TestMongolianIntents:
+    """Verify Mongolian Cyrillic operator phrases route correctly.
+
+    The intent index is language-agnostic — Mongolian patterns sit
+    next to English ones in each engine block. A Mongolian-speaking
+    operator (the ShopAI primary user) types in Cyrillic and the
+    same router resolves the intent. No language switch needed.
+    """
 
     def test_mongolian_discount_keyword(self):
         result = classify_intent("хямдрал хийе")
@@ -81,6 +88,86 @@ class TestMongolianIntents:
 
     def test_mongolian_price_phrase(self):
         result = classify_intent("үнэ нэмэх хэрэгтэй")
+        assert result.engine == "dynamic_pricing"
+
+    @pytest.mark.parametrize("text, expected", [
+        # Customer-facing engines
+        ("үнэнч хэрэглэгчдэд шагнал өгөх", "loyalty"),
+        ("комисс олгох", "affiliate"),
+        ("бараа тэмдэглэх", "tag_management"),
+        ("хайлт оновчлох", "search_optimization"),
+        ("бараа архивлах", "product_lifecycle"),
+        ("бүтээгдэхүүний тайлбар бичих", "content_generation"),
+        ("сагсаа орхисон хэрэглэгч", "cart_recovery"),
+        ("үзсэн бараа сэргээх", "browse_recovery"),
+        ("хэрэглэгч алдах эрсдэл", "churn_prediction"),
+        ("хэрэглэгчийн бүлэг шинжлэх", "cohort_analysis"),
+        ("багц үүсгэх", "bundle"),
+        ("нэмэлт зарах санал", "upsell"),
+        ("өрсөлдөгч судлах", "competitor_analysis"),
+        # Marketing / advertising
+        ("шилдэг зар тагнах", "ads_spy"),
+        ("видео скрипт бичих", "creative"),
+        ("ROAS хязгаар", "roas_guardrails"),
+        ("маркетингийн төлөвлөгөө", "campaign_strategy"),
+        ("имэйл маркетинг явуулах", "email_marketing"),
+        # Operations
+        ("луйврын эрсдэл шалгах", "fraud_detection"),
+        ("хүргэлтийн үнэ", "shipping"),
+        ("татварын тооцоо", "tax"),
+        ("төлбөрийн урсгал сайжруулах", "checkout_optimizer"),
+        ("бөөний үнэ тогтоох", "wholesale_b2b"),
+        # Finance / analytics
+        ("санхүүгийн тайлан", "accounting"),
+        ("мөнгөн гүйлгээ хянах", "cash_flow"),
+        ("ашгийг өсгөх", "profit_optimization"),
+        ("борлуулалт таамаглах", "forecasting"),
+        ("хөрвүүлэлтийн хувь", "conversion_tracking"),
+        ("зах зээл судлах", "market_research"),
+        # Catalog / storefront
+        ("бүтээгдэхүүний каталог", "catalog"),
+        ("хэрэглэгчийн ангилал", "customer_segmentation"),
+        ("бэлгийн карт олгох", "gift_card"),
+        ("зураг оновчлох", "image_optimization"),
+        ("ландинг хуудас үүсгэх", "landing_page"),
+        # Service / support
+        ("чат бот тохируулах", "chatbot"),
+        ("харилцагчийн үйлчилгээ", "customer_service"),
+        ("буцаалт удирдах", "returns_management"),
+        ("сэтгэгдэлд хариулах", "review_management"),
+        ("сэтгэл ханамжийн судалгаа", "nps_engine"),
+        # Other
+        ("сошиал медиа пост", "social_media"),
+        ("сарын захиалга", "subscription"),
+        ("виралжсан бараа илрүүлэх", "trend_detection"),
+        ("таалагдсан бараа", "wishlist"),
+        ("процесс автоматжуулах", "workflow_builder"),
+        ("захиалга удирдах", "order_management"),
+        ("төлбөрийн арга", "payment_optimization"),
+        ("шилдэг бараа олох", "product_research"),
+        ("өрсөлдөгч ажиглах", "competitor_monitor"),
+        ("дропшиппинг", "dropshipping"),
+    ])
+    def test_mongolian_routes_to_expected_engine(self, text, expected):
+        result = classify_intent(text)
+        assert result.engine == expected, (
+            f"{text!r} routed to {result.engine!r} "
+            f"(expected {expected!r}, confidence={result.confidence:.2f})"
+        )
+
+    def test_mongolian_inflection_caught_by_word_set(self):
+        # "үнэ нэмэх" is in the index but the user typed
+        # "үнээ нэмэхийг хүсэж байна" — case-marked + verbal noun
+        # + auxiliary. The substring matcher misses ("үнэ нэмэх"
+        # not literally in input) but the word-set fallback
+        # catches {үнэ, нэмэх} ⊂ stemmed tokens.
+        result = classify_intent("үнээ нэмэхийг хүсэж байна")
+        assert result.engine == "dynamic_pricing"
+
+    def test_mongolian_does_not_steal_english_routing(self):
+        # English input must still resolve to the expected engine
+        # — Mongolian additions are additive, not replacements.
+        result = classify_intent("lower my product prices")
         assert result.engine == "dynamic_pricing"
 
 
