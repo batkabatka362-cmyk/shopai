@@ -21,6 +21,10 @@ from .return_processor import process_returns
 from .reason_analyzer import analyze_reasons
 from .fraud_detector import detect_fraud
 from .cost_calculator import calculate_costs
+from .return_applier import (
+    apply_return_tags,
+    enqueue_return_tags_for_approval,
+)
 from .memory_reader import read_past_returns
 from .memory_writer import write_returns_result
 from engines._shopify_hydrator import hydrate
@@ -142,6 +146,34 @@ class ReturnsManagementEngine:
             return_rate=return_rate,
         )
 
+        # ---- Stage 7.5: Order-tag writeback (opt-in) ----
+        # Default OFF. Two opt-in modes:
+        #
+        #   data.apply_return_tags=True + data.require_approval=False
+        #     → SHOPIFY_TAG_ORDER immediately per processed return
+        #   data.apply_return_tags=True + data.require_approval=True
+        #     → enqueue per-return proposals to core.approval
+        #
+        # Both paths share the same decision-to-tag mapping
+        # (approved → shopai-return-approved, rejected →
+        # shopai-return-rejected, fraud-flagged → +
+        # shopai-return-fraud-flag). Refund issuance is NOT
+        # part of this writeback — tagging is the safer first
+        # cut; ``refundCreate`` needs transaction-parent lookups
+        # the engine doesn't carry yet.
+        tag_apply_results: list[dict[str, Any]] = []
+        if data.get("apply_return_tags") is True:
+            if data.get("require_approval") is True:
+                tag_apply_results = enqueue_return_tags_for_approval(
+                    processed=processed,
+                    fraud_flags=fraud_flags,
+                )
+            else:
+                tag_apply_results = apply_return_tags(
+                    processed=processed,
+                    fraud_flags=fraud_flags,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -153,6 +185,9 @@ class ReturnsManagementEngine:
                 "fraud_flags": fraud_flags,
                 "total_cost": total_cost,
                 "return_rate": return_rate,
+                # Stage 7.5 output — one entry per processed return
+                # when opt-in is on; empty list otherwise.
+                "tag_apply_results": tag_apply_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
