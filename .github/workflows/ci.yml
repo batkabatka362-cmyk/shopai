@@ -143,6 +143,28 @@ jobs:
         run: |
           python cli.py capabilities-audit
 
+      - name: Deployable config dry-run (prepare-deploy)
+        # End-to-end gate: every required institutional protection
+        # check passes AND the deployable shopify.app.toml emits
+        # cleanly. Catches an integration class the individual
+        # audits miss — e.g. a scope name with embedded quotes,
+        # a webhook topic with special chars in the registry, or
+        # a registry-side oversight where collect_manifest() raises.
+        # Uses --skip-live (CI can't reach Shopify) but every
+        # other section must pass.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py shopify-prepare-deploy \
+            --skip-live \
+            --output /tmp/ci-shopify.app.toml \
+            --force \
+            --app-host https://shopai-ci.example.com
+          # Sanity-check the file actually rendered something
+          test -s /tmp/ci-shopify.app.toml
+          grep -q "\[access_scopes\]" /tmp/ci-shopify.app.toml
+          grep -q "\[webhooks\]" /tmp/ci-shopify.app.toml
+
       - name: Config schema validation
         env:
           PYTHONPATH: ${{ github.workspace }}
