@@ -1137,7 +1137,19 @@ def _cmd_run(args) -> None:
 
     # Run engine
     from engines.registry import get_engine
-    engine = get_engine(args.task_type)
+    try:
+        engine = get_engine(args.task_type)
+    except KeyError:
+        engine = None
+    if engine is None:
+        # Pre-PR: ``engine.run(data)`` crashed with
+        # AttributeError on NoneType. Now: clean error + exit 1.
+        print(
+            f"Error: unknown engine: {args.task_type}\n"
+            f"(see ``shopai engines`` for the registered list)"
+        )
+        sys.exit(1)
+
     print(f"Running {args.task_type} (data source: {data.get('source', 'unknown')})...\n")
 
     result = engine.run(data)
