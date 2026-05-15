@@ -7502,8 +7502,38 @@ def _build_status_dict() -> dict:
             "last_status": si.get("last_status"),
         })
 
+    # ── Phase 6/7 wiring snapshot (best-effort) ───────────
+    # Surfaces wired-engine progress in the daily-glance view
+    # so operators see the autonomous-loop coverage without
+    # running engines-writebacks separately.
+    engines_wired: int | None = None
+    engines_advisory: int | None = None
+    try:
+        from engines._writeback_audit import (
+            audit_writeback_coverage,
+        )
+        wb = audit_writeback_coverage("engines")
+        engines_wired = wb.wired_count
+        engines_advisory = wb.advisory_count
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("status writeback probe raised: %s", exc)
+
+    dispatchers: int | None = None
+    try:
+        from core.approval.executor import (
+            _ensure_dispatchers_loaded,
+            list_registered_action_types,
+        )
+        _ensure_dispatchers_loaded()
+        dispatchers = len(list_registered_action_types())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("status dispatcher probe raised: %s", exc)
+
     return {
         "engines": engine_count(),
+        "engines_wired": engines_wired,
+        "engines_advisory": engines_advisory,
+        "dispatchers": dispatchers,
         "stores_count": len(stores),
         "active_store": sm.active_store_id or None,
         "stores": store_payload,
@@ -7524,6 +7554,20 @@ def _cmd_status(args=None) -> None:
 
     print("ShopAI System Status\n")
     print(f"  Engines:  {payload['engines']}")
+    # Phase 6/7 wiring breakdown (best-effort -- present iff
+    # the writeback audit succeeded at status-build time)
+    wired = payload.get("engines_wired")
+    advisory = payload.get("engines_advisory")
+    if wired is not None and advisory is not None:
+        total = payload["engines"]
+        pct = round(100 * wired / total) if total else 0
+        print(
+            f"    wired:  {wired}/{total} ({pct}%), "
+            f"advisory: {advisory}"
+        )
+    dispatchers = payload.get("dispatchers")
+    if dispatchers is not None:
+        print(f"  Dispatchers: {dispatchers}")
     print(f"  Stores:   {payload['stores_count']}")
     print(f"  Active:   {payload['active_store'] or 'none'}")
     print()
