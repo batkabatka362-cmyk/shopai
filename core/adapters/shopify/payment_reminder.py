@@ -53,6 +53,7 @@ mutation paymentReminderSend($paymentScheduleId: ID!) {
 class ShopifyPaymentReminderAdapter(ShopifyBaseAdapter):
     name = "shopify_payment_reminder"
     capabilities = {Capability.SHOPIFY_SEND_PAYMENT_REMINDER}
+    required_scopes = frozenset({"write_orders"})
 
     def _execute(
         self,

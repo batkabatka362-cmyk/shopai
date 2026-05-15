@@ -132,6 +132,7 @@ class ShopifyThemeOpsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_PUBLISH_THEME,
         Capability.SHOPIFY_DELETE_THEME,
     }
+    required_scopes = frozenset({"read_themes", "write_themes"})
 
     def _execute(
         self,

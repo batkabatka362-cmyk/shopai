@@ -209,6 +209,7 @@ class ShopifySellingPlanGroupsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_SELLING_PLAN_GROUPS,
         Capability.SHOPIFY_GET_SELLING_PLAN_GROUP,
     }
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,

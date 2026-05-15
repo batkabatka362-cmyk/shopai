@@ -202,6 +202,7 @@ _VALID_OPS = {
 class ShopifyOrderEditsAdapter(ShopifyBaseAdapter):
     name = "shopify_order_edits"
     capabilities = {Capability.SHOPIFY_EDIT_ORDER}
+    required_scopes = frozenset({"write_orders"})
 
     def _execute(
         self,

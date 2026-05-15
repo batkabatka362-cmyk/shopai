@@ -173,6 +173,7 @@ class ShopifySavedSearchesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_SAVED_SEARCH,
         Capability.SHOPIFY_DELETE_SAVED_SEARCH,
     }
+    required_scopes = frozenset({"read_customers"})
 
     def _execute(
         self,

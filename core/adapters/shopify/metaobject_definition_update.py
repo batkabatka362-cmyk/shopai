@@ -138,6 +138,7 @@ class ShopifyMetaobjectDefinitionUpdateAdapter(ShopifyBaseAdapter):
     capabilities = {
         Capability.SHOPIFY_UPDATE_METAOBJECT_DEFINITION,
     }
+    required_scopes = frozenset({"write_metaobject_definitions"})
 
     def _execute(
         self,

@@ -134,6 +134,7 @@ class ShopifyStorefrontAccessTokensAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN,
         Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN,
     }
+    required_scopes = frozenset({"read_storefront_tokens", "write_storefront_tokens"})
 
     def _execute(
         self,

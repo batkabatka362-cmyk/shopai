@@ -117,6 +117,7 @@ class ShopifyMarketsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_MARKET,
         Capability.SHOPIFY_LIST_SHOP_LOCALES,
     }
+    required_scopes = frozenset({"read_markets", "write_markets"})
 
     def _execute(
         self,

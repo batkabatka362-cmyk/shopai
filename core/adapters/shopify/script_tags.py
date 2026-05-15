@@ -134,6 +134,7 @@ class ShopifyScriptTagsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_SCRIPT_TAG,
         Capability.SHOPIFY_DELETE_SCRIPT_TAG,
     }
+    required_scopes = frozenset({"read_script_tags", "write_script_tags"})
 
     def _execute(
         self,

@@ -153,6 +153,10 @@ class ShopifyMetaobjectDefinitionsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_METAOBJECT_DEFINITION,
         Capability.SHOPIFY_DELETE_METAOBJECT_DEFINITION,
     }
+    required_scopes = frozenset({
+        "read_metaobject_definitions",
+        "write_metaobject_definitions",
+    })
 
     def _execute(
         self,

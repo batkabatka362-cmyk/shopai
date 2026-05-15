@@ -227,6 +227,7 @@ class ShopifyUrlRedirectsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_URL_REDIRECT,
         Capability.SHOPIFY_BULK_DELETE_URL_REDIRECTS,
     }
+    required_scopes = frozenset({"read_content", "write_content"})
 
     def _execute(
         self,

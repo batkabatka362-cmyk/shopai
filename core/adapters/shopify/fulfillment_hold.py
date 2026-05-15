@@ -119,6 +119,7 @@ class ShopifyFulfillmentHoldAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_HOLD_FULFILLMENT_ORDER,
         Capability.SHOPIFY_RELEASE_FULFILLMENT_ORDER_HOLD,
     }
+    required_scopes = frozenset({"write_merchant_managed_fulfillment_orders"})
 
     def _execute(
         self,

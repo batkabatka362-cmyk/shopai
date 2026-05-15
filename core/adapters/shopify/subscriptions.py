@@ -173,6 +173,10 @@ class ShopifySubscriptionContractsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_RESUME_SUBSCRIPTION_CONTRACT,
         Capability.SHOPIFY_CANCEL_SUBSCRIPTION_CONTRACT,
     }
+    required_scopes = frozenset({
+        "read_own_subscription_contracts",
+        "write_own_subscription_contracts",
+    })
 
     def _execute(
         self,

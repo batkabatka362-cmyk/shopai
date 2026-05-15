@@ -113,6 +113,7 @@ class ShopifyMetafieldDefinitionPinAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_PIN_METAFIELD_DEFINITION,
         Capability.SHOPIFY_UNPIN_METAFIELD_DEFINITION,
     }
+    required_scopes = frozenset({"write_metaobject_definitions"})
 
     def _execute(
         self,

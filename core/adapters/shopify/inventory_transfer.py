@@ -166,6 +166,7 @@ class ShopifyInventoryTransferAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_INVENTORY_TRANSFER,
         Capability.SHOPIFY_MARK_INVENTORY_TRANSFER_READY,
     }
+    required_scopes = frozenset({"read_inventory", "write_inventory"})
 
     def _execute(
         self,

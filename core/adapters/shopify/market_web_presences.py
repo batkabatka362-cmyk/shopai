@@ -119,6 +119,7 @@ class ShopifyMarketWebPresencesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_MARKET_WEB_PRESENCES,
         Capability.SHOPIFY_GET_MARKET_WEB_PRESENCE,
     }
+    required_scopes = frozenset({"read_markets", "write_markets"})
 
     def _execute(
         self,

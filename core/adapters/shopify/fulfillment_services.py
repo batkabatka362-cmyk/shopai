@@ -164,6 +164,7 @@ class ShopifyFulfillmentServicesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_FULFILLMENT_SERVICE,
         Capability.SHOPIFY_DELETE_FULFILLMENT_SERVICE,
     }
+    required_scopes = frozenset({"write_merchant_managed_fulfillment_orders"})
 
     def _execute(
         self,

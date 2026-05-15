@@ -163,6 +163,7 @@ class ShopifyProductFeedsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_PRODUCT_FEED,
         Capability.SHOPIFY_TRIGGER_PRODUCT_FULL_SYNC,
     }
+    required_scopes = frozenset({"read_product_feeds", "write_product_feeds"})
 
     def _execute(
         self,

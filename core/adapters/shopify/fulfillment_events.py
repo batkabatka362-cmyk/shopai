@@ -133,6 +133,7 @@ class ShopifyFulfillmentEventsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_FULFILLMENT_EVENTS,
         Capability.SHOPIFY_CREATE_FULFILLMENT_EVENT,
     }
+    required_scopes = frozenset({"write_merchant_managed_fulfillment_orders"})
 
     def _execute(
         self,

@@ -82,6 +82,7 @@ mutation inventorySetQuantities(
 class ShopifyInventoryAdjustAdapter(ShopifyBaseAdapter):
     name = "shopify_inventory_adjust"
     capabilities = {Capability.SHOPIFY_SET_INVENTORY_QUANTITIES}
+    required_scopes = frozenset({"write_inventory"})
 
     def _execute(
         self,

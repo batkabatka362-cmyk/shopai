@@ -113,6 +113,7 @@ class ShopifyUrlRedirectImportAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_SUBMIT_URL_REDIRECT_IMPORT,
         Capability.SHOPIFY_GET_URL_REDIRECT_IMPORT,
     }
+    required_scopes = frozenset({"write_content"})
 
     def _execute(
         self,

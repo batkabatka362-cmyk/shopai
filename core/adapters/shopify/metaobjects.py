@@ -140,6 +140,7 @@ class ShopifyMetaobjectsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_METAOBJECT,
         Capability.SHOPIFY_LIST_METAOBJECTS,
     }
+    required_scopes = frozenset({"read_metaobjects", "write_metaobjects"})
 
     def _execute(
         self,

@@ -102,6 +102,7 @@ class ShopifyDisputesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_DISPUTES,
         Capability.SHOPIFY_GET_DISPUTE,
     }
+    required_scopes = frozenset({"read_shopify_payments_disputes"})
 
     def _execute(
         self,

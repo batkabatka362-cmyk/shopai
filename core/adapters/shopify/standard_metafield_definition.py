@@ -107,6 +107,7 @@ class ShopifyStandardMetafieldDefinitionAdapter(ShopifyBaseAdapter):
     capabilities = {
         Capability.SHOPIFY_ENABLE_STANDARD_METAFIELD_DEFINITION,
     }
+    required_scopes = frozenset({"write_metaobject_definitions"})
 
     def _execute(
         self,

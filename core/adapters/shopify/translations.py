@@ -138,6 +138,7 @@ class ShopifyTranslationsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_REGISTER_TRANSLATIONS,
         Capability.SHOPIFY_REMOVE_TRANSLATIONS,
     }
+    required_scopes = frozenset({"read_translations", "write_translations"})
 
     def _execute(
         self,

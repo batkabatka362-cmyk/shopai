@@ -147,6 +147,7 @@ class ShopifyPriceListAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_PRICE_LIST,
         Capability.SHOPIFY_DELETE_PRICE_LIST,
     }
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,

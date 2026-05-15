@@ -128,6 +128,7 @@ class ShopifyPaymentsPayoutsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_PAYOUT,
         Capability.SHOPIFY_GET_PAYMENTS_BALANCE,
     }
+    required_scopes = frozenset({"read_shopify_payments_payouts"})
 
     def _execute(
         self,

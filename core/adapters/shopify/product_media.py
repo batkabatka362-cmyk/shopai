@@ -139,6 +139,7 @@ class ShopifyProductMediaAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_APPEND_VARIANT_MEDIA,
         Capability.SHOPIFY_DETACH_VARIANT_MEDIA,
     }
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,

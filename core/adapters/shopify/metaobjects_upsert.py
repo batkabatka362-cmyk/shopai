@@ -111,6 +111,7 @@ class ShopifyMetaobjectsUpsertAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPSERT_METAOBJECT,
         Capability.SHOPIFY_BULK_DELETE_METAOBJECTS,
     }
+    required_scopes = frozenset({"write_metaobjects"})
 
     def _execute(
         self,

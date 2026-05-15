@@ -136,6 +136,7 @@ _VALID_DISCOUNT_VALUE_TYPES = {"PERCENTAGE", "FIXED_AMOUNT"}
 class ShopifyDraftOrderCalculateAdapter(ShopifyBaseAdapter):
     name = "shopify_draft_order_calculate"
     capabilities = {Capability.SHOPIFY_CALCULATE_DRAFT_ORDER}
+    required_scopes = frozenset({"read_draft_orders", "write_draft_orders"})
 
     def _execute(
         self,
