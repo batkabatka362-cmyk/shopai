@@ -235,6 +235,8 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UNTAG_ORDER,
         Capability.SHOPIFY_CLOSE_ORDER,
     }
+    # read for list/get; write for update/tag/untag/close.
+    required_scopes = frozenset({"read_orders", "write_orders"})
 
     def _execute(
         self,

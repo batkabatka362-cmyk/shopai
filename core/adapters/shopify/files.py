@@ -155,6 +155,7 @@ class ShopifyFilesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPLOAD_FILE,
         Capability.SHOPIFY_LIST_FILES,
     }
+    required_scopes = frozenset({"read_files", "write_files"})
 
     def _execute(
         self,

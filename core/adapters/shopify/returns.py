@@ -173,6 +173,11 @@ class ShopifyReturnsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_APPROVE_RETURN,
         Capability.SHOPIFY_DECLINE_RETURN,
     }
+    # Returns ride on the orders scope plus return-management.
+    required_scopes = frozenset({
+        "read_returns", "write_returns",
+        "read_orders",
+    })
 
     def _execute(
         self,

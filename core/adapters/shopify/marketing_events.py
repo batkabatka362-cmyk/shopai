@@ -250,6 +250,9 @@ class ShopifyMarketingEventsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_ADD_MARKETING_ENGAGEMENT,
         Capability.SHOPIFY_LIST_MARKETING_ACTIVITIES,
     }
+    required_scopes = frozenset({
+        "read_marketing_events", "write_marketing_events",
+    })
 
     def _execute(
         self,

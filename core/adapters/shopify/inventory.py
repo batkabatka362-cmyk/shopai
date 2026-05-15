@@ -100,6 +100,12 @@ class ShopifyInventoryAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_FETCH_PRODUCTS,
         Capability.SHOPIFY_UPDATE_INVENTORY,
     }
+    # FETCH_PRODUCTS is a join through inventory level, so it
+    # needs both read_products AND read_inventory; the write
+    # mutation needs write_inventory.
+    required_scopes = frozenset({
+        "read_products", "read_inventory", "write_inventory",
+    })
 
     def _execute(
         self,

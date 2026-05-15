@@ -249,6 +249,9 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_PRODUCT,
         Capability.SHOPIFY_UPDATE_VARIANTS,
     }
+    # read_products covers list/get; write_products covers
+    # create/update/delete and the variant mutation surface.
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,

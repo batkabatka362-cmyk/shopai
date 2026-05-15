@@ -122,6 +122,10 @@ class ShopifyPublicationsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_PUBLISH_RESOURCE,
         Capability.SHOPIFY_UNPUBLISH_RESOURCE,
     }
+    # Publications ride on the product publication API.
+    required_scopes = frozenset({
+        "read_publications", "write_publications",
+    })
 
     def _execute(
         self,

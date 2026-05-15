@@ -142,6 +142,11 @@ class ShopifyCustomerSegmentsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_SEGMENT_MEMBERS,
         Capability.SHOPIFY_CREATE_SEGMENT,
     }
+    # Segments are customer-derived; they ride on the customer
+    # scope pair.
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

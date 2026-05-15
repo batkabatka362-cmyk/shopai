@@ -116,6 +116,10 @@ class ShopifyDiscountAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_DISCOUNT,
         Capability.SHOPIFY_LIST_DISCOUNTS,
     }
+    # Discounts use a dedicated scope pair distinct from products.
+    required_scopes = frozenset({
+        "read_discounts", "write_discounts",
+    })
 
     def _execute(
         self,

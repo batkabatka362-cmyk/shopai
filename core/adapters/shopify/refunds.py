@@ -158,6 +158,8 @@ class ShopifyRefundsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_ORDER_REFUNDS,
         Capability.SHOPIFY_GET_REFUND,
     }
+    # Refunds ride on the orders scope.
+    required_scopes = frozenset({"read_orders", "write_orders"})
 
     def _execute(
         self,

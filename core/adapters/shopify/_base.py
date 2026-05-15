@@ -82,6 +82,19 @@ class ShopifyBaseAdapter(BaseAdapter):
     cost_per_call = 0.0  # Free — included in Shopify plan
     priority = 100        # Native APIs always preferred over apps
 
+    # OAuth scope manifest. Each concrete adapter declares the
+    # Shopify access scopes (https://shopify.dev/docs/api/usage/
+    # access-scopes) it needs for its GraphQL calls. Aggregated
+    # via ``core.adapters.shopify.scope_registry`` so operators
+    # see exactly which scopes the app install needs without
+    # reading every adapter docstring.
+    #
+    # Empty default — adapters that haven't been wired into the
+    # registry yet won't surface scopes, but won't break either.
+    # The registry treats an unwired adapter as "scopes unknown"
+    # and flags it so operators can request a wireup.
+    required_scopes: frozenset[str] = frozenset()
+
     def __init__(
         self,
         shop_url: str | None = None,
