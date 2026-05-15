@@ -1289,6 +1289,81 @@ class ApprovalQueue:
             }
         return result
 
+    def revenue_attribution_stats(self) -> dict[str, dict[str, Any]]:
+        """Per-engine revenue attribution from matched outcomes.
+
+        The existing :meth:`engine_outcome_stats` returns a SIGNED
+        net total that mixes positive uplift and refunded revenue
+        — fine for the recommender's effectiveness score, but
+        operators inspecting which engines drive revenue need the
+        breakdown:
+
+          - ``gross_revenue``: positive-polarity revenue sum
+            (the engine's contribution before refunds).
+          - ``refunded_revenue``: negative-polarity revenue sum,
+            as a positive number (what came back). Lets operators
+            see "engine X drove $10k gross but $2k came back".
+          - ``net_revenue``: gross - refunded.
+          - ``positive_outcomes`` / ``negative_outcomes``: outcome
+            counts, helpful for sanity-checking small numbers.
+          - ``revenue_per_positive_outcome``: gross / positive
+            count. The "average impact when something good
+            happens" — useful for cross-engine comparison
+            independent of volume.
+
+        Returns ``{engine: stats}`` for each engine with at
+        least one matched outcome. Engines without outcomes are
+        absent.
+        """
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT p.engine, o.polarity, o.metrics_json
+                   FROM action_outcomes o
+                   INNER JOIN pending_actions p ON p.id = o.action_id""",
+            ).fetchall()
+
+        by_engine: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            engine = r["engine"]
+            entry = by_engine.setdefault(engine, {
+                "gross_revenue": 0.0,
+                "refunded_revenue": 0.0,
+                "positive_outcomes": 0,
+                "negative_outcomes": 0,
+            })
+            metrics = _safe_loads(r["metrics_json"])
+            try:
+                rev = float(metrics.get("revenue", 0) or 0)
+            except (TypeError, ValueError):
+                rev = 0.0
+            polarity = r["polarity"]
+            if polarity == "positive":
+                entry["positive_outcomes"] += 1
+                entry["gross_revenue"] += rev
+            elif polarity == "negative":
+                entry["negative_outcomes"] += 1
+                entry["refunded_revenue"] += rev
+            # neutral polarities don't carry revenue
+            # attribution — silently skip.
+
+        result: dict[str, dict[str, Any]] = {}
+        for engine, entry in by_engine.items():
+            gross = entry["gross_revenue"]
+            refunded = entry["refunded_revenue"]
+            pos = entry["positive_outcomes"]
+            rev_per_pos: float | None = (
+                round(gross / pos, 2) if pos > 0 else None
+            )
+            result[engine] = {
+                "gross_revenue": round(gross, 2),
+                "refunded_revenue": round(refunded, 2),
+                "net_revenue": round(gross - refunded, 2),
+                "positive_outcomes": pos,
+                "negative_outcomes": entry["negative_outcomes"],
+                "revenue_per_positive_outcome": rev_per_pos,
+            }
+        return result
+
     def list_recent_outcomes(
         self,
         *,
