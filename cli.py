@@ -313,8 +313,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Page size (default: 20)",
     )
 
-    approvals_sub.add_parser(
+    approvals_stats = approvals_sub.add_parser(
         "stats", help="Per-status counts in the approval queue",
+    )
+    approvals_stats.add_argument(
+        "--by-engine", action="store_true",
+        help="Break down counts per engine (triage signal)",
     )
 
     approvals_show = approvals_sub.add_parser(
@@ -2346,7 +2350,35 @@ def _cmd_approvals_pending(args) -> None:
 
 def _cmd_approvals_stats(args) -> None:
     from core.approval import get_approval_queue
-    stats = get_approval_queue().stats()
+    queue = get_approval_queue()
+
+    if getattr(args, "by_engine", False):
+        by_engine = queue.stats_by_engine()
+        if not by_engine:
+            print("Approval queue is empty.")
+            return
+        statuses = ["pending", "approved", "executed",
+                    "failed", "rejected", "expired"]
+        col = 10
+        header = (
+            f"{'engine':<24}"
+            + "".join(f"{s:>{col}}" for s in statuses)
+        )
+        print("Approval queue by engine:")
+        print(f"  {header}")
+        print(f"  {'-' * len(header)}")
+        for engine in sorted(by_engine):
+            counts = by_engine[engine]
+            row = (
+                f"{engine:<24}"
+                + "".join(
+                    f"{counts.get(s, 0):>{col}}" for s in statuses
+                )
+            )
+            print(f"  {row}")
+        return
+
+    stats = queue.stats()
     print("Approval queue stats:")
     for status, count in sorted(stats.items()):
         print(f"  {status:<10} {count}")
