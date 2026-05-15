@@ -93,10 +93,15 @@ class WebhookFeedbackBridge:
         self, topic: str, payload: dict[str, Any],
     ) -> dict[str, Any]:
         polarity = self._polarity(topic)
-        codes = _extract_discount_codes(payload)
 
+        # Strategy 1: discount-code match (the original path).
+        # Strong attribution — a redeemed code uniquely names the
+        # engine that minted it. Covers cart_recovery,
+        # browse_recovery, loyalty, discount_strategy,
+        # email_marketing, wholesale_b2b.
+        codes = _extract_discount_codes(payload)
         if codes:
-            matched = self._match_to_action(codes)
+            matched = self._match_to_action_by_code(codes)
             if matched is not None:
                 self._stats["matched_actions"] += 1
                 return self._feed_matched(
@@ -106,9 +111,27 @@ class WebhookFeedbackBridge:
                     action=matched,
                 )
 
-        # Orphan path — no code match. Still useful to feed the
-        # loop with the raw event so future engines can correlate
-        # revenue / churn with their own decisions.
+        # Strategy 2: product-id match. Loose attribution — covers
+        # engines that mutate a product (tag_management, dynamic_pricing,
+        # product_lifecycle, content_generation, image_optimization,
+        # catalog, ...) and need credit when that product sells or
+        # gets refunded. The signal is weaker than a unique
+        # discount-code redemption, but better than zero.
+        product_ids = _extract_product_ids(payload)
+        if product_ids:
+            matched = self._match_to_action_by_product(product_ids)
+            if matched is not None:
+                self._stats["matched_actions"] += 1
+                return self._feed_matched(
+                    topic=topic,
+                    polarity=polarity,
+                    payload=payload,
+                    action=matched,
+                )
+
+        # Orphan path — no code or product match. Still useful to
+        # feed the loop with the raw event so future engines can
+        # correlate revenue / churn with their own decisions.
         self._stats["orphan_events"] += 1
         return self._feed_orphan(
             topic=topic, polarity=polarity, payload=payload,
@@ -122,26 +145,18 @@ class WebhookFeedbackBridge:
             return "negative"
         return "neutral"
 
-    def _match_to_action(
+    def _match_to_action_by_code(
         self, codes: list[str],
     ) -> dict[str, Any] | None:
-        """Look up an EXECUTED action in the approval queue whose
-        ``result.code`` matches any of the discount codes in the
-        webhook payload.
+        """Look up an EXECUTED action whose ``result.code`` matches
+        any of the discount codes in the webhook payload.
 
-        Returns the matching :class:`ApprovalAction` snapshot (as
-        a dict) or ``None`` when nothing matches. The lookup is
-        case-insensitive — Shopify uppercases discount codes on
-        the storefront but engines often mint them in mixed case.
+        Returns the matching :class:`ApprovalAction` snapshot or
+        ``None``. Case-insensitive — Shopify uppercases discount
+        codes on the storefront but engines often mint mixed case.
         """
-        queue = self._get_approval_queue()
-        if queue is None:
-            return None
-
-        try:
-            snapshot = queue.list_executed(limit=500)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("approval queue lookup failed: %s", exc)
+        snapshot = self._list_executed_snapshot()
+        if snapshot is None:
             return None
 
         wanted = {c.strip().lower() for c in codes if c}
@@ -151,6 +166,56 @@ class WebhookFeedbackBridge:
             if minted_code and minted_code in wanted:
                 return action.to_dict()
         return None
+
+    # Backward-compat alias for tests that called the old name
+    # before the rename. New callers should use the explicit
+    # _by_code / _by_product variants.
+    _match_to_action = _match_to_action_by_code
+
+    def _match_to_action_by_product(
+        self, product_ids: list[str],
+    ) -> dict[str, Any] | None:
+        """Look up an EXECUTED action whose ``params`` reference one
+        of the product ids in the webhook payload.
+
+        Returns the matching :class:`ApprovalAction` snapshot or
+        ``None``. Attribution is looser than discount-code matching
+        (the engine's product mutation may not be why the customer
+        bought) — but tag_management, dynamic_pricing,
+        product_lifecycle, content_generation, image_optimization,
+        catalog all act on products without minting codes, and
+        ANY signal beats zero signal.
+
+        Comparison strategy: both sides normalised to bare ids
+        (``gid://shopify/Product/123`` stripped to ``123``) so
+        engines and webhooks can use either form.
+        """
+        snapshot = self._list_executed_snapshot()
+        if snapshot is None:
+            return None
+
+        wanted = {_normalise_product_id(p) for p in product_ids if p}
+        wanted.discard("")
+        if not wanted:
+            return None
+
+        for action in snapshot:
+            params = action.params or {}
+            candidate = _normalise_product_id(params.get("product_id"))
+            if candidate and candidate in wanted:
+                return action.to_dict()
+        return None
+
+    def _list_executed_snapshot(self) -> Any:
+        """Common queue-fetch wrapper used by both match strategies."""
+        queue = self._get_approval_queue()
+        if queue is None:
+            return None
+        try:
+            return queue.list_executed(limit=500)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("approval queue lookup failed: %s", exc)
+            return None
 
     def _feed_matched(
         self,
@@ -310,6 +375,67 @@ def _extract_discount_codes(payload: dict[str, Any]) -> list[str]:
         codes.extend(_extract_discount_codes(nested))
 
     return codes
+
+
+def _extract_product_ids(payload: dict[str, Any]) -> list[str]:
+    """Pull product ids from a Shopify webhook payload.
+
+    Coverage:
+    - ``line_items[].product_id`` — orders/create, orders/paid,
+      orders/cancelled (top level)
+    - ``order.line_items[].product_id`` — refunds/create
+      (nested via order ref)
+    - ``refund_line_items[].line_item.product_id`` — refunds
+      (alternate shape on some shop versions)
+
+    Ids are returned as strings to match how engines pin them in
+    ``params`` (Shopify's GraphQL gid format ``gid://shopify/Product/X``
+    OR REST numeric form). Comparison happens via
+    ``_normalise_product_id`` which strips both forms to bare ids.
+    """
+    ids: list[str] = []
+
+    items = payload.get("line_items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                pid = item.get("product_id")
+                if pid is not None and str(pid).strip():
+                    ids.append(str(pid).strip())
+
+    refund_items = payload.get("refund_line_items")
+    if isinstance(refund_items, list):
+        for item in refund_items:
+            if isinstance(item, dict):
+                li = item.get("line_item")
+                if isinstance(li, dict):
+                    pid = li.get("product_id")
+                    if pid is not None and str(pid).strip():
+                        ids.append(str(pid).strip())
+
+    nested = payload.get("order")
+    if isinstance(nested, dict):
+        ids.extend(_extract_product_ids(nested))
+
+    return ids
+
+
+def _normalise_product_id(value: Any) -> str:
+    """Reduce ``gid://shopify/Product/12345`` (or the bare
+    ``"12345"`` / ``12345`` forms) to a comparable string ``"12345"``.
+
+    Returns ``""`` for anything unparseable so set-membership
+    checks don't accidentally collide on empty strings.
+    """
+    if value is None:
+        return ""
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    if "/" in raw:
+        # gid://shopify/Product/12345 → 12345
+        return raw.rsplit("/", 1)[-1].strip()
+    return raw
 
 
 def _extract_metrics(
