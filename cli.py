@@ -117,6 +117,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output path. Default: shopai-backup-<UTC timestamp>.tar.gz",
     )
 
+    db_restore = db_sub.add_parser(
+        "restore",
+        help="Replace data/ with the contents of a backup tarball",
+    )
+    db_restore.add_argument(
+        "archive",
+        help="Path to a tar.gz produced by ``shopai db backup``",
+    )
+    db_restore.add_argument(
+        "--yes", action="store_true",
+        help="Skip the confirmation prompt (CAUTION: replaces live data)",
+    )
+
     # ── Config commands ──────────────────────────────────────
     config_p = sub.add_parser("config", help="Inspect / validate configuration")
     config_sub = config_p.add_subparsers(dest="config_action")
@@ -587,7 +600,71 @@ def _cmd_db_backup(out_path: str | None) -> None:
     else:
         size = f"{size_bytes / (1024 * 1024):.1f}MB"
     print(f"Backup written: {out_file} ({size})")
-    print(f"Restore with: tar -xzf {out_file}")
+    print(f"Restore with: shopai db restore {out_file}")
+
+
+def _cmd_db_restore(archive: str, yes: bool = False) -> None:
+    """Restore data/ from a backup tarball.
+
+    Replaces the current data/ contents wholesale. The pre-restore
+    state is moved to ``data.<timestamp>.bak/`` first so a failed
+    restore (or "I picked the wrong tarball") is still recoverable
+    without leaving the operator stuck.
+
+    Refuses without ``--yes`` so an accidental restore can't wipe
+    a working install.
+    """
+    import datetime
+    import shutil
+    import tarfile
+    from pathlib import Path
+
+    archive_path = Path(archive)
+    if not archive_path.exists():
+        print(f"Error: archive not found: {archive_path}")
+        sys.exit(1)
+
+    if not yes:
+        print(
+            f"Restore will REPLACE the contents of data/ with the "
+            f"tarball {archive_path.name}."
+        )
+        print("Current data/ will be moved aside (not deleted) first.")
+        print("Re-run with --yes to confirm:")
+        print(f"  shopai db restore {archive} --yes")
+        sys.exit(1)
+
+    data_dir = Path("data")
+    if data_dir.exists():
+        ts = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        backup_dir = Path(f"data.{ts}.bak")
+        if backup_dir.exists():
+            print(f"Error: {backup_dir} already exists; aborting")
+            sys.exit(1)
+        try:
+            shutil.move(str(data_dir), str(backup_dir))
+        except OSError as exc:
+            print(f"Error: could not move data/ aside: {exc}")
+            sys.exit(1)
+        print(f"Moved current data/ → {backup_dir}")
+
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(".")
+    except (tarfile.TarError, OSError) as exc:
+        print(f"Error: extract failed: {exc}")
+        sys.exit(1)
+
+    if not data_dir.exists():
+        print(
+            "Error: restore completed but data/ not present — "
+            "tarball may have a different layout. Inspect the "
+            "archive: tar -tzf <archive> | head"
+        )
+        sys.exit(1)
+
+    file_count = sum(1 for _ in data_dir.rglob("*") if _.is_file())
+    print(f"Restored data/ from {archive_path.name} ({file_count} files)")
 
 
 # ── Config Commands ──────────────────────────────────────────
@@ -1791,8 +1868,13 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_db_migrate()
         elif args.db_action == "backup":
             _cmd_db_backup(getattr(args, "out", None))
+        elif args.db_action == "restore":
+            _cmd_db_restore(
+                args.archive,
+                yes=getattr(args, "yes", False),
+            )
         else:
-            print("Usage: shopai db {status|migrate|backup}")
+            print("Usage: shopai db {status|migrate|backup|restore}")
         return
 
     if args.command == "config":
