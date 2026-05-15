@@ -381,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--only", default=None,
         choices=[
             "pattern_k", "oauth", "pattern_y",
-            "pattern_i", "pattern_j",
+            "pattern_i", "pattern_j", "pattern_z",
         ],
         metavar="NAME",
         help=(
@@ -401,6 +401,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     pattern_j_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
+    pattern_z_audit_p = sub.add_parser(
+        "pattern-z-audit",
+        help=(
+            "CI gate (Pattern Z): every writer module "
+            "(*_applier.py / *_minter.py / *_payer.py) that "
+            "calls a Shopify mutation MUST also call "
+            "record_writeback. 0 = clean, 1 = at least one "
+            "writer skipping Phase 8 feedback."
+        ),
+    )
+    pattern_z_audit_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -4007,6 +4022,105 @@ def _cmd_pattern_j_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_pattern_z_audit(args) -> None:
+    """CI gate (Pattern Z): every writer module that calls a
+    Shopify mutation MUST also call ``record_writeback`` so the
+    autonomous learning loop sees the outcome.
+
+    Catches the bug class fixed in PR #205: four discount-code
+    minters were minting real Shopify codes but skipping
+    ``record_writeback``. The minted codes were live on Shopify,
+    but Phase 8 (MemoryIntelligence / DataArchitecture /
+    LearningLoop) never saw the mint event -- recommender + EMA
+    silently undercounted those engines' impact.
+
+    Writer modules in scope (filename suffix):
+      * ``*_applier.py``
+      * ``*_minter.py``
+      * ``*_payer.py``
+
+    A writer is flagged when it calls one of (``execute``,
+    ``_router_call``, ``mint_recovery_code``, ``_mint``) but
+    has NO ``record_writeback`` call in the same file. Writers
+    that only enqueue (no direct mutation) skip cleanly --
+    Phase 8 fan-out for the queue path is the executor's
+    responsibility, not the applier's.
+
+    Exit 0 = clean. Exit 1 = at least one writer skips
+    record_writeback.
+    """
+    try:
+        from engines._pattern_z_audit import audit_pattern_z
+        report = audit_pattern_z()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern Z audit raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Pattern Z audit unavailable: {exc}")
+        return
+
+    if getattr(args, "json", False):
+        payload = {
+            "ok": not report.has_violations,
+            "scanned_writers": report.scanned_writers,
+            "clean_writers": report.clean_writers,
+            "skipped_no_mutation": report.skipped_no_mutation,
+            "missing_recorder": [
+                {
+                    "file": s.file,
+                    "mutation_calls": list(s.mutation_calls),
+                    "has_recorder_import": s.has_recorder_import,
+                }
+                for s in report.missing_recorder
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        if report.has_violations:
+            sys.exit(1)
+        return
+
+    if not report.has_violations:
+        print(
+            f"Pattern Z OK -- "
+            f"{len(report.clean_writers)}/{report.scanned_writers} "
+            "writer module(s) call record_writeback "
+            f"({len(report.skipped_no_mutation)} skipped: no "
+            "direct mutation)."
+        )
+        return
+
+    print(
+        f"Pattern Z FAILED: "
+        f"{len(report.missing_recorder)} writer(s) call a Shopify "
+        "mutation but skip record_writeback."
+    )
+    print()
+    print(
+        "Phase 8 (MemoryIntelligence / DataArchitecture / "
+        "LearningLoop) won't see these writes -- the autonomous "
+        "loop can't learn from them:"
+    )
+    for s in report.missing_recorder:
+        hint = (
+            " (recorder imported but not called)"
+            if s.has_recorder_import else ""
+        )
+        print(
+            f"  {s.file}  mutations={list(s.mutation_calls)}"
+            f"{hint}"
+        )
+    print()
+    print(
+        "Fix: add `from engines._writeback_recorder import "
+        "record_writeback` and call it adjacent to the mutation, "
+        "passing engine + action_type + capability + params + "
+        "success + error. See engines/loyalty/discount_minter.py "
+        "for the canonical pattern."
+    )
+    sys.exit(1)
+
+
 def _run_one_audit(name: str) -> dict[str, Any]:
     """Run a single named audit and return ``{ok, details}``.
 
@@ -4085,6 +4199,19 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for s in j.unguarded_sites
                 ],
             }
+        if name == "pattern_z":
+            from engines._pattern_z_audit import audit_pattern_z
+            z = audit_pattern_z()
+            return {
+                "ok": not z.has_violations,
+                "scanned_writers": z.scanned_writers,
+                "clean_writers": len(z.clean_writers),
+                "skipped_no_mutation": len(z.skipped_no_mutation),
+                "missing_recorder": [
+                    f"{s.file} {list(s.mutation_calls)}"
+                    for s in z.missing_recorder
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -4093,6 +4220,7 @@ def _run_one_audit(name: str) -> dict[str, Any]:
 
 _AUDIT_ORDER = (
     "pattern_k", "oauth", "pattern_y", "pattern_i", "pattern_j",
+    "pattern_z",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -4100,6 +4228,7 @@ _AUDIT_LABELS = {
     "pattern_y": "Pattern Y (capability coverage)",
     "pattern_i": "Pattern I (engine capability parity)",
     "pattern_j": "Pattern J (test pollution)",
+    "pattern_z": "Pattern Z (writer-recorder parity)",
 }
 
 
@@ -4181,6 +4310,11 @@ def _cmd_audit_all(args) -> None:
                     print(
                         f"  [FAIL] {label} -- "
                         f"{len(r.get('unguarded_sites', []))} unguarded site(s)"
+                    )
+                elif name == "pattern_z":
+                    print(
+                        f"  [FAIL] {label} -- "
+                        f"{len(r.get('missing_recorder', []))} writer(s) missing recorder"
                     )
                 else:
                     print(f"  [FAIL] {label}")
@@ -8923,6 +9057,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-j-audit":
         _cmd_pattern_j_audit(args)
+        return
+
+    if args.command == "pattern-z-audit":
+        _cmd_pattern_z_audit(args)
         return
 
     if args.command == "audit":
