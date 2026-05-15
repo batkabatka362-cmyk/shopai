@@ -207,6 +207,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    eng_calibration = sub.add_parser(
+        "engine-calibration",
+        help=(
+            "Confidence-bucket calibration for an engine "
+            "(does high confidence actually correlate with "
+            "positive outcomes?)"
+        ),
+    )
+    eng_calibration.add_argument(
+        "engine_name", help="Engine to inspect",
+    )
+    eng_calibration.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     run_p = sub.add_parser("run", help="Run an engine")
     run_p.add_argument("task_type", help="Engine name")
     run_p.add_argument("--store", default="", help="Store ID")
@@ -1919,6 +1935,103 @@ def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
         print(f"Outputs: {payload['outputs']}")
 
     _print_engine_brain_stack(engine_name)
+
+
+def _cmd_engine_calibration(args) -> None:
+    """Render an engine's confidence-bucket calibration.
+
+    A well-calibrated engine produces high outcome_score in
+    high-confidence buckets and low outcome_score in low-
+    confidence buckets — i.e. confidence actually means something.
+    A miscalibrated engine (inverted or flat shape) is a signal
+    operators need to act on:
+      - Inverted: high-confidence actions worse than mid → the
+        engine's internal scoring is broken or systematically
+        overconfident on a specific failure mode.
+      - Flat: confidence carries no information about outcome —
+        the MIN_CONFIDENCE floor in auto-approve does nothing
+        useful.
+
+    The summary line ("Calibration: well-calibrated / inverted /
+    insufficient data") gives operators an at-a-glance verdict
+    backed by the bucketed numbers.
+    """
+    from core.approval import get_approval_queue
+
+    try:
+        queue = get_approval_queue()
+        result = queue.engine_confidence_calibration(
+            args.engine_name,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine calibration lookup raised: %s", exc,
+        )
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "engine": args.engine_name,
+                "buckets": [],
+                "monotonic_increasing": None,
+                "error": str(exc),
+            }, indent=2))
+        else:
+            print(f"Calibration unavailable for {args.engine_name}")
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    buckets = result["buckets"]
+    monotonic = result["monotonic_increasing"]
+    rendered_buckets = [b for b in buckets if b["action_count"]]
+
+    print(f"Confidence calibration for engine: {args.engine_name}")
+    print()
+
+    if not rendered_buckets:
+        print(
+            "  (no actions with recorded confidence yet — "
+            "engine has not enqueued actions or the queue is "
+            "empty)"
+        )
+        return
+
+    print(
+        "  bucket       actions  positive  negative  score"
+    )
+    for b in rendered_buckets:
+        score_display = (
+            f"{b['outcome_score']:.2f}"
+            if b['outcome_score'] is not None
+            else "  -- "
+        )
+        print(
+            f"  {b['label']:<11}  "
+            f"{b['action_count']:>7}  "
+            f"{b['positive_outcomes']:>8}  "
+            f"{b['negative_outcomes']:>8}  "
+            f"{score_display}"
+        )
+
+    print()
+    if monotonic is True:
+        print(
+            "Calibration: well-calibrated "
+            "(outcome score rises with confidence)"
+        )
+    elif monotonic is False:
+        print(
+            "Calibration: INVERTED — outcome score does not "
+            "monotonically rise with confidence. The engine's "
+            "self-assessment is unreliable; treat its "
+            "confidence floor (e.g. auto-approve) with caution."
+        )
+    else:
+        print(
+            "Calibration: insufficient data "
+            "(< 2 buckets with outcomes — need more history)"
+        )
 
 
 def _print_engine_brain_stack(engine_name: str) -> None:
@@ -4262,6 +4375,10 @@ def main(argv: list[str] | None = None) -> None:
             args.engine_name,
             as_json=getattr(args, "json", False),
         )
+        return
+
+    if args.command == "engine-calibration":
+        _cmd_engine_calibration(args)
         return
 
     if args.command == "run":
