@@ -143,6 +143,21 @@ jobs:
         run: |
           python cli.py capabilities-audit
 
+      - name: Pattern Q engine envelope audit
+        # Every registered engine's run() must return the
+        # canonical {status, data, meta, error} envelope. This
+        # is a RUNTIME audit (it actually calls each engine
+        # with empty input) because envelope dicts are computed
+        # dynamically and an AST walk can't verify them.
+        # Catches refactors that drop one of the four keys --
+        # downstream consumers (approval queue narrative,
+        # Phase 8 recorder, recommender) all assume the
+        # envelope.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py pattern-q-audit
+
       - name: Pattern Z writer-recorder audit
         # Every writer module (*_applier.py / *_minter.py /
         # *_payer.py) that calls a Shopify mutation MUST also

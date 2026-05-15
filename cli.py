@@ -468,6 +468,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[
             "pattern_k", "oauth", "pattern_y",
             "pattern_i", "pattern_j", "pattern_z",
+            "pattern_q",
         ],
         metavar="NAME",
         help=(
@@ -487,6 +488,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     pattern_j_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
+    pattern_q_audit_p = sub.add_parser(
+        "pattern-q-audit",
+        help=(
+            "CI gate (Pattern Q): every registered engine's "
+            "run() must return the canonical "
+            "{status, data, meta, error} envelope. 0 = clean, "
+            "1 = at least one engine violates the contract."
+        ),
+    )
+    pattern_q_audit_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -4493,6 +4508,96 @@ def _cmd_pattern_z_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_pattern_q_audit(args) -> None:
+    """CI gate (Pattern Q): every registered engine's ``run()``
+    must return the canonical ``{status, data, meta, error}``
+    envelope.
+
+    Catches a regression class the existing audits don't:
+    a refactor drops one of the four envelope keys, downstream
+    consumers (approval queue narrative, Phase 8 recorder,
+    recommender) assume the missing key and silently break.
+
+    The audit RUNS each engine with empty input -- it's a
+    runtime check, not an AST walk, because engines compute
+    their envelope dict dynamically. Engines that need real
+    data return ``status="error"`` cleanly; they still emit
+    the four-key envelope.
+
+    Exit 0 = clean. Exit 1 = at least one engine violates.
+    """
+    try:
+        from engines._output_schema_audit import (
+            audit_engine_output_schema,
+        )
+        report = audit_engine_output_schema()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern Q audit raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Pattern Q audit unavailable: {exc}")
+        return
+
+    if getattr(args, "json", False):
+        payload = {
+            "ok": not report.has_violations,
+            "scanned_engines": report.scanned_engines,
+            "clean_engines": report.clean_engines,
+            "skipped_engines": report.skipped_engines,
+            "violations": [
+                {
+                    "engine": v.engine,
+                    "reason": v.reason,
+                    "detail": v.detail,
+                }
+                for v in report.violations
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        if report.has_violations:
+            sys.exit(1)
+        return
+
+    if not report.has_violations:
+        print(
+            f"Pattern Q OK -- "
+            f"{len(report.clean_engines)}/{report.scanned_engines} "
+            "engines return the canonical "
+            "{status, data, meta, error} envelope"
+            + (
+                f" ({len(report.skipped_engines)} skipped: "
+                "could not instantiate)"
+                if report.skipped_engines else ""
+            )
+            + "."
+        )
+        return
+
+    print(
+        f"Pattern Q FAILED: "
+        f"{len(report.violations)} engine(s) violate the "
+        "envelope contract."
+    )
+    print()
+    print("Each engine's run() must return a dict with keys "
+          "{status, data, meta, error}, with status in "
+          "{success, error, fail}.")
+    print()
+    for v in report.violations:
+        print(f"  {v.engine}  [{v.reason}]  {v.detail}")
+    print()
+    print(
+        "Fix: ensure the engine's run() returns the canonical "
+        "envelope on every code path (including error paths). "
+        "Look at engines/loyalty/flow.py for the standard "
+        "pattern (status='success'/'error'/'fail', data=dict, "
+        "meta=dict with engine name + timestamp, "
+        "error=str | None)."
+    )
+    sys.exit(1)
+
+
 def _run_one_audit(name: str) -> dict[str, Any]:
     """Run a single named audit and return ``{ok, details}``.
 
@@ -4584,6 +4689,21 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for s in z.missing_recorder
                 ],
             }
+        if name == "pattern_q":
+            from engines._output_schema_audit import (
+                audit_engine_output_schema,
+            )
+            q = audit_engine_output_schema()
+            return {
+                "ok": not q.has_violations,
+                "scanned_engines": q.scanned_engines,
+                "clean_engines": len(q.clean_engines),
+                "skipped_engines": len(q.skipped_engines),
+                "violations": [
+                    f"{v.engine} [{v.reason}] {v.detail}"
+                    for v in q.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -4592,7 +4712,7 @@ def _run_one_audit(name: str) -> dict[str, Any]:
 
 _AUDIT_ORDER = (
     "pattern_k", "oauth", "pattern_y", "pattern_i", "pattern_j",
-    "pattern_z",
+    "pattern_z", "pattern_q",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -4601,6 +4721,7 @@ _AUDIT_LABELS = {
     "pattern_i": "Pattern I (engine capability parity)",
     "pattern_j": "Pattern J (test pollution)",
     "pattern_z": "Pattern Z (writer-recorder parity)",
+    "pattern_q": "Pattern Q (engine envelope parity)",
 }
 
 
@@ -4687,6 +4808,11 @@ def _cmd_audit_all(args) -> None:
                     print(
                         f"  [FAIL] {label} -- "
                         f"{len(r.get('missing_recorder', []))} writer(s) missing recorder"
+                    )
+                elif name == "pattern_q":
+                    print(
+                        f"  [FAIL] {label} -- "
+                        f"{len(r.get('violations', []))} engine(s) violate envelope"
                     )
                 else:
                     print(f"  [FAIL] {label}")
@@ -9785,6 +9911,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-z-audit":
         _cmd_pattern_z_audit(args)
+        return
+
+    if args.command == "pattern-q-audit":
+        _cmd_pattern_q_audit(args)
         return
 
     if args.command == "audit":
