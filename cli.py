@@ -525,6 +525,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_revenue = approvals_sub.add_parser(
+        "revenue-by-engine",
+        help=(
+            "Per-engine revenue attribution from matched "
+            "outcomes (gross/refunded/net + per-positive)"
+        ),
+    )
+    approvals_revenue.add_argument(
+        "--top", type=int, default=20, metavar="N",
+        help="How many top engines to render (default 20)",
+    )
+    approvals_revenue.add_argument(
+        "--sort", default="net",
+        choices=["net", "gross", "per-positive"],
+        help=(
+            "Sort key. 'net' (default): net_revenue desc. "
+            "'gross': gross_revenue desc (ignores refunds). "
+            "'per-positive': revenue_per_positive_outcome desc "
+            "(useful when comparing across volume)."
+        ),
+    )
+    approvals_revenue.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_rejection_rates = approvals_sub.add_parser(
         "rejection-rates",
         help=(
@@ -3660,6 +3686,9 @@ def _cmd_approvals(args) -> None:
     if verb == "rejection-rates":
         _cmd_approvals_rejection_rates(args)
         return
+    if verb == "revenue-by-engine":
+        _cmd_approvals_revenue_by_engine(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3679,7 +3708,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals quarantine-release-candidates [--since 7d] [--json]\n"
         "  shopai approvals pending-latency [--older-than 24h] [--json]\n"
         "  shopai approvals decision-latency [--status approved|rejected|executed|failed|expired|all] [--json]\n"
-        "  shopai approvals rejection-rates [--min-decisions N] [--threshold 0.5] [--json]"
+        "  shopai approvals rejection-rates [--min-decisions N] [--threshold 0.5] [--json]\n"
+        "  shopai approvals revenue-by-engine [--top N] [--sort net|gross|per-positive] [--json]"
     )
     sys.exit(1)
 
@@ -4259,6 +4289,92 @@ def _cmd_approvals_rejection_rates(args) -> None:
             "rejected proposals. Inspect via "
             "`shopai approvals recent rejected --engine <name>` "
             "and consider disabling at the engine level."
+        )
+
+
+def _cmd_approvals_revenue_by_engine(args) -> None:
+    """Per-engine revenue attribution.
+
+    The complement to ``shopai approvals rejection-rates``:
+    that surfaces the engines operators veto; this surfaces
+    the engines that DRIVE revenue. Both are useful triage
+    inputs — an engine producing $50k net but with a 70%
+    rejection rate is BOTH valuable (when operators approve)
+    AND noisy (operators are spending time vetoing).
+
+    Three sort modes:
+      - ``net`` (default): net_revenue desc — what each engine
+        actually contributed after refunds. Most operator-useful.
+      - ``gross``: gross_revenue desc — ignores refunds, useful
+        when investigating an engine's headline numbers before
+        the refund picture.
+      - ``per-positive``: revenue_per_positive_outcome desc —
+        the engine's "average impact when something good
+        happens". Cross-engine comparison independent of volume.
+    """
+    from core.approval import get_approval_queue
+
+    try:
+        queue = get_approval_queue()
+        stats = queue.revenue_attribution_stats()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("revenue_attribution_stats raised: %s", exc)
+        stats = {}
+
+    sort_key = getattr(args, "sort", "net") or "net"
+    top_n = max(1, int(getattr(args, "top", 20)))
+
+    rows = [{"engine": e, **s} for e, s in stats.items()]
+
+    if sort_key == "net":
+        rows.sort(key=lambda r: (
+            -r["net_revenue"], r["engine"],
+        ))
+    elif sort_key == "gross":
+        rows.sort(key=lambda r: (
+            -r["gross_revenue"], r["engine"],
+        ))
+    else:  # per-positive
+        # Engines without a per-positive (zero positive outcomes)
+        # sort to the bottom.
+        rows.sort(key=lambda r: (
+            -(r["revenue_per_positive_outcome"] or -1.0),
+            r["engine"],
+        ))
+
+    rows = rows[:top_n]
+
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        print(
+            "No engines have matched outcomes with revenue yet."
+        )
+        return
+
+    print(
+        f"Revenue by engine ({len(rows)} engines, sort={sort_key}):"
+    )
+    print()
+    print(
+        "  engine                          gross     refunded     "
+        "net   pos  per-positive"
+    )
+    for r in rows:
+        engine_label = r["engine"][:30]
+        per_pos = r["revenue_per_positive_outcome"]
+        per_pos_display = (
+            f"{per_pos:>9.2f}" if per_pos is not None else "       --"
+        )
+        print(
+            f"  {engine_label:<30}  "
+            f"{r['gross_revenue']:>9.2f}  "
+            f"{r['refunded_revenue']:>9.2f}  "
+            f"{r['net_revenue']:>9.2f}  "
+            f"{r['positive_outcomes']:>4}  "
+            f"{per_pos_display}"
         )
 
 
