@@ -206,6 +206,7 @@ class ShopifyDiscountAutomaticAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_AUTOMATIC_DISCOUNT,
         Capability.SHOPIFY_DELETE_AUTOMATIC_DISCOUNT,
     }
+    required_scopes = frozenset({"read_discounts", "write_discounts"})
 
     def _execute(
         self,

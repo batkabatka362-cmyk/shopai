@@ -71,6 +71,8 @@ class ShopifyChannelsAdapter(ShopifyBaseAdapter):
     capabilities = {
         Capability.SHOPIFY_LIST_CHANNELS,
     }
+    # Channels piggyback on the publications surface.
+    required_scopes = frozenset({"read_publications"})
 
     def _execute(
         self,

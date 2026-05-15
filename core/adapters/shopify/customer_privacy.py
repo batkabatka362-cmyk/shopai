@@ -88,6 +88,7 @@ class ShopifyCustomerPrivacyAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_REQUEST_CUSTOMER_DATA_ERASURE,
         Capability.SHOPIFY_DATA_SALE_OPT_OUT,
     }
+    required_scopes = frozenset({"write_customers"})
 
     def _execute(
         self,

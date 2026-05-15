@@ -152,6 +152,9 @@ class ShopifyCustomerAddressesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_CUSTOMER_ADDRESS,
         Capability.SHOPIFY_DELETE_CUSTOMER_ADDRESS,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

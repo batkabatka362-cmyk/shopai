@@ -204,6 +204,7 @@ class ShopifyDeliveryProfilesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_DELIVERY_PROFILE,
         Capability.SHOPIFY_GET_DELIVERY_SETTINGS,
     }
+    required_scopes = frozenset({"read_shipping"})
 
     def _execute(
         self,

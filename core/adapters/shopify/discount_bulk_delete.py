@@ -142,6 +142,7 @@ class ShopifyDiscountBulkDeleteAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_BULK_DELETE_AUTOMATIC_DISCOUNTS,
         Capability.SHOPIFY_BULK_DELETE_CODE_DISCOUNTS,
     }
+    required_scopes = frozenset({"write_discounts"})
 
     def _execute(
         self,

@@ -216,6 +216,9 @@ class ShopifyCompanyLocationsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_COMPANY_LOCATION,
         Capability.SHOPIFY_DELETE_COMPANY_LOCATION,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

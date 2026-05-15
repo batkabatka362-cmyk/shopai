@@ -142,6 +142,11 @@ class ShopifyCompaniesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_COMPANY,
         Capability.SHOPIFY_CREATE_COMPANY,
     }
+    # B2B companies ride on customer scopes — Shopify treats
+    # companies as a customer feature.
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

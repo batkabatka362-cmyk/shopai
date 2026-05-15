@@ -152,6 +152,9 @@ class ShopifyAbandonedCheckoutsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_ABANDONED_CHECKOUTS,
         Capability.SHOPIFY_GET_ABANDONED_CHECKOUT,
     }
+    # Shopify treats checkouts as part of the orders surface
+    # for scope purposes (the file's module docstring confirms).
+    required_scopes = frozenset({"read_orders"})
 
     def _execute(
         self,

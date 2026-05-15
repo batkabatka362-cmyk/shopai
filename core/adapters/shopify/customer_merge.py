@@ -151,6 +151,9 @@ class ShopifyCustomerMergeAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_MERGE_CUSTOMERS,
         Capability.SHOPIFY_GET_CUSTOMER_MERGE_JOB,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

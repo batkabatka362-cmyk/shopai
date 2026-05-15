@@ -131,6 +131,10 @@ class ShopifyCustomerPaymentMethodsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD,
         Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD,
     }
+    required_scopes = frozenset({
+        "read_customer_payment_methods",
+        "write_customer_payment_methods",
+    })
 
     def _execute(
         self,

@@ -174,6 +174,7 @@ class ShopifyDiscountFreeShippingUpdateAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_DISCOUNT_AUTO_FREE_SHIPPING,
         Capability.SHOPIFY_UPDATE_DISCOUNT_CODE_FREE_SHIPPING,
     }
+    required_scopes = frozenset({"write_discounts"})
 
     def _execute(
         self,

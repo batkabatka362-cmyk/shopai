@@ -222,6 +222,8 @@ class ShopifyCollectionsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_COLLECTION,
         Capability.SHOPIFY_DELETE_COLLECTION,
     }
+    # Collections are part of the products surface.
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,

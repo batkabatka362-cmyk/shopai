@@ -131,6 +131,7 @@ class ShopifyDiscountCodeBxgyAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_DISCOUNT_BXGY,
         Capability.SHOPIFY_DELETE_DISCOUNT_BXGY,
     }
+    required_scopes = frozenset({"write_discounts"})
 
     def _execute(
         self,

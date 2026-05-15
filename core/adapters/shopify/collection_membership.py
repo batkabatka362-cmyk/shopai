@@ -111,6 +111,7 @@ class ShopifyCollectionMembershipAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_REMOVE_PRODUCTS_FROM_COLLECTION,
         Capability.SHOPIFY_REORDER_COLLECTION_PRODUCTS,
     }
+    required_scopes = frozenset({"write_products"})
 
     def _execute(
         self,

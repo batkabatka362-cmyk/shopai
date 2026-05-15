@@ -139,6 +139,9 @@ class ShopifyCompanyContactRolesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_ASSIGN_COMPANY_CONTACT_ROLE,
         Capability.SHOPIFY_REVOKE_COMPANY_CONTACT_ROLE,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

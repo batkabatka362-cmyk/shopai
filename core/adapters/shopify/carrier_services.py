@@ -126,6 +126,7 @@ class ShopifyCarrierServicesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_CARRIER_SERVICE,
         Capability.SHOPIFY_DELETE_CARRIER_SERVICE,
     }
+    required_scopes = frozenset({"write_shipping"})
 
     def _execute(
         self,

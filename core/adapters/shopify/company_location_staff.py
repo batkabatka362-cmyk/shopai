@@ -149,6 +149,9 @@ class ShopifyCompanyLocationStaffAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_REMOVE_COMPANY_LOCATION_STAFF,
         Capability.SHOPIFY_SEND_COMPANY_CONTACT_WELCOME_EMAIL,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

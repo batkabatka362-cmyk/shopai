@@ -101,6 +101,8 @@ class ShopifyCatalogsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_CATALOGS,
         Capability.SHOPIFY_GET_CATALOG,
     }
+    # B2B catalog reads — same scope pair as price-list reads.
+    required_scopes = frozenset({"read_products"})
 
     def _execute(
         self,

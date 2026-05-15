@@ -149,6 +149,7 @@ class ShopifyDiscountActivateAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_ACTIVATE_CODE_DISCOUNT,
         Capability.SHOPIFY_DEACTIVATE_CODE_DISCOUNT,
     }
+    required_scopes = frozenset({"write_discounts"})
 
     def _execute(
         self,

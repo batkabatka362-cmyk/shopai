@@ -219,6 +219,8 @@ class ShopifyArticlesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_ARTICLE,
         Capability.SHOPIFY_DELETE_ARTICLE,
     }
+    # Articles + blogs share the content scope.
+    required_scopes = frozenset({"read_content", "write_content"})
 
     def _execute(
         self,

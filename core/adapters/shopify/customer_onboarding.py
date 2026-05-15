@@ -91,6 +91,7 @@ class ShopifyCustomerOnboardingAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GENERATE_CUSTOMER_ACTIVATION_URL,
         Capability.SHOPIFY_SEND_CUSTOMER_INVITE_EMAIL,
     }
+    required_scopes = frozenset({"write_customers"})
 
     def _execute(
         self,

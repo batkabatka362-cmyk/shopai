@@ -117,6 +117,9 @@ class ShopifyCustomerConsentAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_SMS_CONSENT,
         Capability.SHOPIFY_UPDATE_EMAIL_CONSENT,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,
