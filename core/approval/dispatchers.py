@@ -456,3 +456,49 @@ def _mint_wholesale_dispatch(
 ) -> tuple[bool, dict[str, Any]]:
     """Replay wholesale_b2b's per-account volume-discount mint."""
     return _generic_mint_dispatch(params, default_ttl_days=30)
+
+
+# ── customer_segmentation → SHOPIFY_TAG_CUSTOMER ────────────────
+
+
+@register_dispatcher("apply_segment_tag")
+def _apply_segment_tag_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay customer_segmentation's per-customer tag write.
+
+    Enqueue carries ``{customer_id, tag, segment}``. The adapter
+    side wants ``{id, tags: [tag]}`` — same translation the live
+    applier does (segment is kept in approval-side params for
+    operator context but isn't part of the Shopify mutation).
+    """
+    customer_id = str(params.get("customer_id", "")).strip()
+    tag = str(params.get("tag", "")).strip()
+    if not customer_id or not tag:
+        return False, {"error": "missing_customer_id_or_tag"}
+    return _router_call(
+        "SHOPIFY_TAG_CUSTOMER",
+        {"id": customer_id, "tags": [tag]},
+    )
+
+
+# ── landing_page → SHOPIFY_CREATE_PAGE ──────────────────────────
+
+
+@register_dispatcher("apply_landing_page")
+def _apply_landing_page_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay landing_page's variant-page creation.
+
+    The applier pre-builds the wire format under
+    ``adapter_params`` (title/handle/body_html/template_suffix
+    etc.) at enqueue time, so the dispatcher just forwards it
+    verbatim — the wire-format authoring lives in the engine,
+    where the proposal's full context (best_variant, copy
+    template) is still available.
+    """
+    adapter_params = params.get("adapter_params")
+    if not isinstance(adapter_params, dict) or not adapter_params:
+        return False, {"error": "missing_adapter_params"}
+    return _router_call("SHOPIFY_CREATE_PAGE", adapter_params)

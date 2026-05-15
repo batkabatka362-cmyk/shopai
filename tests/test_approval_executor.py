@@ -68,6 +68,8 @@ class TestRegistry:
             "mint_wholesale_code",
             "apply_price_change",
             "apply_tags",
+            "apply_segment_tag",
+            "apply_landing_page",
             "pay_commission",
             "archive_declining_product",
             "apply_description",
@@ -594,6 +596,140 @@ class TestGenericMintDispatchers:
         assert success is False
         assert "mint_raised" in result["error"]
         assert "network down" in result["error"]
+
+
+# ─── apply_segment_tag (SHOPIFY_TAG_CUSTOMER) ──────────────────
+
+
+class TestApplySegmentTagDispatcher:
+    """customer_segmentation enqueues {customer_id, tag, segment};
+    dispatcher translates to {id, tags: [tag]} for SHOPIFY_TAG_CUSTOMER."""
+
+    def test_happy_path_forwards_translated_payload(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["capability"] = capability
+            captured["payload"] = payload
+            return True, {"id": "cust_99"}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, result = _DISPATCHERS["apply_segment_tag"]({
+                "customer_id": "gid://shopify/Customer/99",
+                "tag": "vip-2026",
+                "segment": "loyalty-tier-1",
+            })
+
+        assert success is True
+        assert captured["capability"] == "SHOPIFY_TAG_CUSTOMER"
+        # Wire-format: id (not customer_id) + tags as a list
+        assert captured["payload"] == {
+            "id": "gid://shopify/Customer/99",
+            "tags": ["vip-2026"],
+        }
+
+    def test_missing_customer_id_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_segment_tag"]({
+            "customer_id": "",
+            "tag": "vip",
+        })
+        assert success is False
+        assert "missing_customer_id_or_tag" in result["error"]
+
+    def test_missing_tag_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_segment_tag"]({
+            "customer_id": "c1",
+            "tag": "",
+        })
+        assert success is False
+        assert "missing_customer_id_or_tag" in result["error"]
+
+    def test_segment_field_ignored_at_dispatch(self, loaded_dispatchers):
+        """The `segment` field is operator-context only — it
+        shouldn't bleed into the Shopify mutation."""
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["payload"] = payload
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            _DISPATCHERS["apply_segment_tag"]({
+                "customer_id": "c1",
+                "tag": "vip",
+                "segment": "should-not-appear",
+            })
+
+        assert "segment" not in captured["payload"]
+
+
+# ─── apply_landing_page (SHOPIFY_CREATE_PAGE) ──────────────────
+
+
+class TestApplyLandingPageDispatcher:
+    """landing_page pre-builds the wire format at enqueue time
+    under `adapter_params`; the dispatcher forwards verbatim."""
+
+    def test_happy_path_forwards_adapter_params(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["capability"] = capability
+            captured["payload"] = payload
+            return True, {"id": "page_42", "handle": "summer-sale"}
+
+        adapter_params = {
+            "title": "Summer Sale 2026",
+            "handle": "summer-sale-2026",
+            "body_html": "<p>Up to 40% off</p>",
+            "template_suffix": "landing",
+        }
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, result = _DISPATCHERS["apply_landing_page"]({
+                "title": "Summer Sale 2026",
+                "handle": "summer-sale-2026",
+                "best_variant": "v2",
+                "estimated_conversion": 0.18,
+                "adapter_params": adapter_params,
+            })
+
+        assert success is True
+        assert captured["capability"] == "SHOPIFY_CREATE_PAGE"
+        # Wire-format: forwarded verbatim (engine pre-built it)
+        assert captured["payload"] == adapter_params
+
+    def test_missing_adapter_params_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_landing_page"]({
+            "title": "X", "handle": "x",
+        })
+        assert success is False
+        assert "missing_adapter_params" in result["error"]
+
+    def test_empty_adapter_params_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_landing_page"]({
+            "adapter_params": {},
+        })
+        assert success is False
+        assert "missing_adapter_params" in result["error"]
+
+    def test_non_dict_adapter_params_fails(self, loaded_dispatchers):
+        """Defensive: if a malformed row somehow lands with
+        adapter_params as a string or list, fail-fast rather
+        than passing it to the router."""
+        success, result = _DISPATCHERS["apply_landing_page"]({
+            "adapter_params": "not a dict",
+        })
+        assert success is False
 
 
 # ─── apply_description body-truncation guard ───────────────────
