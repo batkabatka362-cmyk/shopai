@@ -489,6 +489,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_auto_config = approvals_sub.add_parser(
+        "auto-config",
+        help=(
+            "Manage the auto-approve allowlist (per-engine "
+            "opt-in for proven engines)"
+        ),
+    )
+    auto_action = approvals_auto_config.add_mutually_exclusive_group()
+    auto_action.add_argument(
+        "--enable", metavar="ENGINE", default=None,
+        help="Add ENGINE to the auto-approve allowlist",
+    )
+    auto_action.add_argument(
+        "--disable", metavar="ENGINE", default=None,
+        help="Remove ENGINE from the auto-approve allowlist",
+    )
+    auto_action.add_argument(
+        "--list", action="store_true",
+        help="Show current allowlist + threshold settings",
+    )
+    approvals_auto_config.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     approvals_recent = approvals_sub.add_parser(
         "recent",
         help="List recent actions filtered by status (operator triage)",
@@ -3134,6 +3159,9 @@ def _cmd_approvals(args) -> None:
     if verb == "history":
         _cmd_approvals_history(args)
         return
+    if verb == "auto-config":
+        _cmd_approvals_auto_config(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3146,9 +3174,74 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals approve-all [--engine NAME] [--min-confidence 0.X] [--execute] [--dry-run]\n"
         "  shopai approvals audit       [--engines-root PATH]\n"
         "  shopai approvals recent      <status> [--engine NAME] [--limit N]\n"
-        "  shopai approvals history     [<action_id>] [--by ACTOR] [--limit N] [--json]"
+        "  shopai approvals history     [<action_id>] [--by ACTOR] [--limit N] [--json]\n"
+        "  shopai approvals auto-config [--enable ENGINE | --disable ENGINE | --list] [--json]"
     )
     sys.exit(1)
+
+
+def _cmd_approvals_auto_config(args) -> None:
+    """Manage the auto-approve allowlist.
+
+    No mutation flag → defaults to list mode. ``--enable`` /
+    ``--disable`` mutate the persisted JSON allowlist; ``--list``
+    explicitly shows current state. The current thresholds (min
+    history / ratio / confidence) are always included so an
+    operator inspecting the config sees the full evaluator
+    contract, not just the allowlist.
+    """
+    from core.approval import auto_approve as aa
+
+    if args.enable:
+        cfg = aa.enable_engine(args.enable)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "enabled": args.enable,
+                "allowlist": sorted(cfg.allowlist),
+            }, indent=2))
+            return
+        print(
+            f"Enabled auto-approve for engine '{args.enable}'. "
+            f"Allowlist now: {sorted(cfg.allowlist)}"
+        )
+        return
+
+    if args.disable:
+        cfg = aa.disable_engine(args.disable)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "disabled": args.disable,
+                "allowlist": sorted(cfg.allowlist),
+            }, indent=2))
+            return
+        print(
+            f"Disabled auto-approve for engine '{args.disable}'. "
+            f"Allowlist now: {sorted(cfg.allowlist)}"
+        )
+        return
+
+    cfg = aa.load_config()
+    payload = {
+        "allowlist": sorted(cfg.allowlist),
+        "thresholds": {
+            "min_outcomes_observed": aa.MIN_OUTCOMES_OBSERVED,
+            "min_outcome_ratio": aa.MIN_OUTCOME_RATIO,
+            "min_confidence": aa.MIN_CONFIDENCE,
+        },
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return
+
+    print("Auto-approve configuration:")
+    print(
+        f"  Allowlist ({len(cfg.allowlist)}): "
+        f"{', '.join(sorted(cfg.allowlist)) or '(empty — safe default)'}"
+    )
+    print("  Thresholds:")
+    print(f"    min outcomes observed: {aa.MIN_OUTCOMES_OBSERVED}")
+    print(f"    min outcome ratio:     {aa.MIN_OUTCOME_RATIO:.2f}")
+    print(f"    min confidence:        {aa.MIN_CONFIDENCE:.2f}")
 
 
 def _cmd_approvals_history(args) -> None:
