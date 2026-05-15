@@ -191,7 +191,7 @@ class TestRecommenderConsumes:
             e: s.get("outcome_score") for e, s in scores.items()
         }
         result = recommend_engines(
-            goal="grow_customers", limit=20,
+            goal="grow_customers", limit=100,
             include_alternatives=False,
             outcome_scores=outcome_scores,
         )
@@ -220,7 +220,7 @@ class TestRecommenderConsumes:
             e: s.get("outcome_score") for e, s in scores.items()
         }
         result = recommend_engines(
-            goal="grow_customers", limit=20,
+            goal="grow_customers", limit=100,
             include_alternatives=False,
             outcome_scores=outcome_scores,
         )
@@ -269,7 +269,7 @@ class TestRecommenderConsumes:
             "loyalty": 0.0,
         }
         result = recommend_engines(
-            goal="grow_customers", limit=20,
+            goal="grow_customers", limit=100,
             include_alternatives=False,
             outcome_scores=override,
         )

@@ -268,8 +268,10 @@ class TestGoalResolutionE2E:
 
     def test_no_goal_uses_manager_current(self):
         mgr = GoalManager()
-        # Default current is maximize_profit
-        result = recommend_engines(manager=mgr, limit=5)
+        # Default current is maximize_profit.
+        # Use generous limit so we see all profit engines (v2
+        # expanded the map from ~7 to ~30 profit engines).
+        result = recommend_engines(manager=mgr, limit=100)
         assert result.active_goal == "maximize_profit"
         engine_names = {r.engine for r in result.primary}
         # discount_strategy & dynamic_pricing are profit engines
