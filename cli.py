@@ -937,6 +937,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_doctor = approvals_sub.add_parser(
+        "doctor",
+        help=(
+            "Aggregate approval-queue health check (Pattern K + "
+            "pending-age + recent failure rate + quarantine + "
+            "auto-approve coverage in one shot)"
+        ),
+    )
+    approvals_doctor.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+    approvals_doctor.add_argument(
+        "--stale-pending-hours", type=float, default=24.0,
+        metavar="H",
+        help=(
+            "PENDING actions older than this many hours flag the "
+            "section. Default: 24h."
+        ),
+    )
+    approvals_doctor.add_argument(
+        "--failure-rate-warn", type=float, default=0.25,
+        metavar="R",
+        help=(
+            "Recent dispatch failure-rate above which the section "
+            "warns (failed / (executed + failed)). Default: 0.25."
+        ),
+    )
+
     approvals_release_candidates = approvals_sub.add_parser(
         "quarantine-release-candidates",
         help=(
@@ -5858,6 +5887,9 @@ def _cmd_approvals(args) -> None:
     if verb == "revenue-by-engine":
         _cmd_approvals_revenue_by_engine(args)
         return
+    if verb == "doctor":
+        _cmd_approvals_doctor(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -5878,7 +5910,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals pending-latency [--older-than 24h] [--json]\n"
         "  shopai approvals decision-latency [--status approved|rejected|executed|failed|expired|all] [--json]\n"
         "  shopai approvals rejection-rates [--min-decisions N] [--threshold 0.5] [--json]\n"
-        "  shopai approvals revenue-by-engine [--top N] [--sort net|gross|per-positive] [--json]"
+        "  shopai approvals revenue-by-engine [--top N] [--sort net|gross|per-positive] [--json]\n"
+        "  shopai approvals doctor             [--stale-pending-hours H] [--failure-rate-warn R] [--json]"
     )
     sys.exit(1)
 
@@ -6677,6 +6710,345 @@ def _cmd_approvals_stats(args) -> None:
     print("Approval queue stats:")
     for status, count in sorted(stats.items()):
         print(f"  {status:<10} {count}")
+
+
+def _collect_approvals_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
+    """Collect every approvals-doctor section without rendering.
+
+    Returns ``(overall_ok, sections_dict)``. ``overall_ok`` flips
+    False when any FATAL section fails (dispatcher coverage gap,
+    stale-pending overage, high failure rate). Informational
+    sections (auto-approve coverage, quarantine list) never flip
+    it to False.
+    """
+    import time
+    sections: dict[str, Any] = {}
+    overall_ok = True
+
+    stale_hours = float(getattr(args, "stale_pending_hours", 24.0))
+    fail_rate_warn = float(getattr(args, "failure_rate_warn", 0.25))
+
+    # ── Pattern K dispatcher coverage (reuse existing audit) ─
+    try:
+        from core.approval.coverage_audit import audit_coverage
+        from pathlib import Path
+        report = audit_coverage(Path("engines"))
+        sections["pattern_k_dispatchers"] = {
+            "status": "pass" if not report.has_gaps else "fail",
+            "enqueue_sites": len(report.enqueued),
+            "dispatchers_registered": len(report.registered),
+            "missing": sorted(report.missing),
+            "orphaned": sorted(report.orphaned),
+        }
+        if report.has_gaps:
+            overall_ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern K probe raised: %s", exc)
+        sections["pattern_k_dispatchers"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── Pending queue depth + stale pending ──────────────────
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+        pending = queue.list_pending(limit=1000)
+        now = time.time()
+        ages_s = [
+            now - p.proposed_at
+            for p in pending
+            if p.proposed_at is not None
+        ]
+        stale_threshold_s = stale_hours * 3600.0
+        stale = [a for a in ages_s if a >= stale_threshold_s]
+        oldest_s = max(ages_s) if ages_s else 0.0
+        status = "pass"
+        if stale:
+            status = "fail"
+            overall_ok = False
+        sections["pending_queue"] = {
+            "status": status,
+            "pending_count": len(pending),
+            "stale_threshold_hours": stale_hours,
+            "stale_count": len(stale),
+            "oldest_age_hours": round(oldest_s / 3600.0, 2),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pending queue probe raised: %s", exc)
+        sections["pending_queue"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── Recent dispatch failure rate ─────────────────────────
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+        stats = queue.stats()
+        executed = int(stats.get("executed", 0))
+        failed = int(stats.get("failed", 0))
+        decided = executed + failed
+        rate = (failed / decided) if decided > 0 else 0.0
+        status = "pass"
+        if decided >= 5 and rate >= fail_rate_warn:
+            status = "warn"
+            # Informational/warning — does NOT flip overall_ok
+            # (failures can be from upstream Shopify issues, not
+            # a queue health bug — operators decide the action).
+        sections["recent_dispatch"] = {
+            "status": status,
+            "executed_count": executed,
+            "failed_count": failed,
+            "decided_count": decided,
+            "failure_rate": round(rate, 3),
+            "warn_threshold": fail_rate_warn,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("dispatch stats probe raised: %s", exc)
+        sections["recent_dispatch"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── Quarantine state ─────────────────────────────────────
+    # The quarantine module stores operator state (exemptions +
+    # manual releases); the "currently quarantined" set is computed
+    # dynamically from outcome stats. The doctor surfaces the
+    # operator-managed state so it's a 1-line readout.
+    try:
+        from core.approval.quarantine import load_state
+        qstate = load_state()
+        sections["quarantine"] = {
+            "status": "info",
+            "exemptions_count": len(qstate.exemptions),
+            "exemptions": sorted(qstate.exemptions),
+            "released_count": len(qstate.released),
+            "released": sorted(qstate.released),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("quarantine probe raised: %s", exc)
+        sections["quarantine"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── Auto-approve coverage (informational) ────────────────
+    try:
+        from core.approval.auto_approve import load_config
+        cfg = load_config()
+        allowed = list(cfg.allowlist)
+        sections["auto_approve"] = {
+            "status": "info",
+            "allowlist_count": len(allowed),
+            "allowlist": sorted(allowed),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("auto-approve probe raised: %s", exc)
+        sections["auto_approve"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    return overall_ok, sections
+
+
+def _cmd_approvals_doctor(args) -> None:
+    """Aggregate approval-queue health check.
+
+    Combines five existing audits into one shot:
+
+      1. Pattern K dispatcher coverage (reuses `approvals audit`)
+      2. Pending queue depth + stale-pending detection
+      3. Recent dispatch failure rate (executed vs failed)
+      4. Quarantine list (failed engines auto-paused)
+      5. Auto-approve allowlist coverage (informational)
+
+    Fatal sections fail the doctor (exit 1): Pattern K gap,
+    stale pending. Warning sections don't fail it: high failure
+    rate, non-empty quarantine. Informational sections never
+    fail.
+    """
+    overall_ok, sections = _collect_approvals_doctor_sections(args)
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": overall_ok,
+            "sections": sections,
+        }, indent=2, default=str))
+        if not overall_ok:
+            sys.exit(1)
+        return
+
+    print("ShopAI Approvals Doctor")
+    print()
+
+    _approvals_doctor_render_pattern_k(
+        sections.get("pattern_k_dispatchers", {}),
+    )
+    _approvals_doctor_render_pending(
+        sections.get("pending_queue", {}),
+    )
+    _approvals_doctor_render_dispatch(
+        sections.get("recent_dispatch", {}),
+    )
+    _approvals_doctor_render_quarantine(
+        sections.get("quarantine", {}),
+    )
+    _approvals_doctor_render_auto_approve(
+        sections.get("auto_approve", {}),
+    )
+
+    print()
+    if overall_ok:
+        print(
+            "Overall: OK -- approval queue health checks pass."
+        )
+    else:
+        print(
+            "Overall: FAILED -- at least one fatal check has gaps. "
+            "Inspect sections above."
+        )
+        sys.exit(1)
+
+
+def _approvals_doctor_render_pattern_k(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Pattern K dispatchers -- "
+            f"{section.get('enqueue_sites', 0)} enqueue sites, "
+            f"{section.get('dispatchers_registered', 0)} dispatchers"
+        )
+    elif status == "fail":
+        missing = section.get("missing", [])
+        print(
+            f"[FAIL] Pattern K dispatchers -- "
+            f"{len(missing)} missing: "
+            f"{', '.join(missing[:3])}"
+            f"{'...' if len(missing) > 3 else ''}"
+        )
+        print(
+            "       fix: register a dispatcher for each missing "
+            "action_type in core/approval/dispatchers.py"
+        )
+    else:
+        print(
+            f"[??] Pattern K dispatchers -- "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _approvals_doctor_render_pending(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Pending queue -- "
+            f"{section.get('pending_count', 0)} pending, "
+            f"oldest {section.get('oldest_age_hours', 0)}h "
+            f"(threshold {section.get('stale_threshold_hours', 24)}h)"
+        )
+    elif status == "fail":
+        print(
+            f"[FAIL] Pending queue -- "
+            f"{section.get('stale_count', 0)} action(s) older than "
+            f"{section.get('stale_threshold_hours', 24)}h, "
+            f"oldest {section.get('oldest_age_hours', 0)}h"
+        )
+        print(
+            "       fix: triage stale actions via `shopai approvals "
+            "pending`, decide / sweep / expire; long pending ages "
+            "stall the autonomous loop"
+        )
+    else:
+        print(
+            f"[??] Pending queue -- "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _approvals_doctor_render_dispatch(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        decided = section.get("decided_count", 0)
+        rate = section.get("failure_rate", 0.0)
+        if decided == 0:
+            print(
+                "[pass] Recent dispatch -- no decided actions yet"
+            )
+        else:
+            print(
+                f"[pass] Recent dispatch -- "
+                f"{section.get('executed_count', 0)}/"
+                f"{decided} executed "
+                f"(failure rate {rate * 100:.1f}%)"
+            )
+    elif status == "warn":
+        rate = section.get("failure_rate", 0.0)
+        warn = section.get("warn_threshold", 0.25)
+        print(
+            f"[WARN] Recent dispatch -- "
+            f"{section.get('failed_count', 0)}/"
+            f"{section.get('decided_count', 0)} failed "
+            f"(rate {rate * 100:.1f}% >= warn {warn * 100:.0f}%)"
+        )
+        print(
+            "       investigate: `shopai approvals recent failed`"
+            " -- common causes are adapter scope drift or upstream"
+            " Shopify errors, not a queue bug"
+        )
+    else:
+        print(
+            f"[??] Recent dispatch -- "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _approvals_doctor_render_quarantine(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "info":
+        ex = section.get("exemptions_count", 0)
+        rel = section.get("released_count", 0)
+        if ex == 0 and rel == 0:
+            print(
+                "[info] Quarantine -- no exemptions, "
+                "no manual releases"
+            )
+        else:
+            print(
+                f"[info] Quarantine -- "
+                f"{ex} exemption(s), "
+                f"{rel} manual release(s)"
+            )
+    else:
+        print(
+            f"[??] Quarantine -- "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _approvals_doctor_render_auto_approve(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "info":
+        count = section.get("allowlist_count", 0)
+        if count == 0:
+            print(
+                "[info] Auto-approve -- empty allowlist "
+                "(every action requires human review)"
+            )
+        else:
+            allowed = section.get("allowlist", [])
+            print(
+                f"[info] Auto-approve -- "
+                f"{count} engine(s) on allowlist: "
+                f"{', '.join(allowed[:3])}"
+                f"{'...' if len(allowed) > 3 else ''}"
+            )
+    else:
+        print(
+            f"[??] Auto-approve -- "
+            f"{section.get('error', 'unavailable')}"
+        )
 
 
 def _cmd_approvals_show(args) -> None:
