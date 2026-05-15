@@ -363,6 +363,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    audit_p = sub.add_parser(
+        "audit",
+        help=(
+            "Run all five institutional audits in one shot "
+            "(Pattern K + OAuth scope + Pattern Y + Pattern I + "
+            "Pattern J). Exit 0 = all pass; 1 = at least one "
+            "audit failed. The single-command companion to the "
+            "individual `*-audit` surfaces."
+        ),
+    )
+    audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+    audit_p.add_argument(
+        "--only", default=None,
+        choices=[
+            "pattern_k", "oauth", "pattern_y",
+            "pattern_i", "pattern_j",
+        ],
+        metavar="NAME",
+        help=(
+            "Run a single named audit instead of all five. "
+            "Useful for fast pre-commit checks targeting one "
+            "concern."
+        ),
+    )
+
     pattern_j_audit_p = sub.add_parser(
         "pattern-j-audit",
         help=(
@@ -3974,6 +4002,203 @@ def _cmd_pattern_j_audit(args) -> None:
         "`_is_test_environment()` guard to the calling module."
     )
     sys.exit(1)
+
+
+def _run_one_audit(name: str) -> dict[str, Any]:
+    """Run a single named audit and return ``{ok, details}``.
+
+    Each branch matches the existing per-audit module's interface.
+    Catches all module-level exceptions and surfaces them as
+    ``{ok: False, error: ...}`` so a single broken audit doesn't
+    block the others.
+    """
+    try:
+        if name == "pattern_k":
+            from core.approval.coverage_audit import audit_coverage
+            from pathlib import Path
+            r = audit_coverage(Path("engines"))
+            return {
+                "ok": not r.has_gaps,
+                "enqueue_sites": len(r.enqueued),
+                "dispatchers_registered": len(r.registered),
+                "missing": sorted(r.missing),
+                "orphaned": sorted(r.orphaned),
+            }
+        if name == "oauth":
+            from core.adapters.shopify.scope_registry import collect_manifest
+            m = collect_manifest()
+            return {
+                "ok": not m.undeclared_adapters,
+                "total_adapters": m.total_adapters,
+                "declared_count": (
+                    m.total_adapters - len(m.undeclared_adapters)
+                ),
+                "scope_independent_count": (
+                    len(m.scope_independent_adapters)
+                ),
+                "undeclared_adapters": m.undeclared_adapters,
+                "unique_scopes": len(m.all_scopes),
+            }
+        if name == "pattern_y":
+            from core.adapters.coverage_audit import (
+                audit_capability_coverage,
+            )
+            c = audit_capability_coverage()
+            return {
+                "ok": not c.has_gaps,
+                "total_capabilities": c.total_shopify_capabilities,
+                "claimed_count": c.claimed_count,
+                "unclaimed": c.unclaimed,
+                "orphan_claims": c.orphan_claims,
+            }
+        if name == "pattern_i":
+            from engines._engine_capability_audit import (
+                audit_engine_capabilities,
+            )
+            i = audit_engine_capabilities()
+            return {
+                "ok": not i.has_gaps,
+                "total_refs": i.total_refs,
+                "distinct_capabilities": i.distinct_capabilities,
+                "unknown_enum_member": [
+                    f"{r.capability_name} ({r.file}:{r.lineno})"
+                    for r in i.unknown_enum_member
+                ],
+                "unclaimed_by_adapter": [
+                    f"{r.capability_name} ({r.file}:{r.lineno})"
+                    for r in i.unclaimed_by_adapter
+                ],
+            }
+        if name == "pattern_j":
+            from engines._pattern_j_audit import audit_pattern_j
+            j = audit_pattern_j()
+            return {
+                "ok": not j.has_violations,
+                "scanned_modules": j.scanned_modules,
+                "recorder_sites": len(j.recorder_sites),
+                "guarded_sites": len(j.guarded_sites),
+                "unguarded_sites": [
+                    f"{s.file}:{s.lineno} {s.receiver_expr}.{s.method}()"
+                    for s in j.unguarded_sites
+                ],
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("audit %s raised: %s", name, exc)
+        return {"ok": False, "error": str(exc)}
+    return {"ok": False, "error": f"unknown audit: {name}"}
+
+
+_AUDIT_ORDER = (
+    "pattern_k", "oauth", "pattern_y", "pattern_i", "pattern_j",
+)
+_AUDIT_LABELS = {
+    "pattern_k": "Pattern K (dispatcher coverage)",
+    "oauth": "OAuth scope coverage",
+    "pattern_y": "Pattern Y (capability coverage)",
+    "pattern_i": "Pattern I (engine capability parity)",
+    "pattern_j": "Pattern J (test pollution)",
+}
+
+
+def _cmd_audit_all(args) -> None:
+    """Run every institutional audit in one shot and surface a
+    unified verdict.
+
+    A single-pass companion to the five individual ``*-audit``
+    surfaces. Operators run ``shopai audit`` as a fast pre-commit
+    check; CI can replace the five separate steps with one when
+    granular per-audit failure surfacing isn't required.
+
+    ``--only NAME`` restricts to one audit; useful for fast pre-
+    commit checks targeting one concern.
+
+    Exit 0 = all selected audits pass. Exit 1 = at least one
+    failed.
+    """
+    only = getattr(args, "only", None)
+    selected = (only,) if only else _AUDIT_ORDER
+
+    results: dict[str, dict[str, Any]] = {}
+    for name in selected:
+        results[name] = _run_one_audit(name)
+    all_ok = all(r.get("ok", False) for r in results.values())
+
+    if getattr(args, "json", False):
+        payload = {
+            "ok": all_ok,
+            "audits": results,
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        if not all_ok:
+            sys.exit(1)
+        return
+
+    # Text mode
+    if only:
+        print(f"ShopAI audit: {_AUDIT_LABELS.get(only, only)}")
+    else:
+        print("ShopAI audit (all institutional gates)")
+    print()
+
+    for name in selected:
+        r = results[name]
+        label = _AUDIT_LABELS.get(name, name)
+        if r.get("ok"):
+            print(f"  [pass] {label}")
+        else:
+            if "error" in r:
+                print(f"  [??]   {label} -- {r['error']}")
+            else:
+                # surface a short fail-detail per audit
+                if name == "pattern_k":
+                    missing = r.get("missing", [])
+                    print(
+                        f"  [FAIL] {label} -- "
+                        f"{len(missing)} missing dispatcher(s)"
+                    )
+                elif name == "oauth":
+                    gaps = r.get("undeclared_adapters", [])
+                    print(
+                        f"  [FAIL] {label} -- "
+                        f"{len(gaps)} undeclared adapter(s)"
+                    )
+                elif name == "pattern_y":
+                    print(
+                        f"  [FAIL] {label} -- "
+                        f"{len(r.get('unclaimed', []))} unclaimed, "
+                        f"{len(r.get('orphan_claims', []))} orphan(s)"
+                    )
+                elif name == "pattern_i":
+                    print(
+                        f"  [FAIL] {label} -- "
+                        f"{len(r.get('unknown_enum_member', []))} unknown, "
+                        f"{len(r.get('unclaimed_by_adapter', []))} unclaimed"
+                    )
+                elif name == "pattern_j":
+                    print(
+                        f"  [FAIL] {label} -- "
+                        f"{len(r.get('unguarded_sites', []))} unguarded site(s)"
+                    )
+                else:
+                    print(f"  [FAIL] {label}")
+    print()
+    if all_ok:
+        if only:
+            print(f"Audit OK -- {only} passes.")
+        else:
+            print("Audit OK -- every institutional gate passes.")
+    else:
+        broken = [
+            _AUDIT_LABELS.get(n, n)
+            for n, r in results.items()
+            if not r.get("ok", False)
+        ]
+        print(
+            f"Audit FAILED -- {len(broken)} of "
+            f"{len(results)} gate(s) flagged: "
+            f"{'; '.join(broken)}"
+        )
+        sys.exit(1)
 
 
 def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
@@ -8695,6 +8920,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-j-audit":
         _cmd_pattern_j_audit(args)
+        return
+
+    if args.command == "audit":
+        _cmd_audit_all(args)
         return
 
     if args.command == "shopify-doctor":
