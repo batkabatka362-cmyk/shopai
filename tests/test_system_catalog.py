@@ -465,3 +465,105 @@ class TestMarkdownExport:
         # Markdown header, not JSON envelope
         assert "# ShopAI Action Catalog" in out
         assert not out.lstrip().startswith("{")
+
+
+# ─── --by-capability grouping ────────────────────────────────
+
+
+class TestByCapabilityGrouping:
+
+    def test_groups_by_capability(self, cli):
+        out, code = _capture(
+            cli._cmd_catalog, _ns(by_capability=True),
+        )
+        assert code == 0
+        # Capability-grouped header
+        assert "by capability" in out
+        # Known capability appears
+        assert "SHOPIFY_CREATE_DISCOUNT" in out
+        # The 6 mint dispatchers grouped under it
+        assert "mint_loyalty_code" in out
+        assert "mint_cart_recovery_code" in out
+
+    def test_capability_section_shows_adapter_and_scopes(self, cli):
+        out, _ = _capture(
+            cli._cmd_catalog, _ns(by_capability=True),
+        )
+        # Each capability's adapter + scopes appear
+        assert "adapter:" in out
+        assert "scopes:" in out
+        # Real adapter name + scope from the live registry
+        assert "shopify_discount" in out
+        assert "write_discounts" in out
+
+    def test_emitting_engines_listed_under_each_action(self, cli):
+        out, _ = _capture(
+            cli._cmd_catalog, _ns(by_capability=True),
+        )
+        # The "emitted by: <engine>" line per action
+        assert "emitted by:" in out
+        assert "loyalty" in out
+
+    def test_json_groups_by_capability_key(self, cli):
+        out, _ = _capture(
+            cli._cmd_catalog,
+            _ns(by_capability=True, json=True),
+        )
+        data = json.loads(out)
+        assert "summary" in data
+        assert "by_capability" in data
+        # Keys are capability names; SHOPIFY_CREATE_DISCOUNT has
+        # 6 actions (the mint dispatchers)
+        assert (
+            len(data["by_capability"]["SHOPIFY_CREATE_DISCOUNT"]) == 6
+        )
+        # Each grouped entry carries the expected fields
+        first = data["by_capability"][
+            "SHOPIFY_CREATE_DISCOUNT"
+        ][0]
+        assert "action_type" in first
+        assert "description" in first
+        assert "adapters" in first
+        assert "emitting_engines" in first
+
+    def test_filter_applies_with_grouping(self, cli):
+        """--engine + --by-capability narrows the grouping to
+        a single engine's actions."""
+        out, _ = _capture(
+            cli._cmd_catalog,
+            _ns(by_capability=True, engine="loyalty"),
+        )
+        # Only the loyalty action_type appears
+        assert "mint_loyalty_code" in out
+        # Other engines' actions don't appear
+        assert "mint_cart_recovery_code" not in out
+        # SHOPIFY_CREATE_DISCOUNT is the one capability shown
+        assert "SHOPIFY_CREATE_DISCOUNT" in out
+
+    def test_by_capability_takes_precedence_over_text_view(
+        self, cli,
+    ):
+        """When --by-capability is set, the default per-action
+        text view doesn't render."""
+        out, _ = _capture(
+            cli._cmd_catalog, _ns(by_capability=True),
+        )
+        # The default text view's "dispatcher:" line under each
+        # action_type doesn't appear; grouping uses adapter/scopes
+        # under each CAPABILITY not under each action.
+        assert "by capability" in out
+        # The per-action "dispatcher:" line from the default
+        # render is absent.
+        assert "dispatcher:" not in out
+
+    def test_markdown_takes_precedence_over_by_capability(self, cli):
+        """When both --markdown and --by-capability are set,
+        markdown wins (matches the JSON-vs-markdown precedence)."""
+        out, _ = _capture(
+            cli._cmd_catalog,
+            _ns(markdown=True, by_capability=True),
+        )
+        # Markdown header rendered
+        assert "# ShopAI Action Catalog" in out
+        # Not the by-capability text view
+        assert "by capability" not in out
