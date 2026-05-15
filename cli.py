@@ -325,6 +325,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    pattern_j_audit_p = sub.add_parser(
+        "pattern-j-audit",
+        help=(
+            "CI gate (Pattern J): writes to MemoryIntelligence / "
+            "DataArchitecture / LearningLoop must come from the "
+            "Phase 8 recorder or have a test-env guard. 0 = clean, "
+            "1 = at least one unguarded write-site."
+        ),
+    )
+    pattern_j_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     shopify_scopes_live_p = sub.add_parser(
         "shopify-scopes-live-check",
         help=(
@@ -3427,6 +3441,104 @@ def _cmd_engines_capability_audit(args) -> None:
         "Fix: either correct the engine's `capability_name=` "
         "string, OR add an adapter under core/adapters/shopify/ "
         "claiming the capability."
+    )
+    sys.exit(1)
+
+
+def _cmd_pattern_j_audit(args) -> None:
+    """CI gate (Pattern J): every write to
+    MemoryIntelligence / DataArchitecture / LearningLoop
+    singletons must come from the canonical Phase 8 recorder
+    (``engines/_writeback_recorder.py``) -- which gates on
+    ``PYTEST_CURRENT_TEST`` -- or be in a module that defines its
+    own ``_is_test_environment`` guard.
+
+    Catches the bug class documented in CLAUDE.md Pattern J:
+    test code that exercises an unguarded path silently pollutes
+    the on-disk SQLite stores; the failure-intelligence pipeline
+    then generates avoidance rules from test fixtures.
+
+    Exit 0 = clean. Exit 1 = at least one unguarded write-site.
+    """
+    try:
+        from engines._pattern_j_audit import audit_pattern_j
+        report = audit_pattern_j()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern J audit raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Pattern J audit unavailable: {exc}")
+        return
+
+    if getattr(args, "json", False):
+        payload = {
+            "ok": not report.has_violations,
+            "scanned_modules": report.scanned_modules,
+            "recorder_sites": [
+                {
+                    "file": s.file,
+                    "lineno": s.lineno,
+                    "method": s.method,
+                    "receiver": s.receiver_expr,
+                }
+                for s in report.recorder_sites
+            ],
+            "guarded_sites": [
+                {
+                    "file": s.file,
+                    "lineno": s.lineno,
+                    "method": s.method,
+                    "receiver": s.receiver_expr,
+                }
+                for s in report.guarded_sites
+            ],
+            "unguarded_sites": [
+                {
+                    "file": s.file,
+                    "lineno": s.lineno,
+                    "method": s.method,
+                    "receiver": s.receiver_expr,
+                }
+                for s in report.unguarded_sites
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        if report.has_violations:
+            sys.exit(1)
+        return
+
+    if not report.has_violations:
+        print(
+            f"Pattern J OK -- "
+            f"{len(report.recorder_sites)} recorder site(s), "
+            f"{len(report.guarded_sites)} guarded site(s); "
+            f"no unguarded writes across "
+            f"{report.scanned_modules} scanned modules."
+        )
+        return
+
+    print(
+        f"Pattern J FAILED: "
+        f"{len(report.unguarded_sites)} unguarded write-site(s) "
+        "to learning singletons."
+    )
+    print()
+    print(
+        "Unguarded sites (each could pollute the on-disk "
+        "SQLite stores when a test exercises the path):"
+    )
+    for s in report.unguarded_sites:
+        print(
+            f"  {s.file}:{s.lineno}  "
+            f"{s.receiver_expr}.{s.method}()"
+        )
+    print()
+    print(
+        "Fix: either delegate the write through "
+        "`engines._writeback_recorder.record_writeback()` (the "
+        "canonical Phase 8 bridge), OR add an "
+        "`_is_test_environment()` guard to the calling module."
     )
     sys.exit(1)
 
@@ -8142,6 +8254,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "engines-capability-audit":
         _cmd_engines_capability_audit(args)
+        return
+
+    if args.command == "pattern-j-audit":
+        _cmd_pattern_j_audit(args)
         return
 
     if args.command == "shopify-doctor":
