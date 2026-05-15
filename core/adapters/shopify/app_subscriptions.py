@@ -196,6 +196,8 @@ class ShopifyAppSubscriptionsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_APP_SUBSCRIPTION,
         Capability.SHOPIFY_CANCEL_APP_SUBSCRIPTION,
     }
+    # App-level subscription management — no extra OAuth scope.
+    scope_independent = True
 
     def _execute(
         self,

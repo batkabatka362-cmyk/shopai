@@ -128,6 +128,10 @@ class ShopifyBulkMutationsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_STAGE_UPLOAD,
         Capability.SHOPIFY_RUN_BULK_MUTATION,
     }
+    # Scope depends on the caller's mutation — staged upload +
+    # bulk-mutation surfaces inherit the mutation's own scope
+    # (e.g. write_products for product bulk mutations).
+    scope_independent = True
 
     def _execute(
         self,

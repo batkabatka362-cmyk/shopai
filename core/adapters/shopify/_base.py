@@ -95,6 +95,17 @@ class ShopifyBaseAdapter(BaseAdapter):
     # and flags it so operators can request a wireup.
     required_scopes: frozenset[str] = frozenset()
 
+    # Sentinel for adapters that legitimately need NO extra OAuth
+    # scope — either because they're app-level features available
+    # to any installed app (e.g. app billing, app subscriptions,
+    # mobile platform app, shop info) or because the scope depends
+    # on the caller's payload at runtime (bulk operations,
+    # generic tags). Set this to ``True`` AND leave
+    # ``required_scopes`` as the empty default; the registry will
+    # treat the adapter as "declared, no scopes needed" rather
+    # than surfacing it in the rollout-gap list.
+    scope_independent: bool = False
+
     def __init__(
         self,
         shop_url: str | None = None,

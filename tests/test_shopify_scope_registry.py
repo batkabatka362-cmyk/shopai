@@ -186,6 +186,112 @@ class TestCollectManifest:
         assert "read_oops" not in manifest.all_scopes
 
 
+# ─── scope_independent sentinel ────────────────────────────────
+
+
+class _FakeScopeIndependentAdapter(ShopifyBaseAdapter):
+    """Synthetic adapter declaring it needs no extra OAuth
+    scope (app-level feature)."""
+
+    name = "fake_independent"
+    scope_independent = True
+
+    def __init__(self) -> None:
+        pass
+
+
+class TestScopeIndependentSentinel:
+
+    def test_independent_adapter_not_in_undeclared(self):
+        """An adapter that sets ``scope_independent = True``
+        with empty ``required_scopes`` is treated as declared,
+        not as a rollout gap."""
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest(
+            adapter_classes=(_FakeScopeIndependentAdapter,),
+        )
+        assert "fake_independent" not in manifest.undeclared_adapters
+
+    def test_independent_adapter_listed(self):
+        """The manifest exposes the independent list so the CLI
+        can surface it distinctly from the undeclared list."""
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest(
+            adapter_classes=(_FakeScopeIndependentAdapter,),
+        )
+        assert "fake_independent" in manifest.scope_independent_adapters
+
+    def test_independent_adapter_empty_in_by_adapter(self):
+        """Independent adapters appear in by_adapter with an
+        empty scope list — same shape as 'declared zero scopes'."""
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest(
+            adapter_classes=(_FakeScopeIndependentAdapter,),
+        )
+        assert manifest.by_adapter["fake_independent"] == []
+
+    def test_independent_doesnt_add_phantom_scopes(self):
+        """An independent adapter doesn't contribute any scopes
+        to the all_scopes union."""
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest(
+            adapter_classes=(_FakeScopeIndependentAdapter,),
+        )
+        assert manifest.all_scopes == frozenset()
+
+    def test_normal_undeclared_still_in_gap_list(self):
+        """An adapter with neither scopes nor the sentinel
+        still surfaces as undeclared."""
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest(
+            adapter_classes=(
+                _FakeUndeclaredAdapter,
+                _FakeScopeIndependentAdapter,
+            ),
+        )
+        assert "fake_undeclared" in manifest.undeclared_adapters
+        assert (
+            "fake_independent"
+            not in manifest.undeclared_adapters
+        )
+
+    def test_base_class_default_is_false(self):
+        """The base class default is False so adapters that
+        don't override require explicit declaration."""
+        assert ShopifyBaseAdapter.scope_independent is False
+
+
+# ─── Live coverage now at 100% ─────────────────────────────────
+
+
+class TestLiveCoverage:
+
+    def test_no_remaining_undeclared(self):
+        """After the sentinel + 7 straggler wireups, every
+        registered adapter is either scope-declared or
+        scope-independent."""
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest()
+        assert manifest.undeclared_adapters == []
+
+    def test_live_independents(self):
+        """The 7 known scope-independent adapters all surface."""
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest()
+        expected = {
+            "shopify_app_billing",
+            "shopify_app_subscriptions",
+            "shopify_mobile_platform_app",
+            "shopify_bulk",
+            "shopify_bulk_mutations",
+            "shopify_generic_tags",
+            "shopify_shop",
+        }
+        assert expected.issubset(
+            set(manifest.scope_independent_adapters),
+        )
+
+
 # ─── Helper aliases ────────────────────────────────────────────
 
 

@@ -84,6 +84,11 @@ class ShopifyGenericTagsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_ADD_TAGS,
         Capability.SHOPIFY_REMOVE_TAGS,
     }
+    # Tags can target any owner type (product, order, customer,
+    # blog post, ...). Scope is dictated by the owner GID in the
+    # caller's payload — write_products for product tags,
+    # write_orders for order tags, etc.
+    scope_independent = True
 
     def _execute(
         self,
