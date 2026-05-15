@@ -101,6 +101,8 @@ class TestJson:
             "oauth_scope_coverage",
             "pattern_y_capabilities",
             "pattern_i_engine_capabilities",
+            "pattern_j_test_pollution",
+            "pattern_z_writer_recorder",
             "live_scope_drift",
             "live_webhook_drift",
             "engines_writebacks",
@@ -500,6 +502,84 @@ class TestRemediationHints:
         assert "re-install" in out.lower()
         # Sample of missing scopes appears in the FAIL line
         assert "read_orders" in out
+
+    def test_pattern_j_section_renders_in_text(self, cli):
+        out, code = _capture(
+            cli._cmd_shopify_doctor, _ns(skip_live=True),
+        )
+        assert code == 0
+        assert "Pattern J test pollution" in out
+
+    def test_pattern_z_section_renders_in_text(self, cli):
+        out, code = _capture(
+            cli._cmd_shopify_doctor, _ns(skip_live=True),
+        )
+        assert code == 0
+        assert "Pattern Z writer-recorder" in out
+
+    def test_pattern_j_failure_fails_doctor(self, cli):
+        from engines._pattern_j_audit import (
+            PatternJReport,
+            WriteSite,
+        )
+        bad = PatternJReport(
+            recorder_sites=[],
+            guarded_sites=[],
+            unguarded_sites=[
+                WriteSite(
+                    file="engines/x/flow.py",
+                    lineno=42,
+                    method="create_from_decision",
+                    receiver_expr="mi",
+                    module_path="/abs/x/flow.py",
+                ),
+            ],
+            scanned_modules=10,
+        )
+        with patch(
+            "engines._pattern_j_audit.audit_pattern_j",
+            return_value=bad,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(skip_live=True),
+            )
+        assert code == 1
+        assert "[FAIL] Pattern J" in out
+        assert "engines/x/flow.py:42" in out
+        # Remediation hint surfaces
+        assert "fix:" in out
+        assert "_writeback_recorder" in out
+
+    def test_pattern_z_failure_fails_doctor(self, cli):
+        from engines._pattern_z_audit import (
+            PatternZReport,
+            WriterAuditSite,
+        )
+        bad = PatternZReport(
+            scanned_writers=1,
+            clean_writers=[],
+            missing_recorder=[
+                WriterAuditSite(
+                    file="engines/bad/foo_applier.py",
+                    mutation_calls=("execute",),
+                    has_recorder_import=False,
+                ),
+            ],
+            skipped_no_mutation=[],
+        )
+        with patch(
+            "engines._pattern_z_audit.audit_pattern_z",
+            return_value=bad,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(skip_live=True),
+            )
+        assert code == 1
+        assert "[FAIL] Pattern Z" in out
+        assert "engines/bad/foo_applier.py" in out
+        # Remediation hint surfaces
+        assert "fix:" in out
+        assert "record_writeback" in out
 
     def test_webhook_fail_shows_gdpr_callout(self, cli):
         """GDPR-mandatory missing topics get a separate, louder

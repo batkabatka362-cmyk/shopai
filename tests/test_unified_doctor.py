@@ -69,13 +69,15 @@ class TestHappyPath:
         assert "Overall: OK" in out
         assert "both Shopify and approval-queue checks pass" in out
 
-    def test_renders_seven_shopify_sections(self, cli):
+    def test_renders_nine_shopify_sections(self, cli):
         out, _ = _capture(cli._cmd_unified_doctor, _ns())
-        # 4 platform audits + 2 live (skipped) + 1 writebacks
+        # 6 platform audits + 2 live (skipped) + 1 writebacks
         assert "Pattern K dispatchers" in out
         assert "OAuth scope coverage" in out
         assert "Pattern Y capabilities" in out
         assert "Pattern I engine capabilities" in out
+        assert "Pattern J test pollution" in out
+        assert "Pattern Z writer-recorder" in out
         assert "Live scope drift" in out
         assert "Live webhook drift" in out
         assert "Engine writebacks" in out
