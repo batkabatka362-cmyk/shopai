@@ -636,3 +636,27 @@ def _tag_return_decision_dispatch(
     return _router_call(
         "SHOPIFY_TAG_ORDER", {"id": order_id, "tags": tags},
     )
+
+
+# ── bundle → SHOPIFY_CREATE_PRODUCT (pre-built component variants)
+
+
+@register_dispatcher("apply_bundle_product")
+def _apply_bundle_product_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay bundle's new-product creation.
+
+    The bundle engine pre-builds the full Shopify product payload
+    (title + component variants + bundle pricing) under
+    ``adapter_params`` at proposal time. The component graph,
+    variant assembly, and savings math all live in the engine's
+    proposal step — dispatcher forwards the assembled payload
+    verbatim. Operator-context fields (``components``,
+    ``bundle_price``, ``savings_pct``, ``estimated_uplift``)
+    stay queue-side for review and are NOT re-sent.
+    """
+    adapter_params = params.get("adapter_params")
+    if not isinstance(adapter_params, dict) or not adapter_params:
+        return False, {"error": "missing_adapter_params"}
+    return _router_call("SHOPIFY_CREATE_PRODUCT", adapter_params)

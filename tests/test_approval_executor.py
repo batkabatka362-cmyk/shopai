@@ -74,6 +74,7 @@ class TestRegistry:
             "apply_landing_page",
             "apply_legal_document",
             "apply_shipping_strategy",
+            "apply_bundle_product",
             "tag_return_decision",
             "pay_commission",
             "archive_declining_product",
@@ -1055,6 +1056,97 @@ class TestTagReturnDecisionDispatcher:
             "tags": [],
         })
         assert success is False
+
+
+# ─── apply_bundle_product (SHOPIFY_CREATE_PRODUCT) ─────────────
+
+
+class TestApplyBundleProductDispatcher:
+    """Closes the last Pattern K gap. Bundle engine pre-builds
+    the full Shopify CREATE_PRODUCT payload (title, variants from
+    components, bundle pricing) under adapter_params at proposal
+    time; dispatcher forwards verbatim. Operator-context fields
+    (components / bundle_price / savings_pct / estimated_uplift)
+    stay queue-side and don't reach Shopify."""
+
+    def test_happy_path_forwards_adapter_params(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["capability"] = capability
+            captured["payload"] = payload
+            return True, {"id": "gid://shopify/Product/100"}
+
+        adapter_params = {
+            "title": "Camera Starter Bundle",
+            "variants": [
+                {"sku": "BUNDLE-CAM-01", "price": "199.99"},
+            ],
+            "vendor": "ShopAI",
+            "product_type": "Bundle",
+        }
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, _ = _DISPATCHERS["apply_bundle_product"]({
+                "title": "Camera Starter Bundle",
+                "components": ["sku-A", "sku-B", "sku-C"],
+                "bundle_price": 199.99,
+                "savings_pct": 0.15,
+                "estimated_uplift": 320.0,
+                "adapter_params": adapter_params,
+            })
+
+        assert success is True
+        assert captured["capability"] == "SHOPIFY_CREATE_PRODUCT"
+        # Verbatim forward — engine authored the wire format
+        assert captured["payload"] == adapter_params
+
+    def test_operator_context_not_forwarded(self, loaded_dispatchers):
+        """components / bundle_price / savings_pct / estimated_uplift
+        are queue-side review fields, NOT part of the Shopify
+        mutation. The dispatcher must not leak them."""
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["payload"] = payload
+            return True, {}
+
+        adapter_params = {"title": "X", "variants": []}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            _DISPATCHERS["apply_bundle_product"]({
+                "title": "X",
+                "components": ["a", "b"],
+                "bundle_price": 99.0,
+                "savings_pct": 0.1,
+                "estimated_uplift": 50.0,
+                "adapter_params": adapter_params,
+            })
+
+        # Only the engine-authored fields are forwarded
+        assert captured["payload"] == adapter_params
+        assert "components" not in captured["payload"]
+        assert "bundle_price" not in captured["payload"]
+
+    def test_missing_adapter_params_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_bundle_product"]({
+            "title": "X",
+        })
+        assert success is False
+        assert "missing_adapter_params" in result["error"]
+
+    def test_empty_adapter_params_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_bundle_product"]({
+            "adapter_params": {},
+        })
+        assert success is False
+        assert "missing_adapter_params" in result["error"]
 
 
 # ─── apply_description body-truncation guard ───────────────────
