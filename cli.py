@@ -107,6 +107,10 @@ def build_parser() -> argparse.ArgumentParser:
     db_sub = db_p.add_subparsers(dest="db_action")
     db_sub.add_parser("status", help="Show schema version for every DB")
     db_sub.add_parser("migrate", help="Apply pending migrations to all DBs")
+    db_sub.add_parser(
+        "info",
+        help="Inventory all data/ files with size, age, row counts",
+    )
 
     # ── Config commands ──────────────────────────────────────
     config_p = sub.add_parser("config", help="Inspect / validate configuration")
@@ -567,6 +571,111 @@ def _cmd_db_migrate() -> None:
     print("Running pending migrations...")
     _import_registered_dbs()
     _cmd_db_status()
+
+
+def _cmd_db_info() -> None:
+    """Inventory every file under ``data/``.
+
+    For each file:
+      - size (human-friendly)
+      - mtime (age in seconds → human-friendly)
+      - row count for SQLite databases (sum across user tables)
+      - top-level entry count for JSON files
+
+    Useful for "what state does ShopAI persist?" + "is anything
+    growing or stale?" questions an operator might ask without
+    digging into individual modules.
+    """
+    import sqlite3
+    from pathlib import Path
+
+    data_dir = Path("data")
+    if not data_dir.exists():
+        print(f"No data directory at {data_dir.resolve()}")
+        return
+
+    files = sorted(data_dir.iterdir())
+    files = [f for f in files if f.is_file()]
+    if not files:
+        print(f"No state files under {data_dir.resolve()}")
+        return
+
+    now = time.time()
+
+    def _fmt_size(n: int) -> str:
+        if n < 1024:
+            return f"{n}B"
+        if n < 1024 * 1024:
+            return f"{n / 1024:.1f}KB"
+        if n < 1024 * 1024 * 1024:
+            return f"{n / (1024 * 1024):.1f}MB"
+        return f"{n / (1024 ** 3):.1f}GB"
+
+    def _fmt_age(seconds: float) -> str:
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        if seconds < 3600:
+            return f"{int(seconds / 60)}m"
+        if seconds < 86400:
+            return f"{int(seconds / 3600)}h"
+        return f"{int(seconds / 86400)}d"
+
+    def _sqlite_row_count(p: Path) -> int | None:
+        try:
+            with sqlite3.connect(str(p)) as conn:
+                cur = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+                total = 0
+                for (table,) in cur.fetchall():
+                    try:
+                        n = conn.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                        total += int(n or 0)
+                    except sqlite3.Error:
+                        continue
+                return total
+        except sqlite3.Error:
+            return None
+
+    def _json_entries(p: Path) -> int | None:
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return len(data)
+            if isinstance(data, list):
+                return len(data)
+            return None
+        except (OSError, ValueError):
+            return None
+
+    print(f"ShopAI data files in {data_dir.resolve()}\n")
+    print(
+        f"  {'FILE':<28} {'SIZE':>8} {'AGE':>6}  ROWS / ENTRIES"
+    )
+    print(f"  {'-' * 28} {'-' * 8} {'-' * 6}  {'-' * 16}")
+    total_size = 0
+    for f in files:
+        st = f.stat()
+        total_size += st.st_size
+        age_s = now - st.st_mtime
+        rows: str = "-"
+        if f.suffix == ".db":
+            n = _sqlite_row_count(f)
+            if n is not None:
+                rows = f"{n:,} rows"
+        elif f.suffix == ".json":
+            n = _json_entries(f)
+            if n is not None:
+                rows = f"{n} entries"
+        print(
+            f"  {f.name:<28} {_fmt_size(st.st_size):>8} "
+            f"{_fmt_age(age_s):>6}  {rows}"
+        )
+    print(f"\n  Total: {len(files)} files, {_fmt_size(total_size)}")
 
 
 # ── Config Commands ──────────────────────────────────────────
@@ -1984,8 +2093,10 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_db_status()
         elif args.db_action == "migrate":
             _cmd_db_migrate()
+        elif args.db_action == "info":
+            _cmd_db_info()
         else:
-            print("Usage: shopai db {status|migrate}")
+            print("Usage: shopai db {status|migrate|info}")
         return
 
     if args.command == "config":
