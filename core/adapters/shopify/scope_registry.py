@@ -36,7 +36,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from core.adapters.shopify._base import ShopifyBaseAdapter
-from core.adapters.shopify.bootstrap import _SHOPIFY_ADAPTER_CLASSES
 
 
 @dataclass(frozen=True)
@@ -60,14 +59,24 @@ class ScopeManifest:
 
 
 def collect_manifest(
-    adapter_classes: tuple = _SHOPIFY_ADAPTER_CLASSES,
+    adapter_classes: tuple | None = None,
 ) -> ScopeManifest:
     """Walk every registered Shopify adapter and aggregate the
     OAuth scope manifest.
 
     Tests can inject ``adapter_classes`` to scope the audit to a
-    subset. Production callers leave the default.
+    subset. Production callers pass ``None`` (default) — the
+    module-level ``_SHOPIFY_ADAPTER_CLASSES`` is read on each
+    call so the audit reflects the current bootstrap state
+    (lets tests patch the constant and have the change pick up
+    on the next call).
     """
+    if adapter_classes is None:
+        # Re-read at call time, not at function-definition time
+        from core.adapters.shopify.bootstrap import (
+            _SHOPIFY_ADAPTER_CLASSES as _CURRENT_CLASSES,
+        )
+        adapter_classes = _CURRENT_CLASSES
     all_scopes: set[str] = set()
     by_scope: dict[str, set[str]] = {}
     by_adapter: dict[str, list[str]] = {}
