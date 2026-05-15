@@ -116,6 +116,21 @@ jobs:
         run: |
           python cli.py approvals audit
 
+      - name: OAuth scope coverage audit
+        # Cross-references every Shopify adapter against its
+        # `required_scopes` / `scope_independent` declarations.
+        # Missing declarations would make the operator install
+        # manifest incorrect — over-requesting (Shopify review
+        # rejects) or under-requesting (ACCESS_DENIED at first
+        # live call). Required gate — every registered adapter
+        # MUST declare one of: a non-empty `required_scopes`
+        # frozenset, OR `scope_independent = True` for context-
+        # dependent / app-level surfaces.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py shopify-scopes-audit
+
       - name: Config schema validation
         env:
           PYTHONPATH: ${{ github.workspace }}

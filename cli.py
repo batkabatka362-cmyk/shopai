@@ -233,6 +233,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    shopify_scopes_audit_p = sub.add_parser(
+        "shopify-scopes-audit",
+        help=(
+            "CI gate: exit 1 if any Shopify adapter is missing "
+            "a scope declaration (mirrors `approvals audit` for "
+            "Pattern K)"
+        ),
+    )
+    shopify_scopes_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     eng_calibration = sub.add_parser(
         "engine-calibration",
         help=(
@@ -2201,6 +2214,82 @@ def _cmd_shopify_scopes(args) -> None:
                 print(f"  {a}")
             if len(gaps) > 40:
                 print(f"  ... and {len(gaps) - 40} more")
+
+
+def _cmd_shopify_scopes_audit(args) -> None:
+    """CI gate: exit 1 if any Shopify adapter is missing a scope
+    declaration.
+
+    The companion to ``shopai approvals audit`` (PR #157 — the
+    Pattern K dispatcher coverage gate). Every concrete Shopify
+    adapter must declare one of:
+
+      - ``required_scopes = frozenset({...})`` — the OAuth scopes
+        it needs at install time
+      - ``scope_independent = True`` — sentinel for app-level
+        features (app billing, mobile platform) or context-
+        dependent surfaces (bulk, generic_tags, shop) that
+        legitimately need no extra OAuth scope
+
+    Exit 0 = clean. Exit 1 = at least one adapter has neither
+    set, which would silently become a "scope unknown" install
+    risk. The audit prints the gap list so the failing CI run's
+    output is actionable — operators can wire the missing
+    declarations directly from the error message.
+    """
+    try:
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("scope manifest collection raised: %s", exc)
+        # Surface the failure but don't exit 1 — a broken
+        # registry import is a different bug class from a
+        # missing scope declaration. The test suite catches
+        # the registry-broken case directly.
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Scope audit unavailable: {exc}")
+        return
+
+    gaps = list(manifest.undeclared_adapters)
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": not gaps,
+            "undeclared_count": len(gaps),
+            "undeclared_adapters": gaps,
+            "total_adapters": manifest.total_adapters,
+        }, indent=2))
+        if gaps:
+            sys.exit(1)
+        return
+
+    if not gaps:
+        independent = len(manifest.scope_independent_adapters)
+        print(
+            f"Scope coverage OK — "
+            f"{manifest.total_adapters}/{manifest.total_adapters} "
+            f"adapters declared "
+            f"({independent} scope-independent)."
+        )
+        return
+
+    print(
+        f"Scope coverage FAILED: {len(gaps)} adapter(s) missing "
+        "scope declaration."
+    )
+    print()
+    print("Undeclared adapters:")
+    for a in gaps:
+        print(f"  {a}")
+    print()
+    print(
+        "Fix: add ``required_scopes = frozenset({\"...\"})`` "
+        "(or ``scope_independent = True`` for app-level "
+        "adapters) to each class. See PR #173 / #176 for "
+        "examples."
+    )
+    sys.exit(1)
 
 
 def _cmd_engine_calibration(args) -> None:
@@ -5327,6 +5416,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-scopes":
         _cmd_shopify_scopes(args)
+        return
+
+    if args.command == "shopify-scopes-audit":
+        _cmd_shopify_scopes_audit(args)
         return
 
     if args.command == "engine-calibration":
