@@ -200,6 +200,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show only engines without a primary-goal mapping",
     )
 
+    engines_writebacks_p = sub.add_parser(
+        "engines-writebacks",
+        help=(
+            "Catalog Phase 6/7 writeback wireup state per "
+            "engine (wired / advisory / partial)"
+        ),
+    )
+    engines_writebacks_p.add_argument(
+        "--filter", default="all",
+        choices=["all", "wired", "advisory", "partial"],
+        help=(
+            "Filter the catalog to one status. Default 'all' "
+            "shows every engine. 'wired' = full Phase 6/7 "
+            "writeback. 'advisory' = engine only emits "
+            "recommendations. 'partial' = half-wired (writer "
+            "OR opt-in flag, not both)."
+        ),
+    )
+    engines_writebacks_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     eng_info = sub.add_parser("engine-info", help="Show engine details")
     eng_info.add_argument("engine_name", help="Engine name")
     eng_info.add_argument(
@@ -2235,6 +2258,129 @@ def _cmd_engines(*, by_goal: bool = False, unmapped: bool = False) -> None:
     print(f"Registered engines: {engine_count()}\n")
     for i, name in enumerate(engines, 1):
         print(f"  {i:3d}. {name}")
+
+
+def _cmd_engines_writebacks(args) -> None:
+    """Catalog Phase 6/7 writeback wireup state per engine.
+
+    Operators want a one-glance answer to: "which engines act
+    autonomously on Shopify, and which are advisory-only?".
+    This surface gives them three buckets:
+
+      * ``wired``: full Phase 6/7 — writer module exists AND
+        flow.py has the opt-in flag. Engine acts on Shopify
+        when the operator opts in.
+      * ``advisory``: no writer module + no opt-in flag.
+        Engine only emits recommendations; operator must
+        action manually.
+      * ``partial``: half-wired — writer OR opt-in flag, not
+        both. Indicates incomplete rollout; the next thing to
+        fix.
+
+    Today's catalog (per scan): 22 wired / 113 advisory / 0
+    partial. The wired set covers ~16% of engines; subsequent
+    Phase 7 candidates (e.g. dropshipping, gift_card,
+    subscription) will push that higher.
+    """
+    from engines._writeback_audit import audit_writeback_coverage
+
+    try:
+        report = audit_writeback_coverage("engines")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "writeback audit raised: %s", exc,
+        )
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Writeback audit unavailable: {exc}")
+        return
+
+    filter_mode = getattr(args, "filter", "all") or "all"
+    if filter_mode == "all":
+        engines_filtered = report.engines
+    else:
+        engines_filtered = [
+            s for s in report.engines if s.status == filter_mode
+        ]
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "summary": {
+                "total_engines": report.total_engines,
+                "wired": report.wired_count,
+                "advisory": report.advisory_count,
+                "partial": report.partial_count,
+            },
+            "filter": filter_mode,
+            "engines": [
+                {
+                    "name": s.name,
+                    "status": s.status,
+                    "writer_files": s.writer_files,
+                    "opt_in_flags": s.opt_in_flags,
+                }
+                for s in engines_filtered
+            ],
+        }, indent=2, default=str))
+        return
+
+    # Text render
+    coverage_pct = (
+        round(100 * report.wired_count / report.total_engines)
+        if report.total_engines else 0
+    )
+    print(
+        f"Engine writeback coverage: "
+        f"{report.wired_count}/{report.total_engines} wired "
+        f"({coverage_pct}%) — "
+        f"{report.advisory_count} advisory, "
+        f"{report.partial_count} partial"
+    )
+
+    if not engines_filtered:
+        print()
+        print(f"No engines match filter '{filter_mode}'.")
+        return
+
+    if filter_mode != "all":
+        print(
+            f"\nFiltered to status='{filter_mode}' "
+            f"({len(engines_filtered)} engines):"
+        )
+
+    # Sort: wired first, then partial, then advisory; within
+    # each bucket alphabetical
+    status_rank = {"wired": 0, "partial": 1, "advisory": 2}
+    sorted_engines = sorted(
+        engines_filtered,
+        key=lambda s: (status_rank.get(s.status, 9), s.name),
+    )
+
+    print()
+    print("  engine                          status     writers  opt-ins")
+    for s in sorted_engines:
+        marker = (
+            "!" if s.status == "partial"
+            else " "
+        )
+        engine_label = s.name[:30]
+        writers_count = len(s.writer_files)
+        opt_ins_count = len(s.opt_in_flags)
+        print(
+            f"{marker} {engine_label:<30}  "
+            f"{s.status:<9}  "
+            f"{writers_count:>7}  "
+            f"{opt_ins_count:>7}"
+        )
+
+    if filter_mode == "all" and report.partial_count > 0:
+        print()
+        print(
+            f"NOTE: {report.partial_count} engine(s) are "
+            "partially wired — pass --filter partial to "
+            "investigate."
+        )
 
 
 def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
@@ -6614,6 +6760,10 @@ def main(argv: list[str] | None = None) -> None:
             by_goal=getattr(args, "by_goal", False),
             unmapped=getattr(args, "unmapped", False),
         )
+        return
+
+    if args.command == "engines-writebacks":
+        _cmd_engines_writebacks(args)
         return
 
     if args.command == "engine-info":
