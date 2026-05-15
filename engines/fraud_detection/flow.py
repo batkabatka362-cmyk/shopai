@@ -226,6 +226,31 @@ class FraudDetectionEngine:
             alert=alert,
         )
 
+        # ---- Stage 10.5: Phase 7 writeback (opt-in) ----
+        # Default OFF. Operator opts in via either:
+        #   data.require_approval=True -- queue path (recommended;
+        #     order tagging is operator-visible)
+        #   data.apply_fraud_tag=True  -- direct execute path
+        # The queue path takes precedence when both are set.
+        fraud_data_block = {
+            "order_id": order_id,
+            "verdict": verdict,
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+            "confidence": confidence,
+        }
+        apply_results: list[dict[str, Any]] = []
+        if data.get("require_approval"):
+            from .fraud_applier import (
+                enqueue_fraud_tag_for_approval,
+            )
+            apply_results = enqueue_fraud_tag_for_approval(
+                fraud_data_block,
+            )
+        elif data.get("apply_fraud_tag"):
+            from .fraud_applier import apply_fraud_tag
+            apply_results = apply_fraud_tag(fraud_data_block)
+
         # ---- Stage 11: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -247,6 +272,7 @@ class FraudDetectionEngine:
                 },
                 "recommended_actions": recommended_actions,
                 "alert": alert,
+                "fraud_pending_actions": apply_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
