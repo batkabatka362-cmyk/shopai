@@ -3153,6 +3153,32 @@ def _cmd_shopify_doctor(args) -> None:
                 "error": str(exc),
             }
 
+    # ── Engines-writebacks coverage (informational) ─────────
+    # Not a pass/fail check — advisory engines are legitimate.
+    # Surfaces the Phase 6/7 wireup state so operators know
+    # which engines act autonomously today + what the Phase 7
+    # candidate pool looks like. Counts as 'info' (never fails
+    # the doctor) but does flag 'partial' wireups as a warning.
+    try:
+        from engines._writeback_audit import audit_writeback_coverage
+        wb_report = audit_writeback_coverage("engines")
+        # Status: 'info' when nothing is partial; 'warn' when
+        # at least one engine is half-wired (real rollout gap).
+        wb_status = "warn" if wb_report.partial_count > 0 else "info"
+        sections["engines_writebacks"] = {
+            "status": wb_status,
+            "total_engines": wb_report.total_engines,
+            "wired": wb_report.wired_count,
+            "advisory": wb_report.advisory_count,
+            "partial": wb_report.partial_count,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("writebacks audit raised: %s", exc)
+        sections["engines_writebacks"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
     if getattr(args, "json", False):
         print(json.dumps({
             "ok": overall_ok,
@@ -3171,6 +3197,7 @@ def _cmd_shopify_doctor(args) -> None:
     _doctor_render_pattern_y(sections.get("pattern_y_capabilities", {}))
     _doctor_render_live(sections.get("live_scope_drift", {}))
     _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
+    _doctor_render_writebacks(sections.get("engines_writebacks", {}))
 
     print()
     if overall_ok:
@@ -3320,6 +3347,42 @@ def _doctor_render_webhook_live(section: dict) -> None:
     else:
         print(
             f"[??] Live webhook drift — "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_writebacks(section: dict) -> None:
+    """Render the engines-writebacks Phase 6/7 coverage line.
+
+    Informational (never fails the doctor): advisory engines
+    are legitimate. ``partial`` engines surface as a warning
+    because they're a real rollout gap — writer or opt-in but
+    not both.
+    """
+    status = section.get("status", "unavailable")
+    if status == "info":
+        total = section.get("total_engines", 0)
+        wired = section.get("wired", 0)
+        advisory = section.get("advisory", 0)
+        pct = round(100 * wired / total) if total else 0
+        print(
+            f"[info] Engine writebacks — "
+            f"{wired}/{total} wired ({pct}%), "
+            f"{advisory} advisory"
+        )
+    elif status == "warn":
+        total = section.get("total_engines", 0)
+        wired = section.get("wired", 0)
+        partial = section.get("partial", 0)
+        print(
+            f"[WARN] Engine writebacks — "
+            f"{wired}/{total} wired; "
+            f"{partial} engine(s) half-wired (run "
+            "`shopai engines-writebacks --filter partial`)"
+        )
+    else:
+        print(
+            f"[??] Engine writebacks — "
             f"{section.get('error', 'unavailable')}"
         )
 

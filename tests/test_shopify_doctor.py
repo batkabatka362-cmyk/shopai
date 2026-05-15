@@ -102,6 +102,7 @@ class TestJson:
             "pattern_y_capabilities",
             "live_scope_drift",
             "live_webhook_drift",
+            "engines_writebacks",
         }
 
     def test_json_pattern_k_section(self, cli):
@@ -323,3 +324,87 @@ class TestLiveWarnings:
             )
         data = json.loads(out_json)
         assert "read_unused" in data["sections"]["live_scope_drift"]["extra_in_app"]
+
+
+# ─── Engines-writebacks section (PR #188) ──────────────────────
+
+
+class TestEnginesWritebacksSection:
+    """The 6th doctor section reports Phase 6/7 writeback
+    coverage. Informational by default — never fails the
+    doctor; flags 'partial' wireups as a warning."""
+
+    def test_section_appears_in_text(self, cli):
+        out, code = _capture(
+            cli._cmd_shopify_doctor, _ns(skip_live=True),
+        )
+        assert code == 0
+        assert "Engine writebacks" in out
+        # Live audit has wired + advisory engines
+        assert "wired" in out
+
+    def test_section_appears_in_json(self, cli):
+        out, _ = _capture(
+            cli._cmd_shopify_doctor,
+            _ns(json=True, skip_live=True),
+        )
+        data = json.loads(out)
+        assert "engines_writebacks" in data["sections"]
+        section = data["sections"]["engines_writebacks"]
+        assert section["status"] in {"info", "warn"}
+        assert section["total_engines"] >= 100
+        assert section["wired"] >= 20
+
+    def test_info_status_doesnt_fail_doctor(self, cli):
+        """Advisory engines are legitimate. The doctor must
+        stay at OK even with ~113 advisory engines today."""
+        out, code = _capture(
+            cli._cmd_shopify_doctor, _ns(skip_live=True),
+        )
+        assert code == 0
+        assert "Overall: OK" in out
+
+    def test_partial_engine_renders_warn(self, cli):
+        """A partial wireup is a real gap. Section renders
+        [WARN] but doesn't fail the doctor overall — partial
+        is informational, not fatal."""
+        from engines._writeback_audit import (
+            EngineWritebackStatus,
+            WritebackCoverageReport,
+        )
+        fake_report = WritebackCoverageReport(
+            engines=[
+                EngineWritebackStatus(
+                    name="half_wired", has_flow=True,
+                    writer_files=["x_applier.py"],
+                    opt_in_flags=[],
+                    status="partial",
+                ),
+            ],
+            wired_count=0, advisory_count=0, partial_count=1,
+            total_engines=1,
+        )
+        with patch(
+            "engines._writeback_audit.audit_writeback_coverage",
+            return_value=fake_report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(skip_live=True),
+            )
+        # Warn appears, but doctor stays OK (partial is info)
+        assert "[WARN] Engine writebacks" in out
+        assert code == 0
+
+    def test_audit_failure_renders_unavailable(self, cli):
+        """If the writeback-audit module itself raises, the
+        doctor's section renders [??] and the overall stays OK."""
+        with patch(
+            "engines._writeback_audit.audit_writeback_coverage",
+            side_effect=RuntimeError("audit broken"),
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(skip_live=True),
+            )
+        assert "[??] Engine writebacks" in out
+        # Doctor overall stays OK — audit failure is informational
+        assert code == 0
