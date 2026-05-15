@@ -576,6 +576,110 @@ adapter or engine (analytics, audit log, telemetry sink) needs the
 same gate — assume the test suite WILL exercise that path and
 WILL leave residue otherwise.
 
+### Pattern Z: writer modules must call ``record_writeback``
+
+Mirrors Pattern J but for the OUTGOING side. Every writer module
+(file matching ``*_applier.py`` / ``*_minter.py`` / ``*_payer.py``)
+that calls a Shopify mutation must ALSO call ``record_writeback``
+so Phase 8 (MemoryIntelligence + DataArchitecture + LearningLoop)
+sees the outcome.
+
+Caught live on PR #205: four discount-code minters
+(``browse_recovery``, ``cart_recovery``, ``email_marketing``,
+``wholesale_b2b``) minted real codes via the shared
+``mint_recovery_code`` helper but skipped ``record_writeback``.
+The minted codes were live on Shopify, but the autonomous loop
+never saw the mint events. Recommender + EMA undercount these
+engines.
+
+The CI gate (``shopai pattern-z-audit``, PR #206) AST-scans
+writer modules for any of (``execute``, ``_router_call``,
+``mint_recovery_code``, ``_mint``) calls and verifies there's
+a ``record_writeback`` call in the same file. Writers that only
+enqueue (no direct mutation) are legitimately skipped — the
+queue path's recording is the executor's responsibility (closed
+by PR #207).
+
+The fix template, mirroring ``engines/loyalty/discount_minter.py``:
+
+```python
+from engines._writeback_recorder import record_writeback
+
+def my_writer(...):
+    result = router.execute(capability, params)
+    record_writeback(
+        engine="my_engine",
+        action_type="apply_my_thing",
+        capability="SHOPIFY_X",
+        params={...},
+        success=result.ok,
+        error=None if result.ok else result.error,
+    )
+    return result
+```
+
+### Pattern Q: engines must return the canonical envelope
+
+Every engine's ``run()`` method must return a dict with the four
+canonical keys: ``{status, data, meta, error}``. ``status`` must
+be one of ``{"success", "error", "fail"}``. Implicit contract
+documented in every engine's docstring but never enforced until
+PR #213.
+
+The envelope is consumed by:
+  - The approval queue narrative (reads ``data`` + ``meta.engine``).
+  - The Phase 8 recorder (uses ``status`` for the success flag).
+  - The recommender's ``record_outcome`` hook.
+  - The autonomous-loop dashboard.
+
+A refactor that drops one of the four keys ships silently — the
+envelope dict is computed dynamically and an AST walk can't
+verify it. The CI gate (``shopai pattern-q-audit``) is a
+RUNTIME audit: it actually calls each engine's ``run()`` with
+an empty input envelope, then checks the result has all four
+keys + a valid status value.
+
+Four violation classes:
+  - ``missing_keys``: one of {status, data, meta, error} absent.
+  - ``not_a_dict``: ``run()`` returned a non-dict (None, str, list).
+  - ``bad_status``: status not in the accepted literal set.
+  - ``raised``: ``run()`` threw on empty input.
+
+Engines that need real data return ``status="error"`` cleanly;
+they still emit the four-key envelope (engines/loyalty/flow.py
+is the canonical reference).
+
+## The seven institutional audits
+
+The repo gates every PR on seven AST + runtime audits (each is a
+standalone CLI command + a CI step + a section in
+``shopai doctor`` + an entry in the consolidated ``shopai audit``):
+
+| Audit | What it catches | Type |
+|---|---|---|
+| Pattern K | enqueued action_type has a dispatcher | AST |
+| OAuth | every adapter declares ``required_scopes`` | runtime |
+| Pattern Y | every ``Capability.SHOPIFY_*`` enum has 1+ adapter | runtime |
+| Pattern I | every engine's ``capability_name=`` references a real enum + adapter | AST |
+| Pattern J | writes to learning singletons are test-guarded | AST |
+| Pattern Z | every writer module calls ``record_writeback`` | AST |
+| Pattern Q | every engine's ``run()`` returns the canonical envelope | runtime |
+
+When adding a new pattern, the convention is:
+
+1. New module under ``engines/`` or ``core/adapters/`` named
+   ``_pattern_<letter>_audit.py`` (lowercase letter; pick the
+   next unused).
+2. Returns a dataclass ``Pattern<Letter>Report`` with a
+   ``has_violations: bool`` property.
+3. CLI command ``shopai pattern-<letter>-audit`` with ``--json``.
+4. Wire into the consolidated ``shopai audit`` (label in
+   ``_AUDIT_LABELS``, entry in ``_AUDIT_ORDER``, branch in
+   ``_run_one_audit``).
+5. CI gate in ``.github/workflows/ci.yml``.
+6. Tests under ``tests/test_pattern_<letter>_audit.py``.
+7. Update this section + add a "### Pattern <Letter>:" subsection.
+
 ## Current branch state
 
 Branch: `claude/shopify-api-integration-oQzce` → PR #22.
