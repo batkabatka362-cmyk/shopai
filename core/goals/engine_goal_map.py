@@ -37,6 +37,21 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "wholesale_b2b": "maximize_profit",
     "shipping_optimization": "maximize_profit",
     "tax": "maximize_profit",
+    # v2 expansion — high-confidence profit levers:
+    "accounting": "maximize_profit",
+    "financial": "maximize_profit",
+    "profitability_calculator": "maximize_profit",
+    "payment_optimization": "maximize_profit",
+    "price_elasticity": "maximize_profit",
+    "tax_engine": "maximize_profit",
+    "demand_estimator": "maximize_profit",
+    "demand_analysis": "maximize_profit",
+    "product_optimization": "maximize_profit",
+    "product_ranking": "maximize_profit",
+    "product_scoring": "maximize_profit",
+    "forecasting": "maximize_profit",
+    "checkout_optimizer": "maximize_profit",
+    "monetization": "maximize_profit",
 
     # ─ Customer growth / retention ────────────────────────
     "loyalty": "grow_customers",
@@ -50,17 +65,44 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "review_management": "grow_customers",
     "customer_service": "grow_customers",
     "chatbot": "grow_customers",
+    # v2 expansion — high-confidence retention/acquisition:
+    "customer_journey": "grow_customers",
+    "customer_support": "grow_customers",
+    "ltv_cac_dashboard": "grow_customers",
+    "subscription": "grow_customers",
+    "wishlist": "grow_customers",
+    "feedback_collection": "grow_customers",
+    "feedback_processing": "grow_customers",
+    "sentiment_analysis": "grow_customers",
+    "cohort_analysis": "grow_customers",
+    "conversion_tracking": "grow_customers",
+    "customer_effort_score": "grow_customers",
+    "audience_targeting": "grow_customers",
+    "influencer": "grow_customers",
+    "video_marketing": "grow_customers",
+    "notification": "grow_customers",
+    "warranty": "grow_customers",
 
     # ─ AOV / order-size levers ────────────────────────────
     "bundle": "increase_aov",
     "upsell": "increase_aov",
     "cross_sell": "increase_aov",
+    # v2 expansion:
+    "gift_card": "increase_aov",
+    "order_management": "increase_aov",
+    "product_variant": "increase_aov",
 
     # ─ Crisis / risk-protection ───────────────────────────
     "fraud_detection": "survive_crisis",
     "returns_management": "survive_crisis",
     "product_lifecycle": "survive_crisis",
     "inventory": "survive_crisis",
+    # v2 expansion — cash-flow + risk:
+    "cash_flow": "survive_crisis",
+    "cashflow_simulator": "survive_crisis",
+    "backup_recovery": "survive_crisis",
+    "security_monitor": "survive_crisis",
+    "product_risk": "survive_crisis",
 
     # ─ Opportunity capture ────────────────────────────────
     "trend_detection": "capture_opportunity",
@@ -71,6 +113,20 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "landing_page": "capture_opportunity",
     "social_media": "capture_opportunity",
     "product_research": "capture_opportunity",
+    # v2 expansion:
+    "trend_discovery": "capture_opportunity",
+    "opportunity_detection": "capture_opportunity",
+    "opportunity_scoring": "capture_opportunity",
+    "market_research": "capture_opportunity",
+    "international_expansion": "capture_opportunity",
+    "supplier_discovery": "capture_opportunity",
+    "ab_testing": "capture_opportunity",
+    "auto_research": "capture_opportunity",
+    "competitor_analysis": "capture_opportunity",
+    "competition_analyzer": "capture_opportunity",
+    "competitor_monitor": "capture_opportunity",
+    "marketplace": "capture_opportunity",
+    "stock_prediction": "capture_opportunity",
 
     # ─ Catalog hygiene (defaults to profit — it removes
     #   dead weight from the storefront, doesn't directly
@@ -80,6 +136,11 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "content_generation": "maximize_profit",
     "catalog": "maximize_profit",
     "image_optimization": "maximize_profit",
+    # v2: catalog-hygiene additions:
+    "product_description": "maximize_profit",
+    "product_filter": "maximize_profit",
+    "product_validation": "maximize_profit",
+    "product_selection": "maximize_profit",
 }
 
 
