@@ -326,7 +326,21 @@ class GoalManager:
         """Hydrate ``_goal_stats`` from the JSON state file if it
         exists. Best-effort — a missing or corrupt file leaves the
         in-memory dict empty (same as a fresh start). Never raises.
+
+        Pattern J — under pytest, skip the load if the path is the
+        production default (``data/goal_state.json``). Tests that
+        construct ``GoalManager()`` without an explicit
+        ``state_path`` see a clean slate instead of inheriting
+        whatever the dev box's previous runs left on disk.
+        Tests that want persistence behaviour pass a tmp ``state_path``
+        — those load normally because they're not pointed at the
+        production file.
         """
+        if (
+            _is_test_environment()
+            and self._state_path == _DEFAULT_STATE_PATH
+        ):
+            return
         if not self._state_path.exists():
             return
         try:
