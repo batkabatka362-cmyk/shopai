@@ -240,8 +240,16 @@ def _derive_outcome_metrics(
                 metrics["revenue_delta"] = (
                     rev_f if polarity == "positive" else -rev_f
                 )
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as exc:
+                # Revenue field is malformed -- skip the delta
+                # rather than poisoning the EMA. The polarity-
+                # based fallback in ``_derive_metrics`` covers
+                # the case where no usable financial signal is
+                # present.
+                logger.debug(
+                    "outcome revenue not numeric (%r): %s",
+                    rev, exc,
+                )
     return metrics
 
 
