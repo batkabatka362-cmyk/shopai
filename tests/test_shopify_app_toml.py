@@ -40,6 +40,8 @@ def _ns(**kw):
         app_name="shopai",
         app_host="https://YOUR_APP_HOST",
         api_version="2024-01",
+        write=None,
+        force=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -185,3 +187,132 @@ class TestResilience:
         assert "[webhooks]" in out
         # Skeleton fields still present
         assert 'name = "shopai"' in out
+
+
+# ─── --write extension ────────────────────────────────────────
+
+
+class TestWriteToFile:
+    """Tests for the --write FILE / --force flag combination.
+
+    --write redirects the emitter's output from stdout to the
+    given file. By default it refuses to clobber an existing
+    file — operators have to pass --force to overwrite (protects
+    against accidentally trampling a hand-edited
+    shopify.app.toml).
+    """
+
+    def test_write_creates_file(self, cli, tmp_path):
+        target = tmp_path / "shopify.app.toml"
+        assert not target.exists()
+        out, code = _capture(
+            cli._cmd_shopify_app_toml,
+            _ns(write=str(target)),
+        )
+        assert code == 0
+        assert target.exists()
+        body = target.read_text(encoding="utf-8")
+        # Same content shape as stdout output
+        assert 'name = "shopai"' in body
+        assert "[access_scopes]" in body
+        assert "[webhooks]" in body
+
+    def test_write_status_line_to_stdout(self, cli, tmp_path):
+        """When writing to a file, stdout shows a one-line
+        status confirmation (not the file contents) — operators
+        can tail / pipe / monitor the success without parsing
+        a multi-line TOML."""
+        target = tmp_path / "out.toml"
+        out, _ = _capture(
+            cli._cmd_shopify_app_toml,
+            _ns(write=str(target)),
+        )
+        assert "Wrote" in out
+        # Stats appear in the status line so operators
+        # can sanity-check
+        assert "scopes" in out
+        assert "webhooks" in out
+
+    def test_write_refuses_overwrite_without_force(
+        self, cli, tmp_path,
+    ):
+        target = tmp_path / "exists.toml"
+        target.write_text("PRE-EXISTING CONTENT", encoding="utf-8")
+        out, code = _capture(
+            cli._cmd_shopify_app_toml,
+            _ns(write=str(target)),
+        )
+        assert code == 1
+        assert "Refusing to overwrite" in out
+        # File untouched
+        assert target.read_text(encoding="utf-8") == "PRE-EXISTING CONTENT"
+
+    def test_write_force_overwrites(self, cli, tmp_path):
+        target = tmp_path / "exists.toml"
+        target.write_text("PRE-EXISTING CONTENT", encoding="utf-8")
+        out, code = _capture(
+            cli._cmd_shopify_app_toml,
+            _ns(write=str(target), force=True),
+        )
+        assert code == 0
+        # File replaced
+        new_body = target.read_text(encoding="utf-8")
+        assert new_body != "PRE-EXISTING CONTENT"
+        assert 'name = "shopai"' in new_body
+
+    def test_write_creates_parent_dir(self, cli, tmp_path):
+        """When the target's parent dir doesn't exist, the
+        emitter creates it — operators pointing at e.g.
+        ``deploy/shopify.app.toml`` don't fail on a missing
+        dir."""
+        target = tmp_path / "deploy" / "nested" / "app.toml"
+        assert not target.parent.exists()
+        out, code = _capture(
+            cli._cmd_shopify_app_toml,
+            _ns(write=str(target)),
+        )
+        assert code == 0
+        assert target.exists()
+
+    def test_write_file_ends_with_newline(self, cli, tmp_path):
+        """Standard convention: text files end with a newline.
+        Some tools (POSIX) strip the final line if it lacks one;
+        Shopify's CLI parser handles either but emitting the
+        newline is the polite default."""
+        target = tmp_path / "newline.toml"
+        _capture(
+            cli._cmd_shopify_app_toml,
+            _ns(write=str(target)),
+        )
+        body = target.read_bytes()
+        assert body.endswith(b"\n")
+
+    def test_stdout_mode_unchanged_when_no_write(
+        self, cli, tmp_path,
+    ):
+        """Without --write, the emitter still writes to stdout
+        like before — backwards compatible with PR #184."""
+        out, code = _capture(cli._cmd_shopify_app_toml, _ns())
+        assert code == 0
+        # Full TOML in stdout
+        assert 'name = "shopai"' in out
+        assert "[access_scopes]" in out
+        # No "Wrote" status line (which only appears in write mode)
+        assert "Wrote" not in out
+
+    def test_write_io_error_exits_1(self, cli, tmp_path):
+        """Mock a write failure (read-only filesystem, etc.).
+        Should exit 1 with an actionable error message rather
+        than crashing."""
+        from unittest.mock import patch as mock_patch
+        target = tmp_path / "blocked.toml"
+        with mock_patch(
+            "pathlib.Path.write_text",
+            side_effect=OSError("permission denied"),
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_app_toml,
+                _ns(write=str(target)),
+            )
+        assert code == 1
+        assert "Failed to write" in out
