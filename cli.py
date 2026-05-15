@@ -2673,6 +2673,13 @@ def _build_loop_dict(top_n: int = 5) -> dict:
         "recommendations": [],
         "webhook_stats": {},
         "engine_coverage": {},
+        "governance": {
+            "auto_approve_allowlist": [],
+            "quarantine_exemptions": [],
+            "quarantine_released": [],
+            "recent_auto_approved": 0,
+            "recent_auto_quarantined": 0,
+        },
     }
 
     # Approval queue: per-status counts + recent EXECUTED
@@ -2748,6 +2755,48 @@ def _build_loop_dict(top_n: int = 5) -> dict:
         }
     except Exception as exc:  # noqa: BLE001
         logger.debug("engine coverage probe failed: %s", exc)
+
+    # Governance: auto-approve allowlist + quarantine state +
+    # last-24h counters for auto-decisions (PR #161 + #162). The
+    # counters answer "is the self-regulating loop actually firing?"
+    # so an operator can spot a regression (e.g. quarantine
+    # suddenly thrashing) at a glance.
+    try:
+        from core.approval.auto_approve import load_config as _aa_cfg
+        payload["governance"]["auto_approve_allowlist"] = (
+            sorted(_aa_cfg().allowlist)
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("auto_approve probe failed: %s", exc)
+
+    try:
+        from core.approval.quarantine import load_state as _q_state
+        s = _q_state()
+        payload["governance"]["quarantine_exemptions"] = (
+            sorted(s.exemptions)
+        )
+        payload["governance"]["quarantine_released"] = (
+            sorted(s.released)
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("quarantine probe failed: %s", exc)
+
+    try:
+        from core.approval import get_approval_queue
+        q = get_approval_queue()
+        # Last 24h window — same lens as `shopai outcomes --since 24h`
+        recent = q.list_decisions(limit=500)
+        cutoff = _time.time() - 86400
+        for r in recent:
+            if r.get("occurred_at", 0) < cutoff:
+                continue
+            actor = r.get("decided_by")
+            if actor == "auto_threshold":
+                payload["governance"]["recent_auto_approved"] += 1
+            elif actor == "auto_quarantine":
+                payload["governance"]["recent_auto_quarantined"] += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("governance counters probe failed: %s", exc)
 
     return payload
 
@@ -2912,6 +2961,33 @@ def _render_loop_text(payload: dict) -> None:
             f"Engine coverage: {cov.get('mapped', 0)}/"
             f"{cov.get('total', 0)} mapped "
             f"({cov.get('ratio', 0.0):.0%})"
+        )
+
+    # ── 6. Governance (PR #161 / #162) ────────────────────
+    gov = payload.get("governance", {})
+    if gov:
+        print()
+        print("Governance:")
+        allowlist = gov.get("auto_approve_allowlist") or []
+        print(
+            f"  Auto-approve allowlist ({len(allowlist)}): "
+            f"{', '.join(allowlist) or '(empty)'}"
+        )
+        exemptions = gov.get("quarantine_exemptions") or []
+        released = gov.get("quarantine_released") or []
+        print(
+            f"  Quarantine exemptions ({len(exemptions)}): "
+            f"{', '.join(exemptions) or '(none)'}"
+        )
+        if released:
+            print(
+                f"  Quarantine released ({len(released)}): "
+                f"{', '.join(released)}"
+            )
+        print(
+            f"  Last 24h:  "
+            f"auto-approved={gov.get('recent_auto_approved', 0)}  "
+            f"auto-quarantined={gov.get('recent_auto_quarantined', 0)}"
         )
 
 

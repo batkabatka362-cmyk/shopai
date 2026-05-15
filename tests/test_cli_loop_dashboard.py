@@ -56,7 +56,27 @@ class TestBuildLoopDict:
             "recommendations",
             "webhook_stats",
             "engine_coverage",
+            "governance",
         }
+
+    def test_governance_section_has_full_shape(self, cli):
+        """Governance panel (PR #163) surfaces auto-approve +
+        quarantine state + 24h counters."""
+        payload = cli._build_loop_dict()
+        gov = payload["governance"]
+        assert set(gov.keys()) >= {
+            "auto_approve_allowlist",
+            "quarantine_exemptions",
+            "quarantine_released",
+            "recent_auto_approved",
+            "recent_auto_quarantined",
+        }
+        # Empty defaults render as empty lists / zero counters
+        assert isinstance(gov["auto_approve_allowlist"], list)
+        assert isinstance(gov["quarantine_exemptions"], list)
+        assert isinstance(gov["quarantine_released"], list)
+        assert isinstance(gov["recent_auto_approved"], int)
+        assert isinstance(gov["recent_auto_quarantined"], int)
 
     def test_goal_section_has_current_and_stats(self, cli):
         payload = cli._build_loop_dict()
