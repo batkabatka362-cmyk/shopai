@@ -280,6 +280,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    shopify_doctor_p = sub.add_parser(
+        "shopify-doctor",
+        help=(
+            "Aggregate health check — runs every institutional "
+            "protection audit (Pattern K dispatchers + OAuth "
+            "scope coverage + Pattern Y capabilities + live "
+            "scope drift) in one shot"
+        ),
+    )
+    shopify_doctor_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+    shopify_doctor_p.add_argument(
+        "--skip-live", action="store_true",
+        help=(
+            "Skip the live scope drift check (don't call "
+            "Shopify). Use in CI / dev environments without "
+            "live credentials."
+        ),
+    )
+
     shopify_install_manifest_p = sub.add_parser(
         "shopify-install-manifest",
         help=(
@@ -2570,6 +2592,282 @@ def _cmd_capabilities_audit(args) -> None:
         "the enum value if it's no longer needed."
     )
     sys.exit(1)
+
+
+def _cmd_shopify_doctor(args) -> None:
+    """Aggregate health check across every institutional
+    protection layer.
+
+    The capstone to the declaration-protection arc (PRs #157,
+    #173-#180). Operators run ONE command and get a pass/fail
+    verdict for every check:
+
+      * Pattern K — every enqueued action_type has a dispatcher
+      * OAuth scope coverage — every adapter declares scopes
+      * Pattern Y — every Capability enum value is claimed
+      * Live scope drift — declared vs granted on the merchant
+
+    Exit 0 = all green. Exit 1 = at least one fatal check
+    failed. The live-scope check is best-effort: when the apps
+    adapter isn't configured, the check reports
+    ``status=skipped`` and does NOT fail the doctor (so dev
+    environments without live creds still see the rest of the
+    health picture). ``--skip-live`` skips it entirely (useful
+    in CI where Shopify creds shouldn't be exposed).
+
+    JSON output mirrors the same structure for automation —
+    each section has its own ``status`` (pass / fail / skipped /
+    unavailable) plus a per-section detail blob.
+    """
+    sections: dict[str, dict[str, Any]] = {}
+    overall_ok = True
+
+    # ── Pattern K dispatcher coverage ────────────────────────
+    try:
+        from core.approval.coverage_audit import audit_coverage
+        from pathlib import Path
+        report = audit_coverage(Path("engines"))
+        sections["pattern_k_dispatchers"] = {
+            "status": "pass" if not report.has_gaps else "fail",
+            "enqueue_sites": len(report.enqueued),
+            "dispatchers_registered": len(report.registered),
+            "missing": sorted(report.missing),
+            "orphaned": sorted(report.orphaned),
+        }
+        if report.has_gaps:
+            overall_ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern K probe raised: %s", exc)
+        sections["pattern_k_dispatchers"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── OAuth scope coverage ─────────────────────────────────
+    try:
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest()
+        gaps = manifest.undeclared_adapters
+        sections["oauth_scope_coverage"] = {
+            "status": "pass" if not gaps else "fail",
+            "total_adapters": manifest.total_adapters,
+            "declared_count": (
+                manifest.total_adapters - len(gaps)
+            ),
+            "scope_independent_count": (
+                len(manifest.scope_independent_adapters)
+            ),
+            "unique_scopes": len(manifest.all_scopes),
+            "undeclared_adapters": gaps,
+        }
+        if gaps:
+            overall_ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("oauth scope probe raised: %s", exc)
+        sections["oauth_scope_coverage"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── Pattern Y capability coverage ────────────────────────
+    try:
+        from core.adapters.coverage_audit import (
+            audit_capability_coverage,
+        )
+        cap_report = audit_capability_coverage()
+        sections["pattern_y_capabilities"] = {
+            "status": "pass" if not cap_report.has_gaps else "fail",
+            "total_shopify_capabilities": (
+                cap_report.total_shopify_capabilities
+            ),
+            "claimed_count": cap_report.claimed_count,
+            "unclaimed": cap_report.unclaimed,
+            "orphan_claims": cap_report.orphan_claims,
+        }
+        if cap_report.has_gaps:
+            overall_ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern Y probe raised: %s", exc)
+        sections["pattern_y_capabilities"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── Live scope drift ─────────────────────────────────────
+    if getattr(args, "skip_live", False):
+        sections["live_scope_drift"] = {
+            "status": "skipped",
+            "reason": "--skip-live flag set",
+        }
+    else:
+        try:
+            from core.adapters.shopify.scope_health import compare_to_live
+            health_report = compare_to_live()
+            if health_report is None:
+                sections["live_scope_drift"] = {
+                    "status": "skipped",
+                    "reason": (
+                        "apps adapter not configured or live "
+                        "API call failed"
+                    ),
+                }
+            else:
+                # Missing scopes are fatal; extras are a warning
+                # (recorded but don't fail the doctor)
+                sections["live_scope_drift"] = {
+                    "status": (
+                        "pass" if health_report.is_healthy
+                        else "fail"
+                    ),
+                    "missing_from_app": (
+                        health_report.missing_from_app
+                    ),
+                    "extra_in_app": health_report.extra_in_app,
+                    "granted_count": (
+                        len(health_report.granted_scopes)
+                    ),
+                    "required_count": (
+                        len(health_report.required_scopes)
+                    ),
+                }
+                if not health_report.is_healthy:
+                    overall_ok = False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("live scope probe raised: %s", exc)
+            sections["live_scope_drift"] = {
+                "status": "unavailable",
+                "error": str(exc),
+            }
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": overall_ok,
+            "sections": sections,
+        }, indent=2, default=str))
+        if not overall_ok:
+            sys.exit(1)
+        return
+
+    # Text render — header + per-section summary + final verdict
+    print("ShopAI Shopify Doctor")
+    print()
+
+    _doctor_render_pattern_k(sections.get("pattern_k_dispatchers", {}))
+    _doctor_render_oauth(sections.get("oauth_scope_coverage", {}))
+    _doctor_render_pattern_y(sections.get("pattern_y_capabilities", {}))
+    _doctor_render_live(sections.get("live_scope_drift", {}))
+
+    print()
+    if overall_ok:
+        print("Overall: OK — all institutional protection checks pass.")
+    else:
+        print(
+            "Overall: FAILED — at least one check has gaps. "
+            "Inspect sections above."
+        )
+        sys.exit(1)
+
+
+def _doctor_render_pattern_k(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Pattern K dispatchers — "
+            f"{section.get('enqueue_sites', 0)} enqueue sites, "
+            f"{section.get('dispatchers_registered', 0)} dispatchers"
+        )
+    elif status == "fail":
+        missing = section.get("missing", [])
+        print(
+            f"[FAIL] Pattern K dispatchers — "
+            f"{len(missing)} missing: "
+            f"{', '.join(missing[:3])}"
+            f"{'...' if len(missing) > 3 else ''}"
+        )
+    else:
+        print(
+            f"[??] Pattern K dispatchers — "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_oauth(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] OAuth scope coverage — "
+            f"{section.get('declared_count', 0)}/"
+            f"{section.get('total_adapters', 0)} adapters, "
+            f"{section.get('unique_scopes', 0)} unique scopes"
+        )
+    elif status == "fail":
+        gaps = section.get("undeclared_adapters", [])
+        print(
+            f"[FAIL] OAuth scope coverage — "
+            f"{len(gaps)} undeclared adapter(s)"
+        )
+    else:
+        print(
+            f"[??] OAuth scope coverage — "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_pattern_y(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Pattern Y capabilities — "
+            f"{section.get('claimed_count', 0)}/"
+            f"{section.get('total_shopify_capabilities', 0)} "
+            "enum values claimed"
+        )
+    elif status == "fail":
+        unclaimed = section.get("unclaimed", [])
+        orphan = section.get("orphan_claims", [])
+        print(
+            f"[FAIL] Pattern Y capabilities — "
+            f"{len(unclaimed)} unclaimed, "
+            f"{len(orphan)} orphan claim(s)"
+        )
+    else:
+        print(
+            f"[??] Pattern Y capabilities — "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_live(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Live scope drift — "
+            f"{section.get('granted_count', 0)}/"
+            f"{section.get('required_count', 0)} "
+            "scopes granted; no drift"
+        )
+        extras = section.get("extra_in_app", [])
+        if extras:
+            print(
+                f"       (warning: {len(extras)} extra scope(s) "
+                "granted but not declared — over-requesting)"
+            )
+    elif status == "fail":
+        missing = section.get("missing_from_app", [])
+        print(
+            f"[FAIL] Live scope drift — "
+            f"{len(missing)} scope(s) declared but NOT granted"
+        )
+    elif status == "skipped":
+        print(
+            f"[skip] Live scope drift — "
+            f"{section.get('reason', 'unknown')}"
+        )
+    else:
+        print(
+            f"[??] Live scope drift — "
+            f"{section.get('error', 'unavailable')}"
+        )
 
 
 def _cmd_shopify_install_manifest(args) -> None:
@@ -5793,6 +6091,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "capabilities-audit":
         _cmd_capabilities_audit(args)
+        return
+
+    if args.command == "shopify-doctor":
+        _cmd_shopify_doctor(args)
         return
 
     if args.command == "shopify-scopes-live-check":
