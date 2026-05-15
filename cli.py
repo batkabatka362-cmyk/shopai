@@ -441,6 +441,56 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    shopify_prepare_deploy_p = sub.add_parser(
+        "shopify-prepare-deploy",
+        help=(
+            "Capstone: run shopify-doctor, then emit "
+            "shopify.app.toml if every fatal check passes. "
+            "Refuses to write when the doctor flags failures "
+            "(override with --write-on-warning)."
+        ),
+    )
+    shopify_prepare_deploy_p.add_argument(
+        "--output", "-o", default="shopify.app.toml",
+        metavar="FILE",
+        help=(
+            "Target file for the generated TOML. Default: "
+            "shopify.app.toml in the working directory."
+        ),
+    )
+    shopify_prepare_deploy_p.add_argument(
+        "--app-name", default="shopai",
+        help="App name. Default: shopai",
+    )
+    shopify_prepare_deploy_p.add_argument(
+        "--app-host", default="https://YOUR_APP_HOST",
+        help="Deployed app base URL. Default: placeholder.",
+    )
+    shopify_prepare_deploy_p.add_argument(
+        "--api-version", default="2024-01",
+        help="Shopify Admin API version. Default: 2024-01",
+    )
+    shopify_prepare_deploy_p.add_argument(
+        "--force", action="store_true",
+        help="Overwrite the output file if it exists.",
+    )
+    shopify_prepare_deploy_p.add_argument(
+        "--skip-live", action="store_true",
+        help=(
+            "Skip the live-API drift checks (live scope + live "
+            "webhook). Useful in CI where the dev store isn't "
+            "reachable."
+        ),
+    )
+    shopify_prepare_deploy_p.add_argument(
+        "--write-on-warning", action="store_true",
+        help=(
+            "Emit the TOML even if the doctor flagged failures. "
+            "Used during initial bring-up before a live Shopify "
+            "app exists to compare against."
+        ),
+    )
+
     eng_calibration = sub.add_parser(
         "engine-calibration",
         help=(
@@ -2963,32 +3013,19 @@ def _cmd_capabilities_audit(args) -> None:
     sys.exit(1)
 
 
-def _cmd_shopify_doctor(args) -> None:
-    """Aggregate health check across every institutional
-    protection layer.
+def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
+    """Collect every doctor-section's status without rendering.
 
-    The capstone to the declaration-protection arc (PRs #157,
-    #173-#180). Operators run ONE command and get a pass/fail
-    verdict for every check:
+    Extracted so the section-collection logic is reusable across
+    ``_cmd_shopify_doctor`` (which renders text/json) and
+    ``_cmd_shopify_prepare_deploy`` (which uses the
+    ``overall_ok`` to gate the file write).
 
-      * Pattern K — every enqueued action_type has a dispatcher
-      * OAuth scope coverage — every adapter declares scopes
-      * Pattern Y — every Capability enum value is claimed
-      * Live scope drift — declared vs granted on the merchant
-
-    Exit 0 = all green. Exit 1 = at least one fatal check
-    failed. The live-scope check is best-effort: when the apps
-    adapter isn't configured, the check reports
-    ``status=skipped`` and does NOT fail the doctor (so dev
-    environments without live creds still see the rest of the
-    health picture). ``--skip-live`` skips it entirely (useful
-    in CI where Shopify creds shouldn't be exposed).
-
-    JSON output mirrors the same structure for automation —
-    each section has its own ``status`` (pass / fail / skipped /
-    unavailable) plus a per-section detail blob.
+    Returns ``(overall_ok, sections_dict)``. ``overall_ok`` is
+    True iff every fatal check passes; informational sections
+    (engines_writebacks) never flip it to False.
     """
-    sections: dict[str, dict[str, Any]] = {}
+    sections: dict[str, Any] = {}
     overall_ok = True
 
     # ── Pattern K dispatcher coverage ────────────────────────
@@ -3179,6 +3216,15 @@ def _cmd_shopify_doctor(args) -> None:
             "error": str(exc),
         }
 
+    return overall_ok, sections
+
+
+def _cmd_shopify_doctor(args) -> None:
+    """Aggregate health check across the institutional-protection
+    surfaces. Renders either JSON or human text and exits non-zero
+    when any fatal check fails."""
+    overall_ok, sections = _collect_doctor_sections(args)
+
     if getattr(args, "json", False):
         print(json.dumps({
             "ok": overall_ok,
@@ -3188,7 +3234,6 @@ def _cmd_shopify_doctor(args) -> None:
             sys.exit(1)
         return
 
-    # Text render — header + per-section summary + final verdict
     print("ShopAI Shopify Doctor")
     print()
 
@@ -3619,6 +3664,70 @@ def _cmd_shopify_app_toml(args) -> None:
 
     # Default: stdout
     sys.stdout.write(toml_body)
+
+
+def _cmd_shopify_prepare_deploy(args) -> None:
+    """Capstone: doctor health check + ``shopify.app.toml`` emit.
+
+    The fail-safe deploy gate. Operators run ONE command to:
+
+      1. Run every doctor section (Pattern K, OAuth scopes,
+         Pattern Y, live drift, webhook drift, writebacks audit).
+      2. Refuse to emit the deploy file if any fatal check
+         failed — unless ``--write-on-warning`` is set.
+      3. When safe (or forced), invoke the same logic as
+         ``shopai shopify-app-toml`` to write the deployable
+         TOML.
+
+    Default destination is ``shopify.app.toml`` in the working
+    directory; override with ``--output``. Use ``--force`` to
+    overwrite an existing file (mirrors the app-toml command).
+
+    Exits 0 on successful write; 1 when doctor flags a fatal
+    issue and ``--write-on-warning`` is unset, or when writing
+    fails.
+    """
+    overall_ok, sections = _collect_doctor_sections(args)
+
+    print("ShopAI prepare-deploy")
+    print()
+    _doctor_render_pattern_k(sections.get("pattern_k_dispatchers", {}))
+    _doctor_render_oauth(sections.get("oauth_scope_coverage", {}))
+    _doctor_render_pattern_y(sections.get("pattern_y_capabilities", {}))
+    _doctor_render_live(sections.get("live_scope_drift", {}))
+    _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
+    _doctor_render_writebacks(sections.get("engines_writebacks", {}))
+    print()
+
+    if not overall_ok and not getattr(args, "write_on_warning", False):
+        print(
+            "Refusing to write — doctor flagged failures. Fix the "
+            "above sections, or pass --write-on-warning to emit "
+            "the TOML anyway (e.g. during initial bring-up before "
+            "the live app exists)."
+        )
+        sys.exit(1)
+
+    if not overall_ok:
+        print(
+            "Doctor flagged failures, but --write-on-warning was "
+            "passed — emitting TOML anyway."
+        )
+
+    # Re-use the app-toml command's emission logic. Build a small
+    # namespace with the fields it reads so we don't duplicate.
+    import argparse as _argparse
+    output = getattr(args, "output", None) or "shopify.app.toml"
+    toml_args = _argparse.Namespace(
+        app_name=getattr(args, "app_name", None) or "shopai",
+        app_host=(
+            getattr(args, "app_host", None) or "https://YOUR_APP_HOST"
+        ),
+        api_version=getattr(args, "api_version", None) or "2024-01",
+        write=output,
+        force=bool(getattr(args, "force", False)),
+    )
+    _cmd_shopify_app_toml(toml_args)
 
 
 def _cmd_shopify_install_manifest(args) -> None:
@@ -6862,6 +6971,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-app-toml":
         _cmd_shopify_app_toml(args)
+        return
+
+    if args.command == "shopify-prepare-deploy":
+        _cmd_shopify_prepare_deploy(args)
         return
 
     if args.command == "shopify-scopes-live-check":
