@@ -97,8 +97,18 @@ from data_pipeline.store.sync_service import SyncService
 
 @pytest.fixture
 def fresh_db():
-    """Give each test its own isolated SQLite file."""
-    with tempfile.TemporaryDirectory() as tmp:
+    """Give each test its own isolated SQLite file.
+
+    ``ignore_cleanup_errors`` covers Windows: SQLite holds the
+    file handle briefly even after ``db.close()``, so
+    ``TemporaryDirectory`` teardown trips
+    ``PermissionError: [WinError 32]`` if it tries to ``unlink``
+    too fast. The tmp dir leaks on that one path — fine, the OS
+    sweeps ``%TEMP%`` separately.
+    """
+    with tempfile.TemporaryDirectory(
+        ignore_cleanup_errors=True,
+    ) as tmp:
         path = Path(tmp) / "test.db"
         db = ShopAIDatabase(db_path=path)
         yield db
