@@ -131,6 +131,18 @@ jobs:
         run: |
           python cli.py shopify-scopes-audit
 
+      - name: Capability coverage audit (Pattern Y)
+        # Cross-references every Capability.SHOPIFY_* enum value
+        # against the registered adapters. Missing claims = engines
+        # routing into a void (AdapterNotConfigured). Orphan claims =
+        # adapter declares a capability that doesn't exist on the
+        # enum (typo trap). Required gate — every enum value MUST
+        # be claimed by 1+ adapter.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py capabilities-audit
+
       - name: Config schema validation
         env:
           PYTHONPATH: ${{ github.workspace }}

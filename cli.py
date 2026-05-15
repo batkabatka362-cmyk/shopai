@@ -246,6 +246,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    capabilities_audit_p = sub.add_parser(
+        "capabilities-audit",
+        help=(
+            "CI gate (Pattern Y): exit 1 if any Capability."
+            "SHOPIFY_* enum value is unclaimed by every adapter "
+            "(mirrors Pattern K dispatcher audit). 0 = clean, "
+            "1 = at least one gap."
+        ),
+    )
+    capabilities_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+    capabilities_audit_p.add_argument(
+        "--show-multi-claimed", action="store_true",
+        help=(
+            "Also list capabilities claimed by 2+ adapters "
+            "(warning — usually legitimate, sometimes routing "
+            "ambiguity)"
+        ),
+    )
+
     shopify_scopes_live_p = sub.add_parser(
         "shopify-scopes-live-check",
         help=(
@@ -2440,6 +2462,114 @@ def _cmd_shopify_scopes_live_check(args) -> None:
         "re-submit so Shopify's app reviewers don't flag "
         "over-requesting."
     )
+
+
+def _cmd_capabilities_audit(args) -> None:
+    """CI gate (Pattern Y): exit 1 if any ``Capability.SHOPIFY_*``
+    enum value is unclaimed by every adapter.
+
+    The companion to ``shopai approvals audit`` (Pattern K) and
+    ``shopai shopify-scopes-audit``. Each enum value declares an
+    abstract capability the router can resolve to an adapter.
+    When a new ``SHOPIFY_X`` lands on the enum without a matching
+    adapter, engines calling for ``Capability.SHOPIFY_X`` hit
+    ``AdapterNotConfigured`` — silent at the system level, loud
+    at the single engine. This audit makes that an explicit gate.
+
+    Two failure modes caught:
+
+      - **unclaimed**: enum has the capability, no adapter
+        declares it. Engines route into a void.
+      - **orphan_claims**: adapter declares a "capability" that
+        isn't a real enum value (string typo, deleted enum).
+        Module load would crash on the import; this gate would
+        flag it before tests run.
+
+    Exit 0 = clean. Exit 1 = at least one gap. ``--show-multi-
+    claimed`` adds a warning section for capabilities claimed
+    by 2+ adapters (legitimate in some cases — read vs write
+    splits — but worth surfacing).
+    """
+    try:
+        from core.adapters.coverage_audit import audit_capability_coverage
+        report = audit_capability_coverage()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("capability coverage audit raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Capability audit unavailable: {exc}")
+        return
+
+    if getattr(args, "json", False):
+        payload = {
+            "ok": not report.has_gaps,
+            "total_shopify_capabilities": (
+                report.total_shopify_capabilities
+            ),
+            "claimed_count": report.claimed_count,
+            "unclaimed": report.unclaimed,
+            "orphan_claims": report.orphan_claims,
+        }
+        if getattr(args, "show_multi_claimed", False):
+            payload["multi_claimed"] = report.multi_claimed
+        print(json.dumps(payload, indent=2))
+        if report.has_gaps:
+            sys.exit(1)
+        return
+
+    if not report.has_gaps:
+        print(
+            f"Capability coverage OK — "
+            f"{report.claimed_count}/"
+            f"{report.total_shopify_capabilities} "
+            "Shopify capabilities claimed by 1+ adapter."
+        )
+        if getattr(args, "show_multi_claimed", False):
+            if report.multi_claimed:
+                print()
+                print(
+                    f"Multi-claimed ({len(report.multi_claimed)}) — "
+                    "usually legitimate, sometimes routing "
+                    "ambiguity:"
+                )
+                for cap, adapters in sorted(
+                    report.multi_claimed.items(),
+                ):
+                    print(f"  {cap}: {', '.join(adapters)}")
+            else:
+                print()
+                print("No multi-claimed capabilities.")
+        return
+
+    print(
+        f"Capability coverage FAILED: "
+        f"{len(report.unclaimed)} unclaimed, "
+        f"{len(report.orphan_claims)} orphan claim(s)."
+    )
+    print()
+    if report.unclaimed:
+        print(
+            "Unclaimed capabilities (engines routing to these "
+            "will hit AdapterNotConfigured):"
+        )
+        for cap in report.unclaimed:
+            print(f"  {cap}")
+        print()
+    if report.orphan_claims:
+        print(
+            "Orphan claims (adapter declares a capability that "
+            "doesn't exist on the enum):"
+        )
+        for cap in report.orphan_claims:
+            print(f"  {cap}")
+        print()
+    print(
+        "Fix: add the missing capabilities to the adapter's "
+        "`capabilities` set in core/adapters/shopify/, OR drop "
+        "the enum value if it's no longer needed."
+    )
+    sys.exit(1)
 
 
 def _cmd_shopify_install_manifest(args) -> None:
@@ -5659,6 +5789,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-scopes-audit":
         _cmd_shopify_scopes_audit(args)
+        return
+
+    if args.command == "capabilities-audit":
+        _cmd_capabilities_audit(args)
         return
 
     if args.command == "shopify-scopes-live-check":
