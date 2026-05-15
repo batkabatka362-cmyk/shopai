@@ -251,6 +251,14 @@ def build_parser() -> argparse.ArgumentParser:
             "wiki/README. Mutually exclusive with --json."
         ),
     )
+    catalog_p.add_argument(
+        "--by-capability", action="store_true",
+        help=(
+            "Group entries by Shopify Capability enum value "
+            "instead of listing per-action_type. Answers 'which "
+            "action_types route through SHOPIFY_UPDATE_PRODUCT?'"
+        ),
+    )
 
     release_bundle_p = sub.add_parser(
         "release-bundle",
@@ -2818,6 +2826,113 @@ def _render_catalog_markdown(report, entries) -> None:
         print()
 
 
+def _render_catalog_by_capability(report, entries, args) -> None:
+    """Group catalog entries by capability instead of action_type.
+
+    Answers the operator question: 'which action_types route
+    through SHOPIFY_UPDATE_PRODUCT?' Useful when reviewing a
+    capability's footprint or planning scope-deprecation.
+
+    Entries that route through multiple capabilities appear
+    under each (rare today; only a few dispatchers like
+    branchy mints have >1).
+
+    Honors --json for machine consumption: emits
+    ``{capability_name: [entries...]}``.
+    """
+    # cap_name -> [entries...]
+    grouped: dict[str, list] = {}
+    unrouted: list = []
+    for e in entries:
+        if not e.capabilities:
+            unrouted.append(e)
+            continue
+        for cap in e.capabilities:
+            grouped.setdefault(cap, []).append(e)
+
+    if getattr(args, "json", False):
+        payload = {
+            "summary": {
+                "total_dispatchers": len(report.entries),
+                "distinct_capabilities": len(grouped),
+                "unrouted_count": len(unrouted),
+                "filtered_count": len(entries),
+            },
+            "by_capability": {
+                cap: [
+                    {
+                        "action_type": e.action_type,
+                        "description": e.description,
+                        "adapters": [
+                            a.name for a in e.adapters
+                        ],
+                        "aggregate_scopes": list(
+                            e.aggregate_scopes,
+                        ),
+                        "emitting_engines": list(e.emitting_engines),
+                    }
+                    for e in sorted(
+                        cap_entries,
+                        key=lambda x: x.action_type,
+                    )
+                ]
+                for cap, cap_entries in sorted(grouped.items())
+            },
+            "unrouted": [e.action_type for e in unrouted],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    print(
+        f"ShopAI action catalog by capability -- "
+        f"{len(grouped)} distinct capability(ies), "
+        f"{len(entries)} action(s) total."
+    )
+    if unrouted:
+        print(
+            f"  ({len(unrouted)} dispatcher(s) unresolved -- "
+            "no capability extracted)"
+        )
+    print()
+
+    for cap_name in sorted(grouped.keys()):
+        cap_entries = sorted(
+            grouped[cap_name], key=lambda x: x.action_type,
+        )
+        # Pull adapter + scopes from the first entry (all entries
+        # under one capability share the same adapter aggregation)
+        first = cap_entries[0]
+        adapter_names = sorted({a.name for a in first.adapters})
+        scopes = (
+            ", ".join(first.aggregate_scopes)
+            if first.aggregate_scopes else "(none)"
+        )
+        adapters_str = (
+            ", ".join(adapter_names) if adapter_names
+            else "(no adapter)"
+        )
+        print(f"  {cap_name}")
+        print(f"    adapter:    {adapters_str}")
+        print(f"    scopes:     {scopes}")
+        print(
+            f"    actions ({len(cap_entries)}):"
+        )
+        for e in cap_entries:
+            engines = (
+                ", ".join(e.emitting_engines)
+                or "(no engine)"
+            )
+            print(
+                f"      {e.action_type:<28}  emitted by: {engines}"
+            )
+        print()
+
+    if unrouted:
+        print("  Unresolved dispatchers (no capability):")
+        for e in unrouted:
+            print(f"    {e.action_type}")
+
+
 def _cmd_catalog(args) -> None:
     """Complete action surface in one operator readout.
 
@@ -2860,6 +2975,10 @@ def _cmd_catalog(args) -> None:
 
     if getattr(args, "markdown", False):
         _render_catalog_markdown(report, entries)
+        return
+
+    if getattr(args, "by_capability", False):
+        _render_catalog_by_capability(report, entries, args)
         return
 
     if getattr(args, "json", False):
