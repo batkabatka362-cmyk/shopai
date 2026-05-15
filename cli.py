@@ -244,6 +244,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter to a specific action_type (exact match)",
     )
 
+    snapshot_p = sub.add_parser(
+        "snapshot",
+        help=(
+            "Capture the entire system state -- catalog + engine "
+            "counts + every audit + doctor verdicts -- into one "
+            "committable JSON artifact. Operators commit "
+            "snapshots and diff them across releases."
+        ),
+    )
+    snapshot_p.add_argument(
+        "--output", "-o", default=None, metavar="FILE",
+        help=(
+            "Write the snapshot JSON to FILE. Default: stdout. "
+            "Refuses to overwrite an existing file unless "
+            "--force is passed."
+        ),
+    )
+    snapshot_p.add_argument(
+        "--force", action="store_true",
+        help="Overwrite the output file if it exists.",
+    )
+    snapshot_p.add_argument(
+        "--skip-live", action="store_true",
+        help=(
+            "Skip the live drift checks (live scope + live "
+            "webhook) when collecting doctor verdicts."
+        ),
+    )
+
     eng_info = sub.add_parser("engine-info", help="Show engine details")
     eng_info.add_argument("engine_name", help="Engine name")
     eng_info.add_argument(
@@ -2691,6 +2720,223 @@ def _cmd_catalog(args) -> None:
             print("    adapter:     (no adapter claims this capability)")
         print(f"    engines:     {engines_str}")
         print()
+
+
+def _cmd_snapshot(args) -> None:
+    """Capture the complete system state in one committable JSON
+    artifact.
+
+    The snapshot bundles every existing audit, doctor, and
+    catalog into a single deterministic dict suitable for git
+    archival. Operators commit the snapshot when they release
+    and diff future captures against it to surface drift.
+
+    Fields:
+      - ``generated_at``: ISO 8601 UTC timestamp
+      - ``engine_counts``: total / wired / advisory / partial
+      - ``catalog``: full action surface (dispatcher -> capability
+        -> adapter -> scopes -> engines)
+      - ``audits``: pattern_k / oauth / pattern_y / pattern_i /
+        pattern_j summaries
+      - ``doctor_shopify``: doctor section dict (without live
+        drift if --skip-live)
+      - ``doctor_approvals``: approval-queue doctor sections
+
+    With ``--output FILE`` the snapshot is written to disk;
+    otherwise it's emitted to stdout. ``--force`` overwrites
+    existing files (matches the shopify-app-toml --force
+    semantics).
+    """
+    import time as _time
+    from datetime import datetime, timezone
+
+    snapshot: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": 1,
+    }
+
+    # ── Engine counts (Phase 6/7 writeback wiring) ──────────
+    try:
+        from engines._writeback_audit import audit_writeback_coverage
+        wb = audit_writeback_coverage("engines")
+        snapshot["engine_counts"] = {
+            "total": wb.total_engines,
+            "wired": wb.wired_count,
+            "advisory": wb.advisory_count,
+            "partial": wb.partial_count,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine count audit raised: %s", exc)
+        snapshot["engine_counts"] = {"error": str(exc)}
+
+    # ── Catalog ─────────────────────────────────────────────
+    try:
+        from core.approval.catalog import build_catalog
+        catalog = build_catalog()
+        snapshot["catalog"] = {
+            "total_dispatchers": len(catalog.entries),
+            "unknown_dispatchers": list(catalog.unknown_dispatchers),
+            "entries": [
+                {
+                    "action_type": e.action_type,
+                    "dispatcher": (
+                        f"{e.dispatcher_module}."
+                        f"{e.dispatcher_qualname}"
+                    ),
+                    "capabilities": list(e.capabilities),
+                    "adapters": [
+                        {
+                            "name": a.name,
+                            "required_scopes": list(a.required_scopes),
+                            "scope_independent": a.scope_independent,
+                        }
+                        for a in e.adapters
+                    ],
+                    "aggregate_scopes": list(e.aggregate_scopes),
+                    "emitting_engines": list(e.emitting_engines),
+                }
+                for e in catalog.entries
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("catalog raised: %s", exc)
+        snapshot["catalog"] = {"error": str(exc)}
+
+    # ── Audits summary ──────────────────────────────────────
+    audits: dict[str, Any] = {}
+    # Pattern K
+    try:
+        from core.approval.coverage_audit import audit_coverage
+        from pathlib import Path as _P
+        r = audit_coverage(_P("engines"))
+        audits["pattern_k"] = {
+            "ok": not r.has_gaps,
+            "enqueue_sites": len(r.enqueued),
+            "dispatchers_registered": len(r.registered),
+            "missing": sorted(r.missing),
+            "orphaned": sorted(r.orphaned),
+        }
+    except Exception as exc:  # noqa: BLE001
+        audits["pattern_k"] = {"error": str(exc)}
+    # OAuth scope coverage
+    try:
+        from core.adapters.shopify.scope_registry import collect_manifest
+        m = collect_manifest()
+        audits["oauth_scopes"] = {
+            "ok": not m.undeclared_adapters,
+            "total_adapters": m.total_adapters,
+            "undeclared_adapters": m.undeclared_adapters,
+            "scope_independent": list(
+                m.scope_independent_adapters,
+            ),
+            "unique_scopes": sorted(m.all_scopes),
+        }
+    except Exception as exc:  # noqa: BLE001
+        audits["oauth_scopes"] = {"error": str(exc)}
+    # Pattern Y
+    try:
+        from core.adapters.coverage_audit import (
+            audit_capability_coverage,
+        )
+        c = audit_capability_coverage()
+        audits["pattern_y"] = {
+            "ok": not c.has_gaps,
+            "total_capabilities": c.total_shopify_capabilities,
+            "claimed_count": c.claimed_count,
+            "unclaimed": c.unclaimed,
+            "orphan_claims": c.orphan_claims,
+        }
+    except Exception as exc:  # noqa: BLE001
+        audits["pattern_y"] = {"error": str(exc)}
+    # Pattern I
+    try:
+        from engines._engine_capability_audit import (
+            audit_engine_capabilities,
+        )
+        i = audit_engine_capabilities()
+        audits["pattern_i"] = {
+            "ok": not i.has_gaps,
+            "total_refs": i.total_refs,
+            "distinct_capabilities": i.distinct_capabilities,
+            "unknown_enum_member": [
+                f"{r.capability_name} ({r.file}:{r.lineno})"
+                for r in i.unknown_enum_member
+            ],
+            "unclaimed_by_adapter": [
+                f"{r.capability_name} ({r.file}:{r.lineno})"
+                for r in i.unclaimed_by_adapter
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001
+        audits["pattern_i"] = {"error": str(exc)}
+    # Pattern J
+    try:
+        from engines._pattern_j_audit import audit_pattern_j
+        j = audit_pattern_j()
+        audits["pattern_j"] = {
+            "ok": not j.has_violations,
+            "scanned_modules": j.scanned_modules,
+            "recorder_sites": len(j.recorder_sites),
+            "guarded_sites": len(j.guarded_sites),
+            "unguarded_sites": [
+                f"{s.file}:{s.lineno} {s.receiver_expr}.{s.method}()"
+                for s in j.unguarded_sites
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001
+        audits["pattern_j"] = {"error": str(exc)}
+    snapshot["audits"] = audits
+
+    # ── Doctor verdicts (re-use existing collectors) ───────
+    try:
+        shopify_ok, shopify_sections = _collect_doctor_sections(args)
+        snapshot["doctor_shopify"] = {
+            "ok": shopify_ok,
+            "sections": shopify_sections,
+        }
+    except Exception as exc:  # noqa: BLE001
+        snapshot["doctor_shopify"] = {"error": str(exc)}
+    try:
+        approvals_ok, approvals_sections = (
+            _collect_approvals_doctor_sections(args)
+        )
+        snapshot["doctor_approvals"] = {
+            "ok": approvals_ok,
+            "sections": approvals_sections,
+        }
+    except Exception as exc:  # noqa: BLE001
+        snapshot["doctor_approvals"] = {"error": str(exc)}
+
+    snapshot["overall_ok"] = bool(
+        snapshot.get("doctor_shopify", {}).get("ok", True)
+        and snapshot.get("doctor_approvals", {}).get("ok", True)
+    )
+
+    serialised = json.dumps(snapshot, indent=2, default=str) + "\n"
+
+    target = getattr(args, "output", None)
+    if not target:
+        sys.stdout.write(serialised)
+        return
+
+    from pathlib import Path as _P
+    target_path = _P(target)
+    if target_path.exists() and not getattr(args, "force", False):
+        print(
+            f"Refusing to overwrite {target_path} -- pass --force "
+            "to overwrite, or pick a different path."
+        )
+        sys.exit(1)
+    try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(serialised, encoding="utf-8")
+    except OSError as exc:
+        print(f"Failed to write {target_path}: {exc}")
+        sys.exit(1)
+    print(
+        f"Wrote {target_path} "
+        f"({len(serialised.splitlines())} lines)"
+    )
 
 
 def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
@@ -8231,6 +8477,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "catalog":
         _cmd_catalog(args)
+        return
+
+    if args.command == "snapshot":
+        _cmd_snapshot(args)
         return
 
     if args.command == "engine-info":
