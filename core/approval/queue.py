@@ -257,6 +257,29 @@ class ApprovalQueue:
             "narrative": narrative,
             "confidence": confidence,
         })
+
+        # Auto-approve evaluator (PR #161). Safe defaults — engines
+        # opt in per-namespace via the allowlist; pytest is gated
+        # so test seeds never trigger a live auto-transition.
+        # Refresh ``action`` from the DB after the maybe-approve so
+        # the returned object reflects the auto-decision (otherwise
+        # callers see status=PENDING for an already-APPROVED row).
+        try:
+            from core.approval.auto_approve import maybe_auto_approve
+            decision = maybe_auto_approve(
+                queue=self, action_id=action_id,
+                engine=engine, confidence=confidence,
+            )
+            if decision.should_auto:
+                refreshed = self.get(action_id)
+                if refreshed is not None:
+                    action = refreshed
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "auto-approve hook raised for %s: %s",
+                action_id, exc,
+            )
+
         return action
 
     def get(self, action_id: str) -> ApprovalAction | None:
