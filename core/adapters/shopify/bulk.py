@@ -120,6 +120,10 @@ class ShopifyBulkOperationsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_BULK_OPERATION,
         Capability.SHOPIFY_CANCEL_BULK_OPERATION,
     }
+    # Scope depends on the caller's query — the bulk operation
+    # surface itself adds no specific scope, but the embedded
+    # query inherits whatever read scope it queries against.
+    scope_independent = True
 
     def _execute(
         self,

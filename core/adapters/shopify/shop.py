@@ -135,6 +135,10 @@ class ShopifyShopAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_SHOP_POLICIES,
         Capability.SHOPIFY_LIST_CURRENCIES,
     }
+    # Shop is the root object — basic shop info, policies, and
+    # currency lists are available to any installed app without
+    # an additional OAuth scope.
+    scope_independent = True
 
     def _execute(
         self,

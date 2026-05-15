@@ -179,6 +179,8 @@ class ShopifyMobilePlatformAppAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_MOBILE_PLATFORM_APPLICATION,
         Capability.SHOPIFY_DELETE_MOBILE_PLATFORM_APPLICATION,
     }
+    # App-level mobile platform configuration — no extra scope.
+    scope_independent = True
 
     def _execute(
         self,

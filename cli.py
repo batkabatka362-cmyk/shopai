@@ -2139,6 +2139,9 @@ def _cmd_shopify_scopes(args) -> None:
                 manifest.undeclared_adapters
                 if getattr(args, "show_gaps", False) else None
             ),
+            "scope_independent_adapters": (
+                manifest.scope_independent_adapters
+            ),
             "total_adapters": manifest.total_adapters,
             "declared_adapter_count": (
                 manifest.total_adapters
@@ -2152,10 +2155,11 @@ def _cmd_shopify_scopes(args) -> None:
         manifest.total_adapters
         - len(manifest.undeclared_adapters)
     )
+    independent_count = len(manifest.scope_independent_adapters)
     print(
         f"Shopify OAuth scope manifest "
         f"({declared_count}/{manifest.total_adapters} adapters "
-        f"declared):"
+        f"declared; {independent_count} scope-independent):"
     )
     print()
 

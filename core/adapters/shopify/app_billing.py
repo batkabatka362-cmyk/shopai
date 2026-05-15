@@ -180,6 +180,9 @@ class ShopifyAppBillingAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_EXTEND_APP_SUBSCRIPTION_TRIAL,
         Capability.SHOPIFY_CREATE_APP_USAGE_RECORD,
     }
+    # App-level billing — available to any installed app, no
+    # extra OAuth scope needed.
+    scope_independent = True
 
     def _execute(
         self,
