@@ -502,3 +502,137 @@ def _apply_landing_page_dispatch(
     if not isinstance(adapter_params, dict) or not adapter_params:
         return False, {"error": "missing_adapter_params"}
     return _router_call("SHOPIFY_CREATE_PAGE", adapter_params)
+
+
+# ── inventory → SHOPIFY_UPDATE_PRODUCT.tags (merged) ────────────
+
+
+@register_dispatcher("apply_inventory_tags")
+def _apply_inventory_tags_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay inventory's state-tag write.
+
+    Enqueue carries ``{product_id, merged_tags, state_tags,
+    tags_added}``; only ``id`` + ``tags`` reach Shopify. The
+    ``merged_tags`` list is already deduped on the engine side
+    (existing + new state tags) so it's the verbatim payload —
+    no re-merge at dispatch time.
+    """
+    pid = str(params.get("product_id", "")).strip()
+    merged = params.get("merged_tags") or []
+    if not pid or not isinstance(merged, list) or not merged:
+        return False, {"error": "missing_product_id_or_tags"}
+    return _router_call(
+        "SHOPIFY_UPDATE_PRODUCT", {"id": pid, "tags": merged},
+    )
+
+
+# ── legal_document → SHOPIFY_CREATE_PAGE (pre-built params) ─────
+
+
+@register_dispatcher("apply_legal_document")
+def _apply_legal_document_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay legal_document's policy-page creation.
+
+    Same shape as ``apply_landing_page`` — the engine pre-builds
+    the full wire format under ``adapter_params`` (title/handle/
+    body_html with the policy text). Dispatcher forwards verbatim.
+    Operator-context fields (``type``, ``title``, ``handle``) are
+    duplicated outside ``adapter_params`` for the queue display
+    but are NOT re-sent in the mutation.
+    """
+    adapter_params = params.get("adapter_params")
+    if not isinstance(adapter_params, dict) or not adapter_params:
+        return False, {"error": "missing_adapter_params"}
+    return _router_call("SHOPIFY_CREATE_PAGE", adapter_params)
+
+
+# ── shipping_optimization → CREATE_AUTOMATIC_FREE_SHIPPING ──────
+
+
+@register_dispatcher("apply_shipping_strategy")
+def _apply_shipping_strategy_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay shipping_optimization's free-shipping discount.
+
+    The engine assembles a Shopify automatic-discount payload
+    (title + starts_at + ends_at + minimum_subtotal) under
+    ``adapter_params`` at proposal time. Dispatcher forwards
+    verbatim — date math + threshold derivation belong to the
+    engine, not replay.
+    """
+    adapter_params = params.get("adapter_params")
+    if not isinstance(adapter_params, dict) or not adapter_params:
+        return False, {"error": "missing_adapter_params"}
+    return _router_call(
+        "SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING", adapter_params,
+    )
+
+
+# ── pricing → SHOPIFY_UPDATE_VARIANTS (per-variant price) ───────
+
+
+@register_dispatcher("apply_strategic_price")
+def _apply_strategic_price_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay pricing's per-product variant-price update.
+
+    Enqueue carries ``{product_id, new_price, variant_ids, ...}``;
+    Shopify's bulk variant mutation wants
+    ``{product_id, variants: [{id, price}, ...]}``. Dispatcher
+    re-assembles that payload from the listed variant ids + the
+    new price (formatted to 2 decimal places, matching the live
+    applier's format).
+    """
+    pid = str(params.get("product_id", "")).strip()
+    new_price_raw = params.get("new_price")
+    variant_ids = params.get("variant_ids") or []
+    if not pid or not isinstance(variant_ids, list) or not variant_ids:
+        return False, {"error": "missing_product_id_or_variants"}
+    try:
+        new_price = float(new_price_raw)
+    except (TypeError, ValueError):
+        return False, {"error": "invalid_new_price"}
+    if new_price <= 0:
+        return False, {"error": "non_positive_price"}
+
+    price_str = f"{new_price:.2f}"
+    variants_payload = [
+        {"id": str(vid), "price": price_str}
+        for vid in variant_ids if vid
+    ]
+    if not variants_payload:
+        return False, {"error": "no_valid_variant_ids"}
+
+    return _router_call(
+        "SHOPIFY_UPDATE_VARIANTS",
+        {"product_id": pid, "variants": variants_payload},
+    )
+
+
+# ── returns_management → SHOPIFY_TAG_ORDER ──────────────────────
+
+
+@register_dispatcher("tag_return_decision")
+def _tag_return_decision_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay returns_management's order-tagging decision write.
+
+    Enqueue carries ``{return_id, order_id, tags, refund_amount,
+    decision_status, rejection_reason}``; only the order id +
+    tags reach Shopify. The other fields are decision-context
+    that operators inspect on the approval queue.
+    """
+    order_id = str(params.get("order_id", "")).strip()
+    tags = params.get("tags") or []
+    if not order_id or not isinstance(tags, list) or not tags:
+        return False, {"error": "missing_order_id_or_tags"}
+    return _router_call(
+        "SHOPIFY_TAG_ORDER", {"id": order_id, "tags": tags},
+    )
