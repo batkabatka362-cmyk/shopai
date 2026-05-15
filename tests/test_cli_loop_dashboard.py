@@ -189,3 +189,83 @@ class TestResilience:
             )
         # Header still present
         assert "ShopAI Autonomous Loop" in out
+
+
+# ─── --watch refresh loop ────────────────────────────────────────
+
+
+class TestWatchMode:
+
+    def test_watch_zero_renders_once(self, cli):
+        """watch=0 (default) is a one-shot render, not a loop."""
+        out = _capture(
+            cli._cmd_loop,
+            argparse.Namespace(json=False, top=5, watch=0),
+        )
+        # Header appears exactly once
+        assert out.count("ShopAI Autonomous Loop") == 1
+
+    def test_watch_exits_on_keyboard_interrupt(self, cli):
+        """The watch loop catches Ctrl+C and returns cleanly
+        rather than propagating the KeyboardInterrupt."""
+        # Patch sleep to raise immediately — simulates Ctrl+C on
+        # the first iteration.
+        with patch(
+            "time.sleep", side_effect=KeyboardInterrupt,
+        ):
+            out = _capture(
+                cli._cmd_loop,
+                argparse.Namespace(json=False, top=3, watch=2),
+            )
+        # Header rendered once (the loop drew once then the
+        # KeyboardInterrupt during sleep broke out)
+        assert "ShopAI Autonomous Loop" in out
+        assert "refreshing every 2s" in out
+
+    def test_watch_renders_repeatedly(self, cli):
+        """After 3 iterations (3rd sleep raises), the dashboard
+        has rendered 3 times."""
+        call_count = {"n": 0}
+
+        def _fake_sleep(_):
+            call_count["n"] += 1
+            if call_count["n"] >= 3:
+                raise KeyboardInterrupt
+
+        with patch("time.sleep", side_effect=_fake_sleep):
+            out = _capture(
+                cli._cmd_loop,
+                argparse.Namespace(json=False, top=2, watch=1),
+            )
+        assert out.count("ShopAI Autonomous Loop") == 3
+
+    def test_watch_json_falls_through_to_oneshot(self, cli):
+        """--watch + --json together: json takes priority (watching
+        a json stream isn't useful; callers scripting a live feed
+        write their own polling loop)."""
+        with patch("time.sleep", side_effect=AssertionError(
+            "sleep should not be called when json=True"
+        )):
+            out = _capture(
+                cli._cmd_loop,
+                argparse.Namespace(json=True, top=3, watch=5),
+            )
+        # Output is pure JSON, no watch-loop header text
+        data = json.loads(out)
+        assert "approval_queue" in data
+
+
+# ─── _render_loop_text extracted helper ──────────────────────────
+
+
+class TestRenderLoopText:
+
+    def test_render_helper_returns_full_dashboard(self, cli):
+        """``_render_loop_text(payload)`` works standalone for
+        callers that build the payload separately (the watch
+        loop, future test harnesses)."""
+        payload = cli._build_loop_dict(top_n=3)
+        out = _capture(cli._render_loop_text, payload)
+        assert "ShopAI Autonomous Loop" in out
+        assert "Approval Queue:" in out
+        assert "Active Goal:" in out

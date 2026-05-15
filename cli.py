@@ -531,6 +531,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--top", type=int, default=5,
         help="How many top-recommended engines to render (default 5)",
     )
+    loop_p.add_argument(
+        "--watch", type=int, default=0, metavar="SECONDS",
+        help=(
+            "Refresh the dashboard every N seconds (like top/htop). "
+            "Default 0 = one-shot. Ctrl+C exits the watch loop."
+        ),
+    )
     sub.add_parser("setup", help="Interactive setup wizard")
     sub.add_parser("start", help="Start the orchestrator")
     sub.add_parser("stop", help="Stop the orchestrator")
@@ -2626,13 +2633,59 @@ def _cmd_loop(args=None) -> None:
       3. Active Goal + per-goal EMA
       4. Top Picks (from recommender)
       5. Webhook Bridge + Engine Coverage
+
+    ``--watch N`` repeats the render every N seconds (like
+    ``top`` / ``htop``). Ctrl+C exits cleanly.
     """
     top_n = getattr(args, "top", 5) if args is not None else 5
+    watch_interval = (
+        getattr(args, "watch", 0) if args is not None else 0
+    )
+
+    # --watch loop: clear + redraw every N seconds. Json mode
+    # ignores --watch because watching a json stream isn't useful;
+    # callers wanting a live JSON feed should script their own
+    # polling loop.
+    if (
+        watch_interval > 0
+        and not (args is not None and getattr(args, "json", False))
+    ):
+        try:
+            while True:
+                _clear_screen()
+                _render_loop_text(_build_loop_dict(top_n=top_n))
+                print()
+                print(
+                    f"(refreshing every {watch_interval}s — "
+                    "press Ctrl+C to exit)"
+                )
+                time.sleep(watch_interval)
+        except KeyboardInterrupt:
+            print()  # flush a final newline so the prompt is clean
+            return
+
     payload = _build_loop_dict(top_n=top_n)
 
     if args is not None and getattr(args, "json", False):
         print(json.dumps(payload, indent=2, default=str))
         return
+
+    _render_loop_text(payload)
+
+
+def _clear_screen() -> None:
+    """Cross-platform clear. ANSI escape sequence works on
+    modern Windows terminals (Win10+ console-host upgrade), most
+    UNIX terminals, and falls through harmlessly on legacy
+    consoles (extra junk in the scrollback, no actual harm).
+    """
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+
+
+def _render_loop_text(payload: dict) -> None:
+    """Render the dashboard as text. Extracted so ``--watch``
+    can call it repeatedly without re-doing the build."""
 
     print("ShopAI Autonomous Loop\n")
 
