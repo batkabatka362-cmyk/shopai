@@ -113,6 +113,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/pending-actions/stats": self._pending_actions_stats,
             "/api/recommendations": self._list_recommendations,
             "/api/goal": self._get_goal,
+            "/api/feedback/stats": self._feedback_stats,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -293,6 +294,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             logger.warning("engine info failed: %s", exc)
             self._json_response(500, {"error": str(exc)})
 
+<<<<<<< HEAD
     def _get_goal(self) -> None:
         """GET /api/goal — brain-stack goal state.
 
@@ -338,6 +340,41 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "current": current,
             "stats": stats,
         })
+
+    def _feedback_stats(self) -> None:
+        """GET /api/feedback/stats — webhook feedback bridge counters.
+
+        Surfaces operator-relevant debug info: how many webhook
+        events have hit the bridge, how many were tagged back to
+        an engine action (matched_actions), how many were
+        orphan (orders without engine-minted attribution),
+        recorded feedback events, and total errors.
+
+        Useful for "did Shopify ever send us a webhook?" debugging
+        when an operator's autonomous loop appears dormant.
+        """
+        try:
+            from core.feedback import get_webhook_feedback_bridge
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "webhook bridge module unavailable: %s", exc,
+            )
+            self._json_response(200, {
+                "stats": {},
+                "error": "webhook bridge module unavailable",
+            })
+            return
+        try:
+            bridge = get_webhook_feedback_bridge()
+            stats = bridge.get_stats()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("bridge stats lookup raised: %s", exc)
+            self._json_response(200, {
+                "stats": {},
+                "error": str(exc),
+            })
+            return
+        self._json_response(200, {"stats": stats})
 
     def _get_experience(self) -> None:
         try:
