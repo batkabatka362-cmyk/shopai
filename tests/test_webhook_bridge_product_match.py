@@ -15,7 +15,7 @@ signal.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -33,11 +33,27 @@ def isolated_queue(tmp_path: Path, monkeypatch):
 
 @pytest.fixture
 def fresh_bridge(isolated_queue):
+    """Build a clean WebhookFeedbackBridge with a stubbed
+    LearningLoop, AND temporarily disable the test-env guard so
+    the bridge's ``_learn`` path actually invokes the mock.
+
+    Without the guard disable, ``_learn`` short-circuits under
+    PYTEST_CURRENT_TEST (Pattern J) and the mock never sees the
+    call -- causing assert_called_once() to fail.
+    """
     from core.feedback import webhook_bridge as wb
     wb._INSTANCE = None
     bridge = wb.WebhookFeedbackBridge()
     bridge._learning_loop = MagicMock()
-    yield bridge
+    # Pattern J test-env guard is enabled by default; disable it
+    # here so the learn path completes + the mock receives the
+    # call. Tests that explicitly want the guard ON should not
+    # use this fixture.
+    with patch(
+        "core.feedback.webhook_bridge._is_test_environment",
+        return_value=False,
+    ):
+        yield bridge
 
 
 def _seed_product_action(

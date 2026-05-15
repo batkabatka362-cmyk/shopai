@@ -65,10 +65,21 @@ class TestBrainStackField:
         assert body["brain_stack"]["goal"] == "grow_customers"
 
     def test_unmapped_engine_has_null_goal(self):
-        """cohort_analysis is not in ENGINE_GOAL_MAP (per
-        ``shopai engines --unmapped`` output)."""
+        """Pick an unmapped engine dynamically -- the
+        engine-goal map evolves, and hardcoding a specific
+        engine name caused drift (cohort_analysis was unmapped
+        when this test was written but later mapped to
+        grow_customers).
+        """
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+        from engines.registry import list_engines
+        unmapped = sorted(
+            e for e in list_engines() if e not in ENGINE_GOAL_MAP
+        )
+        assert unmapped, "expected at least one unmapped engine"
+        target = unmapped[0]
         handler, responses = _make_handler()
-        handler._engine_info("cohort_analysis")
+        handler._engine_info(target)
         status, body = responses[0]
         assert status == 200
         assert body["brain_stack"]["goal"] is None
