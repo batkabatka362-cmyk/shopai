@@ -25,6 +25,7 @@ already happened; recording must not propagate failures.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any
@@ -35,6 +36,19 @@ logger = get_logger("feedback.webhook_bridge")
 
 _LOCK = threading.RLock()
 _INSTANCE: "WebhookFeedbackBridge | None" = None
+
+
+def _is_test_environment() -> bool:
+    """Pattern J — LearningLoop.learn writes to brain memory +
+    memory_intelligence + data_architecture, all of which back to
+    on-disk SQLite. Tests that exercise this bridge without mocking
+    the LearningLoop will pollute those stores. Defense-in-depth
+    gate: short-circuit the learning fan-out under pytest. Tests
+    that need to verify learning behaviour patch this to return
+    False (same pattern as the writeback recorder and hooks
+    dispatcher).
+    """
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
 # Topic → outcome polarity. Anything not listed is treated as a
@@ -300,7 +314,19 @@ class WebhookFeedbackBridge:
         result: dict[str, Any],
         metrics: dict[str, Any],
     ) -> bool:
-        """Best-effort ``LearningLoop.learn`` call."""
+        """Best-effort ``LearningLoop.learn`` call.
+
+        Short-circuits under pytest (Pattern J) — LearningLoop.learn
+        writes to multiple persistent SQLite stores, and a test
+        firing this without mocking the loop would leave residue
+        in the dev DBs. The bridge's tests (test_webhook_feedback_bridge)
+        explicitly inject a MagicMock loop AND disable this gate so
+        they can verify the learning fan-out shape; production
+        callers (api/server.py webhook handler) run with the gate
+        off because PYTEST_CURRENT_TEST isn't set.
+        """
+        if _is_test_environment():
+            return False
         loop = self._get_learning_loop()
         if loop is None:
             return False

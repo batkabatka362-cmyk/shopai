@@ -28,6 +28,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _disable_test_env_guard():
+    """Disable Pattern J gate so the LearningLoop fan-out actually
+    fires — tests in this file inject a MagicMock loop and need to
+    see the call. Production callers always have the gate active
+    (PYTEST_CURRENT_TEST is unset)."""
+    with patch(
+        "core.feedback.webhook_bridge._is_test_environment",
+        return_value=False,
+    ):
+        yield
+
+
 @pytest.fixture
 def isolated_queue(tmp_path: Path, monkeypatch):
     from core.approval import queue as q
