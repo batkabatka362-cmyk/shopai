@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import time
+from typing import Any
 
 from utils.logger import get_logger
 
@@ -516,6 +517,19 @@ def build_parser() -> argparse.ArgumentParser:
     status_p.add_argument(
         "--json", action="store_true",
         help="Emit raw status JSON instead of the table view",
+    )
+
+    loop_p = sub.add_parser(
+        "loop",
+        help="Single-screen autonomous-loop dashboard (queue + EMA + recommender + outcomes)",
+    )
+    loop_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+    loop_p.add_argument(
+        "--top", type=int, default=5,
+        help="How many top-recommended engines to render (default 5)",
     )
     sub.add_parser("setup", help="Interactive setup wizard")
     sub.add_parser("start", help="Start the orchestrator")
@@ -2495,6 +2509,225 @@ def _cmd_status(args=None) -> None:
     _print_goal_status()
 
 
+def _build_loop_dict(top_n: int = 5) -> dict:
+    """Aggregate the autonomous loop's live state in one pass.
+
+    Pulls from five subsystems, each best-effort (a missing
+    module leaves its slice empty rather than blowing up the
+    whole render):
+
+      * Approval queue stats by status (PR #110)
+      * Recent EXECUTED actions (PR #111)
+      * Active brain-stack goal + per-goal EMA (PR #119)
+      * Top-N recommended engines (PR #91)
+      * Webhook bridge counters (PR #128)
+      * Engine→goal mapping coverage (PR #116)
+    """
+    import time as _time
+
+    payload: dict[str, Any] = {
+        "approval_queue": {},
+        "recent_executed": [],
+        "goal": {"current": None, "stats": {}},
+        "recommendations": [],
+        "webhook_stats": {},
+        "engine_coverage": {},
+    }
+
+    # Approval queue: per-status counts + recent EXECUTED
+    try:
+        from core.approval import get_approval_queue
+        q = get_approval_queue()
+        payload["approval_queue"] = q.stats()
+        now = _time.time()
+        for a in q.list_executed(limit=top_n):
+            decided = a.decided_at or a.proposed_at
+            payload["recent_executed"].append({
+                "id": a.id,
+                "engine": a.engine,
+                "action_type": a.action_type,
+                "status": a.status.value,
+                "age_seconds": (
+                    int(now - decided) if decided else None
+                ),
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue probe failed: %s", exc)
+
+    # Brain stack: current goal + per-goal EMA
+    try:
+        from core.goals.goal_feedback import _default_manager
+        mgr = _default_manager()
+        if mgr is not None:
+            payload["goal"]["current"] = mgr.get_current_goal()
+            payload["goal"]["stats"] = mgr.get_effectiveness_stats()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("goal manager probe failed: %s", exc)
+
+    # Recommender: top-N engines (best-effort, doesn't 500 if
+    # the brain stack is mid-init)
+    try:
+        from core.brain.engine_recommender import recommend_engines
+        result = recommend_engines(
+            limit=max(1, int(top_n)),
+            include_alternatives=False,
+        )
+        for r in result.primary:
+            payload["recommendations"].append({
+                "engine": r.engine,
+                "goal": r.goal,
+                "priority": round(r.priority, 4),
+                "effectiveness": round(r.effectiveness, 4),
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("recommender probe failed: %s", exc)
+
+    # Webhook bridge: counters
+    try:
+        from core.feedback import get_webhook_feedback_bridge
+        payload["webhook_stats"] = (
+            get_webhook_feedback_bridge().get_stats()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("webhook bridge probe failed: %s", exc)
+
+    # Engine→goal mapping coverage
+    try:
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+        from engines.registry import list_engines
+        engines = list_engines()
+        mapped = sum(1 for e in engines if e in ENGINE_GOAL_MAP)
+        payload["engine_coverage"] = {
+            "total": len(engines),
+            "mapped": mapped,
+            "unmapped": len(engines) - mapped,
+            "ratio": (
+                round(mapped / len(engines), 3) if engines else 0.0
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine coverage probe failed: %s", exc)
+
+    return payload
+
+
+def _cmd_loop(args=None) -> None:
+    """Single-screen autonomous-loop dashboard.
+
+    Pulls the live state of every moving part — queue depth,
+    recent decisions, goal EMA, recommender picks, webhook
+    counters, mapping coverage — into one operator-friendly
+    view. The text mode is for humans; ``--json`` is for
+    monitoring tools.
+
+    Five panels stacked top-to-bottom in text mode:
+      1. Approval Queue (per-status counts)
+      2. Recent Decisions (last N EXECUTED)
+      3. Active Goal + per-goal EMA
+      4. Top Picks (from recommender)
+      5. Webhook Bridge + Engine Coverage
+    """
+    top_n = getattr(args, "top", 5) if args is not None else 5
+    payload = _build_loop_dict(top_n=top_n)
+
+    if args is not None and getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    print("ShopAI Autonomous Loop\n")
+
+    # ── 1. Approval Queue ─────────────────────────────────
+    q = payload["approval_queue"]
+    if q:
+        print("Approval Queue:")
+        print(
+            f"  pending: {q.get('pending', 0):<3}  "
+            f"approved: {q.get('approved', 0):<3}  "
+            f"executed: {q.get('executed', 0):<3}"
+        )
+        print(
+            f"  rejected: {q.get('rejected', 0):<2}  "
+            f"failed:   {q.get('failed', 0):<3}  "
+            f"expired:  {q.get('expired', 0):<3}"
+        )
+    else:
+        print("Approval Queue: (unavailable)")
+    print()
+
+    # ── 2. Recent Decisions ───────────────────────────────
+    recent = payload["recent_executed"]
+    if recent:
+        print(f"Recent Decisions (last {len(recent)}):")
+        for a in recent:
+            age_str = (
+                _format_age(a["age_seconds"])
+                if a["age_seconds"] is not None else "?"
+            )
+            label = f"{a['engine']}/{a['action_type']}"
+            if len(label) > 36:
+                label = label[:33] + "..."
+            print(
+                f"  {a['id'][:18]:<18} {label:<36} "
+                f"{a['status'].upper():<9} {age_str}"
+            )
+    else:
+        print("Recent Decisions: (none yet)")
+    print()
+
+    # ── 3. Active Goal + EMA ──────────────────────────────
+    goal = payload["goal"]
+    print(f"Active Goal: {goal['current'] or '(unknown)'}")
+    stats = goal["stats"]
+    if stats:
+        print("  Per-goal EMA:")
+        sorted_goals = sorted(
+            stats.items(),
+            key=lambda kv: kv[1].get("effectiveness", 0.5),
+            reverse=True,
+        )
+        for g, s in sorted_goals:
+            ema = s.get("effectiveness", 0.5)
+            n = s.get("n", 0)
+            print(f"    {g:<22} {ema:.2f}  (over {n} outcomes)")
+    else:
+        print("  Per-goal EMA: (no recorded outcomes yet)")
+    print()
+
+    # ── 4. Top Picks ──────────────────────────────────────
+    recs = payload["recommendations"]
+    if recs:
+        print(f"Top Picks (recommender, n={len(recs)}):")
+        for i, r in enumerate(recs, 1):
+            print(
+                f"  {i}. {r['engine']:<24} "
+                f"priority {r['priority']:.2f}  "
+                f"(goal={r['goal']}, eff={r['effectiveness']:.2f})"
+            )
+    else:
+        print("Top Picks: (recommender unavailable)")
+    print()
+
+    # ── 5. Webhook Bridge + Coverage ──────────────────────
+    wh = payload["webhook_stats"]
+    cov = payload["engine_coverage"]
+    print("Webhook bridge:")
+    if wh:
+        print(
+            f"  events_seen={wh.get('events_seen', 0)}  "
+            f"matched={wh.get('matched_actions', 0)}  "
+            f"orphan={wh.get('orphan_events', 0)}  "
+            f"errors={wh.get('errors', 0)}"
+        )
+    else:
+        print("  (bridge unavailable)")
+    if cov:
+        print(
+            f"Engine coverage: {cov.get('mapped', 0)}/"
+            f"{cov.get('total', 0)} mapped "
+            f"({cov.get('ratio', 0.0):.0%})"
+        )
+
+
 def _format_age(seconds: float) -> str:
     if seconds < 60:
         return f"{int(seconds)}s ago"
@@ -3274,6 +3507,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "status":
         _cmd_status(args)
+        return
+
+    if args.command == "loop":
+        _cmd_loop(args)
         return
 
     if args.command == "setup":
