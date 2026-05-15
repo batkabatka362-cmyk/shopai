@@ -54,8 +54,17 @@ def _is_test_environment() -> bool:
 # Topic → outcome polarity. Anything not listed is treated as a
 # raw market signal (no positive/negative tilt; just feeds the
 # loop with revenue / churn observation context).
-_POSITIVE_TOPICS = {"orders/create", "orders/paid"}
-_NEGATIVE_TOPICS = {"orders/cancelled", "refunds/create"}
+#
+# Derived from the webhook subscription registry (PR #182) —
+# single source of truth across the codebase. Changing a topic's
+# polarity is now a one-line edit in webhook_registry.py.
+from core.feedback.webhook_registry import (  # noqa: E402
+    negative_topics as _negative_topics,
+    positive_topics as _positive_topics,
+)
+
+_POSITIVE_TOPICS: frozenset[str] = _positive_topics()
+_NEGATIVE_TOPICS: frozenset[str] = _negative_topics()
 
 
 class WebhookFeedbackBridge:
