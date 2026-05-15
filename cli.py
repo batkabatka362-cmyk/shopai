@@ -273,6 +273,19 @@ def build_parser() -> argparse.ArgumentParser:
     learn_p = sub.add_parser("learn", help="Show learning status")
     learn_p.add_argument("--details", action="store_true", help="Show detailed learning data")
 
+    feedback_p = sub.add_parser(
+        "feedback",
+        help="Inspect webhook feedback bridge (events → engine attribution)",
+    )
+    feedback_sub = feedback_p.add_subparsers(dest="feedback_action")
+    feedback_stats = feedback_sub.add_parser(
+        "stats", help="Show webhook bridge counters",
+    )
+    feedback_stats.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     # ── System commands ──────────────────────────────────────
     sub.add_parser("health", help="System health check")
     status_p = sub.add_parser("status", help="Full system status")
@@ -1511,6 +1524,66 @@ def _cmd_auto(args) -> None:
     print(f"  Learning: {learning.get('patterns_found', 0)} patterns, {learning.get('weight_updates', 0)} weight updates")
 
 
+def _cmd_feedback(args) -> None:
+    """Dispatcher for ``shopai feedback {stats}``."""
+    action = getattr(args, "feedback_action", None)
+    if action == "stats":
+        _cmd_feedback_stats(args)
+        return
+    print(
+        "Usage:\n"
+        "  shopai feedback stats [--json]"
+    )
+    sys.exit(1)
+
+
+def _cmd_feedback_stats(args) -> None:
+    """Webhook bridge counters — diagnoses whether webhook events
+    are reaching the bridge and getting attributed to engines.
+    """
+    try:
+        from core.feedback import get_webhook_feedback_bridge
+    except Exception as exc:
+        print(f"Error: webhook bridge unavailable: {exc}")
+        sys.exit(1)
+
+    try:
+        bridge = get_webhook_feedback_bridge()
+        stats = bridge.get_stats()
+    except Exception as exc:
+        print(f"Error: bridge stats lookup failed: {exc}")
+        sys.exit(1)
+
+    if getattr(args, "json", False):
+        print(json.dumps(stats, indent=2, default=str))
+        return
+
+    print("Webhook bridge stats:")
+    rows = [
+        ("Events seen",       stats.get("events_seen", 0)),
+        ("Matched actions",   stats.get("matched_actions", 0)),
+        ("Orphan events",     stats.get("orphan_events", 0)),
+        ("Feedback recorded", stats.get("feedback_recorded", 0)),
+        ("Errors",            stats.get("errors", 0)),
+    ]
+    for label, value in rows:
+        print(f"  {label:<20} {value}")
+
+    # Quick diagnostic hints
+    events = stats.get("events_seen", 0)
+    matched = stats.get("matched_actions", 0)
+    if events == 0:
+        print(
+            "\n  Hint: 0 events seen — is the Shopify webhook "
+            "subscription pointing at this server?"
+        )
+    elif matched == 0:
+        print(
+            "\n  Hint: events arriving but no engine attribution. "
+            "Engines may not be minting matchable codes/product_ids."
+        )
+
+
 def _cmd_learn(args) -> None:
     from core.autonomous.controller import LearningPipeline
     sm = _get_store_manager()
@@ -1900,6 +1973,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "learn":
         _cmd_learn(args)
+        return
+
+    if args.command == "feedback":
+        _cmd_feedback(args)
         return
 
     if args.command == "pipeline":
