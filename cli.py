@@ -223,6 +223,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    catalog_p = sub.add_parser(
+        "catalog",
+        help=(
+            "Complete action surface: every registered dispatcher "
+            "with its action_type, capability, claiming adapter, "
+            "required scopes, and emitting engine -- in one shot"
+        ),
+    )
+    catalog_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+    catalog_p.add_argument(
+        "--engine", default=None, metavar="NAME",
+        help="Filter to entries emitted by a specific engine",
+    )
+    catalog_p.add_argument(
+        "--action-type", default=None, metavar="TYPE",
+        help="Filter to a specific action_type (exact match)",
+    )
+
     eng_info = sub.add_parser("engine-info", help="Show engine details")
     eng_info.add_argument("engine_name", help="Engine name")
     eng_info.add_argument(
@@ -2487,9 +2508,138 @@ def _cmd_engines_writebacks(args) -> None:
         print()
         print(
             f"NOTE: {report.partial_count} engine(s) are "
-            "partially wired — pass --filter partial to "
+            "partially wired -- pass --filter partial to "
             "investigate."
         )
+
+
+def _cmd_catalog(args) -> None:
+    """Complete action surface in one operator readout.
+
+    For every registered dispatcher, surfaces:
+      - action_type + dispatcher fully-qualified name
+      - the Capability enum value it routes through
+      - claiming adapter(s) + their declared required_scopes
+      - emitting engine(s) (which engines enqueue this action_type)
+
+    Master-level visibility — the answer to 'what can ShopAI do?'
+    Pure read-only; builds on top of every registry the doctor
+    surfaces use (dispatcher registry, Capability enum, adapter
+    classes, engines/ AST scan).
+
+    Filters: --engine NAME (engines emitting), --action-type T
+    (exact match).
+    """
+    try:
+        from core.approval.catalog import build_catalog
+        report = build_catalog()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("catalog build raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Catalog unavailable: {exc}")
+        return
+
+    engine_filter = getattr(args, "engine", None)
+    action_type_filter = getattr(args, "action_type", None)
+    entries = report.entries
+    if engine_filter:
+        entries = tuple(
+            e for e in entries if engine_filter in e.emitting_engines
+        )
+    if action_type_filter:
+        entries = tuple(
+            e for e in entries if e.action_type == action_type_filter
+        )
+
+    if getattr(args, "json", False):
+        payload = {
+            "summary": {
+                "total_dispatchers": len(report.entries),
+                "unknown_dispatchers": list(
+                    report.unknown_dispatchers,
+                ),
+                "filtered_count": len(entries),
+            },
+            "entries": [
+                {
+                    "action_type": e.action_type,
+                    "dispatcher": (
+                        f"{e.dispatcher_module}."
+                        f"{e.dispatcher_qualname}"
+                    ),
+                    "capabilities": list(e.capabilities),
+                    "adapters": [
+                        {
+                            "name": a.name,
+                            "module": a.module,
+                            "required_scopes": list(a.required_scopes),
+                            "scope_independent": a.scope_independent,
+                        }
+                        for a in e.adapters
+                    ],
+                    "aggregate_scopes": list(e.aggregate_scopes),
+                    "emitting_engines": list(e.emitting_engines),
+                }
+                for e in entries
+            ],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    print(
+        f"ShopAI action catalog -- "
+        f"{len(report.entries)} dispatcher(s) registered"
+    )
+    if report.unknown_dispatchers:
+        print(
+            f"  ({len(report.unknown_dispatchers)} could not be "
+            "AST-resolved; dispatcher source uses an unrecognised "
+            "router-call pattern)"
+        )
+    if engine_filter or action_type_filter:
+        filter_parts = []
+        if engine_filter:
+            filter_parts.append(f"engine={engine_filter}")
+        if action_type_filter:
+            filter_parts.append(f"action_type={action_type_filter}")
+        print(
+            f"  filtered to {' + '.join(filter_parts)}: "
+            f"{len(entries)} entry(ies)"
+        )
+    print()
+
+    if not entries:
+        print("No catalog entries match the filter.")
+        return
+
+    for e in entries:
+        cap_str = ", ".join(e.capabilities) or "(unresolved)"
+        engines_str = (
+            ", ".join(e.emitting_engines) or "(no engine emits)"
+        )
+        print(f"  {e.action_type}")
+        print(f"    dispatcher:  {e.dispatcher_qualname}")
+        print(f"    capability:  {cap_str}")
+        if e.adapters:
+            for a in e.adapters:
+                scope_str = (
+                    ", ".join(a.required_scopes)
+                    if a.required_scopes
+                    else (
+                        "(scope-independent)"
+                        if a.scope_independent
+                        else "(no scopes declared)"
+                    )
+                )
+                print(
+                    f"    adapter:     {a.name}  ({scope_str})"
+                )
+        else:
+            print("    adapter:     (no adapter claims this capability)")
+        print(f"    engines:     {engines_str}")
+        print()
 
 
 def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
@@ -7763,6 +7913,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "engines-writebacks":
         _cmd_engines_writebacks(args)
+        return
+
+    if args.command == "catalog":
+        _cmd_catalog(args)
         return
 
     if args.command == "engine-info":
