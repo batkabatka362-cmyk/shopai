@@ -143,6 +143,21 @@ jobs:
         run: |
           python cli.py capabilities-audit
 
+      - name: Pattern J test-pollution audit
+        # Every write to MemoryIntelligence / DataArchitecture /
+        # LearningLoop must come from the canonical Phase 8
+        # recorder (which gates on PYTEST_CURRENT_TEST) or be in
+        # a module that defines its own _is_test_environment
+        # guard. Catches the bug class documented in CLAUDE.md
+        # Pattern J: test code that hits an unguarded path
+        # pollutes on-disk SQLite, then the failure-intelligence
+        # pipeline auto-generates avoidance rules from test
+        # fixtures.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py pattern-j-audit
+
       - name: Engine capability parity audit (Pattern I)
         # Cross-references every `capability_name=` string literal
         # in engines/**/*.py against the Capability enum AND the
