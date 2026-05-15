@@ -2711,6 +2711,49 @@ def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
         "outputs": getattr(engine, "required_output_fields", []),
     }
 
+    # ── Writeback status (Phase 6/7 wiring) ──────────────────
+    try:
+        from engines._writeback_audit import audit_writeback_coverage
+        wb_report = audit_writeback_coverage("engines")
+        engine_wb = next(
+            (s for s in wb_report.engines if s.name == engine_name),
+            None,
+        )
+        if engine_wb is not None:
+            payload["writeback"] = {
+                "status": engine_wb.status,
+                "writer_files": engine_wb.writer_files,
+                "opt_in_flags": engine_wb.opt_in_flags,
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("writeback audit raised: %s", exc)
+
+    # ── Action chain (from catalog) ──────────────────────────
+    try:
+        from core.approval.catalog import build_catalog
+        catalog = build_catalog()
+        emitted = [
+            e for e in catalog.entries
+            if engine_name in e.emitting_engines
+        ]
+        if emitted:
+            payload["actions"] = [
+                {
+                    "action_type": e.action_type,
+                    "capability": (
+                        list(e.capabilities)[0]
+                        if e.capabilities else None
+                    ),
+                    "adapter": (
+                        e.adapters[0].name if e.adapters else None
+                    ),
+                    "scopes": list(e.aggregate_scopes),
+                }
+                for e in emitted
+            ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("catalog lookup raised: %s", exc)
+
     if as_json:
         print(json.dumps(payload, indent=2, default=str))
         return
@@ -2721,6 +2764,33 @@ def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
         print(f"Inputs: {payload['inputs']}")
     if payload["outputs"]:
         print(f"Outputs: {payload['outputs']}")
+
+    # Writeback wiring section
+    wb = payload.get("writeback")
+    if wb is not None:
+        print()
+        print(f"Writeback:  {wb['status']}")
+        if wb["writer_files"]:
+            print(f"  writers:  {', '.join(wb['writer_files'])}")
+        if wb["opt_in_flags"]:
+            print(f"  flags:    {', '.join(wb['opt_in_flags'])}")
+
+    # Action chain section
+    actions = payload.get("actions")
+    if actions:
+        print()
+        print(f"Actions emitted ({len(actions)}):")
+        for a in actions:
+            cap = a.get("capability") or "(unresolved)"
+            adapter = a.get("adapter") or "(no adapter)"
+            scopes = (
+                ", ".join(a["scopes"]) if a["scopes"]
+                else "(none)"
+            )
+            print(f"  {a['action_type']}")
+            print(f"    capability:  {cap}")
+            print(f"    adapter:     {adapter}")
+            print(f"    scopes:      {scopes}")
 
     _print_engine_brain_stack(engine_name)
 
