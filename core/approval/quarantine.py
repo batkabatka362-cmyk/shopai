@@ -347,3 +347,119 @@ def maybe_quarantine(
                 action_id, exc,
             )
     return decision
+
+
+# ── Release candidate finder ───────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ReleaseCandidate:
+    """One engine that's effectively quarantined (all-time
+    history triggers the guardrail) but whose RECENT window has
+    improved enough to pass it. The CLI surfaces this so
+    operators can release engines that have demonstrably recovered
+    rather than reading tea leaves from the raw outcome ticker."""
+
+    engine: str
+    all_time_negative_ratio: float
+    all_time_polarised: int
+    recent_negative_ratio: float
+    recent_polarised: int
+
+
+def find_release_candidates(
+    queue: "ApprovalQueue",
+    *,
+    recent_seconds: int = 7 * 86400,
+    state: QuarantineState | None = None,
+) -> list[ReleaseCandidate]:
+    """Scan engines that ARE effectively quarantined (all-time
+    negative_ratio ≥ MAX_NEGATIVE_RATIO, not exempt, not already
+    released) but whose recent window passes the healthy
+    threshold.
+
+    Default window: 7 days. Caller can shrink the window for
+    sensitivity (catch recoveries faster) or widen it for
+    stability (avoid false-positives on a lucky week).
+
+    Sorted highest-recent-history-first; ties break on lowest
+    recent_negative_ratio (cleanest recovery surfaces first).
+    """
+    s = state if state is not None else load_state()
+
+    try:
+        per_engine = queue.all_engine_outcome_stats()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "all_engine_outcome_stats raised: %s", exc,
+        )
+        return []
+
+    out: list[ReleaseCandidate] = []
+
+    for engine, stats in per_engine.items():
+        # Skip exempted + already-released — neither needs a
+        # release recommendation. Exempt engines never quarantine
+        # in the first place; released engines were already
+        # manually cleared.
+        if s.is_exempt(engine) or s.is_released(engine):
+            continue
+
+        positive = int(stats.get("positive_count", 0) or 0)
+        negative = int(stats.get("negative_count", 0) or 0)
+        polarised = positive + negative
+        if polarised < MIN_OUTCOMES_OBSERVED:
+            continue
+
+        all_time_neg_ratio = negative / polarised
+        if all_time_neg_ratio < MAX_NEGATIVE_RATIO:
+            # Engine isn't currently effectively quarantined —
+            # no release needed.
+            continue
+
+        # Engine IS effectively quarantined. Check the recent
+        # window for recovery.
+        try:
+            recent_rows = queue.list_recent_outcomes(
+                limit=10_000, engine=engine,
+                since_seconds=recent_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "list_recent_outcomes raised for %s: %s",
+                engine, exc,
+            )
+            continue
+
+        recent_pos = recent_neg = 0
+        for r in recent_rows:
+            polarity = r.get("polarity")
+            if polarity == "positive":
+                recent_pos += 1
+            elif polarity == "negative":
+                recent_neg += 1
+        recent_polarised = recent_pos + recent_neg
+
+        if recent_polarised < MIN_OUTCOMES_OBSERVED:
+            continue
+
+        recent_neg_ratio = recent_neg / recent_polarised
+        if recent_neg_ratio >= MAX_NEGATIVE_RATIO:
+            # Recent is still bad — no release recommendation.
+            continue
+
+        out.append(ReleaseCandidate(
+            engine=engine,
+            all_time_negative_ratio=round(all_time_neg_ratio, 4),
+            all_time_polarised=polarised,
+            recent_negative_ratio=round(recent_neg_ratio, 4),
+            recent_polarised=recent_polarised,
+        ))
+
+    out.sort(
+        key=lambda c: (
+            c.recent_polarised, -c.recent_negative_ratio,
+        ),
+        reverse=True,
+    )
+    return out

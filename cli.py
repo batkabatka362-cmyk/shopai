@@ -489,6 +489,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_release_candidates = approvals_sub.add_parser(
+        "quarantine-release-candidates",
+        help=(
+            "Recommend quarantined engines whose recent outcomes "
+            "have improved enough to safely release"
+        ),
+    )
+    approvals_release_candidates.add_argument(
+        "--since", default="7d", metavar="AGE",
+        help=(
+            "Recent-window size for recovery check "
+            "(e.g. 1d, 3d, 7d). Default 7d."
+        ),
+    )
+    approvals_release_candidates.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_auto_candidates = approvals_sub.add_parser(
         "auto-approve-candidates",
         help=(
@@ -3297,6 +3316,9 @@ def _cmd_approvals(args) -> None:
     if verb == "auto-approve-candidates":
         _cmd_approvals_auto_candidates(args)
         return
+    if verb == "quarantine-release-candidates":
+        _cmd_approvals_release_candidates(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3312,7 +3334,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals history     [<action_id>] [--by ACTOR] [--limit N] [--json]\n"
         "  shopai approvals auto-config [--enable ENGINE | --disable ENGINE | --list] [--json]\n"
         "  shopai approvals auto-approve-candidates [--json]\n"
-        "  shopai approvals quarantine  [--release | --clear-release | --exempt | --unexempt ENGINE | --list] [--json]"
+        "  shopai approvals quarantine  [--release | --clear-release | --exempt | --unexempt ENGINE | --list] [--json]\n"
+        "  shopai approvals quarantine-release-candidates [--since 7d] [--json]"
     )
     sys.exit(1)
 
@@ -3540,6 +3563,89 @@ def _cmd_approvals_auto_candidates(args) -> None:
     print()
     print(
         "Enable with: shopai approvals auto-config --enable <engine>"
+    )
+
+
+def _cmd_approvals_release_candidates(args) -> None:
+    """List quarantined engines whose recent window has recovered.
+
+    Symmetric to ``auto-approve-candidates`` (PR #164). Where
+    that one says "these engines could safely speed up", this
+    one says "these engines could safely come off the brake".
+
+    The recent window defaults to 7d but is operator-tunable via
+    ``--since`` — shrink it to catch recoveries faster, widen it
+    to avoid false-positives on a lucky week.
+    """
+    from core.approval import get_approval_queue
+    from core.approval.quarantine import find_release_candidates
+
+    raw_since = getattr(args, "since", "7d") or "7d"
+    recent_seconds = _parse_age_spec(raw_since)
+    if recent_seconds is None:
+        print(
+            f"Invalid --since value: {raw_since!r} "
+            "(expected e.g. 60s, 30m, 24h, 7d)"
+        )
+        sys.exit(1)
+
+    try:
+        queue = get_approval_queue()
+        candidates = find_release_candidates(
+            queue, recent_seconds=int(recent_seconds),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "quarantine release candidate scan failed: %s", exc,
+        )
+        candidates = []
+
+    if getattr(args, "json", False):
+        print(json.dumps(
+            [
+                {
+                    "engine": c.engine,
+                    "all_time_negative_ratio": (
+                        c.all_time_negative_ratio
+                    ),
+                    "all_time_polarised": c.all_time_polarised,
+                    "recent_negative_ratio": (
+                        c.recent_negative_ratio
+                    ),
+                    "recent_polarised": c.recent_polarised,
+                }
+                for c in candidates
+            ],
+            indent=2,
+        ))
+        return
+
+    if not candidates:
+        print(
+            f"No quarantine-release candidates in the last "
+            f"{raw_since} window."
+        )
+        return
+
+    print(
+        f"Quarantine-release candidates ({len(candidates)}) — "
+        f"recovered in last {raw_since}:"
+    )
+    print(
+        "  engine                          alltime  recent  "
+        "recent_total"
+    )
+    for c in candidates:
+        engine_label = c.engine[:30]
+        print(
+            f"  {engine_label:<30}  "
+            f"{c.all_time_negative_ratio:>5.2f}    "
+            f"{c.recent_negative_ratio:>5.2f}  "
+            f"{c.recent_polarised:>11}"
+        )
+    print()
+    print(
+        "Release with: shopai approvals quarantine --release <engine>"
     )
 
 
