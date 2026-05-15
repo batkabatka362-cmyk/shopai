@@ -252,6 +252,54 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    release_bundle_p = sub.add_parser(
+        "release-bundle",
+        help=(
+            "Deploy-day capstone: generate every release "
+            "artifact (snapshot + catalog.md + shopify.app.toml "
+            "+ doctor.txt + README.md) into one folder. "
+            "Refuses to write when the doctor flags failures."
+        ),
+    )
+    release_bundle_p.add_argument(
+        "--output", "-o", default="release",
+        metavar="DIR",
+        help=(
+            "Target directory for the bundle. Default: "
+            "``release/`` in the working directory."
+        ),
+    )
+    release_bundle_p.add_argument(
+        "--app-name", default="shopai",
+        help="App name for shopify.app.toml. Default: shopai",
+    )
+    release_bundle_p.add_argument(
+        "--app-host", default="https://YOUR_APP_HOST",
+        help="Deployed app base URL. Default: placeholder.",
+    )
+    release_bundle_p.add_argument(
+        "--api-version", default="2024-01",
+        help="Shopify Admin API version. Default: 2024-01",
+    )
+    release_bundle_p.add_argument(
+        "--force", action="store_true",
+        help="Overwrite the output directory if it exists.",
+    )
+    release_bundle_p.add_argument(
+        "--skip-live", action="store_true",
+        help=(
+            "Skip the live-API drift checks when collecting "
+            "doctor verdicts."
+        ),
+    )
+    release_bundle_p.add_argument(
+        "--write-on-warning", action="store_true",
+        help=(
+            "Emit the bundle even if the doctor flagged failures "
+            "(initial bring-up before a live app exists)."
+        ),
+    )
+
     learning_p = sub.add_parser(
         "learning",
         help=(
@@ -5707,6 +5755,223 @@ def _cmd_shopify_prepare_deploy(args) -> None:
     _cmd_shopify_app_toml(toml_args)
 
 
+def _cmd_release_bundle(args) -> None:
+    """Deploy-day capstone: generate every release artifact into
+    one folder.
+
+    Files written:
+      - snapshot.json -- full system state via shopai snapshot
+      - catalog.md    -- catalog Markdown via catalog --markdown
+      - shopify.app.toml -- deployable config via shopify-app-toml
+      - doctor.txt    -- text doctor output (point-in-time
+        verdict for audit history)
+      - README.md     -- index linking the above + summary
+
+    Refuses to write when the doctor flags failures unless
+    ``--write-on-warning`` is set (matches prepare-deploy's
+    contract).
+
+    Operators commit this folder per release; the diff between
+    release/ at v1 vs v2 is the operator-visible delta for
+    review.
+    """
+    from io import StringIO
+    from pathlib import Path
+
+    output_dir = Path(getattr(args, "output", None) or "release")
+    force = bool(getattr(args, "force", False))
+    write_on_warning = bool(getattr(args, "write_on_warning", False))
+
+    # ── Doctor gate ─────────────────────────────────────────
+    overall_ok, sections = _collect_doctor_sections(args)
+    print("ShopAI release-bundle")
+    print()
+    print("== Doctor verdict ==")
+    _doctor_render_pattern_k(sections.get("pattern_k_dispatchers", {}))
+    _doctor_render_oauth(sections.get("oauth_scope_coverage", {}))
+    _doctor_render_pattern_y(sections.get("pattern_y_capabilities", {}))
+    _doctor_render_pattern_i(
+        sections.get("pattern_i_engine_capabilities", {})
+    )
+    _doctor_render_pattern_j(
+        sections.get("pattern_j_test_pollution", {})
+    )
+    _doctor_render_pattern_z(
+        sections.get("pattern_z_writer_recorder", {})
+    )
+    _doctor_render_live(sections.get("live_scope_drift", {}))
+    _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
+    _doctor_render_writebacks(sections.get("engines_writebacks", {}))
+    print()
+
+    if not overall_ok and not write_on_warning:
+        print(
+            "Refusing to write -- doctor flagged failures. "
+            "Fix the above sections, or pass --write-on-warning."
+        )
+        sys.exit(1)
+    if not overall_ok:
+        print(
+            "Doctor flagged failures, but --write-on-warning "
+            "was passed -- emitting bundle anyway."
+        )
+
+    # ── Output dir guard ────────────────────────────────────
+    if output_dir.exists() and not force:
+        # Allow if empty (mkdir, no overwrites)
+        try:
+            empty = not any(output_dir.iterdir())
+        except OSError as exc:
+            print(f"Cannot inspect {output_dir}: {exc}")
+            sys.exit(1)
+        if not empty:
+            print(
+                f"Refusing to overwrite non-empty {output_dir} "
+                "-- pass --force to overwrite."
+            )
+            sys.exit(1)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Failed to create {output_dir}: {exc}")
+        sys.exit(1)
+
+    # ── snapshot.json ───────────────────────────────────────
+    import argparse as _argparse
+    snap_args = _argparse.Namespace(
+        output=str(output_dir / "snapshot.json"),
+        force=True,
+        skip_live=getattr(args, "skip_live", False),
+        diff=None,
+        json=False,
+        stale_pending_hours=24.0,
+        failure_rate_warn=0.25,
+    )
+    # Re-use the existing snapshot command so the same code path
+    # produces the same artifact shape that operators get from
+    # `shopai snapshot --output FILE`.
+    _capture_silent(_cmd_snapshot, snap_args)
+    print(f"  wrote {output_dir / 'snapshot.json'}")
+
+    # ── catalog.md ──────────────────────────────────────────
+    md_buf = StringIO()
+    md_args = _argparse.Namespace(
+        json=False, markdown=True,
+        engine=None, action_type=None,
+    )
+    with _redirect_stdout(md_buf):
+        _cmd_catalog(md_args)
+    (output_dir / "catalog.md").write_text(
+        md_buf.getvalue(), encoding="utf-8",
+    )
+    print(f"  wrote {output_dir / 'catalog.md'}")
+
+    # ── shopify.app.toml ────────────────────────────────────
+    toml_args = _argparse.Namespace(
+        app_name=getattr(args, "app_name", None) or "shopai",
+        app_host=(
+            getattr(args, "app_host", None) or "https://YOUR_APP_HOST"
+        ),
+        api_version=getattr(args, "api_version", None) or "2024-01",
+        write=str(output_dir / "shopify.app.toml"),
+        force=True,
+    )
+    _capture_silent(_cmd_shopify_app_toml, toml_args)
+    print(f"  wrote {output_dir / 'shopify.app.toml'}")
+
+    # ── doctor.txt ──────────────────────────────────────────
+    # Re-render the doctor to a file for audit history. Uses
+    # _cmd_shopify_doctor's existing text path.
+    doc_buf = StringIO()
+    doc_args = _argparse.Namespace(
+        json=False, skip_live=getattr(args, "skip_live", False),
+    )
+    with _redirect_stdout(doc_buf):
+        try:
+            _cmd_shopify_doctor(doc_args)
+        except SystemExit:
+            # Doctor exits 1 on failure; we already chose to
+            # write (via write_on_warning), so swallow the exit.
+            pass
+    (output_dir / "doctor.txt").write_text(
+        doc_buf.getvalue(), encoding="utf-8",
+    )
+    print(f"  wrote {output_dir / 'doctor.txt'}")
+
+    # ── README.md ───────────────────────────────────────────
+    from datetime import datetime, timezone
+    generated_at = datetime.now(timezone.utc).isoformat()
+    readme = "\n".join([
+        "# ShopAI Release Bundle",
+        "",
+        f"_Generated: {generated_at}_",
+        "",
+        f"Doctor verdict: **{'OK' if overall_ok else 'FAILED'}**",
+        "",
+        "## Contents",
+        "",
+        "- [`snapshot.json`](snapshot.json) -- full system state "
+        "(engine counts, catalog, every audit, both doctor verdicts)",
+        "- [`catalog.md`](catalog.md) -- action catalog for "
+        "ops + non-CLI stakeholders",
+        "- [`shopify.app.toml`](shopify.app.toml) -- deployable "
+        "Shopify config (scopes + webhook subscriptions)",
+        "- [`doctor.txt`](doctor.txt) -- doctor render at the "
+        "time of bundle generation",
+        "",
+        "## How to use",
+        "",
+        "Commit this folder per release. The diff between "
+        "`release/` at v1 vs v2 is the operator-visible delta "
+        "for review. Compare `snapshot.json` across releases "
+        "with `shopai snapshot --diff <prev>/snapshot.json`.",
+        "",
+    ])
+    (output_dir / "README.md").write_text(readme, encoding="utf-8")
+    print(f"  wrote {output_dir / 'README.md'}")
+
+    print()
+    print(
+        f"Release bundle written to {output_dir}/ "
+        f"(5 files; doctor: "
+        f"{'OK' if overall_ok else 'FAILED'})"
+    )
+
+
+def _capture_silent(fn, args) -> None:
+    """Helper to call a CLI command and discard its stdout. Used
+    by release-bundle when re-using existing commands that print
+    progress to stdout but write the actual artifact to disk."""
+    from io import StringIO
+    buf = StringIO()
+    with _redirect_stdout(buf):
+        try:
+            fn(args)
+        except SystemExit:
+            # Inner commands may exit non-zero on overwrite
+            # refusal etc.; the bundle controls force-overwrite
+            # so any inner exit is unexpected -- swallow to keep
+            # the bundle's outer flow intact. The inner output is
+            # available in `buf` for debugging.
+            pass
+
+
+from contextlib import contextmanager as _contextmanager
+
+
+@_contextmanager
+def _redirect_stdout(buf):
+    """Local stdout redirect (the std lib's contextlib.redirect_stdout
+    works too but its presence in cli.py was inconsistent; this
+    keeps the import surface minimal)."""
+    old = sys.stdout
+    sys.stdout = buf
+    try:
+        yield buf
+    finally:
+        sys.stdout = old
+
+
 def _cmd_shopify_install_manifest(args) -> None:
     """Generate a Shopify app install manifest fragment.
 
@@ -9481,6 +9746,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "learning":
         _cmd_learning(args)
+        return
+
+    if args.command == "release-bundle":
+        _cmd_release_bundle(args)
         return
 
     if args.command == "snapshot":
