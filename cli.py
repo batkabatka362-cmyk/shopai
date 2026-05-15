@@ -332,6 +332,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show what would expire without writing",
     )
 
+    approvals_approve_all = approvals_sub.add_parser(
+        "approve-all",
+        help="Bulk-approve PENDING actions matching filters",
+    )
+    approvals_approve_all.add_argument(
+        "--engine", default=None,
+        help="Restrict to one engine (omit = all engines)",
+    )
+    approvals_approve_all.add_argument(
+        "--min-confidence", type=float, default=None,
+        help="Skip actions below this confidence (0.0-1.0)",
+    )
+    approvals_approve_all.add_argument(
+        "--by", default="operator",
+        help="Operator name attributed to each decision",
+    )
+    approvals_approve_all.add_argument(
+        "--reason", default="bulk_approve",
+        help="Decision reason attached to each approval",
+    )
+    approvals_approve_all.add_argument(
+        "--execute", action="store_true",
+        help="Immediately run the executor on each approval",
+    )
+    approvals_approve_all.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would approve without writing",
+    )
+
     # ── Pipeline commands ────────────────────────────────────
     pipeline = sub.add_parser("pipeline", help="Run a data pipeline")
     pipeline.add_argument("pipeline_name", choices=["product", "marketing", "analytics"])
@@ -1840,15 +1869,19 @@ def _cmd_approvals(args) -> None:
     if verb == "sweep":
         _cmd_approvals_sweep(args)
         return
+    if verb == "approve-all":
+        _cmd_approvals_approve_all(args)
+        return
     print(
         "Usage:\n"
-        "  shopai approvals pending  [--engine NAME] [--limit N]\n"
+        "  shopai approvals pending     [--engine NAME] [--limit N]\n"
         "  shopai approvals stats\n"
-        "  shopai approvals show     <action_id>\n"
-        "  shopai approvals approve  <action_id> [--reason ...] [--by ...] [--execute]\n"
-        "  shopai approvals reject   <action_id> [--reason ...] [--by ...]\n"
-        "  shopai approvals execute  <action_id>\n"
-        "  shopai approvals sweep    [--older-than 7d] [--dry-run]"
+        "  shopai approvals show        <action_id>\n"
+        "  shopai approvals approve     <action_id> [--reason ...] [--by ...] [--execute]\n"
+        "  shopai approvals reject      <action_id> [--reason ...] [--by ...]\n"
+        "  shopai approvals execute     <action_id>\n"
+        "  shopai approvals sweep       [--older-than 7d] [--dry-run]\n"
+        "  shopai approvals approve-all [--engine NAME] [--min-confidence 0.X] [--execute] [--dry-run]"
     )
     sys.exit(1)
 
@@ -1987,6 +2020,79 @@ def _cmd_approvals_sweep(args) -> None:
     print(f"Sweep complete: {len(expired)} action(s) expired.")
     for a in expired:
         print(f"  {a.id} {a.engine}/{a.action_type}")
+
+
+def _cmd_approvals_approve_all(args) -> None:
+    """Bulk-approve PENDING actions matching engine + confidence filters.
+
+    Saves the operator from clicking through dozens of high-confidence
+    proposals one at a time. Pairs naturally with ``--execute`` so a
+    triage round can land 20 dispatches in a single command.
+    """
+    from core.approval.queue import get_approval_queue
+
+    queue = get_approval_queue()
+    candidates = queue.list_pending(engine=args.engine, limit=10_000)
+    if args.min_confidence is not None:
+        candidates = [
+            a for a in candidates
+            if (a.confidence or 0.0) >= args.min_confidence
+        ]
+
+    if not candidates:
+        filt = []
+        if args.engine:
+            filt.append(f"engine={args.engine}")
+        if args.min_confidence is not None:
+            filt.append(f"min_confidence={args.min_confidence}")
+        suffix = f" ({', '.join(filt)})" if filt else ""
+        print(f"No PENDING actions matched{suffix}.")
+        return
+
+    if args.dry_run:
+        print(
+            f"Dry run: {len(candidates)} action(s) would be approved:"
+        )
+        for a in candidates:
+            conf = (
+                f"conf={a.confidence:.2f}"
+                if a.confidence is not None else "conf=-"
+            )
+            print(
+                f"  {a.id} {a.engine}/{a.action_type} {conf}"
+            )
+        return
+
+    approved_count = 0
+    executed_count = 0
+    failed_ids: list[str] = []
+
+    for a in candidates:
+        decision = queue.approve(
+            a.id, decided_by=args.by, reason=args.reason,
+        )
+        if decision is None:
+            # Race: approved/rejected/expired between list and approve.
+            failed_ids.append(a.id)
+            continue
+        approved_count += 1
+        if args.execute:
+            from core.approval.executor import execute_action
+            from core.approval.queue import ApprovalStatus
+            result = execute_action(a.id)
+            if (
+                result is not None
+                and result.status == ApprovalStatus.EXECUTED
+            ):
+                executed_count += 1
+
+    print(
+        f"Approved {approved_count} action(s)"
+        + (f", executed {executed_count}" if args.execute else "")
+        + "."
+    )
+    if failed_ids:
+        print(f"  Skipped (state changed): {len(failed_ids)}")
 
 
 def _parse_age_spec(spec: str) -> float | None:
