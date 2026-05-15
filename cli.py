@@ -117,6 +117,38 @@ def build_parser() -> argparse.ArgumentParser:
         "info",
         help="Inventory all data/ files with size, age, row counts",
     )
+    db_backup_p = db_sub.add_parser(
+        "backup",
+        help="Snapshot data/ to a tar.gz (operator safety net)",
+    )
+    db_backup_p.add_argument(
+        "--out", default=None,
+        help="Output path (default: shopai-backup-<UTC ts>.tar.gz)",
+    )
+    db_restore_p = db_sub.add_parser(
+        "restore",
+        help="Replace data/ with contents of a backup tarball",
+    )
+    db_restore_p.add_argument("archive", help="Path to tar.gz")
+    db_restore_p.add_argument(
+        "--yes", action="store_true",
+        help="Skip confirmation (CAUTION: replaces live data)",
+    )
+
+    goal_p = sub.add_parser(
+        "goal",
+        help="Inspect / manage brain-stack goal state (EMA, persistence)",
+    )
+    goal_sub = goal_p.add_subparsers(dest="goal_action")
+    goal_sub.add_parser(
+        "show", help="Show current goal + per-goal effectiveness EMA",
+    )
+    goal_reset_p = goal_sub.add_parser(
+        "reset", help="Clear per-goal EMA stats (wipes learned signal)",
+    )
+    goal_reset_p.add_argument(
+        "--yes", action="store_true", help="Skip confirmation prompt",
+    )
 
     # ── Config commands ──────────────────────────────────────
     config_p = sub.add_parser("config", help="Inspect / validate configuration")
@@ -744,6 +776,186 @@ def _cmd_db_migrate() -> None:
     print("Running pending migrations...")
     _import_registered_dbs()
     _cmd_db_status()
+
+
+def _cmd_db_backup(out_path: str | None) -> None:
+    """Snapshot the entire ``data/`` directory to a tar.gz.
+
+    Default output filename: ``shopai-backup-YYYYMMDD-HHMMSS.tar.gz``
+    (UTC). Refuses to overwrite an existing file — operators may
+    mistype and clobber a prior snapshot.
+    """
+    import datetime
+    import tarfile
+    from pathlib import Path
+
+    data_dir = Path("data")
+    if not data_dir.exists():
+        print(f"Error: no data directory at {data_dir.resolve()}")
+        sys.exit(1)
+
+    if out_path is None:
+        ts = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        out_path = f"shopai-backup-{ts}.tar.gz"
+    out_file = Path(out_path)
+    if out_file.exists():
+        print(
+            f"Error: {out_file} already exists. "
+            "Pick a different --out path or remove the existing file."
+        )
+        sys.exit(1)
+    try:
+        with tarfile.open(out_file, "w:gz") as tar:
+            tar.add(data_dir, arcname="data")
+    except OSError as exc:
+        print(f"Error: backup failed: {exc}")
+        sys.exit(1)
+
+    size_bytes = out_file.stat().st_size
+    size = (
+        f"{size_bytes / 1024:.1f}KB"
+        if size_bytes < 1024 * 1024
+        else f"{size_bytes / (1024 * 1024):.1f}MB"
+    )
+    print(f"Backup written: {out_file} ({size})")
+    print(f"Restore with: shopai db restore {out_file}")
+
+
+def _cmd_db_restore(archive: str, yes: bool = False) -> None:
+    """Restore data/ from a backup tarball.
+
+    Current data/ moves to ``data.<UTC ts>.bak/`` before extract
+    so a wrong-tarball recovery is still possible. Refuses
+    without ``--yes``.
+    """
+    import datetime
+    import shutil
+    import tarfile
+    from pathlib import Path
+
+    archive_path = Path(archive)
+    if not archive_path.exists():
+        print(f"Error: archive not found: {archive_path}")
+        sys.exit(1)
+    if not yes:
+        print(
+            f"Restore will REPLACE the contents of data/ with the "
+            f"tarball {archive_path.name}.\n"
+            "Current data/ will be moved aside (not deleted) first.\n"
+            "Re-run with --yes to confirm."
+        )
+        sys.exit(1)
+
+    data_dir = Path("data")
+    if data_dir.exists():
+        ts = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        backup_dir = Path(f"data.{ts}.bak")
+        if backup_dir.exists():
+            print(f"Error: {backup_dir} already exists; aborting")
+            sys.exit(1)
+        try:
+            shutil.move(str(data_dir), str(backup_dir))
+        except OSError as exc:
+            print(f"Error: could not move data/ aside: {exc}")
+            sys.exit(1)
+        print(f"Moved current data/ → {backup_dir}")
+
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(".")
+    except (tarfile.TarError, OSError) as exc:
+        print(f"Error: extract failed: {exc}")
+        sys.exit(1)
+
+    if not data_dir.exists():
+        print("Error: restore completed but data/ not present.")
+        sys.exit(1)
+
+    file_count = sum(1 for p in data_dir.rglob("*") if p.is_file())
+    print(f"Restored data/ from {archive_path.name} ({file_count} files)")
+
+
+def _cmd_goal(args) -> None:
+    """Dispatcher for ``shopai goal {show, reset}``."""
+    action = getattr(args, "goal_action", None)
+    if action == "show":
+        _cmd_goal_show()
+        return
+    if action == "reset":
+        _cmd_goal_reset(args)
+        return
+    print(
+        "Usage:\n"
+        "  shopai goal show\n"
+        "  shopai goal reset [--yes]"
+    )
+    sys.exit(1)
+
+
+def _cmd_goal_show() -> None:
+    """Current goal + per-goal effectiveness EMA snapshot."""
+    try:
+        from core.goals.goal_feedback import _default_manager
+    except Exception as exc:
+        print(f"Error: goal manager unavailable: {exc}")
+        sys.exit(1)
+    manager = _default_manager()
+    if manager is None:
+        print("Goal manager not configured.")
+        sys.exit(1)
+    current = manager.get_current_goal()
+    stats = manager.get_effectiveness_stats()
+    print(f"Current goal:   {current}\n")
+    if not stats:
+        print(
+            "Per-goal EMA: (no recorded outcomes yet — all goals "
+            "use the neutral default of 0.50)"
+        )
+        return
+    print("Per-goal EMA (effectiveness × sample count):")
+    col = 10
+    print(f"  {'goal':<24}{'EMA':>{col}}{'samples':>{col}}")
+    print(f"  {'-' * (24 + col * 2)}")
+    rows = sorted(
+        stats.items(),
+        key=lambda kv: kv[1]["effectiveness"],
+        reverse=True,
+    )
+    for goal, s in rows:
+        print(
+            f"  {goal:<24}{s['effectiveness']:>{col}.2f}"
+            f"{s['n']:>{col}d}"
+        )
+
+
+def _cmd_goal_reset(args) -> None:
+    """Clear the persisted per-goal EMA state."""
+    if not getattr(args, "yes", False):
+        print(
+            "Reset will wipe per-goal EMA stats (the brain stack's "
+            "learned signal). Re-run with --yes to confirm:\n"
+            "  shopai goal reset --yes"
+        )
+        sys.exit(1)
+    from pathlib import Path
+    try:
+        from core.goals.goal_manager import _DEFAULT_STATE_PATH
+        from core.goals.goal_feedback import _default_manager
+    except Exception as exc:
+        print(f"Error: goal manager unavailable: {exc}")
+        sys.exit(1)
+    manager = _default_manager()
+    if manager is not None:
+        with manager._lock:
+            manager._goal_stats.clear()
+        manager._save_state()
+    state_path = Path(_DEFAULT_STATE_PATH)
+    if state_path.exists():
+        try:
+            state_path.unlink()
+        except OSError as exc:
+            print(f"Warning: could not remove {state_path}: {exc}")
+    print("Per-goal EMA stats cleared.")
 
 
 def _cmd_db_info() -> None:
@@ -1519,6 +1731,55 @@ def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
         print(f"Inputs: {payload['inputs']}")
     if payload["outputs"]:
         print(f"Outputs: {payload['outputs']}")
+
+    _print_engine_brain_stack(engine_name)
+
+
+def _print_engine_brain_stack(engine_name: str) -> None:
+    """Render brain-stack attribution + effectiveness for an engine.
+
+    Best-effort: any failure (goal map missing, manager unavailable)
+    skips its line rather than crashing engine-info.
+    """
+    try:
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+    except Exception as exc:
+        logger.debug("engine_goal_map import failed: %s", exc)
+        return
+
+    goal = ENGINE_GOAL_MAP.get(engine_name)
+    print()
+    print("Brain stack:")
+    if goal is None:
+        print(
+            "  Goal:           (unmapped — actions don't attribute "
+            "to any goal)"
+        )
+        return
+    print(f"  Goal:           {goal}")
+
+    try:
+        from core.goals.goal_manager import GoalManager
+    except Exception as exc:
+        logger.debug("GoalManager import failed: %s", exc)
+        return
+    try:
+        stats = GoalManager().get_effectiveness_stats()
+    except Exception as exc:
+        logger.debug("effectiveness stats lookup failed: %s", exc)
+        return
+
+    goal_stats = stats.get(goal, {})
+    ema = goal_stats.get("effectiveness")
+    samples = goal_stats.get("n", 0)
+    if ema is None:
+        print(
+            "  Effectiveness:  0.50 (default — no recorded outcomes yet)"
+        )
+    else:
+        print(
+            f"  Effectiveness:  {ema:.2f} (over {samples} recorded outcomes)"
+        )
 
 
 def _cmd_run(args) -> None:
@@ -2879,8 +3140,18 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_db_migrate()
         elif args.db_action == "info":
             _cmd_db_info()
+        elif args.db_action == "backup":
+            _cmd_db_backup(getattr(args, "out", None))
+        elif args.db_action == "restore":
+            _cmd_db_restore(
+                args.archive, yes=getattr(args, "yes", False),
+            )
         else:
-            print("Usage: shopai db {status|migrate|info}")
+            print("Usage: shopai db {status|migrate|info|backup|restore}")
+        return
+
+    if args.command == "goal":
+        _cmd_goal(args)
         return
 
     if args.command == "config":
