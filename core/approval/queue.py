@@ -1062,6 +1062,65 @@ class ApprovalQueue:
             for engine in sorted(engines)
         }
 
+    def pending_latency_stats(self) -> dict[str, dict[str, Any]]:
+        """Per-engine PENDING-action age aggregator.
+
+        Surfaces engines producing proposals operators consistently
+        don't act on. Either the engine is spammy (too many
+        proposals) or the proposals aren't useful enough to
+        warrant the click — either way, a triage signal worth
+        looking at.
+
+        Returns ``{engine: stats}`` for each engine with at least
+        one PENDING action. Engines with zero pending are absent.
+        Each stats dict carries:
+          - ``pending_count``: int
+          - ``oldest_age_seconds``: float (seconds since the
+            oldest PENDING was proposed)
+          - ``median_age_seconds``: float (50th percentile of
+            ages across this engine's PENDING bucket)
+          - ``mean_age_seconds``: float (arithmetic mean, useful
+            when the distribution is concentrated)
+        """
+        now = time.time()
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT engine, proposed_at
+                   FROM pending_actions
+                   WHERE status = ?
+                   ORDER BY engine, proposed_at""",
+                (ApprovalStatus.PENDING.value,),
+            ).fetchall()
+
+        by_engine: dict[str, list[float]] = {}
+        for r in rows:
+            age = max(0.0, now - float(r["proposed_at"]))
+            by_engine.setdefault(r["engine"], []).append(age)
+
+        result: dict[str, dict[str, Any]] = {}
+        for engine, ages in by_engine.items():
+            ages_sorted = sorted(ages)
+            n = len(ages_sorted)
+            # Median: lower middle for even-count is fine here
+            # (we only need a stable indicator, not p50 to a
+            # spec)
+            if n == 0:
+                continue
+            if n % 2 == 1:
+                median = ages_sorted[n // 2]
+            else:
+                median = (
+                    ages_sorted[n // 2 - 1]
+                    + ages_sorted[n // 2]
+                ) / 2.0
+            result[engine] = {
+                "pending_count": n,
+                "oldest_age_seconds": round(ages_sorted[-1], 1),
+                "median_age_seconds": round(median, 1),
+                "mean_age_seconds": round(sum(ages_sorted) / n, 1),
+            }
+        return result
+
     def list_recent_outcomes(
         self,
         *,

@@ -525,6 +525,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_pending_latency = approvals_sub.add_parser(
+        "pending-latency",
+        help=(
+            "Per-engine PENDING-action age aggregator — surfaces "
+            "engines producing un-actionable proposals"
+        ),
+    )
+    approvals_pending_latency.add_argument(
+        "--older-than", default=None, metavar="AGE",
+        help=(
+            "Filter to engines whose oldest PENDING exceeds AGE "
+            "(e.g. 1h, 24h, 7d). Default: no filter."
+        ),
+    )
+    approvals_pending_latency.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_release_candidates = approvals_sub.add_parser(
         "quarantine-release-candidates",
         help=(
@@ -3578,6 +3597,9 @@ def _cmd_approvals(args) -> None:
     if verb == "quarantine-release-candidates":
         _cmd_approvals_release_candidates(args)
         return
+    if verb == "pending-latency":
+        _cmd_approvals_pending_latency(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3594,7 +3616,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals auto-config [--enable ENGINE | --disable ENGINE | --list] [--json]\n"
         "  shopai approvals auto-approve-candidates [--json]\n"
         "  shopai approvals quarantine  [--release | --clear-release | --exempt | --unexempt ENGINE | --list] [--json]\n"
-        "  shopai approvals quarantine-release-candidates [--since 7d] [--json]"
+        "  shopai approvals quarantine-release-candidates [--since 7d] [--json]\n"
+        "  shopai approvals pending-latency [--older-than 24h] [--json]"
     )
     sys.exit(1)
 
@@ -3906,6 +3929,89 @@ def _cmd_approvals_release_candidates(args) -> None:
     print(
         "Release with: shopai approvals quarantine --release <engine>"
     )
+
+
+def _cmd_approvals_pending_latency(args) -> None:
+    """Per-engine PENDING-action age aggregator.
+
+    Surfaces engines producing un-actionable proposals — either
+    the engine is spammy (too many proposals to triage) or its
+    proposals aren't useful enough to warrant the click.
+    Operators see "engine X has 30 pending, oldest 4 days old"
+    and either tune the engine or sweep its backlog.
+
+    ``--older-than`` filters to engines with at least one PENDING
+    older than the cutoff — triage mode.
+    """
+    from core.approval import get_approval_queue
+
+    cutoff_seconds: float | None = None
+    raw_cutoff = getattr(args, "older_than", None)
+    if raw_cutoff:
+        cutoff_seconds = _parse_age_spec(raw_cutoff)
+        if cutoff_seconds is None:
+            print(
+                f"Invalid --older-than value: {raw_cutoff!r} "
+                "(expected e.g. 60s, 30m, 24h, 7d)"
+            )
+            sys.exit(1)
+
+    try:
+        queue = get_approval_queue()
+        stats = queue.pending_latency_stats()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pending_latency_stats raised: %s", exc)
+        stats = {}
+
+    # Build row data
+    rows: list[dict[str, Any]] = []
+    for engine, s in stats.items():
+        if cutoff_seconds is not None and (
+            s["oldest_age_seconds"] < cutoff_seconds
+        ):
+            continue
+        rows.append({"engine": engine, **s})
+
+    # Sort: oldest oldest_age first (most-stale engines surface
+    # at the top), tiebreak on pending_count desc, then engine
+    # alphabetical
+    rows.sort(key=lambda r: (
+        -r["oldest_age_seconds"],
+        -r["pending_count"],
+        r["engine"],
+    ))
+
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        if cutoff_seconds is not None:
+            print(
+                f"No engines have PENDING actions older than "
+                f"{raw_cutoff}."
+            )
+        else:
+            print("No engines have PENDING actions.")
+        return
+
+    print(
+        f"Pending-action latency ({len(rows)} engines with "
+        "PENDING actions):"
+    )
+    print()
+    print(
+        "  engine                          pending  oldest    "
+        "median    mean"
+    )
+    for r in rows:
+        engine_label = r["engine"][:30]
+        print(
+            f"  {engine_label:<30}  {r['pending_count']:>7}  "
+            f"{_format_age(r['oldest_age_seconds']):>8}  "
+            f"{_format_age(r['median_age_seconds']):>8}  "
+            f"{_format_age(r['mean_age_seconds']):>6}"
+        )
 
 
 def _cmd_approvals_history(args) -> None:
