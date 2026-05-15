@@ -200,6 +200,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show only engines without a primary-goal mapping",
     )
 
+    engines_stats_p = sub.add_parser(
+        "engines-stats",
+        help=(
+            "Aggregate engine activity: per-engine queue counts + "
+            "wiring status + activity totals. The 'which engines "
+            "are pulling weight?' command."
+        ),
+    )
+    engines_stats_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+    engines_stats_p.add_argument(
+        "--top", type=int, default=10, metavar="N",
+        help=(
+            "How many top-activity engines to surface in the "
+            "ranking. Default: 10."
+        ),
+    )
+    engines_stats_p.add_argument(
+        "--filter", default="all",
+        choices=["all", "active", "idle"],
+        help=(
+            "Filter: 'all' (default) shows every engine, "
+            "'active' restricts to engines with at least one "
+            "queue action, 'idle' restricts to engines with "
+            "no queue activity."
+        ),
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -2759,6 +2789,181 @@ def _cmd_engines_writebacks(args) -> None:
             f"NOTE: {report.partial_count} engine(s) are "
             "partially wired -- pass --filter partial to "
             "investigate."
+        )
+
+
+def _collect_engines_stats(top_n: int, filter_mode: str) -> dict:
+    """Aggregate per-engine activity into a structured dict.
+
+    Combines three signals per engine:
+      - Wiring status (wired / advisory / partial) from
+        engines._writeback_audit
+      - Queue activity counts (pending / approved / rejected /
+        executed / failed / expired) from ApprovalQueue.stats_by_engine
+      - Total registered engine count
+
+    The dict shape is stable: ``{summary, engines: [...]}``.
+    Each engine entry has name + wiring + queue counts +
+    derived "total_actions" + "successful_actions" fields.
+    """
+    out: dict = {
+        "summary": {
+            "total_engines": 0,
+            "wired": 0,
+            "advisory": 0,
+            "partial": 0,
+            "active": 0,
+            "idle": 0,
+        },
+        "engines": [],
+        "filter": filter_mode,
+        "top_n": top_n,
+    }
+
+    # ── Registry ────────────────────────────────────────────
+    try:
+        from engines.registry import list_engines
+        all_engine_names = sorted(list_engines())
+        out["summary"]["total_engines"] = len(all_engine_names)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engines registry probe raised: %s", exc)
+        all_engine_names = []
+
+    # ── Wiring (writeback audit) ────────────────────────────
+    wiring_by_name: dict[str, str] = {}
+    writers_by_name: dict[str, list[str]] = {}
+    try:
+        from engines._writeback_audit import audit_writeback_coverage
+        wb = audit_writeback_coverage("engines")
+        out["summary"]["wired"] = wb.wired_count
+        out["summary"]["advisory"] = wb.advisory_count
+        out["summary"]["partial"] = wb.partial_count
+        for s in wb.engines:
+            wiring_by_name[s.name] = s.status
+            writers_by_name[s.name] = list(s.writer_files)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("writeback audit probe raised: %s", exc)
+
+    # ── Queue activity ──────────────────────────────────────
+    queue_stats: dict[str, dict] = {}
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+        queue_stats = queue.stats_by_engine() or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("queue probe raised: %s", exc)
+
+    # ── Build per-engine entries ────────────────────────────
+    entries: list[dict] = []
+    for name in all_engine_names:
+        stats = queue_stats.get(name, {})
+        total_actions = sum(stats.values()) if stats else 0
+        successful = (
+            stats.get("executed", 0) + stats.get("approved", 0)
+        )
+        entry = {
+            "name": name,
+            "wiring": wiring_by_name.get(name, "unknown"),
+            "writers": writers_by_name.get(name, []),
+            "pending": stats.get("pending", 0),
+            "approved": stats.get("approved", 0),
+            "rejected": stats.get("rejected", 0),
+            "executed": stats.get("executed", 0),
+            "failed": stats.get("failed", 0),
+            "expired": stats.get("expired", 0),
+            "total_actions": total_actions,
+            "successful_actions": successful,
+        }
+        entries.append(entry)
+
+    out["summary"]["active"] = sum(
+        1 for e in entries if e["total_actions"] > 0
+    )
+    out["summary"]["idle"] = (
+        out["summary"]["total_engines"]
+        - out["summary"]["active"]
+    )
+
+    # Filter
+    if filter_mode == "active":
+        entries = [e for e in entries if e["total_actions"] > 0]
+    elif filter_mode == "idle":
+        entries = [e for e in entries if e["total_actions"] == 0]
+
+    # Sort by total_actions descending, then alpha for ties
+    entries.sort(key=lambda e: (-e["total_actions"], e["name"]))
+
+    out["engines"] = entries[:top_n] if top_n > 0 else entries
+    return out
+
+
+def _cmd_engines_stats(args) -> None:
+    """Aggregate engine activity: per-engine queue counts +
+    wiring status + activity totals.
+
+    The "which engines are pulling weight?" command. Operators
+    daily-glance see which engines are queueing actions and
+    which are idle, alongside their Phase 6/7 wiring status.
+    """
+    top_n = int(getattr(args, "top", 10) or 10)
+    filter_mode = getattr(args, "filter", "all") or "all"
+
+    stats = _collect_engines_stats(top_n, filter_mode)
+
+    if getattr(args, "json", False):
+        print(json.dumps(stats, indent=2, default=str))
+        return
+
+    s = stats["summary"]
+    print("ShopAI Engine Activity Stats")
+    print()
+    print(
+        f"  Total engines: {s['total_engines']}"
+    )
+    print(
+        f"    wired:    {s['wired']}, "
+        f"advisory: {s['advisory']}, "
+        f"partial: {s['partial']}"
+    )
+    print(
+        f"    active:   {s['active']} "
+        f"(at least 1 queue action), "
+        f"idle: {s['idle']}"
+    )
+
+    entries = stats["engines"]
+    if not entries:
+        print()
+        print(f"No engines match filter '{filter_mode}'.")
+        return
+
+    if filter_mode != "all":
+        print()
+        print(
+            f"Filtered to {filter_mode}: showing "
+            f"{len(entries)} engine(s) "
+            f"(top {top_n}):"
+        )
+    else:
+        print()
+        print(
+            f"Top {len(entries)} engines by queue activity:"
+        )
+    print()
+    # Compact table
+    header = (
+        f"  {'engine':<28} {'wiring':<10} "
+        f"{'exec':>5} {'fail':>5} {'pend':>5} {'total':>6}"
+    )
+    print(header)
+    print(f"  {'-' * (len(header) - 2)}")
+    for e in entries:
+        engine_label = e["name"][:28]
+        wiring = e["wiring"]
+        print(
+            f"  {engine_label:<28} {wiring:<10} "
+            f"{e['executed']:>5} {e['failed']:>5} "
+            f"{e['pending']:>5} {e['total_actions']:>6}"
         )
 
 
@@ -10116,6 +10321,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "engines-writebacks":
         _cmd_engines_writebacks(args)
+        return
+
+    if args.command == "engines-stats":
+        _cmd_engines_stats(args)
         return
 
     if args.command == "catalog":
