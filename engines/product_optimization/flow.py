@@ -157,6 +157,27 @@ class ProductOptimizationEngine:
                 "expected_impact": enh.get("expected_conversion_lift", 0.0),
             })
 
+        # ---- Stage 6.5: Phase 7 writeback (opt-in) ----
+        # Engines today emit advisory recommendations. When the
+        # caller passes ``data.apply_pricing_adjustments = True``,
+        # we enqueue the structured pricing adjustments via the
+        # approval queue (operator review → executor →
+        # SHOPIFY_UPDATE_VARIANTS). Default OFF preserves the
+        # pure-recommendation behavior callers rely on.
+        pricing_pending_actions: list[dict[str, Any]] = []
+        if data.get("apply_pricing_adjustments") is True:
+            from .optimization_applier import (
+                apply_pricing_optimizations,
+            )
+            store_cfg = data.get("store") if isinstance(
+                data.get("store"), dict,
+            ) else None
+            pricing_pending_actions = apply_pricing_optimizations(
+                adjustments=adjustments,
+                products=products,
+                store=store_cfg,
+            )
+
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_optimization_result(optimizations=optimizations)
 
@@ -167,6 +188,10 @@ class ProductOptimizationEngine:
             "status": "success",
             "data": {
                 "optimizations": optimizations,
+                # Phase 7 output. Empty list when not opted in;
+                # populated with per-adjustment queue results
+                # when ``apply_pricing_adjustments=True``.
+                "pricing_pending_actions": pricing_pending_actions,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
