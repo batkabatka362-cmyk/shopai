@@ -1066,7 +1066,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     feedback_p = sub.add_parser(
         "feedback",
-        help="Inspect webhook feedback bridge (events → engine attribution)",
+        help="Inspect webhook feedback bridge (events -> engine attribution)",
     )
     feedback_sub = feedback_p.add_subparsers(dest="feedback_action")
     feedback_stats = feedback_sub.add_parser(
@@ -1109,7 +1109,7 @@ def build_parser() -> argparse.ArgumentParser:
         "outcomes",
         help=(
             "Chronological view of recent webhook outcomes "
-            "(action → downstream event attribution)"
+            "(action -> downstream event attribution)"
         ),
     )
     outcomes_p.add_argument(
