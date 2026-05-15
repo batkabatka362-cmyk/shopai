@@ -286,9 +286,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-multi-claimed", action="store_true",
         help=(
             "Also list capabilities claimed by 2+ adapters "
-            "(warning — usually legitimate, sometimes routing "
+            "(warning -- usually legitimate, sometimes routing "
             "ambiguity)"
         ),
+    )
+
+    engines_cap_audit_p = sub.add_parser(
+        "engines-capability-audit",
+        help=(
+            "CI gate (Pattern I): every `capability_name=` string "
+            "in engines/ must reference a real Capability enum "
+            "member claimed by 1+ adapter. 0 = clean, 1 = gap."
+        ),
+    )
+    engines_cap_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
     )
 
     shopify_scopes_live_p = sub.add_parser(
@@ -3013,6 +3026,108 @@ def _cmd_capabilities_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_engines_capability_audit(args) -> None:
+    """CI gate (Pattern I): every ``capability_name=...`` string
+    literal in ``engines/**/*.py`` must reference a real Capability
+    enum member claimed by 1+ adapter.
+
+    Catches the exact failure class documented in CLAUDE.md Pattern
+    I and fixed in PR #40: engine hydrators using a capability name
+    that's silently unroutable. Mocked unit tests never catch this
+    because they patch the router; only live production traffic
+    hits the real registry. This audit makes it an explicit gate.
+
+    Two failure modes:
+
+      - **unknown_enum_member**: engine passes ``capability_name=
+        "SHOPIFY_FETCH_ORDRES"`` — typo. The router would raise
+        ``AttributeError`` on first call.
+      - **unclaimed_by_adapter**: name exists on the enum but no
+        adapter claims it. Hydrator returns ``[]``, engine falls
+        through to its "X list is required" guard.
+
+    Exit 0 = clean. Exit 1 = at least one ref is broken.
+    """
+    try:
+        from engines._engine_capability_audit import (
+            audit_engine_capabilities,
+            format_refs,
+        )
+        report = audit_engine_capabilities()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine capability audit raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Engine capability audit unavailable: {exc}")
+        return
+
+    if getattr(args, "json", False):
+        payload = {
+            "ok": not report.has_gaps,
+            "total_refs": report.total_refs,
+            "distinct_capabilities": report.distinct_capabilities,
+            "unknown_enum_member": [
+                {
+                    "engine": r.engine,
+                    "file": r.file,
+                    "lineno": r.lineno,
+                    "capability_name": r.capability_name,
+                }
+                for r in report.unknown_enum_member
+            ],
+            "unclaimed_by_adapter": [
+                {
+                    "engine": r.engine,
+                    "file": r.file,
+                    "lineno": r.lineno,
+                    "capability_name": r.capability_name,
+                }
+                for r in report.unclaimed_by_adapter
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        if report.has_gaps:
+            sys.exit(1)
+        return
+
+    if not report.has_gaps:
+        print(
+            f"Engine capability parity OK -- "
+            f"{report.total_refs} `capability_name=` refs across "
+            f"{report.distinct_capabilities} distinct capabilities; "
+            "every name resolves to an adapter-claimed enum value."
+        )
+        return
+
+    print(
+        f"Engine capability parity FAILED: "
+        f"{len(report.unknown_enum_member)} unknown, "
+        f"{len(report.unclaimed_by_adapter)} unclaimed."
+    )
+    print()
+    if report.unknown_enum_member:
+        print(
+            "Unknown enum members (typos -- engine references a "
+            "capability name that doesn't exist on Capability):"
+        )
+        print(format_refs(report.unknown_enum_member))
+        print()
+    if report.unclaimed_by_adapter:
+        print(
+            "Unclaimed by adapter (enum value exists but no "
+            "Shopify adapter claims it):"
+        )
+        print(format_refs(report.unclaimed_by_adapter))
+        print()
+    print(
+        "Fix: either correct the engine's `capability_name=` "
+        "string, OR add an adapter under core/adapters/shopify/ "
+        "claiming the capability."
+    )
+    sys.exit(1)
+
+
 def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
     """Collect every doctor-section's status without rendering.
 
@@ -3095,6 +3210,36 @@ def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("pattern Y probe raised: %s", exc)
         sections["pattern_y_capabilities"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── Pattern I engine capability parity ───────────────────
+    try:
+        from engines._engine_capability_audit import (
+            audit_engine_capabilities,
+        )
+        eng_report = audit_engine_capabilities()
+        sections["pattern_i_engine_capabilities"] = {
+            "status": (
+                "pass" if not eng_report.has_gaps else "fail"
+            ),
+            "total_refs": eng_report.total_refs,
+            "distinct_capabilities": eng_report.distinct_capabilities,
+            "unknown_enum_member": [
+                f"{r.capability_name} ({r.file}:{r.lineno})"
+                for r in eng_report.unknown_enum_member
+            ],
+            "unclaimed_by_adapter": [
+                f"{r.capability_name} ({r.file}:{r.lineno})"
+                for r in eng_report.unclaimed_by_adapter
+            ],
+        }
+        if eng_report.has_gaps:
+            overall_ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern I probe raised: %s", exc)
+        sections["pattern_i_engine_capabilities"] = {
             "status": "unavailable",
             "error": str(exc),
         }
@@ -3240,6 +3385,9 @@ def _cmd_shopify_doctor(args) -> None:
     _doctor_render_pattern_k(sections.get("pattern_k_dispatchers", {}))
     _doctor_render_oauth(sections.get("oauth_scope_coverage", {}))
     _doctor_render_pattern_y(sections.get("pattern_y_capabilities", {}))
+    _doctor_render_pattern_i(
+        sections.get("pattern_i_engine_capabilities", {})
+    )
     _doctor_render_live(sections.get("live_scope_drift", {}))
     _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
     _doctor_render_writebacks(sections.get("engines_writebacks", {}))
@@ -3336,6 +3484,42 @@ def _doctor_render_pattern_y(section: dict) -> None:
     else:
         print(
             f"[??] Pattern Y capabilities — "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_pattern_i(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Pattern I engine capabilities -- "
+            f"{section.get('total_refs', 0)} `capability_name=` "
+            f"refs across "
+            f"{section.get('distinct_capabilities', 0)} capabilities; "
+            "all routable"
+        )
+    elif status == "fail":
+        unknown = section.get("unknown_enum_member", [])
+        unclaimed = section.get("unclaimed_by_adapter", [])
+        print(
+            f"[FAIL] Pattern I engine capabilities -- "
+            f"{len(unknown)} unknown, "
+            f"{len(unclaimed)} unclaimed"
+        )
+        # Surface up to 3 of each so operators see the first hit
+        for ref in unknown[:3]:
+            print(f"       unknown: {ref}")
+        for ref in unclaimed[:3]:
+            print(f"       unclaimed: {ref}")
+        print(
+            "       fix: correct the engine's `capability_name=` "
+            "string, OR add an adapter under core/adapters/shopify/ "
+            "claiming the capability (see "
+            "`shopai engines-capability-audit`)"
+        )
+    else:
+        print(
+            f"[??] Pattern I engine capabilities -- "
             f"{section.get('error', 'unavailable')}"
         )
 
@@ -3728,6 +3912,9 @@ def _cmd_shopify_prepare_deploy(args) -> None:
     _doctor_render_pattern_k(sections.get("pattern_k_dispatchers", {}))
     _doctor_render_oauth(sections.get("oauth_scope_coverage", {}))
     _doctor_render_pattern_y(sections.get("pattern_y_capabilities", {}))
+    _doctor_render_pattern_i(
+        sections.get("pattern_i_engine_capabilities", {})
+    )
     _doctor_render_live(sections.get("live_scope_drift", {}))
     _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
     _doctor_render_writebacks(sections.get("engines_writebacks", {}))
@@ -6989,6 +7176,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "capabilities-audit":
         _cmd_capabilities_audit(args)
+        return
+
+    if args.command == "engines-capability-audit":
+        _cmd_engines_capability_audit(args)
         return
 
     if args.command == "shopify-doctor":

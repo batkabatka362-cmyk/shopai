@@ -100,6 +100,7 @@ class TestJson:
             "pattern_k_dispatchers",
             "oauth_scope_coverage",
             "pattern_y_capabilities",
+            "pattern_i_engine_capabilities",
             "live_scope_drift",
             "live_webhook_drift",
             "engines_writebacks",
