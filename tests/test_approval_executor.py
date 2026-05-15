@@ -57,11 +57,15 @@ def loaded_dispatchers():
 
 class TestRegistry:
 
-    def test_all_nine_action_types_register(self, loaded_dispatchers):
+    def test_all_action_types_register(self, loaded_dispatchers):
         types = set(list_registered_action_types())
         assert types == {
             "mint_strategy_code",
             "mint_loyalty_code",
+            "mint_cart_recovery_code",
+            "mint_browse_recovery_code",
+            "mint_campaign_code",
+            "mint_wholesale_code",
             "apply_price_change",
             "apply_tags",
             "pay_commission",
@@ -437,6 +441,159 @@ class TestMintDispatchers:
             })
         assert success is False
         assert result["error"] == "mint_returned_none"
+
+
+# ─── generic per-customer/per-segment mint dispatchers ──────────
+
+
+class TestGenericMintDispatchers:
+    """The 4 mint_*_code dispatchers (cart_recovery, browse_recovery,
+    email_marketing, wholesale_b2b) share a generic body — closes
+    Pattern K gaps surfaced by the dispatcher coverage audit.
+    """
+
+    _CASES = [
+        ("mint_cart_recovery_code", 7),
+        ("mint_browse_recovery_code", 7),
+        ("mint_campaign_code", 14),
+        ("mint_wholesale_code", 30),
+    ]
+
+    def _good_params(self, code_prefix="RECOVER"):
+        return {
+            "token": "CUSTOMER123",
+            "value": 10.0,
+            "value_kind": "percentage",
+            "code_prefix": code_prefix,
+        }
+
+    @pytest.mark.parametrize("action_type,default_ttl", _CASES)
+    def test_happy_path_calls_mint_with_params(
+        self, action_type, default_ttl, loaded_dispatchers,
+    ):
+        captured: dict = {}
+
+        def _stub(**kwargs):
+            captured.update(kwargs)
+            return {"code": "X-1", "discount_id": "d_1"}
+
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            side_effect=_stub,
+        ):
+            success, result = _DISPATCHERS[action_type](
+                self._good_params(),
+            )
+
+        assert success is True
+        assert result["code"] == "X-1"
+        # Wire-format unchanged from enqueue → dispatch.
+        assert captured["token"] == "CUSTOMER123"
+        assert captured["value"] == 10.0
+        assert captured["value_kind"] == "percentage"
+        assert captured["code_prefix"] == "RECOVER"
+
+    @pytest.mark.parametrize("action_type,default_ttl", _CASES)
+    def test_uses_engine_default_ttl_when_omitted(
+        self, action_type, default_ttl, loaded_dispatchers,
+    ):
+        """Each engine has its own sensible default TTL (cart 7d,
+        campaign 14d, wholesale 30d). When the engine omits
+        ttl_days, the dispatcher fills in that default rather than
+        a global constant."""
+        captured: dict = {}
+
+        def _stub(**kwargs):
+            captured.update(kwargs)
+            return {"code": "X", "discount_id": "d"}
+
+        params = self._good_params()
+        params.pop("ttl_days", None)  # explicitly absent
+
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            side_effect=_stub,
+        ):
+            _DISPATCHERS[action_type](params)
+
+        assert captured["ttl_days"] == default_ttl
+
+    @pytest.mark.parametrize("action_type,_", _CASES)
+    def test_explicit_ttl_overrides_default(
+        self, action_type, _, loaded_dispatchers,
+    ):
+        captured: dict = {}
+
+        def _stub(**kwargs):
+            captured.update(kwargs)
+            return {"code": "X", "discount_id": "d"}
+
+        params = self._good_params()
+        params["ttl_days"] = 3
+
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            side_effect=_stub,
+        ):
+            _DISPATCHERS[action_type](params)
+
+        assert captured["ttl_days"] == 3
+
+    @pytest.mark.parametrize("action_type,_", _CASES)
+    def test_missing_token_fails(self, action_type, _, loaded_dispatchers):
+        params = self._good_params()
+        params["token"] = ""
+        success, result = _DISPATCHERS[action_type](params)
+        assert success is False
+        assert "missing_or_invalid_mint_params" in result["error"]
+
+    @pytest.mark.parametrize("action_type,_", _CASES)
+    def test_invalid_value_kind_fails(
+        self, action_type, _, loaded_dispatchers,
+    ):
+        params = self._good_params()
+        params["value_kind"] = "bogus"
+        success, result = _DISPATCHERS[action_type](params)
+        assert success is False
+
+    @pytest.mark.parametrize("action_type,_", _CASES)
+    def test_non_numeric_ttl_fails(
+        self, action_type, _, loaded_dispatchers,
+    ):
+        params = self._good_params()
+        params["ttl_days"] = "soon"
+        success, result = _DISPATCHERS[action_type](params)
+        assert success is False
+        assert result["error"] == "invalid_ttl_days"
+
+    @pytest.mark.parametrize("action_type,_", _CASES)
+    def test_mint_returns_none_marks_failed(
+        self, action_type, _, loaded_dispatchers,
+    ):
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            return_value=None,
+        ):
+            success, result = _DISPATCHERS[action_type](
+                self._good_params(),
+            )
+        assert success is False
+        assert result["error"] == "mint_returned_none"
+
+    @pytest.mark.parametrize("action_type,_", _CASES)
+    def test_mint_raises_caught(
+        self, action_type, _, loaded_dispatchers,
+    ):
+        with patch(
+            "engines._recovery_codes.mint_recovery_code",
+            side_effect=RuntimeError("network down"),
+        ):
+            success, result = _DISPATCHERS[action_type](
+                self._good_params(),
+            )
+        assert success is False
+        assert "mint_raised" in result["error"]
+        assert "network down" in result["error"]
 
 
 # ─── apply_description body-truncation guard ───────────────────

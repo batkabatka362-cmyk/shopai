@@ -362,3 +362,97 @@ def _mint_strategy_dispatch(params: dict[str, Any]) -> tuple[bool, dict[str, Any
     if minted is None:
         return False, {"error": "mint_returned_none"}
     return True, dict(minted)
+
+
+# ── Generic per-customer/per-segment mint dispatcher ────────────
+#
+# cart_recovery, browse_recovery, email_marketing, wholesale_b2b
+# all enqueue with the same shape: token + value + value_kind +
+# ttl_days + code_prefix. Engine-specific extras (customer_id,
+# order_total, likelihood) are passed through unchanged — the
+# mint helper only cares about the five core fields. Each engine
+# has its own registration so audit coverage (Pattern K) sees an
+# explicit per-engine pairing rather than a catch-all that hides
+# per-engine wireup.
+
+
+def _generic_mint_dispatch(
+    params: dict[str, Any],
+    *,
+    default_ttl_days: int,
+) -> tuple[bool, dict[str, Any]]:
+    """Shared body for engines that enqueue the standard mint shape."""
+    token = str(params.get("token", "")).strip()
+    value = params.get("value")
+    value_kind = str(params.get("value_kind", "")).strip()
+    code_prefix = str(params.get("code_prefix", "")).strip()
+    if not token or value is None or value_kind not in {
+        "percentage", "amount",
+    } or not code_prefix:
+        return False, {
+            "error": "missing_or_invalid_mint_params",
+            "needed": (
+                "token, value, value_kind (percentage|amount), "
+                "code_prefix"
+            ),
+        }
+
+    ttl_raw = params.get("ttl_days")
+    try:
+        ttl_days = (
+            int(ttl_raw) if ttl_raw is not None else default_ttl_days
+        )
+    except (TypeError, ValueError):
+        return False, {"error": "invalid_ttl_days"}
+
+    try:
+        from engines._recovery_codes import mint_recovery_code
+    except Exception as exc:  # noqa: BLE001
+        return False, {"error": f"mint_helper_import_failed: {exc}"}
+
+    try:
+        minted = mint_recovery_code(
+            token=token,
+            code_prefix=code_prefix,
+            value=value,
+            value_kind=value_kind,
+            ttl_days=ttl_days,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, {"error": f"mint_raised: {exc}"}
+
+    if minted is None:
+        return False, {"error": "mint_returned_none"}
+    return True, dict(minted)
+
+
+@register_dispatcher("mint_cart_recovery_code")
+def _mint_cart_recovery_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay cart_recovery's per-customer recovery-code mint."""
+    return _generic_mint_dispatch(params, default_ttl_days=7)
+
+
+@register_dispatcher("mint_browse_recovery_code")
+def _mint_browse_recovery_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay browse_recovery's per-user browse-recovery code."""
+    return _generic_mint_dispatch(params, default_ttl_days=7)
+
+
+@register_dispatcher("mint_campaign_code")
+def _mint_campaign_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay email_marketing's per-campaign code mint."""
+    return _generic_mint_dispatch(params, default_ttl_days=14)
+
+
+@register_dispatcher("mint_wholesale_code")
+def _mint_wholesale_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay wholesale_b2b's per-account volume-discount mint."""
+    return _generic_mint_dispatch(params, default_ttl_days=30)
