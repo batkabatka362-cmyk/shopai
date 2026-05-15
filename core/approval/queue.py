@@ -1364,6 +1364,115 @@ class ApprovalQueue:
             }
         return result
 
+    def engine_scorecard(self, engine_name: str) -> dict[str, Any]:
+        """Unified scorecard combining every per-engine signal.
+
+        The natural capstone to the per-engine intelligence stack.
+        Each subsection comes from a dedicated method but reading
+        them piecemeal forces operators to bounce between 5+
+        commands to assemble a full picture of one engine. This
+        method returns the consolidated dict in a single call.
+
+        Sections:
+          - ``engine`` (str)
+          - ``volume``: counts across the action lifecycle
+            (pending / approved / rejected / executed / failed /
+            expired)
+          - ``outcomes``: outcome counts + outcome_score from
+            :meth:`engine_outcome_stats`
+          - ``calibration``: monotonic_increasing flag from
+            :meth:`engine_confidence_calibration`
+          - ``workflow``: pending + decision latency medians
+          - ``veto``: rejection_rate from
+            :meth:`rejection_rate_stats`
+          - ``revenue``: gross / refunded / net from
+            :meth:`revenue_attribution_stats`
+
+        Each subsection's missing-data semantics are preserved
+        (e.g. ``calibration.monotonic_increasing`` is ``None`` for
+        engines without enough confidence-tagged history). Empty
+        subsections return their existing empty shape, not absent
+        keys — callers can rely on the schema.
+        """
+        if not isinstance(engine_name, str) or not engine_name:
+            return {"engine": engine_name or "", "error": "invalid_engine_name"}
+
+        scorecard: dict[str, Any] = {
+            "engine": engine_name,
+            "volume": {
+                "pending": 0,
+                "approved": 0,
+                "rejected": 0,
+                "executed": 0,
+                "failed": 0,
+                "expired": 0,
+            },
+        }
+
+        # ── Volume ────────────────────────────────────────────
+        with _LOCK:
+            volume_rows = self._conn.execute(
+                """SELECT status, COUNT(*) AS n
+                   FROM pending_actions
+                   WHERE engine = ?
+                   GROUP BY status""",
+                (engine_name,),
+            ).fetchall()
+        for r in volume_rows:
+            key = r["status"]
+            if key in scorecard["volume"]:
+                scorecard["volume"][key] = int(r["n"])
+
+        # ── Outcomes ──────────────────────────────────────────
+        scorecard["outcomes"] = self.engine_outcome_stats(
+            engine_name,
+        )
+
+        # ── Calibration ───────────────────────────────────────
+        scorecard["calibration"] = (
+            self.engine_confidence_calibration(engine_name)
+        )
+
+        # ── Workflow ──────────────────────────────────────────
+        pending_stats = self.pending_latency_stats()
+        decision_stats = self.decision_latency_stats()
+        scorecard["workflow"] = {
+            "pending": pending_stats.get(engine_name, {
+                "pending_count": 0,
+                "oldest_age_seconds": 0.0,
+                "median_age_seconds": 0.0,
+                "mean_age_seconds": 0.0,
+            }),
+            "decision": decision_stats.get(engine_name, {
+                "decided_count": 0,
+                "slowest_seconds": 0.0,
+                "median_seconds": 0.0,
+                "mean_seconds": 0.0,
+            }),
+        }
+
+        # ── Veto ──────────────────────────────────────────────
+        rejection_stats = self.rejection_rate_stats()
+        scorecard["veto"] = rejection_stats.get(engine_name, {
+            "decided_count": 0,
+            "rejected_count": 0,
+            "approved_count": 0,
+            "rejection_rate": 0.0,
+        })
+
+        # ── Revenue ───────────────────────────────────────────
+        revenue_stats = self.revenue_attribution_stats()
+        scorecard["revenue"] = revenue_stats.get(engine_name, {
+            "gross_revenue": 0.0,
+            "refunded_revenue": 0.0,
+            "net_revenue": 0.0,
+            "positive_outcomes": 0,
+            "negative_outcomes": 0,
+            "revenue_per_positive_outcome": None,
+        })
+
+        return scorecard
+
     def list_recent_outcomes(
         self,
         *,

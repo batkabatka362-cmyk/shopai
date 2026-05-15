@@ -223,6 +223,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    eng_scorecard = sub.add_parser(
+        "engine-scorecard",
+        help=(
+            "Unified per-engine scorecard — volume, outcomes, "
+            "calibration, workflow, veto, revenue, governance "
+            "in one view"
+        ),
+    )
+    eng_scorecard.add_argument(
+        "engine_name", help="Engine to inspect",
+    )
+    eng_scorecard.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     engs_calibration = sub.add_parser(
         "engines-calibration",
         help=(
@@ -2276,6 +2292,191 @@ def _cmd_engines_calibration(args) -> None:
             f"ALERT: {len(alerts)} engine(s) are auto-approved AND "
             "have inverted calibration. Consider disabling them "
             "via: shopai approvals auto-config --disable <engine>"
+        )
+
+
+def _cmd_engine_scorecard(args) -> None:
+    """Render the unified engine scorecard.
+
+    The capstone view: every per-engine signal in one screen.
+    Eliminates the operator's need to bounce between
+    ``approvals stats``, ``engine-calibration``,
+    ``approvals pending-latency``, ``approvals decision-latency``,
+    ``approvals rejection-rates``, ``approvals revenue-by-engine``,
+    plus the governance config files. The scorecard pulls every
+    signal from the queue + the auto-approve/quarantine state in
+    a single render.
+    """
+    from core.approval import get_approval_queue
+
+    try:
+        queue = get_approval_queue()
+        sc = queue.engine_scorecard(args.engine_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine_scorecard lookup raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "engine": args.engine_name,
+                "error": str(exc),
+            }, indent=2))
+        else:
+            print(f"Scorecard unavailable for {args.engine_name}")
+        return
+
+    # Governance from the live config + state files (PR #161 /
+    # #162) — these live outside the queue so we layer them on
+    # top of the scorecard.
+    try:
+        from core.approval.auto_approve import load_config as _aa_cfg
+        allowlist = _aa_cfg().allowlist
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("auto-approve allowlist probe failed: %s", exc)
+        allowlist = frozenset()
+    try:
+        from core.approval.quarantine import load_state as _q_state
+        q_state = _q_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("quarantine state probe failed: %s", exc)
+        q_state = None
+
+    sc["governance"] = {
+        "auto_approved": args.engine_name in allowlist,
+        "quarantine_exempt": (
+            q_state.is_exempt(args.engine_name)
+            if q_state is not None else False
+        ),
+        "quarantine_released": (
+            q_state.is_released(args.engine_name)
+            if q_state is not None else False
+        ),
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(sc, indent=2, default=str))
+        return
+
+    # ── Text render ──────────────────────────────────────
+    print(f"Scorecard: {sc['engine']}")
+    print()
+
+    # Volume
+    v = sc["volume"]
+    decided = (
+        v["approved"] + v["rejected"]
+        + v["executed"] + v["failed"]
+    )
+    print("Volume:")
+    print(
+        f"  pending: {v['pending']:<4}  "
+        f"approved: {v['approved']:<4}  "
+        f"executed: {v['executed']:<4}"
+    )
+    print(
+        f"  rejected: {v['rejected']:<3}  "
+        f"failed:   {v['failed']:<4}  "
+        f"expired:  {v['expired']:<3}  "
+        f"(decided: {decided})"
+    )
+
+    # Outcomes
+    o = sc["outcomes"]
+    print()
+    print("Outcomes:")
+    if o.get("total_outcomes", 0) == 0:
+        print("  (no matched outcomes yet)")
+    else:
+        score = o.get("outcome_score")
+        score_display = f"{score:.2f}" if score is not None else "--"
+        print(
+            f"  positive: {o['positive_count']:<3}  "
+            f"negative: {o['negative_count']:<3}  "
+            f"neutral: {o['neutral_count']:<3}  "
+            f"score: {score_display}"
+        )
+
+    # Calibration
+    monotonic = sc["calibration"].get("monotonic_increasing")
+    if monotonic is True:
+        cal_verdict = "well-calibrated"
+    elif monotonic is False:
+        cal_verdict = "INVERTED"
+    else:
+        cal_verdict = "insufficient data"
+    print()
+    print(f"Calibration: {cal_verdict}")
+
+    # Workflow
+    pending = sc["workflow"]["pending"]
+    decision = sc["workflow"]["decision"]
+    print()
+    print("Workflow:")
+    if pending.get("pending_count", 0) > 0:
+        print(
+            f"  pending: {pending['pending_count']} action(s); "
+            f"oldest {_format_age(pending['oldest_age_seconds'])}, "
+            f"median {_format_age(pending['median_age_seconds'])}"
+        )
+    else:
+        print("  pending: (none)")
+    if decision.get("decided_count", 0) > 0:
+        print(
+            f"  decision latency: {decision['decided_count']} "
+            f"decisions; "
+            f"median {_format_age(decision['median_seconds'])}, "
+            f"slowest {_format_age(decision['slowest_seconds'])}"
+        )
+    else:
+        print("  decision latency: (no decisions yet)")
+
+    # Veto
+    veto = sc["veto"]
+    print()
+    if veto["decided_count"] > 0:
+        print(
+            f"Veto: rejection_rate={veto['rejection_rate']:.2f} "
+            f"({veto['rejected_count']}/{veto['decided_count']})"
+        )
+    else:
+        print("Veto: (no decisions yet)")
+
+    # Revenue
+    r = sc["revenue"]
+    per_pos = r.get("revenue_per_positive_outcome")
+    per_pos_display = f"{per_pos:.2f}" if per_pos is not None else "--"
+    print()
+    print("Revenue:")
+    print(
+        f"  gross={r['gross_revenue']:.2f}  "
+        f"refunded={r['refunded_revenue']:.2f}  "
+        f"net={r['net_revenue']:.2f}  "
+        f"per-positive={per_pos_display}"
+    )
+
+    # Governance
+    g = sc["governance"]
+    print()
+    print("Governance:")
+    auto_label = "yes" if g["auto_approved"] else "no"
+    exempt_label = "yes" if g["quarantine_exempt"] else "no"
+    released_label = "yes" if g["quarantine_released"] else "no"
+    print(
+        f"  auto-approve: {auto_label}  "
+        f"quarantine-exempt: {exempt_label}  "
+        f"manually-released: {released_label}"
+    )
+
+    # Headline summary line — turns the full table into a
+    # one-line verdict an operator can grep
+    miscalibrated_and_auto = (
+        monotonic is False and g["auto_approved"]
+    )
+    if miscalibrated_and_auto:
+        print()
+        print(
+            "ALERT: engine is auto-approved AND has inverted "
+            "calibration. Consider disabling via "
+            "`shopai approvals auto-config --disable "
+            f"{sc['engine']}`."
         )
 
 
@@ -4999,6 +5200,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "engines-calibration":
         _cmd_engines_calibration(args)
+        return
+
+    if args.command == "engine-scorecard":
+        _cmd_engine_scorecard(args)
         return
 
     if args.command == "run":
