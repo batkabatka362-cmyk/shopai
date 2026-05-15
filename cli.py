@@ -372,6 +372,43 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    doctor_p = sub.add_parser(
+        "doctor",
+        help=(
+            "Unified health check -- runs shopify-doctor + "
+            "approvals doctor in one shot. The 'is everything "
+            "OK?' command."
+        ),
+    )
+    doctor_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+    doctor_p.add_argument(
+        "--skip-live", action="store_true",
+        help=(
+            "Skip the live drift checks (live scope + live "
+            "webhook). Use in CI / dev environments without "
+            "live credentials."
+        ),
+    )
+    doctor_p.add_argument(
+        "--stale-pending-hours", type=float, default=24.0,
+        metavar="H",
+        help=(
+            "PENDING actions older than this many hours flag "
+            "the approvals section. Default: 24h."
+        ),
+    )
+    doctor_p.add_argument(
+        "--failure-rate-warn", type=float, default=0.25,
+        metavar="R",
+        help=(
+            "Recent dispatch failure-rate threshold for warn. "
+            "Default: 0.25."
+        ),
+    )
+
     shopify_install_manifest_p = sub.add_parser(
         "shopify-install-manifest",
         help=(
@@ -3594,6 +3631,101 @@ def _cmd_shopify_doctor(args) -> None:
     else:
         print(
             "Overall: FAILED — at least one check has gaps. "
+            "Inspect sections above."
+        )
+        sys.exit(1)
+
+
+def _cmd_unified_doctor(args) -> None:
+    """Unified health check: shopify-doctor + approvals doctor in
+    one run.
+
+    The 'is everything OK?' command for operators. Combines the
+    Shopify institutional-protection audit (7 sections) with the
+    approval-queue health check (5 sections) into a single
+    verdict. Fatal failures in either side flip the overall to
+    FAILED and exit 1.
+
+    Reuses the two existing collectors (`_collect_doctor_sections`
+    and `_collect_approvals_doctor_sections`) so the underlying
+    section logic stays single-sourced.
+    """
+    shopify_ok, shopify_sections = _collect_doctor_sections(args)
+    approvals_ok, approvals_sections = (
+        _collect_approvals_doctor_sections(args)
+    )
+    overall_ok = shopify_ok and approvals_ok
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": overall_ok,
+            "shopify": {
+                "ok": shopify_ok,
+                "sections": shopify_sections,
+            },
+            "approvals": {
+                "ok": approvals_ok,
+                "sections": approvals_sections,
+            },
+        }, indent=2, default=str))
+        if not overall_ok:
+            sys.exit(1)
+        return
+
+    print("ShopAI Doctor (unified)")
+    print()
+    print("== Shopify integration ==")
+    _doctor_render_pattern_k(
+        shopify_sections.get("pattern_k_dispatchers", {}),
+    )
+    _doctor_render_oauth(
+        shopify_sections.get("oauth_scope_coverage", {}),
+    )
+    _doctor_render_pattern_y(
+        shopify_sections.get("pattern_y_capabilities", {}),
+    )
+    _doctor_render_pattern_i(
+        shopify_sections.get("pattern_i_engine_capabilities", {}),
+    )
+    _doctor_render_live(
+        shopify_sections.get("live_scope_drift", {}),
+    )
+    _doctor_render_webhook_live(
+        shopify_sections.get("live_webhook_drift", {}),
+    )
+    _doctor_render_writebacks(
+        shopify_sections.get("engines_writebacks", {}),
+    )
+    print()
+    print("== Approval queue ==")
+    _approvals_doctor_render_pattern_k(
+        approvals_sections.get("pattern_k_dispatchers", {}),
+    )
+    _approvals_doctor_render_pending(
+        approvals_sections.get("pending_queue", {}),
+    )
+    _approvals_doctor_render_dispatch(
+        approvals_sections.get("recent_dispatch", {}),
+    )
+    _approvals_doctor_render_quarantine(
+        approvals_sections.get("quarantine", {}),
+    )
+    _approvals_doctor_render_auto_approve(
+        approvals_sections.get("auto_approve", {}),
+    )
+
+    print()
+    if overall_ok:
+        print("Overall: OK -- both Shopify and approval-queue "
+              "checks pass.")
+    else:
+        broken = []
+        if not shopify_ok:
+            broken.append("Shopify")
+        if not approvals_ok:
+            broken.append("Approval queue")
+        print(
+            f"Overall: FAILED -- {' + '.join(broken)} has gaps. "
             "Inspect sections above."
         )
         sys.exit(1)
@@ -7944,6 +8076,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-doctor":
         _cmd_shopify_doctor(args)
+        return
+
+    if args.command == "doctor":
+        _cmd_unified_doctor(args)
         return
 
     if args.command == "shopify-webhooks":
