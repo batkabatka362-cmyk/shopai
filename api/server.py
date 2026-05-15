@@ -115,6 +115,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/recommendations": self._list_recommendations,
             "/api/goal": self._get_goal,
             "/api/feedback/stats": self._feedback_stats,
+            "/api/loop": self._loop_dashboard,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -342,6 +343,56 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "current": current,
             "stats": stats,
         })
+
+    def _loop_dashboard(self) -> None:
+        """GET /api/loop — autonomous-loop dashboard payload.
+
+        HTTP parity for the CLI's ``shopai loop`` (PR #151).
+        Returns the same six-section dict so a future UI can
+        render the dashboard without re-implementing the per-
+        subsystem aggregation:
+
+          * approval_queue: per-status counts
+          * recent_executed: last N EXECUTED actions
+          * goal: current + per-goal EMA
+          * recommendations: top-N engines from the recommender
+          * webhook_stats: bridge counters
+          * engine_coverage: mapped / total / ratio
+
+        Query params:
+          - ``top``: cap on recent_executed + recommendations lists
+            (default 5; max 50)
+        """
+        from urllib.parse import parse_qs, urlparse
+
+        params = parse_qs(urlparse(self.path).query)
+        try:
+            top_n = int(params.get("top", ["5"])[0])
+        except (TypeError, ValueError):
+            top_n = 5
+        top_n = max(1, min(50, top_n))
+
+        # Reuse the CLI's aggregator — same code path, same
+        # contract. The dashboard's six panels are an existing
+        # source of truth.
+        try:
+            import importlib.util as _ilu
+            spec = _ilu.spec_from_file_location("shopai_cli", "cli.py")
+            cli_mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(cli_mod)
+            payload = cli_mod._build_loop_dict(top_n=top_n)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("loop dict build raised: %s", exc)
+            payload = {
+                "approval_queue": {},
+                "recent_executed": [],
+                "goal": {"current": None, "stats": {}},
+                "recommendations": [],
+                "webhook_stats": {},
+                "engine_coverage": {},
+                "error": str(exc),
+            }
+        self._json_response(200, payload)
 
     def _feedback_stats(self) -> None:
         """GET /api/feedback/stats — webhook feedback bridge counters.
