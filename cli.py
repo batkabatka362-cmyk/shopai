@@ -149,6 +149,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     eng_info = sub.add_parser("engine-info", help="Show engine details")
     eng_info.add_argument("engine_name", help="Engine name")
+    eng_info.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
 
     run_p = sub.add_parser("run", help="Run an engine")
     run_p.add_argument("task_type", help="Engine name")
@@ -1106,20 +1110,48 @@ def _cmd_engines() -> None:
         print(f"  {i:3d}. {name}")
 
 
-def _cmd_engine_info(engine_name: str) -> None:
+def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
     from engines.registry import get_engine
     try:
         engine = get_engine(engine_name)
-        name = getattr(engine, "ENGINE_NAME", getattr(engine, "engine_name", engine_name))
-        print(f"Engine: {name}")
-        print(f"Class:  {engine.__class__.__name__}")
-        if hasattr(engine, "required_input_fields"):
-            print(f"Inputs: {engine.required_input_fields}")
-        if hasattr(engine, "required_output_fields"):
-            print(f"Outputs: {engine.required_output_fields}")
     except KeyError:
-        print(f"Unknown engine: {engine_name}")
+        if as_json:
+            print(json.dumps({
+                "error": f"Unknown engine: {engine_name}"
+            }))
+        else:
+            print(f"Unknown engine: {engine_name}")
         sys.exit(1)
+    if engine is None:
+        if as_json:
+            print(json.dumps({
+                "error": f"Unknown engine: {engine_name}"
+            }))
+        else:
+            print(f"Unknown engine: {engine_name}")
+        sys.exit(1)
+
+    name = getattr(
+        engine, "ENGINE_NAME",
+        getattr(engine, "engine_name", engine_name),
+    )
+    payload = {
+        "name": name,
+        "class": engine.__class__.__name__,
+        "inputs": getattr(engine, "required_input_fields", []),
+        "outputs": getattr(engine, "required_output_fields", []),
+    }
+
+    if as_json:
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    print(f"Engine: {payload['name']}")
+    print(f"Class:  {payload['class']}")
+    if payload["inputs"]:
+        print(f"Inputs: {payload['inputs']}")
+    if payload["outputs"]:
+        print(f"Outputs: {payload['outputs']}")
 
 
 def _cmd_run(args) -> None:
@@ -1763,7 +1795,10 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "engine-info":
-        _cmd_engine_info(args.engine_name)
+        _cmd_engine_info(
+            args.engine_name,
+            as_json=getattr(args, "json", False),
+        )
         return
 
     if args.command == "run":
