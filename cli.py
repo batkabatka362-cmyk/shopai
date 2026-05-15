@@ -1475,6 +1475,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
+    version_p.add_argument(
+        "--full", action="store_true",
+        help=(
+            "Include system identity fields (engine count, "
+            "dispatcher count, scope-manifest hash) -- useful "
+            "for support tickets to confirm 'I'm running build X'."
+        ),
+    )
 
     return parser
 
@@ -7299,13 +7307,22 @@ def _cmd_learn(args) -> None:
 
 # ── System Commands ──────────────────────────────────────────
 
-def _build_version_dict() -> dict:
+def _build_version_dict(full: bool = False) -> dict:
     """Gather a runtime fingerprint for support / debug.
 
     Includes the static ShopAI version, the running Python
     interpreter, the platform string, and a best-effort git SHA
     (so operators can pin "they're running commit X" even when
     they're on a non-tagged dev branch).
+
+    With ``full=True``, adds system-identity fields that change
+    when the codebase changes: engine count, dispatcher count,
+    and a stable hash of the scope manifest. Operators paste the
+    full fingerprint into support tickets to confirm "I'm
+    running build X with N dispatchers and scope-hash Y."
+
+    Each ``full`` field is best-effort -- a broken collector
+    surfaces as ``None`` for that field, doesn't block the rest.
     """
     import platform
     import subprocess
@@ -7325,12 +7342,65 @@ def _build_version_dict() -> dict:
     except (OSError, subprocess.TimeoutExpired):
         # No git in PATH or repo unavailable — skip silently.
         pass
+
+    if not full:
+        return payload
+
+    # ── System identity (full mode) ──────────────────────────
+    # Each is wrapped in try/except so a single collector
+    # failure doesn't break the whole fingerprint.
+    try:
+        from engines.registry import engine_count
+        payload["engine_count"] = engine_count()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine_count probe raised: %s", exc)
+        payload["engine_count"] = None
+
+    try:
+        from core.approval.executor import (
+            list_registered_action_types,
+            _ensure_dispatchers_loaded,
+        )
+        _ensure_dispatchers_loaded()
+        payload["dispatcher_count"] = len(
+            list_registered_action_types(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("dispatcher probe raised: %s", exc)
+        payload["dispatcher_count"] = None
+
+    try:
+        import hashlib
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest()
+        scope_blob = ",".join(sorted(manifest.all_scopes))
+        payload["scope_count"] = len(manifest.all_scopes)
+        payload["scope_hash"] = hashlib.sha256(
+            scope_blob.encode("utf-8"),
+        ).hexdigest()[:12]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("scope manifest probe raised: %s", exc)
+        payload["scope_count"] = None
+        payload["scope_hash"] = None
+
+    try:
+        # Wired engine count -- captures Phase 6/7 wiring state.
+        from engines._writeback_audit import audit_writeback_coverage
+        wb = audit_writeback_coverage("engines")
+        payload["engines_wired"] = wb.wired_count
+        payload["engines_advisory"] = wb.advisory_count
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("writeback audit probe raised: %s", exc)
+        payload["engines_wired"] = None
+        payload["engines_advisory"] = None
+
     return payload
 
 
 def _cmd_version(args) -> None:
     """Render the version + runtime fingerprint."""
-    payload = _build_version_dict()
+    full = bool(getattr(args, "full", False))
+    payload = _build_version_dict(full=full)
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2, default=str))
         return
@@ -7339,6 +7409,25 @@ def _cmd_version(args) -> None:
     print(f"Platform {payload['platform']}")
     if "git_sha" in payload:
         print(f"Git SHA {payload['git_sha']}")
+    if full:
+        # System identity block (only present in full mode)
+        ec = payload.get("engine_count")
+        dc = payload.get("dispatcher_count")
+        sc = payload.get("scope_count")
+        sh = payload.get("scope_hash")
+        ew = payload.get("engines_wired")
+        ea = payload.get("engines_advisory")
+        print()
+        print("System identity:")
+        if ec is not None:
+            print(f"  Engines:        {ec}")
+        if ew is not None and ea is not None:
+            print(f"    wired:        {ew}")
+            print(f"    advisory:     {ea}")
+        if dc is not None:
+            print(f"  Dispatchers:    {dc}")
+        if sc is not None and sh is not None:
+            print(f"  Scopes:         {sc}  (hash {sh})")
 
 
 def _cmd_health() -> None:
