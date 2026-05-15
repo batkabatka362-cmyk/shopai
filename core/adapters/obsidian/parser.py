@@ -116,10 +116,14 @@ def parse_note(
             title = path.stem
 
     # ── Relative path ─────────────────────────────────────
-    rel_path = str(path)
+    # Normalise to POSIX-style forward slashes so the same vault
+    # parsed on Windows and Linux yields the same ``path`` value
+    # — useful for cross-platform vault sync and for consumers
+    # that store note ids based on this string.
+    rel_path = path.as_posix()
     if vault_root is not None:
         try:
-            rel_path = str(path.relative_to(vault_root))
+            rel_path = path.relative_to(vault_root).as_posix()
         except ValueError as exc:
             # Path is not under vault_root — keep absolute.
             _ = exc
