@@ -246,6 +246,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    shopify_scopes_live_p = sub.add_parser(
+        "shopify-scopes-live-check",
+        help=(
+            "Compare declared OAuth scopes vs the live app's "
+            "granted scopes (catches install-time misconfig)"
+        ),
+    )
+    shopify_scopes_live_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     shopify_install_manifest_p = sub.add_parser(
         "shopify-install-manifest",
         help=(
@@ -2315,6 +2327,119 @@ def _cmd_shopify_scopes_audit(args) -> None:
         "examples."
     )
     sys.exit(1)
+
+
+def _cmd_shopify_scopes_live_check(args) -> None:
+    """Compare the registry's declared scopes against the live
+    app installation's granted scopes.
+
+    Closes the runtime gap left by the registry + CI gate +
+    install manifest: those tell us what we WANT, but the
+    merchant's actual app install might have a different set.
+    The first symptom of a stale install is adapters failing
+    with ACCESS_DENIED — a slow debug path. This check
+    surfaces it directly.
+
+    Exits 1 when ``missing_from_app`` is non-empty (adapters
+    WILL fail at runtime). Exits 0 with a warning when only
+    ``extra_in_app`` is non-empty (over-requesting — Shopify
+    review may flag, but functionality works).
+
+    Returns 0 with a friendly "no live data" when the apps
+    adapter isn't configured — local dev sees the message
+    rather than an opaque crash.
+    """
+    try:
+        from core.adapters.shopify.scope_health import compare_to_live
+        report = compare_to_live()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("scope health check raised: %s", exc)
+        report = None
+
+    if report is None:
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "ok": None,
+                "error": "live_data_unavailable",
+                "message": (
+                    "apps adapter not configured or live API "
+                    "call failed; cannot compare scopes"
+                ),
+            }, indent=2))
+        else:
+            print(
+                "Live scope check unavailable — the Shopify "
+                "apps adapter is not configured (or the live "
+                "call failed). Configure SHOPAI_SHOPIFY_URL + "
+                "SHOPAI_SHOPIFY_KEY and re-run."
+            )
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": report.is_healthy,
+            "granted_scope_count": len(report.granted_scopes),
+            "required_scope_count": len(report.required_scopes),
+            "missing_from_app": report.missing_from_app,
+            "extra_in_app": report.extra_in_app,
+        }, indent=2))
+        if report.missing_from_app:
+            sys.exit(1)
+        return
+
+    if report.is_healthy and not report.extra_in_app:
+        print(
+            f"Live scope check OK — all "
+            f"{len(report.required_scopes)} required scopes "
+            "are granted on the live app installation."
+        )
+        return
+
+    if report.missing_from_app:
+        print(
+            f"Live scope check FAILED: "
+            f"{len(report.missing_from_app)} scope(s) declared "
+            "but NOT granted on the live install. Adapters "
+            "calling these surfaces WILL fail with ACCESS_DENIED."
+        )
+        print()
+        print("Missing scopes:")
+        for s in report.missing_from_app:
+            print(f"  {s}")
+        if report.extra_in_app:
+            print()
+            print(
+                f"Also: {len(report.extra_in_app)} extra scope(s) "
+                "granted that the registry doesn't declare."
+            )
+            for s in report.extra_in_app:
+                print(f"  {s}")
+        print()
+        print(
+            "Fix: regenerate the install manifest with "
+            "`shopai shopify-install-manifest` and re-install "
+            "the app on the merchant store."
+        )
+        sys.exit(1)
+
+    # is_healthy True + extras exist → warning, not fatal
+    print(
+        f"Live scope check OK with warnings — all "
+        f"{len(report.required_scopes)} required scopes are "
+        f"granted, but {len(report.extra_in_app)} extra scope(s) "
+        "are present that the registry doesn't declare."
+    )
+    print()
+    print("Over-requested scopes:")
+    for s in report.extra_in_app:
+        print(f"  {s}")
+    print()
+    print(
+        "Fix (optional but recommended): regenerate the install "
+        "manifest with `shopai shopify-install-manifest` and "
+        "re-submit so Shopify's app reviewers don't flag "
+        "over-requesting."
+    )
 
 
 def _cmd_shopify_install_manifest(args) -> None:
@@ -5534,6 +5659,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-scopes-audit":
         _cmd_shopify_scopes_audit(args)
+        return
+
+    if args.command == "shopify-scopes-live-check":
+        _cmd_shopify_scopes_live_check(args)
         return
 
     if args.command == "shopify-install-manifest":
