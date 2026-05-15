@@ -3271,6 +3271,11 @@ def _doctor_render_pattern_k(section: dict) -> None:
             f"{', '.join(missing[:3])}"
             f"{'...' if len(missing) > 3 else ''}"
         )
+        print(
+            "       fix: register a dispatcher for each missing "
+            "action_type in core/approval/dispatchers.py "
+            "(see `shopai approvals audit` for the full list)"
+        )
     else:
         print(
             f"[??] Pattern K dispatchers — "
@@ -3289,9 +3294,15 @@ def _doctor_render_oauth(section: dict) -> None:
         )
     elif status == "fail":
         gaps = section.get("undeclared_adapters", [])
+        sample = ", ".join(gaps[:3]) + ("..." if len(gaps) > 3 else "")
         print(
             f"[FAIL] OAuth scope coverage — "
-            f"{len(gaps)} undeclared adapter(s)"
+            f"{len(gaps)} undeclared adapter(s): {sample}"
+        )
+        print(
+            "       fix: add `required_scopes = frozenset({...})` "
+            "or `scope_independent = True` to each adapter under "
+            "core/adapters/shopify/ (see `shopai shopify-scopes-audit`)"
         )
     else:
         print(
@@ -3317,6 +3328,11 @@ def _doctor_render_pattern_y(section: dict) -> None:
             f"{len(unclaimed)} unclaimed, "
             f"{len(orphan)} orphan claim(s)"
         )
+        print(
+            "       fix: add an adapter under core/adapters/shopify/ "
+            "for each unclaimed Capability enum value, OR drop the "
+            "enum value (see `shopai capabilities-audit`)"
+        )
     else:
         print(
             f"[??] Pattern Y capabilities — "
@@ -3341,9 +3357,16 @@ def _doctor_render_live(section: dict) -> None:
             )
     elif status == "fail":
         missing = section.get("missing_from_app", [])
+        sample = ", ".join(missing[:3]) + ("..." if len(missing) > 3 else "")
         print(
             f"[FAIL] Live scope drift — "
-            f"{len(missing)} scope(s) declared but NOT granted"
+            f"{len(missing)} scope(s) declared but NOT granted: "
+            f"{sample}"
+        )
+        print(
+            "       fix: re-install the app on the merchant so the "
+            "OAuth consent re-runs with the current scope set "
+            "(or re-grant via the Shopify Admin -> Apps panel)"
         )
     elif status == "skipped":
         print(
@@ -3383,6 +3406,17 @@ def _doctor_render_webhook_live(section: dict) -> None:
             f"[FAIL] Live webhook drift — "
             f"{len(missing)} topic(s) declared but NOT "
             f"registered{suffix}"
+        )
+        if gdpr_missing:
+            print(
+                "       *** GDPR topics missing — public-distribution "
+                "Shopify review WILL REJECT until these are "
+                f"registered: {', '.join(gdpr_missing)}"
+            )
+        print(
+            "       fix: deploy the latest shopify.app.toml "
+            "(`shopai shopify-prepare-deploy`) and re-deploy the "
+            "app so Shopify picks up the new webhook subscriptions"
         )
     elif status == "skipped":
         print(

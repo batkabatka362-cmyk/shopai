@@ -408,3 +408,130 @@ class TestEnginesWritebacksSection:
         assert "[??] Engine writebacks" in out
         # Doctor overall stays OK — audit failure is informational
         assert code == 0
+
+
+# ─── Remediation hints (PR follows #191) ──────────────────────
+
+
+class TestRemediationHints:
+    """When a section fails, the doctor must surface a one-line
+    'fix:' hint so the operator knows what to change. Same
+    pattern as `shopai capabilities-audit`'s remediation line."""
+
+    def test_pattern_k_fail_shows_fix_hint(self, cli):
+        from core.approval.coverage_audit import AuditReport
+        bad = AuditReport(
+            enqueued=[],
+            registered=[],
+            missing={"missing_action"},
+            orphaned=set(),
+        )
+        with patch(
+            "core.approval.coverage_audit.audit_coverage",
+            return_value=bad,
+        ):
+            out, _ = _capture(
+                cli._cmd_shopify_doctor, _ns(skip_live=True),
+            )
+        assert "fix:" in out
+        assert "core/approval/dispatchers.py" in out
+
+    def test_oauth_fail_shows_fix_hint(self, cli):
+        from core.adapters.shopify.scope_registry import ScopeManifest
+        bad = ScopeManifest(
+            all_scopes=frozenset(),
+            by_scope={},
+            by_adapter={"foo_adapter": []},
+            undeclared_adapters=["foo_adapter"],
+            scope_independent_adapters=[],
+            total_adapters=1,
+        )
+        with patch(
+            "core.adapters.shopify.scope_registry.collect_manifest",
+            return_value=bad,
+        ):
+            out, _ = _capture(
+                cli._cmd_shopify_doctor, _ns(skip_live=True),
+            )
+        assert "fix:" in out
+        assert "required_scopes" in out
+        # First gap is enumerated in the FAIL line so operators
+        # don't have to re-run a separate audit for the first hit
+        assert "foo_adapter" in out
+
+    def test_pattern_y_fail_shows_fix_hint(self, cli):
+        from core.adapters.coverage_audit import CapabilityCoverageReport
+        bad = CapabilityCoverageReport(
+            total_shopify_capabilities=380,
+            claimed_count=379,
+            unclaimed=["SHOPIFY_MISSING"],
+            orphan_claims=[],
+            multi_claimed={},
+            has_gaps=True,
+        )
+        with patch(
+            "core.adapters.coverage_audit.audit_capability_coverage",
+            return_value=bad,
+        ):
+            out, _ = _capture(
+                cli._cmd_shopify_doctor, _ns(skip_live=True),
+            )
+        assert "fix:" in out
+        assert "core/adapters/shopify" in out
+
+    def test_live_scope_fail_shows_reinstall_hint(self, cli):
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        bad = ScopeHealthReport(
+            granted_scopes=frozenset(),
+            required_scopes=frozenset({"read_orders"}),
+            missing_from_app=["read_orders"],
+            extra_in_app=[],
+            is_healthy=False,
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=bad,
+        ):
+            out, _ = _capture(
+                cli._cmd_shopify_doctor, _ns(),
+            )
+        assert "fix:" in out
+        assert "re-install" in out.lower()
+        # Sample of missing scopes appears in the FAIL line
+        assert "read_orders" in out
+
+    def test_webhook_fail_shows_gdpr_callout(self, cli):
+        """GDPR-mandatory missing topics get a separate, louder
+        callout because they block public-distribution review."""
+        from core.feedback.webhook_health import WebhookHealthReport
+        bad = WebhookHealthReport(
+            registered_topics=frozenset(),
+            declared_topics=frozenset({
+                "customers/data_request",
+                "customers/redact",
+            }),
+            missing_on_app=[
+                "customers/data_request",
+                "customers/redact",
+            ],
+            extra_on_app=[],
+            gdpr_missing=[
+                "customers/data_request",
+                "customers/redact",
+            ],
+            is_healthy=False,
+        )
+        with patch(
+            "core.feedback.webhook_health.compare_to_live",
+            return_value=bad,
+        ):
+            out, _ = _capture(
+                cli._cmd_shopify_doctor, _ns(),
+            )
+        assert "GDPR topics missing" in out
+        assert "REJECT" in out
+        # Both missing GDPR topics enumerated
+        assert "customers/data_request" in out
+        assert "customers/redact" in out
+        # General fix hint also present
+        assert "shopify-prepare-deploy" in out
