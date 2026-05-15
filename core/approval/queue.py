@@ -1035,6 +1035,33 @@ class ApprovalQueue:
             "monotonic_increasing": monotonic_increasing,
         }
 
+    def all_engines_calibration(self) -> dict[str, dict[str, Any]]:
+        """Per-engine calibration sweep across every engine that
+        has confidence-tagged actions.
+
+        Returns ``{engine_name: calibration_result}``. Engines
+        without any confidence-tagged actions are absent from
+        the result (no signal to assess).
+
+        Used by the ``shopai engines-calibration`` triage view
+        to flag miscalibrated engines at a glance without N
+        per-engine round-trips.
+        """
+        # Find engines that have at least one confidence-tagged
+        # action — cheaper than scanning every engine in the
+        # registry blindly.
+        with _LOCK:
+            engine_rows = self._conn.execute(
+                """SELECT DISTINCT engine
+                   FROM pending_actions
+                   WHERE confidence IS NOT NULL""",
+            ).fetchall()
+        engines = [r["engine"] for r in engine_rows]
+        return {
+            engine: self.engine_confidence_calibration(engine)
+            for engine in sorted(engines)
+        }
+
     def list_recent_outcomes(
         self,
         *,
