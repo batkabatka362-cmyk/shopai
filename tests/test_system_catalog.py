@@ -381,3 +381,87 @@ class TestDescriptions:
         # And every entry has the key (empty string when no doc)
         for e in data["entries"]:
             assert "description" in e
+
+
+# ─── Markdown export (PR #209) ───────────────────────────────
+
+
+class TestMarkdownExport:
+
+    def test_markdown_emits_header_and_index(self, cli):
+        out, _ = _capture(cli._cmd_catalog, _ns(markdown=True))
+        # Top-level header
+        assert "# ShopAI Action Catalog" in out
+        # Summary line
+        assert "dispatcher(s) registered" in out
+        # Index section
+        assert "## Index" in out
+        # Anchor links use github-slug rules: _ -> -
+        assert "[`apply_tags`](#apply-tags)" in out
+
+    def test_markdown_per_action_section(self, cli):
+        out, _ = _capture(cli._cmd_catalog, _ns(markdown=True))
+        # Per-action h2 header
+        assert "## `apply_tags`" in out
+        # The description from the dispatcher docstring
+        assert "tag" in out.lower()
+        # Field rows
+        assert "**Dispatcher**:" in out
+        assert "**Capability**:" in out
+        assert "**Adapter**:" in out
+        assert "**Emitting engines**:" in out
+        # Scopes are inline-coded
+        assert "`write_products`" in out
+
+    def test_markdown_filter_engine(self, cli):
+        out, _ = _capture(
+            cli._cmd_catalog,
+            _ns(markdown=True, engine="loyalty"),
+        )
+        # Index shows only the filtered entries
+        assert "[`mint_loyalty_code`]" in out
+        # Other engines' entries should NOT appear in the index
+        assert "[`apply_tags`]" not in out
+        # Filter count surfaces
+        assert "1 shown after filters" in out
+
+    def test_markdown_filter_action_type(self, cli):
+        out, _ = _capture(
+            cli._cmd_catalog,
+            _ns(markdown=True, action_type="apply_fraud_tag"),
+        )
+        assert "## `apply_fraud_tag`" in out
+        # Not other actions
+        assert "## `apply_tags`" not in out
+
+    def test_markdown_empty_filter_renders_clean(self, cli):
+        """Filter that matches nothing -> Markdown with empty
+        index, no per-action sections."""
+        out, _ = _capture(
+            cli._cmd_catalog,
+            _ns(markdown=True, engine="not_a_real_engine"),
+        )
+        assert "# ShopAI Action Catalog" in out
+        # Index header still present but no entries
+        assert "## Index" in out
+        # No "## `<action>`" sections
+        # Count of h2 headers should be exactly 1 (the index)
+        h2_count = out.count("\n## ")
+        assert h2_count == 1
+
+    def test_markdown_stable_across_runs(self, cli):
+        """Two consecutive renders produce identical output --
+        operators can commit the file and diff cleanly."""
+        out_a, _ = _capture(cli._cmd_catalog, _ns(markdown=True))
+        out_b, _ = _capture(cli._cmd_catalog, _ns(markdown=True))
+        assert out_a == out_b
+
+    def test_markdown_and_json_mutually_exclusive_at_render(self, cli):
+        """When both flags are set, markdown takes precedence
+        (it short-circuits before the JSON branch)."""
+        out, _ = _capture(
+            cli._cmd_catalog, _ns(markdown=True, json=True),
+        )
+        # Markdown header, not JSON envelope
+        assert "# ShopAI Action Catalog" in out
+        assert not out.lstrip().startswith("{")
