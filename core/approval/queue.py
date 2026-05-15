@@ -1121,6 +1121,96 @@ class ApprovalQueue:
             }
         return result
 
+    def decision_latency_stats(
+        self,
+        *,
+        statuses: list[ApprovalStatus] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Per-engine aggregate of decision latency.
+
+        Latency = ``decided_at - proposed_at`` — i.e. the time
+        from engine proposal to operator click. This is the
+        complement to :meth:`pending_latency_stats`:
+
+          - Pending latency: "what's stale RIGHT NOW?"
+          - Decision latency: "historically, how fast did
+            operators DECIDE on this engine's proposals?"
+
+        Together they distinguish four operator-engine patterns:
+
+          - High pending + low decision latency: spammy engine,
+            operators DO act quickly but lots of proposals →
+            tune frequency.
+          - High pending + high decision latency: engine
+            producing un-actionable proposals → reconsider it.
+          - Low pending + low decision latency: healthy.
+          - Low pending + high decision latency: operators
+            struggle when they DO act → investigate UX.
+
+        EXPIRED is excluded from the default ``statuses`` because
+        ``decided_at`` on an EXPIRED row reflects sweeper time,
+        not operator-click time — including it would skew the
+        signal. Operators wanting that view pass
+        ``statuses=[ApprovalStatus.EXPIRED]`` explicitly.
+
+        Returns ``{engine: stats}`` for each engine with at
+        least one decided action in the requested status set.
+        Each stats dict carries:
+          - ``decided_count`` (int)
+          - ``slowest_seconds`` (float)
+          - ``median_seconds`` (float, p50)
+          - ``mean_seconds`` (float, arithmetic mean)
+        """
+        if statuses is None:
+            statuses = [
+                ApprovalStatus.APPROVED,
+                ApprovalStatus.REJECTED,
+                ApprovalStatus.EXECUTED,
+                ApprovalStatus.FAILED,
+            ]
+        if not statuses:
+            return {}
+
+        status_values = [s.value for s in statuses]
+        placeholders = ",".join("?" for _ in status_values)
+        with _LOCK:
+            rows = self._conn.execute(
+                f"""SELECT engine, proposed_at, decided_at
+                    FROM pending_actions
+                    WHERE status IN ({placeholders})
+                      AND decided_at IS NOT NULL""",
+                status_values,
+            ).fetchall()
+
+        by_engine: dict[str, list[float]] = {}
+        for r in rows:
+            latency = max(
+                0.0,
+                float(r["decided_at"]) - float(r["proposed_at"]),
+            )
+            by_engine.setdefault(r["engine"], []).append(latency)
+
+        result: dict[str, dict[str, Any]] = {}
+        for engine, latencies in by_engine.items():
+            latencies_sorted = sorted(latencies)
+            n = len(latencies_sorted)
+            if n == 0:
+                continue
+            if n % 2 == 1:
+                median = latencies_sorted[n // 2]
+            else:
+                median = (
+                    latencies_sorted[n // 2 - 1]
+                    + latencies_sorted[n // 2]
+                ) / 2.0
+            result[engine] = {
+                "decided_count": n,
+                "slowest_seconds": round(latencies_sorted[-1], 1),
+                "median_seconds": round(median, 1),
+                "mean_seconds": round(sum(latencies_sorted) / n, 1),
+            }
+        return result
+
     def list_recent_outcomes(
         self,
         *,

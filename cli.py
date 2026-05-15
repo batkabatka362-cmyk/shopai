@@ -525,6 +525,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_decision_latency = approvals_sub.add_parser(
+        "decision-latency",
+        help=(
+            "Per-engine historical decision latency — how fast "
+            "operators DECIDE on this engine's proposals"
+        ),
+    )
+    approvals_decision_latency.add_argument(
+        "--status", default="default",
+        choices=[
+            "default", "approved", "rejected", "executed",
+            "failed", "expired", "all",
+        ],
+        help=(
+            "Which decision statuses to aggregate. 'default' = "
+            "approved+rejected+executed+failed (excludes EXPIRED "
+            "since its decided_at is sweeper time, not operator "
+            "time). 'all' includes EXPIRED."
+        ),
+    )
+    approvals_decision_latency.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_pending_latency = approvals_sub.add_parser(
         "pending-latency",
         help=(
@@ -3600,6 +3625,9 @@ def _cmd_approvals(args) -> None:
     if verb == "pending-latency":
         _cmd_approvals_pending_latency(args)
         return
+    if verb == "decision-latency":
+        _cmd_approvals_decision_latency(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3617,7 +3645,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals auto-approve-candidates [--json]\n"
         "  shopai approvals quarantine  [--release | --clear-release | --exempt | --unexempt ENGINE | --list] [--json]\n"
         "  shopai approvals quarantine-release-candidates [--since 7d] [--json]\n"
-        "  shopai approvals pending-latency [--older-than 24h] [--json]"
+        "  shopai approvals pending-latency [--older-than 24h] [--json]\n"
+        "  shopai approvals decision-latency [--status approved|rejected|executed|failed|expired|all] [--json]"
     )
     sys.exit(1)
 
@@ -4011,6 +4040,94 @@ def _cmd_approvals_pending_latency(args) -> None:
             f"{_format_age(r['oldest_age_seconds']):>8}  "
             f"{_format_age(r['median_age_seconds']):>8}  "
             f"{_format_age(r['mean_age_seconds']):>6}"
+        )
+
+
+def _cmd_approvals_decision_latency(args) -> None:
+    """Per-engine historical decision latency.
+
+    Complement to ``pending-latency``: that surface answers
+    "what's stale RIGHT NOW?"; this one answers "across all
+    historical decisions, how fast did operators DECIDE on this
+    engine's proposals?"
+
+    The two together let operators distinguish four
+    engine-relationship patterns (see
+    :meth:`ApprovalQueue.decision_latency_stats` for the table).
+
+    ``--status`` chooses which decision states to include:
+      - ``default`` (no flag): approved + rejected + executed +
+        failed (excludes EXPIRED since its decided_at is sweeper
+        time, not operator time)
+      - ``approved`` / ``rejected`` / ``executed`` / ``failed``
+        / ``expired``: single-status view
+      - ``all``: every decided status including EXPIRED
+    """
+    from core.approval import get_approval_queue
+    from core.approval.queue import ApprovalStatus
+
+    raw_status = getattr(args, "status", "default") or "default"
+    if raw_status == "default":
+        statuses = None
+    elif raw_status == "all":
+        statuses = [
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.REJECTED,
+            ApprovalStatus.EXECUTED,
+            ApprovalStatus.FAILED,
+            ApprovalStatus.EXPIRED,
+        ]
+    else:
+        try:
+            statuses = [ApprovalStatus(raw_status)]
+        except ValueError:
+            print(f"Unknown status: {raw_status}")
+            sys.exit(1)
+
+    try:
+        queue = get_approval_queue()
+        stats = queue.decision_latency_stats(statuses=statuses)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("decision_latency_stats raised: %s", exc)
+        stats = {}
+
+    rows = [{"engine": e, **s} for e, s in stats.items()]
+
+    # Sort: slowest median first (engines operators struggle
+    # with most surface at the top — matches the triage UX of
+    # PRs #164 / #165 / #167 / #168).
+    rows.sort(key=lambda r: (
+        -r["median_seconds"],
+        -r["decided_count"],
+        r["engine"],
+    ))
+
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        print(
+            "No decided actions yet for the selected status set."
+        )
+        return
+
+    print(
+        f"Decision latency ({len(rows)} engines, status="
+        f"{raw_status}):"
+    )
+    print()
+    print(
+        "  engine                          decisions  slowest   "
+        "median   mean"
+    )
+    for r in rows:
+        engine_label = r["engine"][:30]
+        print(
+            f"  {engine_label:<30}  {r['decided_count']:>9}  "
+            f"{_format_age(r['slowest_seconds']):>8}  "
+            f"{_format_age(r['median_seconds']):>7}  "
+            f"{_format_age(r['mean_seconds']):>6}"
         )
 
 
