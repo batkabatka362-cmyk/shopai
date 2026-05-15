@@ -36,6 +36,7 @@ class TestLoopEndpoint:
             "recommendations",
             "webhook_stats",
             "engine_coverage",
+            "governance",
         }
 
     def test_default_top_5(self):
