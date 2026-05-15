@@ -525,6 +525,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_rejection_rates = approvals_sub.add_parser(
+        "rejection-rates",
+        help=(
+            "Per-engine rejection rate — surfaces engines whose "
+            "proposals operators consistently veto"
+        ),
+    )
+    approvals_rejection_rates.add_argument(
+        "--min-decisions", type=int, default=5,
+        metavar="N",
+        help=(
+            "Minimum decided actions for an engine to surface "
+            "(filters out engines with too little signal). "
+            "Default: 5."
+        ),
+    )
+    approvals_rejection_rates.add_argument(
+        "--threshold", type=float, default=None,
+        metavar="RATE",
+        help=(
+            "Filter to engines with rejection_rate >= RATE "
+            "(e.g. 0.5 for majority-rejected). Alert mode."
+        ),
+    )
+    approvals_rejection_rates.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_decision_latency = approvals_sub.add_parser(
         "decision-latency",
         help=(
@@ -3628,6 +3657,9 @@ def _cmd_approvals(args) -> None:
     if verb == "decision-latency":
         _cmd_approvals_decision_latency(args)
         return
+    if verb == "rejection-rates":
+        _cmd_approvals_rejection_rates(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3646,7 +3678,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals quarantine  [--release | --clear-release | --exempt | --unexempt ENGINE | --list] [--json]\n"
         "  shopai approvals quarantine-release-candidates [--since 7d] [--json]\n"
         "  shopai approvals pending-latency [--older-than 24h] [--json]\n"
-        "  shopai approvals decision-latency [--status approved|rejected|executed|failed|expired|all] [--json]"
+        "  shopai approvals decision-latency [--status approved|rejected|executed|failed|expired|all] [--json]\n"
+        "  shopai approvals rejection-rates [--min-decisions N] [--threshold 0.5] [--json]"
     )
     sys.exit(1)
 
@@ -4128,6 +4161,104 @@ def _cmd_approvals_decision_latency(args) -> None:
             f"{_format_age(r['slowest_seconds']):>8}  "
             f"{_format_age(r['median_seconds']):>7}  "
             f"{_format_age(r['mean_seconds']):>6}"
+        )
+
+
+def _cmd_approvals_rejection_rates(args) -> None:
+    """Per-engine rejection rate — engine misbehaviour signal.
+
+    Different signal from the latency surfaces:
+      - pending-latency #168: engines whose proposals SIT
+      - decision-latency #169: engines where decisions are SLOW
+      - this: engines where the operator explicitly says NO
+
+    High rejection rate at proposal time = the engine's
+    proposals are bad (operator vetoes them BEFORE execute).
+    Different from quarantine (PR #162) which fires on
+    negative OUTCOMES post-execute.
+
+    ``--min-decisions`` filters out engines with too little
+    signal (default 5). ``--threshold 0.5`` filters to
+    majority-rejected engines for alert-mode triage.
+    """
+    from core.approval import get_approval_queue
+
+    try:
+        queue = get_approval_queue()
+        stats = queue.rejection_rate_stats()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("rejection_rate_stats raised: %s", exc)
+        stats = {}
+
+    min_decisions = max(1, int(getattr(args, "min_decisions", 5)))
+    threshold = getattr(args, "threshold", None)
+
+    rows: list[dict[str, Any]] = []
+    for engine, s in stats.items():
+        if s["decided_count"] < min_decisions:
+            continue
+        if (
+            threshold is not None
+            and s["rejection_rate"] < threshold
+        ):
+            continue
+        rows.append({"engine": engine, **s})
+
+    # Sort: highest rejection rate first (worst offenders surface
+    # at the top — matches the triage UX of PRs #164/#165/#167/
+    # #168/#169). Tiebreak on decided_count desc (more-evidence
+    # engines first).
+    rows.sort(key=lambda r: (
+        -r["rejection_rate"],
+        -r["decided_count"],
+        r["engine"],
+    ))
+
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        if threshold is not None:
+            print(
+                f"No engines with rejection_rate >= {threshold} "
+                f"(min decisions: {min_decisions})."
+            )
+        else:
+            print(
+                f"No engines with at least {min_decisions} "
+                "decided actions yet."
+            )
+        return
+
+    print(
+        f"Rejection rates ({len(rows)} engines, "
+        f"min decisions: {min_decisions}):"
+    )
+    print()
+    print(
+        "  engine                          decided  approved  "
+        "rejected   rate"
+    )
+    for r in rows:
+        prefix = "!" if r["rejection_rate"] >= 0.5 else " "
+        engine_label = r["engine"][:30]
+        print(
+            f"{prefix} {engine_label:<30}  "
+            f"{r['decided_count']:>7}  "
+            f"{r['approved_count']:>8}  "
+            f"{r['rejected_count']:>8}  "
+            f"{r['rejection_rate']:>5.2f}"
+        )
+
+    alerts = [r for r in rows if r["rejection_rate"] >= 0.5]
+    if alerts:
+        print()
+        print(
+            f"ALERT: {len(alerts)} engine(s) have majority-"
+            "rejected proposals. Inspect via "
+            "`shopai approvals recent rejected --engine <name>` "
+            "and consider disabling at the engine level."
         )
 
 
