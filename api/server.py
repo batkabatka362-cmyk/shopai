@@ -1114,6 +1114,9 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         try:
             report = audit_coverage()
         except Exception as exc:
+            logger.warning(
+                "approvals coverage audit raised: %s", exc,
+            )
             self._json_response(500, {"error": f"Audit failed: {exc}"})
             return
         self._json_response(200, {

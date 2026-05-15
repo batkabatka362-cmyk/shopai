@@ -88,11 +88,22 @@ class TestByGoal:
         assert "cart_recovery" in body["by_goal"]["grow_customers"]
 
     def test_unmapped_engines_in_unmapped_bucket(self):
+        """Pick an unmapped engine dynamically -- the
+        engine-goal map evolves; hardcoding a specific engine
+        name caused drift (cohort_analysis was unmapped when
+        this test was written but later mapped)."""
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+        from engines.registry import list_engines
+        unmapped = sorted(
+            e for e in list_engines() if e not in ENGINE_GOAL_MAP
+        )
+        assert unmapped, "expected at least one unmapped engine"
         handler, responses = _make_handler("?by_goal=1")
         handler._list_engines()
         body = responses[0][1]
-        # cohort_analysis is unmapped per shopai engines --unmapped output
-        assert "cohort_analysis" in body["by_goal"]["unmapped"]
+        # Every unmapped engine should land in the "unmapped"
+        # bucket -- verify on the dynamically-picked sample.
+        assert unmapped[0] in body["by_goal"]["unmapped"]
 
     def test_engines_within_group_sorted(self):
         handler, responses = _make_handler("?by_goal=1")
