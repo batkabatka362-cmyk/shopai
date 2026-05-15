@@ -489,6 +489,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_auto_candidates = approvals_sub.add_parser(
+        "auto-approve-candidates",
+        help=(
+            "Recommend engines NOT yet on the auto-approve "
+            "allowlist that already pass the outcome guardrails"
+        ),
+    )
+    approvals_auto_candidates.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_quarantine = approvals_sub.add_parser(
         "quarantine",
         help=(
@@ -3282,6 +3294,9 @@ def _cmd_approvals(args) -> None:
     if verb == "quarantine":
         _cmd_approvals_quarantine(args)
         return
+    if verb == "auto-approve-candidates":
+        _cmd_approvals_auto_candidates(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3296,6 +3311,7 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals recent      <status> [--engine NAME] [--limit N]\n"
         "  shopai approvals history     [<action_id>] [--by ACTOR] [--limit N] [--json]\n"
         "  shopai approvals auto-config [--enable ENGINE | --disable ENGINE | --list] [--json]\n"
+        "  shopai approvals auto-approve-candidates [--json]\n"
         "  shopai approvals quarantine  [--release | --clear-release | --exempt | --unexempt ENGINE | --list] [--json]"
     )
     sys.exit(1)
@@ -3462,6 +3478,69 @@ def _cmd_approvals_quarantine(args) -> None:
     print("  Thresholds:")
     print(f"    min outcomes observed: {qm.MIN_OUTCOMES_OBSERVED}")
     print(f"    max negative ratio:    {qm.MAX_NEGATIVE_RATIO:.2f}")
+
+
+def _cmd_approvals_auto_candidates(args) -> None:
+    """List engines that would pass auto-approve guardrails if
+    allowlisted — the adoption recommendation surface.
+
+    Operators inspecting the output decide whether to opt each
+    one in via ``shopai approvals auto-config --enable ENGINE``.
+    The numbers (history count + outcome ratio) are shown so the
+    operator can sanity-check the recommendation against their
+    own intuition about the engine.
+    """
+    from core.approval import get_approval_queue
+    from core.approval.auto_approve import find_candidates
+
+    try:
+        queue = get_approval_queue()
+        candidates = find_candidates(queue)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("auto-approve candidate scan failed: %s", exc)
+        candidates = []
+
+    if getattr(args, "json", False):
+        print(json.dumps(
+            [
+                {
+                    "engine": c.engine,
+                    "outcome_ratio": c.outcome_ratio,
+                    "positive": c.positive,
+                    "negative": c.negative,
+                    "total_polarised": c.total_polarised,
+                }
+                for c in candidates
+            ],
+            indent=2,
+        ))
+        return
+
+    if not candidates:
+        print(
+            "No auto-approve candidates "
+            "(no engines outside the allowlist meet the outcome "
+            "guardrails yet)."
+        )
+        return
+
+    print(
+        f"Auto-approve candidates ({len(candidates)} engines could "
+        "be safely opted in):"
+    )
+    print(
+        "  engine                          ratio  positive negative  history"
+    )
+    for c in candidates:
+        engine_label = c.engine[:30]
+        print(
+            f"  {engine_label:<30}  {c.outcome_ratio:>5.2f}  "
+            f"{c.positive:>8}  {c.negative:>8}  {c.total_polarised:>7}"
+        )
+    print()
+    print(
+        "Enable with: shopai approvals auto-config --enable <engine>"
+    )
 
 
 def _cmd_approvals_history(args) -> None:

@@ -337,3 +337,73 @@ def maybe_auto_approve(
                 action_id, exc,
             )
     return decision
+
+
+# ── Candidate finder ───────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CandidateEngine:
+    """One engine that would pass the outcome-based guardrails
+    if added to the allowlist. ``confidence`` isn't checked here —
+    it's a per-action property, not per-engine. The CLI surfaces
+    this as a recommendation; operators inspecting it decide
+    whether to opt in based on the supporting numbers."""
+
+    engine: str
+    outcome_ratio: float
+    positive: int
+    negative: int
+    total_polarised: int
+
+
+def find_candidates(
+    queue: "ApprovalQueue",
+    *,
+    config: AutoApproveConfig | None = None,
+) -> list[CandidateEngine]:
+    """Scan every engine with outcome history and return the ones
+    that would pass the OUTCOME-based guardrails (history + ratio)
+    if added to the allowlist. Already-allowlisted engines are
+    excluded — the recommendation surface is for adoption, not
+    for inventorying current state.
+
+    Returns newest-track-record-first (highest history count) so
+    operators see the most-data engines first. Within the same
+    history bucket the highest outcome_ratio sorts first.
+    """
+    cfg = config if config is not None else load_config()
+    out: list[CandidateEngine] = []
+
+    try:
+        per_engine = queue.all_engine_outcome_stats()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "all_engine_outcome_stats raised: %s", exc,
+        )
+        return out
+
+    for engine, stats in per_engine.items():
+        if cfg.is_enabled(engine):
+            continue
+        positive = int(stats.get("positive_count", 0) or 0)
+        negative = int(stats.get("negative_count", 0) or 0)
+        polarised = positive + negative
+        if polarised < MIN_OUTCOMES_OBSERVED:
+            continue
+        ratio = positive / polarised
+        if ratio < MIN_OUTCOME_RATIO:
+            continue
+        out.append(CandidateEngine(
+            engine=engine,
+            outcome_ratio=round(ratio, 4),
+            positive=positive,
+            negative=negative,
+            total_polarised=polarised,
+        ))
+
+    out.sort(
+        key=lambda c: (c.total_polarised, c.outcome_ratio),
+        reverse=True,
+    )
+    return out
