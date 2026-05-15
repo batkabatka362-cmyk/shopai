@@ -38,6 +38,7 @@ A follow-up PR can wire this into an API endpoint and a CLI
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,6 +66,13 @@ _EFFECTIVENESS_NEUTRAL = 0.5
 # want a short list to render; the alternatives slot picks up the
 # overflow.
 _DEFAULT_LIMIT = 10
+
+# Maximum per-engine priority adjustment driven by direct outcome
+# data. A score of 1.0 (every recorded outcome positive) bumps
+# priority by +cap; 0.0 (every outcome a refund/cancel) by -cap.
+# Capped at 0.10 so a hot engine moves above its goal cluster but
+# can't override the goal alignment signal (which swings ±0.5).
+_OUTCOME_ADJUSTMENT_MAX = 0.10
 
 
 @dataclass
@@ -135,6 +143,7 @@ def recommend_engines(
     manager: Any | None = None,
     include_alternatives: bool = True,
     available_engines: set[str] | None = None,
+    outcome_scores: dict[str, float | None] | None = None,
 ) -> RecommendationResult:
     """Rank engines for the current goal.
 
@@ -172,11 +181,18 @@ def recommend_engines(
             e for e in primary_engines if e in available_engines
         ]
 
+    # If no outcome_scores override provided, fetch from the
+    # approval queue (best-effort — queue unavailable → skip).
+    resolved_scores = outcome_scores
+    if resolved_scores is None:
+        resolved_scores = _resolve_outcome_scores()
+
     primary_rows = _build_rows(
         primary_engines,
         active_goal=resolved_goal,
         manager=resolved_manager,
         alignment=_ALIGNMENT_PRIMARY,
+        outcome_scores=resolved_scores,
     )
     primary_rows.sort(key=lambda r: r.priority, reverse=True)
     primary_rows = primary_rows[:effective_limit]
@@ -199,6 +215,7 @@ def recommend_engines(
             active_goal=resolved_goal,
             manager=resolved_manager,
             alignment=_ALIGNMENT_MISMATCH,
+            outcome_scores=resolved_scores,
         )
         # Rank alternatives by effectiveness within their own goal
         # (since alignment is identical 0.0 for all of them).
@@ -243,29 +260,57 @@ def _build_rows(
     active_goal: str,
     manager: Any | None,
     alignment: float,
+    outcome_scores: dict[str, float | None] | None = None,
 ) -> list[EngineRecommendation]:
     """Per-engine: resolve goal + effectiveness, compute priority.
 
     Engines absent from ``ENGINE_GOAL_MAP`` (shouldn't happen given
     callers source from that map, but defensive) are skipped.
+
+    When ``outcome_scores`` is provided, the per-engine outcome
+    score (positive / (positive + negative) over the action_outcomes
+    table) shifts priority by up to ±``_OUTCOME_ADJUSTMENT_MAX``.
+    Goal-level EMA is the primary signal; the per-engine bump
+    differentiates engines within a goal cluster without dominating.
     """
+    scores = outcome_scores or {}
     rows: list[EngineRecommendation] = []
     for engine in engines:
         primary_goal = goal_for_engine(engine)
         if primary_goal == "unmapped":
             continue
         effectiveness = _effectiveness_for(primary_goal, manager)
-        priority = alignment * (0.5 + 0.5 * effectiveness)
+        base = alignment * (0.5 + 0.5 * effectiveness)
+        # Per-engine outcome adjustment: score is None when the
+        # engine has no polarised history yet (no positive AND no
+        # negative outcomes). In that case the adjustment is zero —
+        # the recommender doesn't punish untested engines.
+        outcome_score = scores.get(engine)
+        if outcome_score is None:
+            adjustment = 0.0
+            score_str = "no outcomes yet"
+        else:
+            # Center at 0.5 (neutral) and scale to the cap.
+            # score=1.0 → +cap; score=0.0 → -cap; score=0.5 → 0.
+            adjustment = (
+                _OUTCOME_ADJUSTMENT_MAX * 2.0 * (outcome_score - 0.5)
+            )
+            score_str = (
+                f"outcome score {outcome_score:.2f} "
+                f"({'+' if adjustment >= 0 else ''}{adjustment:.2f})"
+            )
+        priority = base + adjustment
         if alignment >= _ALIGNMENT_PRIMARY:
             reason = (
                 f"primary engine for {active_goal!r}; "
-                f"effectiveness {effectiveness:.2f}"
+                f"effectiveness {effectiveness:.2f}; "
+                f"{score_str}"
             )
         else:
             reason = (
                 f"primary goal {primary_goal!r} differs from "
                 f"active {active_goal!r}; effectiveness "
-                f"{effectiveness:.2f}"
+                f"{effectiveness:.2f}; {score_str}"
             )
         rows.append(EngineRecommendation(
             engine=engine,
@@ -276,6 +321,37 @@ def _build_rows(
             reason=reason,
         ))
     return rows
+
+
+def _resolve_outcome_scores() -> dict[str, float | None]:
+    """Best-effort: fetch per-engine outcome scores from the
+    approval queue. Returns an empty dict if the queue is
+    unavailable — the recommender simply skips the per-engine
+    adjustment in that case.
+
+    Pattern J — short-circuits under pytest so tests that don't
+    explicitly pass ``outcome_scores`` don't accidentally read
+    production state from ``data/approval_queue.db``. Tests that
+    DO want to exercise the auto-fetch path either patch
+    ``PYTEST_CURRENT_TEST`` away or supply ``outcome_scores``
+    directly to ``recommend_engines``.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {}
+    try:
+        from core.approval import get_approval_queue
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("approval queue unavailable: %s", exc)
+        return {}
+    try:
+        stats = get_approval_queue().all_engine_outcome_stats()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine outcome stats lookup failed: %s", exc)
+        return {}
+    return {
+        engine: entry.get("outcome_score")
+        for engine, entry in stats.items()
+    }
 
 
 def _resolve_goal(goal: str | None, manager: Any | None) -> str:

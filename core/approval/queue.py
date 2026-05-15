@@ -644,6 +644,148 @@ class ApprovalQueue:
             "recorded_at": r["recorded_at"],
         } for r in rows]
 
+    def engine_outcome_stats(
+        self, engine_name: str,
+    ) -> dict[str, Any]:
+        """Aggregate outcomes for a single engine — the per-engine
+        effectiveness signal that goal-level EMA misses.
+
+        Joins ``action_outcomes`` with ``pending_actions`` on
+        ``engine = engine_name``. Counts positive / negative /
+        neutral polarities, sums revenue across rows, and computes
+        ``outcome_score`` = positive / (positive + negative) when
+        there's at least one polarised event, else ``None``.
+
+        Returns:
+            {
+              "positive_count": int,
+              "negative_count": int,
+              "neutral_count":  int,
+              "total_outcomes": int,
+              "total_revenue":  float,  # net of refunds
+              "outcome_score":  float | None,  # [0.0, 1.0]
+            }
+
+        Used by the engine recommender as a per-engine tiebreaker
+        within a goal cluster: two engines mapped to the same goal
+        with the same goal-level EMA can still be differentiated
+        by their direct outcome track records.
+        """
+        if not isinstance(engine_name, str) or not engine_name:
+            return {
+                "positive_count": 0,
+                "negative_count": 0,
+                "neutral_count": 0,
+                "total_outcomes": 0,
+                "total_revenue": 0.0,
+                "outcome_score": None,
+            }
+
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT o.polarity, o.metrics_json
+                   FROM action_outcomes o
+                   INNER JOIN pending_actions p ON p.id = o.action_id
+                   WHERE p.engine = ?""",
+                (engine_name,),
+            ).fetchall()
+
+        positive = negative = neutral = 0
+        revenue = 0.0
+        for r in rows:
+            polarity = r["polarity"]
+            if polarity == "positive":
+                positive += 1
+            elif polarity == "negative":
+                negative += 1
+            else:
+                neutral += 1
+            metrics = _safe_loads(r["metrics_json"])
+            try:
+                rev = float(metrics.get("revenue", 0) or 0)
+            except (TypeError, ValueError):
+                rev = 0.0
+            # Refunds (negative polarity) deduct from net revenue;
+            # the bridge already stores revenue as a positive number
+            # regardless of polarity, so we sign it here.
+            if polarity == "negative":
+                revenue -= rev
+            else:
+                revenue += rev
+
+        signal = positive + negative
+        outcome_score: float | None = (
+            (positive / signal) if signal > 0 else None
+        )
+        return {
+            "positive_count": positive,
+            "negative_count": negative,
+            "neutral_count": neutral,
+            "total_outcomes": positive + negative + neutral,
+            "total_revenue": round(revenue, 2),
+            "outcome_score": (
+                round(outcome_score, 4)
+                if outcome_score is not None
+                else None
+            ),
+        }
+
+    def all_engine_outcome_stats(self) -> dict[str, dict[str, Any]]:
+        """Per-engine outcome aggregator across every engine that
+        has any matched outcomes. Engines with no outcomes are
+        absent from the result (callers default to neutral).
+
+        Single SQL pass over the join. Used by the recommender
+        when it wants to score every candidate engine in one
+        call rather than N round-trips through
+        :meth:`engine_outcome_stats`.
+        """
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT p.engine, o.polarity, o.metrics_json
+                   FROM action_outcomes o
+                   INNER JOIN pending_actions p ON p.id = o.action_id""",
+            ).fetchall()
+
+        agg: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            engine = r["engine"]
+            entry = agg.setdefault(engine, {
+                "positive_count": 0,
+                "negative_count": 0,
+                "neutral_count": 0,
+                "total_revenue": 0.0,
+            })
+            polarity = r["polarity"]
+            if polarity == "positive":
+                entry["positive_count"] += 1
+            elif polarity == "negative":
+                entry["negative_count"] += 1
+            else:
+                entry["neutral_count"] += 1
+            metrics = _safe_loads(r["metrics_json"])
+            try:
+                rev = float(metrics.get("revenue", 0) or 0)
+            except (TypeError, ValueError):
+                rev = 0.0
+            if polarity == "negative":
+                entry["total_revenue"] -= rev
+            else:
+                entry["total_revenue"] += rev
+
+        # Finalise: compute outcome_score and total_outcomes
+        for engine, entry in agg.items():
+            signal = entry["positive_count"] + entry["negative_count"]
+            entry["total_outcomes"] = (
+                signal + entry["neutral_count"]
+            )
+            entry["outcome_score"] = (
+                round(entry["positive_count"] / signal, 4)
+                if signal > 0 else None
+            )
+            entry["total_revenue"] = round(entry["total_revenue"], 2)
+        return agg
+
     def stats(self) -> dict[str, int]:
         """Counts per status — used by the API status endpoint."""
         with _LOCK:
