@@ -489,6 +489,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_quarantine = approvals_sub.add_parser(
+        "quarantine",
+        help=(
+            "Manage failed-engine quarantine "
+            "(exemptions + operator releases)"
+        ),
+    )
+    quarantine_action = (
+        approvals_quarantine.add_mutually_exclusive_group()
+    )
+    quarantine_action.add_argument(
+        "--release", metavar="ENGINE", default=None,
+        help=(
+            "Manually release a quarantined ENGINE — bypasses "
+            "quarantine until the operator clears the release"
+        ),
+    )
+    quarantine_action.add_argument(
+        "--clear-release", metavar="ENGINE", default=None,
+        help="Remove ENGINE from the released list",
+    )
+    quarantine_action.add_argument(
+        "--exempt", metavar="ENGINE", default=None,
+        help=(
+            "Permanently exempt ENGINE from quarantine (legit "
+            "high-negative-ratio engines)"
+        ),
+    )
+    quarantine_action.add_argument(
+        "--unexempt", metavar="ENGINE", default=None,
+        help="Remove ENGINE from the exemption list",
+    )
+    quarantine_action.add_argument(
+        "--list", action="store_true",
+        help="Show current exemptions + released engines + thresholds",
+    )
+    approvals_quarantine.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     approvals_auto_config = approvals_sub.add_parser(
         "auto-config",
         help=(
@@ -3162,6 +3203,9 @@ def _cmd_approvals(args) -> None:
     if verb == "auto-config":
         _cmd_approvals_auto_config(args)
         return
+    if verb == "quarantine":
+        _cmd_approvals_quarantine(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3175,7 +3219,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals audit       [--engines-root PATH]\n"
         "  shopai approvals recent      <status> [--engine NAME] [--limit N]\n"
         "  shopai approvals history     [<action_id>] [--by ACTOR] [--limit N] [--json]\n"
-        "  shopai approvals auto-config [--enable ENGINE | --disable ENGINE | --list] [--json]"
+        "  shopai approvals auto-config [--enable ENGINE | --disable ENGINE | --list] [--json]\n"
+        "  shopai approvals quarantine  [--release | --clear-release | --exempt | --unexempt ENGINE | --list] [--json]"
     )
     sys.exit(1)
 
@@ -3242,6 +3287,105 @@ def _cmd_approvals_auto_config(args) -> None:
     print(f"    min outcomes observed: {aa.MIN_OUTCOMES_OBSERVED}")
     print(f"    min outcome ratio:     {aa.MIN_OUTCOME_RATIO:.2f}")
     print(f"    min confidence:        {aa.MIN_CONFIDENCE:.2f}")
+
+
+def _cmd_approvals_quarantine(args) -> None:
+    """Manage failed-engine quarantine state.
+
+    Five mutually exclusive actions (all optional → default is
+    list mode):
+      - ``--release ENGINE`` clears an active quarantine for ENGINE
+      - ``--clear-release ENGINE`` removes ENGINE from the released
+        list (lets quarantine re-engage on next bad ratio)
+      - ``--exempt ENGINE`` permanently exempts ENGINE from
+        quarantine (for engines where negative polarity is normal
+        e.g. returns workflows)
+      - ``--unexempt ENGINE`` removes the exemption
+      - ``--list`` (default) shows current state + thresholds
+    """
+    from core.approval import quarantine as qm
+
+    if args.release:
+        s = qm.release_engine(args.release)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "released": args.release,
+                "released_list": sorted(s.released),
+            }, indent=2))
+            return
+        print(
+            f"Released '{args.release}' from quarantine. "
+            f"Released list: {sorted(s.released)}"
+        )
+        return
+
+    if args.clear_release:
+        s = qm.clear_release(args.clear_release)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "cleared_release": args.clear_release,
+                "released_list": sorted(s.released),
+            }, indent=2))
+            return
+        print(
+            f"Cleared release of '{args.clear_release}'. "
+            f"Released list: {sorted(s.released)}"
+        )
+        return
+
+    if args.exempt:
+        s = qm.exempt_engine(args.exempt)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "exempted": args.exempt,
+                "exemptions": sorted(s.exemptions),
+            }, indent=2))
+            return
+        print(
+            f"Exempted '{args.exempt}' from quarantine. "
+            f"Exemptions: {sorted(s.exemptions)}"
+        )
+        return
+
+    if args.unexempt:
+        s = qm.unexempt_engine(args.unexempt)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "unexempted": args.unexempt,
+                "exemptions": sorted(s.exemptions),
+            }, indent=2))
+            return
+        print(
+            f"Removed '{args.unexempt}' from exemptions. "
+            f"Exemptions: {sorted(s.exemptions)}"
+        )
+        return
+
+    s = qm.load_state()
+    payload = {
+        "exemptions": sorted(s.exemptions),
+        "released": sorted(s.released),
+        "thresholds": {
+            "min_outcomes_observed": qm.MIN_OUTCOMES_OBSERVED,
+            "max_negative_ratio": qm.MAX_NEGATIVE_RATIO,
+        },
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return
+
+    print("Quarantine state:")
+    print(
+        f"  Exemptions ({len(s.exemptions)}): "
+        f"{', '.join(sorted(s.exemptions)) or '(none)'}"
+    )
+    print(
+        f"  Released ({len(s.released)}): "
+        f"{', '.join(sorted(s.released)) or '(none)'}"
+    )
+    print("  Thresholds:")
+    print(f"    min outcomes observed: {qm.MIN_OUTCOMES_OBSERVED}")
+    print(f"    max negative ratio:    {qm.MAX_NEGATIVE_RATIO:.2f}")
 
 
 def _cmd_approvals_history(args) -> None:
