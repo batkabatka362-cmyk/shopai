@@ -786,6 +786,69 @@ class ApprovalQueue:
             entry["total_revenue"] = round(entry["total_revenue"], 2)
         return agg
 
+    def list_recent_outcomes(
+        self,
+        *,
+        limit: int = 50,
+        engine: str | None = None,
+        polarity: str | None = None,
+        since_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Chronological view of webhook outcomes across all
+        executed actions. Used by ``shopai outcomes`` + the
+        ``/api/outcomes`` endpoint to answer "what's happening
+        downstream right now?"
+
+        Each row is a flat dict with action context joined in:
+        ``action_id`` / ``engine`` / ``action_type`` / ``topic`` /
+        ``polarity`` / ``metrics`` / ``source_event`` /
+        ``recorded_at``. Newest-first.
+
+        Filters (all optional, AND-combined):
+          - ``engine``: only outcomes for one engine namespace
+          - ``polarity``: positive | negative | neutral
+          - ``since_seconds``: only outcomes recorded within the
+            last N seconds (useful for "last hour" / "last day"
+            sweeps)
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if engine:
+            clauses.append("p.engine = ?")
+            params.append(engine)
+        if polarity in ("positive", "negative", "neutral"):
+            clauses.append("o.polarity = ?")
+            params.append(polarity)
+        if since_seconds is not None and since_seconds >= 0:
+            clauses.append("o.recorded_at >= ?")
+            params.append(time.time() - float(since_seconds))
+        where = (
+            " WHERE " + " AND ".join(clauses) if clauses else ""
+        )
+        sql = (
+            "SELECT o.action_id, p.engine, p.action_type, "
+            "       o.topic, o.polarity, o.metrics_json, "
+            "       o.source_event, o.recorded_at "
+            "FROM action_outcomes o "
+            "INNER JOIN pending_actions p ON p.id = o.action_id"
+            + where
+            + " ORDER BY o.recorded_at DESC LIMIT ?"
+        )
+        params.append(max(1, int(limit)))
+
+        with _LOCK:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [{
+            "action_id": r["action_id"],
+            "engine": r["engine"],
+            "action_type": r["action_type"],
+            "topic": r["topic"],
+            "polarity": r["polarity"],
+            "metrics": _safe_loads(r["metrics_json"]),
+            "source_event": r["source_event"],
+            "recorded_at": r["recorded_at"],
+        } for r in rows]
+
     def stats(self) -> dict[str, int]:
         """Counts per status — used by the API status endpoint."""
         with _LOCK:
