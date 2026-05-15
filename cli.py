@@ -368,6 +368,13 @@ def build_parser() -> argparse.ArgumentParser:
         "show", help="Show full detail for one action",
     )
     approvals_show.add_argument("action_id", help="Action ID")
+    approvals_show.add_argument(
+        "--no-outcomes", action="store_true",
+        help=(
+            "Skip embedding downstream outcomes (default: include "
+            "outcomes for EXECUTED actions)"
+        ),
+    )
 
     approvals_approve = approvals_sub.add_parser(
         "approve",
@@ -3056,7 +3063,8 @@ def _cmd_approvals_stats(args) -> None:
 
 def _cmd_approvals_show(args) -> None:
     from core.approval import get_approval_queue
-    action = get_approval_queue().get(args.action_id)
+    queue = get_approval_queue()
+    action = queue.get(args.action_id)
     if action is None:
         print(f"Unknown action id: {args.action_id}")
         sys.exit(1)
@@ -3067,6 +3075,24 @@ def _cmd_approvals_show(args) -> None:
     except Exception:  # noqa: BLE001
         # Knowledge layer optional — degrade silently
         pass
+
+    # Embed outcomes by default for EXECUTED actions — the
+    # whole point of ``show`` is "give me everything about this
+    # action", and the downstream webhook attribution IS part of
+    # "everything". Operators opt out via ``--no-outcomes`` when
+    # the action's outcome history is large or irrelevant
+    # (PENDING / REJECTED actions never have outcomes).
+    include_outcomes = (
+        not getattr(args, "no_outcomes", False)
+        and action.status.value == "executed"
+    )
+    if include_outcomes:
+        try:
+            payload["outcomes"] = queue.get_outcomes(args.action_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("outcome lookup failed: %s", exc)
+            payload["outcomes"] = []
+
     print(json.dumps(payload, indent=2, default=str))
 
 
