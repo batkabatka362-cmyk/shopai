@@ -196,6 +196,7 @@ class ShopifyOrderEditShippingAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_ORDER_EDIT_UPDATE_SHIPPING_LINE,
         Capability.SHOPIFY_ORDER_EDIT_REMOVE_SHIPPING_LINE,
     }
+    required_scopes = frozenset({"write_orders"})
 
     def _execute(
         self,

@@ -159,6 +159,7 @@ class ShopifyInventoryShipmentsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_INVENTORY_SHIPMENT,
         Capability.SHOPIFY_CREATE_INVENTORY_SHIPMENT,
     }
+    required_scopes = frozenset({"read_inventory", "write_inventory"})
 
     def _execute(
         self,

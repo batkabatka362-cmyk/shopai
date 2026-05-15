@@ -142,6 +142,7 @@ class ShopifyThemesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_THEME_FILES,
         Capability.SHOPIFY_UPSERT_THEME_FILES,
     }
+    required_scopes = frozenset({"read_themes", "write_themes"})
 
     def _execute(
         self,

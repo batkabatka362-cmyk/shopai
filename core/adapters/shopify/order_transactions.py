@@ -113,6 +113,7 @@ class ShopifyOrderTransactionsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_ORDER_TRANSACTIONS,
         Capability.SHOPIFY_GET_TRANSACTION,
     }
+    required_scopes = frozenset({"read_orders"})
 
     def _execute(
         self,

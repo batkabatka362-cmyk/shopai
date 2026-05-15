@@ -62,6 +62,7 @@ mutation orderInvoiceSend($id: ID!, $email: EmailInput) {
 class ShopifyOrderInvoiceSendAdapter(ShopifyBaseAdapter):
     name = "shopify_order_invoice"
     capabilities = {Capability.SHOPIFY_SEND_ORDER_INVOICE}
+    required_scopes = frozenset({"write_orders"})
 
     def _execute(
         self,

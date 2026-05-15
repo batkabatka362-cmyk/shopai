@@ -323,6 +323,7 @@ class ShopifyPaymentCustomizationsAdapter(_CustomizationsBase):
         Capability.SHOPIFY_LIST_PAYMENT_CUSTOMIZATIONS,
         Capability.SHOPIFY_DELETE_PAYMENT_CUSTOMIZATION,
     }
+    required_scopes = frozenset({"write_payment_customizations"})
 
 
 class ShopifyDeliveryCustomizationsAdapter(_CustomizationsBase):
@@ -336,3 +337,4 @@ class ShopifyDeliveryCustomizationsAdapter(_CustomizationsBase):
         Capability.SHOPIFY_LIST_DELIVERY_CUSTOMIZATIONS,
         Capability.SHOPIFY_DELETE_DELIVERY_CUSTOMIZATION,
     }
+    required_scopes = frozenset({"write_delivery_customizations"})

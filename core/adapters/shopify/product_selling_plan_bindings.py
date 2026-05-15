@@ -124,6 +124,7 @@ class ShopifyProductSellingPlanBindingsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_PRODUCT_VARIANT_JOIN_SELLING_PLAN_GROUPS,
         Capability.SHOPIFY_PRODUCT_VARIANT_LEAVE_SELLING_PLAN_GROUPS,
     }
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,

@@ -155,6 +155,7 @@ class ShopifyPagesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_PAGE,
         Capability.SHOPIFY_DELETE_PAGE,
     }
+    required_scopes = frozenset({"read_content", "write_content"})
 
     def _execute(
         self,

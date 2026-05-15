@@ -145,6 +145,10 @@ class ShopifyFulfillmentOrderOpsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_RESCHEDULE_FULFILLMENT_ORDER,
         Capability.SHOPIFY_SPLIT_FULFILLMENT_ORDER,
     }
+    required_scopes = frozenset({
+        "read_merchant_managed_fulfillment_orders",
+        "write_merchant_managed_fulfillment_orders",
+    })
 
     def _execute(
         self,

@@ -85,6 +85,7 @@ _VALID_SENTIMENTS = {"POSITIVE", "NEUTRAL", "NEGATIVE"}
 class ShopifyOrderRiskAssessmentAdapter(ShopifyBaseAdapter):
     name = "shopify_order_risk_assessment"
     capabilities = {Capability.SHOPIFY_CREATE_ORDER_RISK_ASSESSMENT}
+    required_scopes = frozenset({"read_orders"})
 
     def _execute(
         self,

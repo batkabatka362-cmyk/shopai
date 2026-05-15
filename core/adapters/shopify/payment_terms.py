@@ -156,6 +156,7 @@ class ShopifyPaymentTermsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_PAYMENT_TERMS,
         Capability.SHOPIFY_DELETE_PAYMENT_TERMS,
     }
+    required_scopes = frozenset({"read_orders", "write_orders"})
 
     def _execute(
         self,

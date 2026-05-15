@@ -151,6 +151,7 @@ class ShopifyProductOptionsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_PRODUCT_OPTIONS,
         Capability.SHOPIFY_REORDER_PRODUCT_OPTIONS,
     }
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,

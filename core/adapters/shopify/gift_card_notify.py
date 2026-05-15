@@ -102,6 +102,7 @@ class ShopifyGiftCardNotifyAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_SEND_GIFT_CARD_TO_CUSTOMER,
         Capability.SHOPIFY_SEND_GIFT_CARD_TO_RECIPIENT,
     }
+    required_scopes = frozenset({"write_gift_cards"})
 
     def _execute(
         self,

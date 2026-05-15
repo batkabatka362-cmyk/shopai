@@ -88,6 +88,7 @@ class ShopifyDraftOrderInvoiceSendAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_PREVIEW_DRAFT_ORDER_INVOICE,
         Capability.SHOPIFY_SEND_DRAFT_ORDER_INVOICE,
     }
+    required_scopes = frozenset({"write_draft_orders"})
 
     def _execute(
         self,

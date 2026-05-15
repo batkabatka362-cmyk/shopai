@@ -163,6 +163,7 @@ class ShopifyInventoryActivationAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DEACTIVATE_INVENTORY_AT_LOCATION,
         Capability.SHOPIFY_ADJUST_INVENTORY_QUANTITIES,
     }
+    required_scopes = frozenset({"write_inventory"})
 
     def _execute(
         self,

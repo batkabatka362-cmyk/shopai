@@ -98,6 +98,7 @@ class ShopifyWebPixelsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_WEB_PIXEL,
         Capability.SHOPIFY_DELETE_WEB_PIXEL,
     }
+    required_scopes = frozenset({"write_pixels"})
 
     def _execute(
         self,

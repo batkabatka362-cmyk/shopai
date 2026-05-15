@@ -131,6 +131,7 @@ class ShopifyGiftCardCRUDAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREDIT_GIFT_CARD,
         Capability.SHOPIFY_DEBIT_GIFT_CARD,
     }
+    required_scopes = frozenset({"read_gift_cards", "write_gift_cards"})
 
     def _execute(
         self,

@@ -168,6 +168,7 @@ class ShopifyReverseDeliveryAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_REVERSE_DELIVERY_SHIPPING,
         Capability.SHOPIFY_DISPOSE_REVERSE_FULFILLMENT_ORDER,
     }
+    required_scopes = frozenset({"write_returns"})
 
     def _execute(
         self,

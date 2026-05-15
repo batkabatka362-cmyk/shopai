@@ -119,6 +119,7 @@ class ShopifySubscriptionDraftAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_SUBSCRIPTION_DRAFT,
         Capability.SHOPIFY_COMMIT_SUBSCRIPTION_DRAFT,
     }
+    required_scopes = frozenset({"write_own_subscription_contracts"})
 
     def _execute(
         self,

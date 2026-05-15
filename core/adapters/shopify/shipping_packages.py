@@ -131,6 +131,7 @@ class ShopifyShippingPackagesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_SHIPPING_PACKAGE,
         Capability.SHOPIFY_MAKE_DEFAULT_SHIPPING_PACKAGE,
     }
+    required_scopes = frozenset({"read_shipping", "write_shipping"})
 
     def _execute(
         self,

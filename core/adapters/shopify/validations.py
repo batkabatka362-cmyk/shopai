@@ -118,6 +118,7 @@ class ShopifyValidationsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_VALIDATIONS,
         Capability.SHOPIFY_DELETE_VALIDATION,
     }
+    required_scopes = frozenset({"write_validations"})
 
     def _execute(
         self,

@@ -159,6 +159,7 @@ class ShopifyLocationsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_LOCATION,
         Capability.SHOPIFY_UPDATE_LOCATION,
     }
+    required_scopes = frozenset({"read_locations"})
 
     def _execute(
         self,

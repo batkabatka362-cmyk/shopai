@@ -162,6 +162,7 @@ class ShopifySubscriptionDraftManualDiscountAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_MANUAL_DISCOUNT,
         Capability.SHOPIFY_SUBSCRIPTION_DRAFT_APPLY_DISCOUNT_CODE,
     }
+    required_scopes = frozenset({"write_own_subscription_contracts"})
 
     def _execute(
         self,

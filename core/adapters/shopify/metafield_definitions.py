@@ -155,6 +155,10 @@ class ShopifyMetafieldDefinitionsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_METAFIELD_DEFINITION,
         Capability.SHOPIFY_DELETE_METAFIELD_DEFINITION,
     }
+    required_scopes = frozenset({
+        "read_metaobject_definitions",
+        "write_metaobject_definitions",
+    })
 
     def _execute(
         self,

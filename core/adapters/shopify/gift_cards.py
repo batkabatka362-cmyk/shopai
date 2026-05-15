@@ -163,6 +163,7 @@ class ShopifyGiftCardsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_GIFT_CARD,
         Capability.SHOPIFY_DEACTIVATE_GIFT_CARD,
     }
+    required_scopes = frozenset({"read_gift_cards", "write_gift_cards"})
 
     def _execute(
         self,

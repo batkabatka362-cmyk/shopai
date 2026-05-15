@@ -114,6 +114,7 @@ class ShopifyCartTransformsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_LIST_CART_TRANSFORMS,
         Capability.SHOPIFY_DELETE_CART_TRANSFORM,
     }
+    required_scopes = frozenset({"write_cart_transforms"})
 
     def _execute(
         self,

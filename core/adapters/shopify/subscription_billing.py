@@ -175,6 +175,7 @@ class ShopifySubscriptionBillingAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UNSKIP_SUBSCRIPTION_BILLING_CYCLE,
         Capability.SHOPIFY_RESCHEDULE_SUBSCRIPTION_BILLING_CYCLE,
     }
+    required_scopes = frozenset({"write_own_subscription_contracts"})
 
     def _execute(
         self,

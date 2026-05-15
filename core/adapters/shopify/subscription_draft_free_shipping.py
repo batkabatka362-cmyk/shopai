@@ -156,6 +156,7 @@ class ShopifySubscriptionDraftFreeShippingAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_SUBSCRIPTION_DRAFT_UPDATE_FREE_SHIPPING,
         Capability.SHOPIFY_SUBSCRIPTION_DRAFT_REMOVE_DISCOUNT,
     }
+    required_scopes = frozenset({"write_own_subscription_contracts"})
 
     def _execute(
         self,

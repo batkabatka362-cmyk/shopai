@@ -68,6 +68,7 @@ mutation metafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
 class ShopifyMetafieldsDeleteAdapter(ShopifyBaseAdapter):
     name = "shopify_metafields_delete"
     capabilities = {Capability.SHOPIFY_DELETE_METAFIELDS}
+    required_scopes = frozenset({"write_customers", "write_orders", "write_products"})
 
     def _execute(
         self,

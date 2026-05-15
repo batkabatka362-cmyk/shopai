@@ -161,6 +161,7 @@ class ShopifyWebhooksAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_WEBHOOK,
         Capability.SHOPIFY_DELETE_WEBHOOK,
     }
+    required_scopes = frozenset({"read_webhooks", "write_webhooks"})
 
     def _execute(
         self,

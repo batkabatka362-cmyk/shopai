@@ -104,6 +104,7 @@ class ShopifyOrderPaymentAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CAPTURE_ORDER_PAYMENT,
         Capability.SHOPIFY_VOID_TRANSACTION,
     }
+    required_scopes = frozenset({"read_orders", "write_orders"})
 
     def _execute(
         self,

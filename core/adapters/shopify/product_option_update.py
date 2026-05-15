@@ -105,6 +105,7 @@ _VALID_VARIANT_STRATEGIES = {"LEAVE_AS_IS", "MANAGE"}
 class ShopifyProductOptionUpdateAdapter(ShopifyBaseAdapter):
     name = "shopify_product_option_update"
     capabilities = {Capability.SHOPIFY_UPDATE_PRODUCT_OPTION}
+    required_scopes = frozenset({"write_products"})
 
     def _execute(
         self,

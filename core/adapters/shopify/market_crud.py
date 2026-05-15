@@ -149,6 +149,7 @@ class ShopifyMarketCRUDAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_ADD_MARKET_REGIONS,
         Capability.SHOPIFY_DELETE_MARKET_REGION,
     }
+    required_scopes = frozenset({"read_markets", "write_markets"})
 
     def _execute(
         self,

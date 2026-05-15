@@ -135,6 +135,7 @@ class ShopifyOrderLifecycleAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_REOPEN_ORDER,
         Capability.SHOPIFY_MARK_ORDER_AS_PAID,
     }
+    required_scopes = frozenset({"read_orders", "write_orders"})
 
     def _execute(
         self,

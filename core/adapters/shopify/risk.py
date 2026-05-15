@@ -92,6 +92,7 @@ _RECOMMENDATION_MAP = {
 class ShopifyRiskAdapter(ShopifyBaseAdapter):
     name = "shopify_risk"
     capabilities = {Capability.SHOPIFY_ASSESS_RISK}
+    required_scopes = frozenset({"read_orders"})
 
     def _execute(
         self,

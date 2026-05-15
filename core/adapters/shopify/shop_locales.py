@@ -129,6 +129,7 @@ class ShopifyShopLocalesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DISABLE_SHOP_LOCALE,
         Capability.SHOPIFY_UPDATE_SHOP_LOCALE,
     }
+    required_scopes = frozenset({"read_locales", "write_locales"})
 
     def _execute(
         self,

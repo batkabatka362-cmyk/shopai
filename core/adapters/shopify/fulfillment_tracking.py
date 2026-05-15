@@ -102,6 +102,7 @@ class ShopifyFulfillmentTrackingAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_FULFILLMENT_TRACKING,
         Capability.SHOPIFY_CANCEL_FULFILLMENT,
     }
+    required_scopes = frozenset({"write_merchant_managed_fulfillment_orders"})
 
     def _execute(
         self,

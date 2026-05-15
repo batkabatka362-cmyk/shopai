@@ -117,6 +117,7 @@ class ShopifyInventoryItemAdapter(ShopifyBaseAdapter):
     capabilities = {
         Capability.SHOPIFY_UPDATE_INVENTORY_ITEM,
     }
+    required_scopes = frozenset({"read_inventory", "write_inventory"})
 
     def _execute(
         self,

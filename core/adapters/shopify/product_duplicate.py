@@ -84,6 +84,7 @@ _VALID_STATUSES = {"ACTIVE", "ARCHIVED", "DRAFT"}
 class ShopifyProductDuplicateAdapter(ShopifyBaseAdapter):
     name = "shopify_product_duplicate"
     capabilities = {Capability.SHOPIFY_DUPLICATE_PRODUCT}
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,
