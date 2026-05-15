@@ -241,16 +241,19 @@ class WebhookFeedbackBridge:
     ) -> dict[str, Any]:
         """Tagged-feedback path. The order/refund traces back to
         an engine action; LearningLoop sees a clean cause-effect
-        signal."""
+        signal AND the approval queue records the outcome on the
+        action so operators can see "this action drove $X" when
+        they ``shopai approvals show`` the executed action."""
         engine = action.get("engine", "")
         action_type = action.get("action_type", "")
+        action_id = action.get("id", "")
 
         metrics = _extract_metrics(topic, polarity, payload)
         result = {
             "topic": topic,
             "polarity": polarity,
             "shopify_event_at": payload.get("created_at"),
-            "matched_action_id": action.get("id"),
+            "matched_action_id": action_id,
             **metrics,
         }
 
@@ -263,14 +266,61 @@ class WebhookFeedbackBridge:
         )
         if ok:
             self._stats["feedback_recorded"] += 1
+
+        # Annotate the action with this outcome so operators see
+        # the redemption / refund history when reviewing the
+        # action. Best-effort — queue unavailable just skips.
+        outcome_recorded = self._record_queue_outcome(
+            action_id=action_id,
+            topic=topic,
+            polarity=polarity,
+            metrics=metrics,
+            payload=payload,
+        )
         return {
             "status": "matched",
             "engine": engine,
             "action_type": action_type,
             "polarity": polarity,
-            "matched_action_id": action.get("id"),
+            "matched_action_id": action_id,
             "feedback_recorded": ok,
+            "outcome_annotated": outcome_recorded,
         }
+
+    def _record_queue_outcome(
+        self,
+        *,
+        action_id: str,
+        topic: str,
+        polarity: str,
+        metrics: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> bool:
+        """Annotate the approval queue's action row with this
+        outcome. Best-effort — a queue failure must not break the
+        webhook handler."""
+        if not action_id:
+            return False
+        queue = self._get_approval_queue()
+        if queue is None:
+            return False
+        source_event = None
+        for key in ("id", "order_id", "event_id"):
+            val = payload.get(key)
+            if val:
+                source_event = str(val)
+                break
+        try:
+            return bool(queue.record_outcome(
+                action_id,
+                topic=topic,
+                polarity=polarity,
+                metrics=metrics,
+                source_event=source_event,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("queue.record_outcome failed: %s", exc)
+            return False
 
     def _feed_orphan(
         self,
