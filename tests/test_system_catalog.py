@@ -288,3 +288,96 @@ class TestCli:
         ):
             out, code = _capture(cli._cmd_catalog, _ns())
         assert "unavailable" in out.lower()
+
+
+# ─── Description / docstring extraction ───────────────────────
+
+
+class TestDescriptions:
+
+    def test_live_entries_carry_descriptions(self):
+        """Every live-registered dispatcher has a docstring; the
+        catalog must surface its summary line as ``description``."""
+        from core.approval.catalog import build_catalog
+        report = build_catalog()
+        with_desc = [e for e in report.entries if e.description]
+        # ALL 22 dispatchers in core/approval/dispatchers.py have
+        # docstrings -- the audit is a regression guard against
+        # someone landing a new dispatcher without one.
+        assert len(with_desc) == len(report.entries)
+
+    def test_apply_tags_description_matches_source(self):
+        """Specific docstring -> specific description. Catches
+        the case where the docstring extractor returns "" or
+        the wrong line."""
+        from core.approval.catalog import build_catalog
+        report = build_catalog()
+        entry = next(
+            e for e in report.entries if e.action_type == "apply_tags"
+        )
+        # The first line of _apply_tags_dispatch's docstring
+        assert "tag" in entry.description.lower()
+
+    def test_synthetic_dispatcher_no_docstring(self, tmp_path):
+        from core.approval.catalog import (
+            _walk_dispatcher_metadata,
+        )
+        src = tmp_path / "fake_disp.py"
+        src.write_text(
+            "def register_dispatcher(x):\n"
+            "    def deco(f):\n"
+            "        return f\n"
+            "    return deco\n"
+            "\n"
+            "@register_dispatcher('no_doc')\n"
+            "def _x(params):\n"
+            "    return _router_call('SHOPIFY_X', {})\n",
+            encoding="utf-8",
+        )
+        caps, docs = _walk_dispatcher_metadata(src)
+        assert caps == {"no_doc": ("SHOPIFY_X",)}
+        # No docstring -> empty string (not missing key)
+        assert docs == {"no_doc": ""}
+
+    def test_synthetic_dispatcher_with_docstring(self, tmp_path):
+        from core.approval.catalog import (
+            _walk_dispatcher_metadata,
+        )
+        src = tmp_path / "fake_disp.py"
+        src.write_text(
+            "def register_dispatcher(x):\n"
+            "    def deco(f):\n"
+            "        return f\n"
+            "    return deco\n"
+            "\n"
+            "@register_dispatcher('with_doc')\n"
+            "def _x(params):\n"
+            "    '''Replay the X action.\n"
+            "\n"
+            "    Detailed explanation here.\n"
+            "    '''\n"
+            "    return _router_call('SHOPIFY_X', {})\n",
+            encoding="utf-8",
+        )
+        _, docs = _walk_dispatcher_metadata(src)
+        # First non-empty line only -- not the whole docstring
+        assert docs["with_doc"] == "Replay the X action."
+
+    def test_cli_text_includes_description(self, cli):
+        out, _ = _capture(
+            cli._cmd_catalog, _ns(action_type="apply_tags"),
+        )
+        # Description line appears under the action label
+        assert "description:" in out
+
+    def test_cli_json_includes_description(self, cli):
+        out, _ = _capture(cli._cmd_catalog, _ns(json=True))
+        data = json.loads(out)
+        # At least one entry has a non-empty description
+        with_desc = [
+            e for e in data["entries"] if e.get("description")
+        ]
+        assert len(with_desc) > 0
+        # And every entry has the key (empty string when no doc)
+        for e in data["entries"]:
+            assert "description" in e

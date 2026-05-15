@@ -2682,6 +2682,7 @@ def _cmd_catalog(args) -> None:
             "entries": [
                 {
                     "action_type": e.action_type,
+                    "description": e.description,
                     "dispatcher": (
                         f"{e.dispatcher_module}."
                         f"{e.dispatcher_qualname}"
@@ -2737,6 +2738,8 @@ def _cmd_catalog(args) -> None:
             ", ".join(e.emitting_engines) or "(no engine emits)"
         )
         print(f"  {e.action_type}")
+        if e.description:
+            print(f"    description: {e.description}")
         print(f"    dispatcher:  {e.dispatcher_qualname}")
         print(f"    capability:  {cap_str}")
         if e.adapters:

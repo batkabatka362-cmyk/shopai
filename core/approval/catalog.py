@@ -56,6 +56,9 @@ class CatalogEntry:
     adapters: tuple[AdapterClaim, ...]
     aggregate_scopes: tuple[str, ...]
     emitting_engines: tuple[str, ...]
+    description: str = ""
+    """First-line summary extracted from the dispatcher's
+    docstring. Empty when the dispatcher has no docstring."""
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,20 @@ class CatalogReport:
     """action_types whose dispatcher source couldn't be AST-walked
     (e.g. dynamically registered). These still appear in entries
     but with empty ``capabilities``."""
+
+
+def _first_line_doc(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Extract the first non-empty line of the function's
+    docstring (the conventional summary). Empty string when the
+    function has no docstring."""
+    doc = ast.get_docstring(node)
+    if not doc:
+        return ""
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
 
 
 def _walk_dispatcher_capabilities(
@@ -85,20 +102,36 @@ def _walk_dispatcher_capabilities(
     (different branches). The walker returns ALL distinct
     capability names found in the body.
     """
+    out, _docs = _walk_dispatcher_metadata(dispatchers_path)
+    return out
+
+
+def _walk_dispatcher_metadata(
+    dispatchers_path: Path,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, str]]:
+    """Combined AST walk: returns
+    ``(capability_map, docstring_map)``.
+
+    Same single pass over the file, two outputs. Cheaper than
+    walking twice; keeps the existing
+    ``_walk_dispatcher_capabilities`` API unchanged for callers
+    that don't need docstrings.
+    """
     out: dict[str, tuple[str, ...]] = {}
+    docs: dict[str, str] = {}
     try:
         src = dispatchers_path.read_text(encoding="utf-8")
     except OSError as exc:
         logger.debug(
             "could not read dispatchers source: %s", exc,
         )
-        return out
+        return out, docs
 
     try:
         tree = ast.parse(src, filename=str(dispatchers_path))
     except SyntaxError as exc:
         logger.debug("dispatcher source has syntax error: %s", exc)
-        return out
+        return out, docs
 
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -157,7 +190,8 @@ def _walk_dispatcher_capabilities(
         if delegates_to_mint and "SHOPIFY_CREATE_DISCOUNT" not in caps:
             caps.append("SHOPIFY_CREATE_DISCOUNT")
         out[action_type] = tuple(caps)
-    return out
+        docs[action_type] = _first_line_doc(node)
+    return out, docs
 
 
 def _walk_engine_action_emitters(
@@ -240,7 +274,7 @@ def build_catalog(
     else:
         dispatchers_path = Path(dispatchers_path)
 
-    cap_map = _walk_dispatcher_capabilities(dispatchers_path)
+    cap_map, doc_map = _walk_dispatcher_metadata(dispatchers_path)
     emitter_map = _walk_engine_action_emitters(engines_root)
 
     # Adapter index: capability_name -> [AdapterClaim, ...]
@@ -292,6 +326,7 @@ def build_catalog(
             adapters=tuple(adapters),
             aggregate_scopes=tuple(sorted(agg_scopes)),
             emitting_engines=tuple(engines),
+            description=doc_map.get(action_type, ""),
         ))
 
     return CatalogReport(
