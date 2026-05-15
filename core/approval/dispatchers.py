@@ -144,6 +144,33 @@ def _apply_seo_meta_dispatch(params: dict[str, Any]) -> tuple[bool, dict[str, An
     return _router_call("SHOPIFY_UPDATE_PRODUCT", payload)
 
 
+# ── fraud_detection → SHOPIFY_TAG_ORDER ─────────────────────────
+
+
+@register_dispatcher("apply_fraud_tag")
+def _apply_fraud_tag_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay fraud_detection's order-tag write.
+
+    The applier parks ``{order_id, tags, verdict, risk_score,
+    confidence}``. Only ``order_id`` + ``tags`` flow to the
+    SHOPIFY_TAG_ORDER call; the rest is context for operator
+    review at trace time.
+    """
+    order_id = str(params.get("order_id", "")).strip()
+    tags = params.get("tags") or []
+    if (
+        not order_id
+        or not isinstance(tags, list)
+        or not tags
+    ):
+        return False, {"error": "missing_order_id_or_tags"}
+    return _router_call(
+        "SHOPIFY_TAG_ORDER", {"id": order_id, "tags": tags},
+    )
+
+
 # ── product_lifecycle → SHOPIFY_UPDATE_PRODUCT.status=ARCHIVED ──
 
 
