@@ -243,6 +243,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--action-type", default=None, metavar="TYPE",
         help="Filter to a specific action_type (exact match)",
     )
+    catalog_p.add_argument(
+        "--markdown", action="store_true",
+        help=(
+            "Emit a Markdown document instead of the text view. "
+            "Suitable for committing to docs or pasting into a "
+            "wiki/README. Mutually exclusive with --json."
+        ),
+    )
 
     snapshot_p = sub.add_parser(
         "snapshot",
@@ -2645,6 +2653,78 @@ def _cmd_engines_writebacks(args) -> None:
         )
 
 
+def _render_catalog_markdown(report, entries) -> None:
+    """Emit the catalog as a Markdown document.
+
+    Renders a header summary + a table-of-contents anchor list +
+    per-action sections with description, dispatcher, capability,
+    claiming adapter(s), required scopes, and emitting engines.
+
+    Deterministic ordering (entries already alphabetised by
+    action_type from the builder) so the rendered doc is
+    stable across runs -- a snapshot of the catalog can be
+    committed and diffed.
+    """
+    print("# ShopAI Action Catalog")
+    print()
+    print(
+        f"_{len(report.entries)} dispatcher(s) registered, "
+        f"{len(entries)} shown after filters._"
+    )
+    if report.unknown_dispatchers:
+        print()
+        print(
+            f"_{len(report.unknown_dispatchers)} dispatcher(s) "
+            "could not be AST-resolved._"
+        )
+    print()
+    print("## Index")
+    print()
+    for e in entries:
+        # GitHub auto-slug: lowercase + non-alphanumerics -> '-'
+        slug = e.action_type.lower().replace("_", "-")
+        print(f"- [`{e.action_type}`](#{slug})")
+    print()
+
+    for e in entries:
+        print(f"## `{e.action_type}`")
+        print()
+        if e.description:
+            print(e.description)
+            print()
+        print(
+            f"- **Dispatcher**: `{e.dispatcher_module}."
+            f"{e.dispatcher_qualname}`"
+        )
+        caps = ", ".join(f"`{c}`" for c in e.capabilities) or "_(unresolved)_"
+        print(f"- **Capability**: {caps}")
+        if e.adapters:
+            for a in e.adapters:
+                scope_md = (
+                    ", ".join(f"`{s}`" for s in a.required_scopes)
+                    if a.required_scopes
+                    else (
+                        "_(scope-independent)_"
+                        if a.scope_independent
+                        else "_(no scopes declared)_"
+                    )
+                )
+                print(
+                    f"- **Adapter**: `{a.name}` "
+                    f"(scopes: {scope_md})"
+                )
+        else:
+            print(
+                "- **Adapter**: _(no adapter claims this capability)_"
+            )
+        engines = (
+            ", ".join(f"`{en}`" for en in e.emitting_engines)
+            or "_(no engine emits this action)_"
+        )
+        print(f"- **Emitting engines**: {engines}")
+        print()
+
+
 def _cmd_catalog(args) -> None:
     """Complete action surface in one operator readout.
 
@@ -2684,6 +2764,10 @@ def _cmd_catalog(args) -> None:
         entries = tuple(
             e for e in entries if e.action_type == action_type_filter
         )
+
+    if getattr(args, "markdown", False):
+        _render_catalog_markdown(report, entries)
+        return
 
     if getattr(args, "json", False):
         payload = {
