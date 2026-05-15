@@ -545,6 +545,40 @@ def build_parser() -> argparse.ArgumentParser:
             "Default 0 = one-shot. Ctrl+C exits the watch loop."
         ),
     )
+
+    outcomes_p = sub.add_parser(
+        "outcomes",
+        help=(
+            "Chronological view of recent webhook outcomes "
+            "(action → downstream event attribution)"
+        ),
+    )
+    outcomes_p.add_argument(
+        "--limit", type=int, default=20,
+        help="How many recent outcomes to show (default 20)",
+    )
+    outcomes_p.add_argument(
+        "--engine", default=None,
+        help="Restrict to one engine namespace",
+    )
+    outcomes_p.add_argument(
+        "--polarity",
+        choices=["positive", "negative", "neutral"],
+        default=None,
+        help="Restrict to one polarity bucket",
+    )
+    outcomes_p.add_argument(
+        "--since", default=None, metavar="AGE",
+        help=(
+            "Only outcomes within the last AGE (e.g. 1h, 30m, "
+            "7d). Empty = no time filter."
+        ),
+    )
+    outcomes_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     sub.add_parser("setup", help="Interactive setup wizard")
     sub.add_parser("start", help="Start the orchestrator")
     sub.add_parser("stop", help="Stop the orchestrator")
@@ -2798,6 +2832,90 @@ def _format_age(seconds: float) -> str:
     return f"{int(seconds / 86400)}d ago"
 
 
+def _cmd_outcomes(args) -> None:
+    """Chronological view of recent webhook outcomes.
+
+    The companion to ``loop`` (snapshot of the moving parts) and
+    ``approvals show`` (everything about ONE action). ``outcomes``
+    is the across-engine ticker: "what's happening downstream right
+    now?". Operators triaging a quiet day or chasing a sudden
+    negative-polarity spike start here.
+
+    Filters compose: ``--engine cart_recovery --polarity positive
+    --since 1h`` answers "did our recovery codes drive any orders in
+    the last hour?".
+    """
+    from core.approval import get_approval_queue
+
+    since_seconds: float | None = None
+    if getattr(args, "since", None):
+        since_seconds = _parse_age_spec(args.since)
+        if since_seconds is None:
+            print(
+                f"Invalid --since value: {args.since!r} "
+                "(expected e.g. 60s, 30m, 24h, 7d)"
+            )
+            sys.exit(1)
+
+    try:
+        queue = get_approval_queue()
+        outcomes = queue.list_recent_outcomes(
+            limit=args.limit,
+            engine=args.engine,
+            polarity=args.polarity,
+            since_seconds=since_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("outcomes lookup failed: %s", exc)
+        outcomes = []
+
+    if getattr(args, "json", False):
+        print(json.dumps(outcomes, indent=2, default=str))
+        return
+
+    if not outcomes:
+        filt_bits = []
+        if args.engine:
+            filt_bits.append(f"engine={args.engine}")
+        if args.polarity:
+            filt_bits.append(f"polarity={args.polarity}")
+        if args.since:
+            filt_bits.append(f"since={args.since}")
+        suffix = f" ({', '.join(filt_bits)})" if filt_bits else ""
+        print(f"No recent outcomes{suffix}.")
+        return
+
+    print(f"Recent outcomes ({len(outcomes)}):")
+    now = time.time()
+    for o in outcomes:
+        ago = (
+            _format_age(now - o["recorded_at"])
+            if o.get("recorded_at") else "?"
+        )
+        label = f"{o['engine']}/{o['action_type']}"
+        if len(label) > 30:
+            label = label[:27] + "..."
+        polarity_tag = (o.get("polarity") or "?")[:8]
+        topic = o.get("topic") or "?"
+        if len(topic) > 22:
+            topic = topic[:19] + "..."
+        line = (
+            f"  {o['action_id'][:18]:<18} "
+            f"{label:<30} "
+            f"{polarity_tag:<8} "
+            f"{topic:<22} "
+            f"{ago}"
+        )
+        # Surface revenue / refund metrics inline when present —
+        # they're the headline number for most outcomes
+        m = o.get("metrics") or {}
+        if isinstance(m, dict):
+            rev = m.get("revenue")
+            if isinstance(rev, (int, float)) and rev:
+                line += f"  rev={rev:.2f}"
+        print(line)
+
+
 def _print_approval_status() -> None:
     """Approval-queue depth + last few decisions.
 
@@ -3590,6 +3708,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "loop":
         _cmd_loop(args)
+        return
+
+    if args.command == "outcomes":
+        _cmd_outcomes(args)
         return
 
     if args.command == "setup":

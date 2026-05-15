@@ -116,6 +116,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/goal": self._get_goal,
             "/api/feedback/stats": self._feedback_stats,
             "/api/loop": self._loop_dashboard,
+            "/api/outcomes": self._recent_outcomes,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -393,6 +394,64 @@ class ShopAIHandler(BaseHTTPRequestHandler):
                 "error": str(exc),
             }
         self._json_response(200, payload)
+
+    def _recent_outcomes(self) -> None:
+        """GET /api/outcomes — chronological view of recent webhook outcomes.
+
+        HTTP parity for ``shopai outcomes`` (CLI). Each entry is a
+        flat dict joining the outcome to its source action's
+        engine + action_type. Newest-first.
+
+        Query params (all optional, AND-combined):
+          - ``limit``: page size (default 20, max 500)
+          - ``engine``: restrict to one engine namespace
+          - ``polarity``: positive | negative | neutral
+          - ``since_seconds``: only outcomes within the last N
+            seconds (useful for "last hour" sweeps).
+        """
+        from urllib.parse import parse_qs, urlparse
+
+        params = parse_qs(urlparse(self.path).query)
+        try:
+            limit = int(params.get("limit", ["20"])[0])
+        except (TypeError, ValueError):
+            limit = 20
+        limit = max(1, min(500, limit))
+
+        engine = params.get("engine", [None])[0]
+        polarity = params.get("polarity", [None])[0]
+        if polarity not in (None, "positive", "negative", "neutral"):
+            polarity = None
+
+        since_seconds: float | None
+        raw_since = params.get("since_seconds", [None])[0]
+        if raw_since is None:
+            since_seconds = None
+        else:
+            try:
+                since_seconds = float(raw_since)
+                if since_seconds < 0:
+                    since_seconds = None
+            except (TypeError, ValueError):
+                since_seconds = None
+
+        try:
+            from core.approval import get_approval_queue
+            queue = get_approval_queue()
+            outcomes = queue.list_recent_outcomes(
+                limit=limit,
+                engine=engine,
+                polarity=polarity,
+                since_seconds=since_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("outcomes lookup raised: %s", exc)
+            outcomes = []
+
+        self._json_response(200, {
+            "outcomes": outcomes,
+            "count": len(outcomes),
+        })
 
     def _feedback_stats(self) -> None:
         """GET /api/feedback/stats — webhook feedback bridge counters.
