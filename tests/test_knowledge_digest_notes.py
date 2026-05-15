@@ -53,6 +53,31 @@ def _render(manager: GoalManager) -> tuple[str, object]:
     ).render()
 
 
+def _pick_recommended_engine(manager: GoalManager) -> str:
+    """Return the first engine name in the current top
+    recommendations.
+
+    The digest filters operator notes to engines that appear in
+    the top recommendations. Tests that hardcode an engine name
+    (e.g. ``discount_strategy``) became fragile as the engine
+    registry + goal map evolved -- the seeded engine started
+    landing past the top-5 cutoff, so the test's note got
+    filtered out.
+
+    This helper picks the actual currently-recommended engine
+    at test time so the seeded note is guaranteed to surface.
+    """
+    md, _ = _render(manager)
+    # The render lists recommendations as: | 1 | [[engine_name]] |
+    # priority | effectiveness |. Pull the first wikilink target.
+    import re as _re
+    match = _re.search(
+        r"\| 1 \| \[\[([^\]]+)\]\]", md,
+    )
+    assert match, "expected at least one top recommendation"
+    return match.group(1)
+
+
 # ─── Empty cases ──────────────────────────────────────────────
 
 
@@ -96,15 +121,17 @@ class TestEngineNotes:
     def test_recommended_engine_note_surfaces(
         self, isolated_notes_store, fresh_manager,
     ):
-        # discount_strategy is maximize_profit (default goal) →
-        # will be in the top-5 recommendations
+        # Pick whichever engine the recommender currently has
+        # at the top of its list -- the seeded note must surface
+        # because that engine IS in the top recommendations.
+        engine = _pick_recommended_engine(fresh_manager)
         isolated_notes_store.set_engine_notes(
-            "discount_strategy",
+            engine,
             "Live: depth under 15% for VIP segment.",
         )
         md, _ = _render(fresh_manager)
         assert "Operator notes (from your vault)" in md
-        assert "[[discount_strategy]]" in md.split(
+        assert f"[[{engine}]]" in md.split(
             "Operator notes (from your vault)",
         )[1]
         # Block-quote rendering
@@ -161,8 +188,9 @@ class TestEngineAndGoalNotes:
     def test_both_rendered_with_order(
         self, isolated_notes_store, fresh_manager,
     ):
+        engine = _pick_recommended_engine(fresh_manager)
         isolated_notes_store.set_engine_notes(
-            "discount_strategy", "engine note",
+            engine, "engine note",
         )
         isolated_notes_store.set_goal_notes(
             "maximize_profit", "goal note",
@@ -185,8 +213,9 @@ class TestNoteFormatting:
     def test_multiline_note_renders_blockquote(
         self, isolated_notes_store, fresh_manager,
     ):
+        engine = _pick_recommended_engine(fresh_manager)
         isolated_notes_store.set_engine_notes(
-            "discount_strategy",
+            engine,
             "Line one.\nLine two.\n\nLine four after blank.",
         )
         md, _ = _render(fresh_manager)
