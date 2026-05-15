@@ -126,6 +126,7 @@ class ShopifyDiscountRedeemCodesAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_BULK_ADD_DISCOUNT_REDEEM_CODES,
         Capability.SHOPIFY_BULK_DELETE_DISCOUNT_REDEEM_CODES,
     }
+    required_scopes = frozenset({"write_discounts"})
 
     def _execute(
         self,

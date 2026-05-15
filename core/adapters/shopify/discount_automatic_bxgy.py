@@ -110,6 +110,7 @@ class ShopifyDiscountAutomaticBxgyAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_AUTOMATIC_BXGY,
         Capability.SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING,
     }
+    required_scopes = frozenset({"write_discounts"})
 
     def _execute(
         self,

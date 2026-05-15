@@ -170,6 +170,9 @@ class ShopifyCompanyContactAssignmentAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_COMPANY_REVOKE_MAIN_CONTACT,
         Capability.SHOPIFY_COMPANY_REMOVE_CONTACT,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

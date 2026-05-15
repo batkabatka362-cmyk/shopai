@@ -113,6 +113,9 @@ class ShopifyAppsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_CURRENT_APP_INSTALLATION,
         Capability.SHOPIFY_LIST_APP_INSTALLATIONS,
     }
+    # `read_apps` is granted automatically to apps installed at
+    # the org-level Partner dashboard (see file docstring).
+    required_scopes = frozenset({"read_apps"})
 
     def _execute(
         self,

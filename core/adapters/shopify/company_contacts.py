@@ -164,6 +164,9 @@ class ShopifyCompanyContactsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_COMPANY_CONTACT,
         Capability.SHOPIFY_REMOVE_COMPANY_CONTACT,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

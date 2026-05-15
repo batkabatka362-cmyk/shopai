@@ -162,6 +162,7 @@ class ShopifyCatalogWriteAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_CATALOG,
         Capability.SHOPIFY_UPDATE_CATALOG_CONTEXT,
     }
+    required_scopes = frozenset({"read_products", "write_products"})
 
     def _execute(
         self,

@@ -123,6 +123,7 @@ class ShopifyBlogsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_BLOG,
         Capability.SHOPIFY_DELETE_BLOG,
     }
+    required_scopes = frozenset({"write_content"})
 
     def _execute(
         self,

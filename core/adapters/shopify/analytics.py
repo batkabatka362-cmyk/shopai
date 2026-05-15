@@ -103,6 +103,9 @@ query shopifyqlQuery($query: String!) {
 class ShopifyAnalyticsAdapter(ShopifyBaseAdapter):
     name = "shopify_analytics"
     capabilities = {Capability.SHOPIFY_RUN_ANALYTICS_QUERY}
+    # read_reports plus Level 2 protected-customer-data declaration
+    # (see file docstring — schema-gated beyond OAuth).
+    required_scopes = frozenset({"read_reports"})
 
     def _execute(
         self,

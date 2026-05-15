@@ -128,6 +128,7 @@ class ShopifyDiscountCodeFreeShippingAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING,
         Capability.SHOPIFY_DELETE_DISCOUNT_FREE_SHIPPING,
     }
+    required_scopes = frozenset({"write_discounts"})
 
     def _execute(
         self,

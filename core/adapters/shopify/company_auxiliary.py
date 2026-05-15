@@ -123,6 +123,9 @@ class ShopifyCompanyAuxiliaryAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_DELETE_COMPANY_ADDRESS,
         Capability.SHOPIFY_UPDATE_COMPANY_LOCATION_TAX_SETTINGS,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

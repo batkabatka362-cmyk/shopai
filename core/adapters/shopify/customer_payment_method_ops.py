@@ -95,6 +95,7 @@ class ShopifyCustomerPaymentMethodOpsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL,
         Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL,
     }
+    required_scopes = frozenset({"write_customer_payment_methods"})
 
     def _execute(
         self,

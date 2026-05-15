@@ -163,6 +163,7 @@ class ShopifyCommentsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_MARK_COMMENT_NOT_SPAM,
         Capability.SHOPIFY_DELETE_COMMENT,
     }
+    required_scopes = frozenset({"read_content", "write_content"})
 
     def _execute(
         self,

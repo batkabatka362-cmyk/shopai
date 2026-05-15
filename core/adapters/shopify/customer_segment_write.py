@@ -82,6 +82,9 @@ class ShopifyCustomerSegmentWriteAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_CUSTOMER_SEGMENT,
         Capability.SHOPIFY_DELETE_CUSTOMER_SEGMENT,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,
