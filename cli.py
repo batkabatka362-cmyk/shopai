@@ -223,6 +223,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    engs_calibration = sub.add_parser(
+        "engines-calibration",
+        help=(
+            "Calibration sweep across every engine; highlights "
+            "miscalibrated allowlisted engines (highest-priority "
+            "alerts)"
+        ),
+    )
+    engs_calibration.add_argument(
+        "--miscalibrated-only", action="store_true",
+        help=(
+            "Filter to engines with inverted calibration "
+            "(triage mode)"
+        ),
+    )
+    engs_calibration.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     run_p = sub.add_parser("run", help="Run an engine")
     run_p.add_argument("task_type", help="Engine name")
     run_p.add_argument("--store", default="", help="Store ID")
@@ -2031,6 +2051,132 @@ def _cmd_engine_calibration(args) -> None:
         print(
             "Calibration: insufficient data "
             "(< 2 buckets with outcomes — need more history)"
+        )
+
+
+def _cmd_engines_calibration(args) -> None:
+    """Calibration sweep across every engine.
+
+    The companion to ``shopai engine-calibration <name>`` —
+    where that's a deep-dive on one engine, this is a triage
+    view across all of them. The highest-priority alert is an
+    engine that's BOTH on the auto-approve allowlist AND
+    miscalibrated: the operator has trusted it to auto-approve
+    on confidence, but the calibration says that confidence
+    floor isn't doing what it should.
+
+    ``--miscalibrated-only`` filters to engines with inverted
+    calibration — useful for "show me what needs attention."
+    """
+    from core.approval import get_approval_queue
+    from core.approval.auto_approve import load_config as _aa_cfg
+
+    try:
+        queue = get_approval_queue()
+        results = queue.all_engines_calibration()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engines calibration sweep raised: %s", exc,
+        )
+        results = {}
+
+    try:
+        allowlist = _aa_cfg().allowlist
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("auto-approve allowlist probe failed: %s", exc)
+        allowlist = frozenset()
+
+    miscal_only = getattr(args, "miscalibrated_only", False)
+
+    # Build row data with allowlist + verdict
+    rows: list[dict[str, Any]] = []
+    for engine, r in results.items():
+        monotonic = r["monotonic_increasing"]
+        if monotonic is True:
+            verdict = "well-calibrated"
+        elif monotonic is False:
+            verdict = "INVERTED"
+        else:
+            verdict = "insufficient"
+
+        action_count = sum(
+            int(b.get("action_count", 0) or 0)
+            for b in r.get("buckets", [])
+        )
+        rows.append({
+            "engine": engine,
+            "verdict": verdict,
+            "monotonic_increasing": monotonic,
+            "allowlisted": engine in allowlist,
+            "action_count": action_count,
+            # Surface a high-priority alert flag: an engine the
+            # operator has trusted to auto-approve whose
+            # confidence has stopped meaning anything.
+            "miscalibrated_and_allowlisted": (
+                monotonic is False and engine in allowlist
+            ),
+        })
+
+    if miscal_only:
+        rows = [r for r in rows if r["monotonic_increasing"] is False]
+
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        if miscal_only:
+            print(
+                "No miscalibrated engines — every engine with "
+                "enough history has a monotonic calibration shape."
+            )
+        else:
+            print(
+                "No engines with confidence-tagged actions yet."
+            )
+        return
+
+    # Sort: highest-priority alerts first
+    #   1. miscalibrated AND allowlisted (RED)
+    #   2. miscalibrated NOT allowlisted (YELLOW)
+    #   3. insufficient data
+    #   4. well-calibrated
+    priority_rank = {
+        "INVERTED": 0,
+        "insufficient": 1,
+        "well-calibrated": 2,
+    }
+    rows.sort(key=lambda r: (
+        not r["miscalibrated_and_allowlisted"],
+        priority_rank[r["verdict"]],
+        r["engine"],
+    ))
+
+    print(f"Engine calibration sweep ({len(rows)} engines):")
+    print()
+    print(
+        "  engine                          verdict           "
+        "allowlist  actions"
+    )
+    for r in rows:
+        # Visual prefix: '!' for the highest-priority alert,
+        # space otherwise. Keeps the table grep-able while
+        # surfacing the alert at the start of the line.
+        prefix = "!" if r["miscalibrated_and_allowlisted"] else " "
+        engine_label = r["engine"][:30]
+        allow_label = "yes" if r["allowlisted"] else "no"
+        print(
+            f"{prefix} {engine_label:<30}  {r['verdict']:<16}  "
+            f"{allow_label:<9}  {r['action_count']:>7}"
+        )
+
+    alerts = [r for r in rows if r["miscalibrated_and_allowlisted"]]
+    if alerts:
+        print()
+        print(
+            f"ALERT: {len(alerts)} engine(s) are auto-approved AND "
+            "have inverted calibration. Consider disabling them "
+            "via: shopai approvals auto-config --disable <engine>"
         )
 
 
@@ -4379,6 +4525,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "engine-calibration":
         _cmd_engine_calibration(args)
+        return
+
+    if args.command == "engines-calibration":
+        _cmd_engines_calibration(args)
         return
 
     if args.command == "run":
