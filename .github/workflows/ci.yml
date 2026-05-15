@@ -104,6 +104,19 @@ jobs:
               exit(1)
           "
 
+      - name: Dispatcher coverage audit (Pattern K)
+        # Cross-references every action_type engines enqueue
+        # against the registered dispatcher table. Missing
+        # dispatchers cause silent execute-time failures (the
+        # action gets auto-marked FAILED with "no executor
+        # registered"). Currently advisory — flips to required
+        # once the remaining 8 apply_* dispatchers land.
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py approvals audit
+
       - name: Config schema validation
         env:
           PYTHONPATH: ${{ github.workspace }}
