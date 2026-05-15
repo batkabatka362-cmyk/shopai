@@ -252,6 +252,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    learning_p = sub.add_parser(
+        "learning",
+        help=(
+            "Inspect what the autonomous learning loop has "
+            "recorded -- MemoryIntelligence rules + "
+            "DataArchitecture attach rate + LearningLoop "
+            "memory layers in one shot."
+        ),
+    )
+    learning_sub = learning_p.add_subparsers(dest="learning_action")
+    learning_stats = learning_sub.add_parser(
+        "stats",
+        help=(
+            "Aggregate stats: total memories, failures, rules, "
+            "attach rate, per-engine breakdown. The 'what is "
+            "Phase 8 learning?' command."
+        ),
+    )
+    learning_stats.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+    learning_stats.add_argument(
+        "--top", type=int, default=10, metavar="N",
+        help=(
+            "How many top categories to surface in the "
+            "per-engine breakdown. Default: 10."
+        ),
+    )
+
     snapshot_p = sub.add_parser(
         "snapshot",
         help=(
@@ -2859,6 +2889,216 @@ def _cmd_catalog(args) -> None:
             print("    adapter:     (no adapter claims this capability)")
         print(f"    engines:     {engines_str}")
         print()
+
+
+def _collect_learning_stats(top_n: int) -> dict[str, Any]:
+    """Aggregate the three Phase 8 learning sources into one
+    structured dict.
+
+    Each section is best-effort -- a missing or broken backend
+    surfaces as ``{"error": "..."}`` for that section, leaves
+    the others intact.
+    """
+    out: dict[str, Any] = {}
+
+    # ── MemoryIntelligence ──────────────────────────────────
+    try:
+        from core.memory.intelligence import MemoryIntelligence
+        mi = MemoryIntelligence()
+        stats = mi.get_stats()
+        meta = mi.get_meta_stats()
+        # Top engines by total memory count
+        by_cat = stats.get("by_category", {}) or {}
+        top_cats = sorted(
+            by_cat.items(), key=lambda kv: kv[1], reverse=True,
+        )[:top_n]
+        out["memory_intelligence"] = {
+            "total_memories": stats.get("total_memories", 0),
+            "by_level": stats.get("by_level", {}),
+            "by_type": stats.get("by_type", {}),
+            "promotions": stats.get("promotions", 0),
+            "failures": stats.get("failures", 0),
+            "avg_score": stats.get("avg_score", 0.0),
+            "top_categories": [
+                {"category": k, "count": v} for k, v in top_cats
+            ],
+            "most_used_count": len(meta.get("most_used", [])),
+            "never_used_count": meta.get("never_used_count", 0),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("MI stats raised: %s", exc)
+        out["memory_intelligence"] = {"error": str(exc)}
+
+    # ── DataArchitecture ───────────────────────────────────
+    try:
+        from core.data.architecture import DataArchitecture
+        da = DataArchitecture()
+        da_stats = da.get_stats()
+        domains = da_stats.get("domains", {}) or {}
+        top_domains = sorted(
+            domains.items(),
+            key=lambda kv: kv[1].get("total", 0),
+            reverse=True,
+        )[:top_n]
+        out["data_architecture"] = {
+            "total_records": da_stats.get("total_records", 0),
+            "actions_tracked": da_stats.get("actions_tracked", 0),
+            "results_attached": da_stats.get("results_attached", 0),
+            "result_rate_pct": da_stats.get("result_rate", 0),
+            "top_domains": [
+                {
+                    "domain": k,
+                    "total": v.get("total", 0),
+                    "avg_score": v.get("avg_score", 0.0),
+                }
+                for k, v in top_domains
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("DA stats raised: %s", exc)
+        out["data_architecture"] = {"error": str(exc)}
+
+    # ── LearningLoop ───────────────────────────────────────
+    try:
+        from core.brain.learning_loop import LearningLoop
+        ll = LearningLoop()
+        ll_stats = ll.get_stats() or {}
+        memory = ll_stats.get("memory", {}) or {}
+        out["learning_loop"] = {
+            "total_learnings": ll_stats.get("total_learnings", 0),
+            "by_layer": memory.get("by_layer", {}),
+            "patterns": memory.get("patterns", 0),
+            "rules": memory.get("rules", 0),
+            "bad_data": memory.get("bad_data", 0),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LL stats raised: %s", exc)
+        out["learning_loop"] = {"error": str(exc)}
+
+    return out
+
+
+def _cmd_learning(args) -> None:
+    """Dispatch ``shopai learning <verb>`` subcommands."""
+    verb = getattr(args, "learning_action", None)
+    if verb == "stats":
+        _cmd_learning_stats(args)
+        return
+    print(
+        "Usage:\n"
+        "  shopai learning stats [--top N] [--json]"
+    )
+    sys.exit(1)
+
+
+def _cmd_learning_stats(args) -> None:
+    """Surface what the Phase 8 autonomous learning loop has
+    recorded across MemoryIntelligence + DataArchitecture +
+    LearningLoop.
+
+    The "what has the system learned?" command. Operators see
+    the OUTPUT of the loop -- previously only the INPUT side
+    (writebacks) was visible.
+    """
+    top_n = int(getattr(args, "top", 10) or 10)
+    stats = _collect_learning_stats(top_n)
+
+    if getattr(args, "json", False):
+        print(json.dumps(stats, indent=2, default=str))
+        return
+
+    print("ShopAI Phase 8 Learning Stats")
+    print()
+    _render_learning_mi(stats.get("memory_intelligence", {}))
+    print()
+    _render_learning_da(stats.get("data_architecture", {}))
+    print()
+    _render_learning_ll(stats.get("learning_loop", {}))
+
+
+def _render_learning_mi(section: dict) -> None:
+    if "error" in section:
+        print(
+            f"[??] Memory Intelligence -- "
+            f"{section['error']}"
+        )
+        return
+    total = section.get("total_memories", 0)
+    fails = section.get("failures", 0)
+    avg = section.get("avg_score", 0.0)
+    promotions = section.get("promotions", 0)
+    by_level = section.get("by_level", {})
+    by_type = section.get("by_type", {})
+    print(
+        f"Memory Intelligence -- {total} memories "
+        f"(avg score {avg:.2f}, {fails} failures, "
+        f"{promotions} promotions)"
+    )
+    if by_level:
+        levels = ", ".join(
+            f"{k}={v}" for k, v in sorted(by_level.items())
+        )
+        print(f"  by_level:  {levels}")
+    if by_type:
+        types = ", ".join(
+            f"{k}={v}" for k, v in sorted(by_type.items())
+        )
+        print(f"  by_type:   {types}")
+    cats = section.get("top_categories", [])
+    if cats:
+        print(f"  top engines by memory count:")
+        for c in cats:
+            print(f"    {c['category']:<28} {c['count']}")
+
+
+def _render_learning_da(section: dict) -> None:
+    if "error" in section:
+        print(
+            f"[??] Data Architecture -- "
+            f"{section['error']}"
+        )
+        return
+    total = section.get("total_records", 0)
+    rate = section.get("result_rate_pct", 0)
+    actions = section.get("actions_tracked", 0)
+    attached = section.get("results_attached", 0)
+    print(
+        f"Data Architecture -- {total} records across 12 domains "
+        f"({rate}% attach rate: {attached}/{actions} actions "
+        "have results)"
+    )
+    domains = section.get("top_domains", [])
+    if domains:
+        print(f"  top domains:")
+        for d in domains:
+            print(
+                f"    {d['domain']:<14} {d['total']:>6}  "
+                f"avg_score {d['avg_score']:.2f}"
+            )
+
+
+def _render_learning_ll(section: dict) -> None:
+    if "error" in section:
+        print(
+            f"[??] Learning Loop -- "
+            f"{section['error']}"
+        )
+        return
+    learnings = section.get("total_learnings", 0)
+    patterns = section.get("patterns", 0)
+    rules = section.get("rules", 0)
+    bad = section.get("bad_data", 0)
+    by_layer = section.get("by_layer", {})
+    print(
+        f"Learning Loop -- {learnings} learnings, "
+        f"{patterns} patterns + {rules} rules detected"
+        f" ({bad} bad-data entries flagged)"
+    )
+    if by_layer:
+        layers = ", ".join(
+            f"{k}={v}" for k, v in sorted(by_layer.items())
+        )
+        print(f"  memory layers: {layers}")
 
 
 def _diff_snapshots(
@@ -9237,6 +9477,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "catalog":
         _cmd_catalog(args)
+        return
+
+    if args.command == "learning":
+        _cmd_learning(args)
         return
 
     if args.command == "snapshot":
