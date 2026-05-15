@@ -37,6 +37,35 @@ logger = get_logger("orchestrator.main")
 CONFIG_DIR = pathlib.Path(__file__).resolve().parent.parent / "config"
 
 
+def _bootstrap_brain_stack() -> bool:
+    """Attach goal-feedback handlers to approval-queue hooks.
+
+    Idempotent. Best-effort — a missing goals layer logs at debug
+    and returns False. The orchestrator keeps working without the
+    brain-stack edge; learning just stays dormant.
+
+    Module-level so tests can call it directly and so other init
+    paths (the autonomous controller) can share the same wiring
+    function name without duplicating logic across files.
+    """
+    try:
+        from core.goals.goal_feedback import register_goal_feedback
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "brain stack bootstrap: goal_feedback unavailable: %s",
+            exc,
+        )
+        return False
+    try:
+        return bool(register_goal_feedback())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "brain stack bootstrap: register_goal_feedback raised: %s",
+            exc,
+        )
+        return False
+
+
 class MainOrchestrator:
     """Central orchestrator that coordinates all core subsystems.
 
@@ -121,6 +150,18 @@ class MainOrchestrator:
         # Wire events system
         EventHandler().register_defaults()
         self._event_bus.emit(EventType.SYSTEM_HEALTH_CHECK, "orchestrator", {"phase": "startup"})
+
+        # Wire the brain-stack feedback edge. Engines emit
+        # ``approval.executed`` / ``approval.failed`` /
+        # ``approval.outcome.recorded`` hooks that drive
+        # GoalManager's per-goal EMA. Without this bootstrap, the
+        # handlers only attach the first time some path lazy-
+        # imports ``core.approval`` — which happens late in the
+        # lifecycle for non-autonomous paths (``shopai server``,
+        # direct API task submission, etc.), missing earlier hook
+        # fires. Best-effort; a missing goals layer is logged and
+        # the orchestrator continues to function.
+        _bootstrap_brain_stack()
 
         # Initialize new modules
         self._init_modules()
