@@ -143,6 +143,17 @@ jobs:
         run: |
           python cli.py capabilities-audit
 
+      - name: Pattern Z writer-recorder audit
+        # Every writer module (*_applier.py / *_minter.py /
+        # *_payer.py) that calls a Shopify mutation MUST also
+        # call record_writeback so Phase 8 sees the outcome.
+        # Catches the bug class fixed in PR #205 where four
+        # minters silently skipped the autonomous learning loop.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py pattern-z-audit
+
       - name: Pattern J test-pollution audit
         # Every write to MemoryIntelligence / DataArchitecture /
         # LearningLoop must come from the canonical Phase 8

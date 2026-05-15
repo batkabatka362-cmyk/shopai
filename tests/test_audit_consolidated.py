@@ -68,9 +68,9 @@ class TestDefaultMode:
     def test_unified_verdict_on_pass(self, cli):
         out, code = _capture(cli._cmd_audit_all, _ns())
         assert code == 0
-        # Each audit shows [pass]
+        # Each audit shows [pass] (6 audits total)
         passes = out.count("[pass]")
-        assert passes == 5
+        assert passes == 6
 
 
 # ─── --only NAME ──────────────────────────────────────────────
@@ -114,7 +114,7 @@ class TestJson:
         assert data["ok"] is True
         assert set(data["audits"].keys()) == {
             "pattern_k", "oauth", "pattern_y",
-            "pattern_i", "pattern_j",
+            "pattern_i", "pattern_j", "pattern_z",
         }
         # Each audit has at least an ok field
         for audit in data["audits"].values():
@@ -185,7 +185,7 @@ class TestFailurePropagation:
 class TestResilience:
 
     def test_one_audit_exception_doesnt_block_others(self, cli):
-        """If Pattern K's module raises, the other four still
+        """If Pattern K's module raises, the other five still
         run and the overall doctor flips to FAILED on its [??]."""
         with patch(
             "core.approval.coverage_audit.audit_coverage",
@@ -195,8 +195,8 @@ class TestResilience:
         # Pattern K renders as [??] (error/unavailable)
         assert "[??]" in out
         assert "module broken" in out
-        # Other four still passed (they ran)
-        assert out.count("[pass]") == 4
+        # Other five still passed (they ran)
+        assert out.count("[pass]") == 5
         # Overall flipped to FAILED
         assert code == 1
 
