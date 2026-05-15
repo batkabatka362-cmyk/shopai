@@ -109,9 +109,8 @@ jobs:
         # against the registered dispatcher table. Missing
         # dispatchers cause silent execute-time failures (the
         # action gets auto-marked FAILED with "no executor
-        # registered"). Currently advisory — flips to required
-        # once the remaining 8 apply_* dispatchers land.
-        continue-on-error: true
+        # registered"). Required gate — every enqueued
+        # action_type MUST have a registered dispatcher.
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
