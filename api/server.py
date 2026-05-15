@@ -117,6 +117,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/feedback/stats": self._feedback_stats,
             "/api/loop": self._loop_dashboard,
             "/api/outcomes": self._recent_outcomes,
+            "/api/approvals/history": self._approvals_history,
         }
 
         if path.startswith("/api/engine/") and path.count("/") == 3:
@@ -451,6 +452,50 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         self._json_response(200, {
             "outcomes": outcomes,
             "count": len(outcomes),
+        })
+
+    def _approvals_history(self) -> None:
+        """GET /api/approvals/history — append-only decision audit trail.
+
+        HTTP parity for ``shopai approvals history``. Two reading
+        modes selected by the presence of ``action_id``:
+          - scoped (one action): chronological lifecycle, oldest
+            first.
+          - global (no action_id): newest first ticker.
+
+        Query params (all optional):
+          - ``action_id``: scope to one action's lifecycle
+          - ``decided_by``: filter by actor (``system`` for executor)
+          - ``limit``: page size (default 50, max 500)
+        """
+        from urllib.parse import parse_qs, urlparse
+
+        params = parse_qs(urlparse(self.path).query)
+        action_id = params.get("action_id", [None])[0]
+        decided_by = params.get("decided_by", [None])[0]
+
+        try:
+            limit = int(params.get("limit", ["50"])[0])
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(500, limit))
+
+        try:
+            from core.approval import get_approval_queue
+            queue = get_approval_queue()
+            rows = queue.list_decisions(
+                action_id=action_id,
+                decided_by=decided_by,
+                limit=limit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("history lookup raised: %s", exc)
+            rows = []
+
+        self._json_response(200, {
+            "decisions": rows,
+            "count": len(rows),
+            "action_id": action_id,
         })
 
     def _feedback_stats(self) -> None:

@@ -179,6 +179,27 @@ class ApprovalQueue:
                 );
                 CREATE INDEX IF NOT EXISTS idx_outcomes_action
                     ON action_outcomes(action_id, recorded_at);
+
+                -- Append-only audit trail of every status transition.
+                -- `pending_actions.decided_by`/`decision_reason` carry
+                -- only the LATEST decision; this table preserves the
+                -- full history so an operator who rejects then
+                -- changes their mind doesn't erase the rejection
+                -- rationale, and compliance auditors can reconstruct
+                -- who decided what when.
+                CREATE TABLE IF NOT EXISTS decision_log (
+                    rowid         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_id     TEXT NOT NULL,
+                    decision      TEXT NOT NULL,
+                    decided_by    TEXT,
+                    reason        TEXT,
+                    occurred_at   REAL NOT NULL,
+                    FOREIGN KEY (action_id) REFERENCES pending_actions(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_decisions_action
+                    ON decision_log(action_id, occurred_at);
+                CREATE INDEX IF NOT EXISTS idx_decisions_actor
+                    ON decision_log(decided_by, occurred_at);
             """)
             self._conn.commit()
 
@@ -431,6 +452,20 @@ class ApprovalQueue:
                    WHERE id = ?""",
                 (target.value, _safe_json(result or {}), action_id),
             )
+            # Audit-trail row: who/why is unknown for an executor
+            # transition (the executor is the system, not a human),
+            # but the timestamp + decision name are still load-
+            # bearing for a compliance reader.
+            self._conn.execute(
+                """INSERT INTO decision_log
+                   (action_id, decision, decided_by, reason, occurred_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    action_id, target.value, "system",
+                    None if success else "execution_failed",
+                    time.time(),
+                ),
+            )
             self._conn.commit()
             new_row = self._conn.execute(
                 "SELECT * FROM pending_actions WHERE id = ?", (action_id,),
@@ -474,6 +509,7 @@ class ApprovalQueue:
                 return []
             ids = [r["id"] for r in rows]
             placeholders = ",".join("?" for _ in ids)
+            ttl_reason = f"ttl_exceeded ({int(max_age_seconds)}s)"
             self._conn.execute(
                 f"""UPDATE pending_actions
                    SET status = ?, decided_at = ?,
@@ -482,9 +518,21 @@ class ApprovalQueue:
                 (
                     ApprovalStatus.EXPIRED.value,
                     now,
-                    f"ttl_exceeded ({int(max_age_seconds)}s)",
+                    ttl_reason,
                     *ids,
                 ),
+            )
+            self._conn.executemany(
+                """INSERT INTO decision_log
+                   (action_id, decision, decided_by, reason, occurred_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (
+                        aid, ApprovalStatus.EXPIRED.value, "system",
+                        ttl_reason, now,
+                    )
+                    for aid in ids
+                ],
             )
             self._conn.commit()
             new_rows = self._conn.execute(
@@ -849,6 +897,59 @@ class ApprovalQueue:
             "recorded_at": r["recorded_at"],
         } for r in rows]
 
+    def list_decisions(
+        self,
+        *,
+        action_id: str | None = None,
+        decided_by: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Append-only decision history for an action (or, when
+        ``action_id`` is omitted, the global decision ticker).
+
+        Returns flat dicts ordered chronologically: oldest first
+        when scoped to one action (reading top-to-bottom = lifecycle),
+        newest first when scanning globally (latest activity first).
+
+        Filters compose:
+          - ``action_id``: only this action's transitions
+          - ``decided_by``: who made the call (use ``"system"`` for
+            executor / TTL-sweep transitions)
+          - ``limit``: page size cap
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if action_id:
+            clauses.append("action_id = ?")
+            params.append(action_id)
+        if decided_by:
+            clauses.append("decided_by = ?")
+            params.append(decided_by)
+        where = (
+            " WHERE " + " AND ".join(clauses) if clauses else ""
+        )
+        # Per-action: ASC (lifecycle reads top-to-bottom).
+        # Global feed: DESC (newest activity first).
+        order = "ASC" if action_id else "DESC"
+        sql = (
+            "SELECT action_id, decision, decided_by, reason, "
+            "       occurred_at "
+            "FROM decision_log"
+            + where
+            + f" ORDER BY occurred_at {order} LIMIT ?"
+        )
+        params.append(max(1, int(limit)))
+
+        with _LOCK:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [{
+            "action_id": r["action_id"],
+            "decision": r["decision"],
+            "decided_by": r["decided_by"],
+            "reason": r["reason"],
+            "occurred_at": r["occurred_at"],
+        } for r in rows]
+
     def stats(self) -> dict[str, int]:
         """Counts per status — used by the API status endpoint."""
         with _LOCK:
@@ -883,13 +984,23 @@ class ApprovalQueue:
                     action_id, from_status.value,
                 ),
             )
-            self._conn.commit()
             if cur.rowcount == 0:
+                self._conn.commit()
                 logger.debug(
                     "transition no-op for %s (id missing or not in %s)",
                     action_id, from_status.value,
                 )
                 return None
+            self._conn.execute(
+                """INSERT INTO decision_log
+                   (action_id, decision, decided_by, reason, occurred_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    action_id, to_status.value,
+                    decided_by or None, reason or None, now,
+                ),
+            )
+            self._conn.commit()
             row = self._conn.execute(
                 "SELECT * FROM pending_actions WHERE id = ?", (action_id,),
             ).fetchone()

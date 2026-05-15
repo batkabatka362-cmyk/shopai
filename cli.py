@@ -462,6 +462,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to engines directory (default: engines)",
     )
 
+    approvals_history = approvals_sub.add_parser(
+        "history",
+        help=(
+            "Append-only decision audit trail (per-action lifecycle "
+            "or global ticker)"
+        ),
+    )
+    approvals_history.add_argument(
+        "action_id", nargs="?", default=None,
+        help=(
+            "Action ID to scope to. Omit for the global decision "
+            "ticker (newest first)."
+        ),
+    )
+    approvals_history.add_argument(
+        "--by", default=None,
+        help="Restrict to decisions made by this actor (use 'system' for executor)",
+    )
+    approvals_history.add_argument(
+        "--limit", type=int, default=50,
+        help="Page size (default: 50)",
+    )
+    approvals_history.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_recent = approvals_sub.add_parser(
         "recent",
         help="List recent actions filtered by status (operator triage)",
@@ -3104,6 +3131,9 @@ def _cmd_approvals(args) -> None:
     if verb == "recent":
         _cmd_approvals_recent(args)
         return
+    if verb == "history":
+        _cmd_approvals_history(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -3115,9 +3145,83 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals sweep       [--older-than 7d] [--dry-run]\n"
         "  shopai approvals approve-all [--engine NAME] [--min-confidence 0.X] [--execute] [--dry-run]\n"
         "  shopai approvals audit       [--engines-root PATH]\n"
-        "  shopai approvals recent      <status> [--engine NAME] [--limit N]"
+        "  shopai approvals recent      <status> [--engine NAME] [--limit N]\n"
+        "  shopai approvals history     [<action_id>] [--by ACTOR] [--limit N] [--json]"
     )
     sys.exit(1)
+
+
+def _cmd_approvals_history(args) -> None:
+    """Append-only decision audit trail.
+
+    Two reading modes share the same verb:
+      - ``shopai approvals history <action_id>`` — chronological
+        lifecycle of ONE action (oldest first; reads top-to-bottom
+        as the operator/system made each call).
+      - ``shopai approvals history`` — global ticker (newest first)
+        for cross-action audit sweeps.
+
+    Filters compose: ``--by alice`` shows just alice's calls,
+    ``--by system`` shows just the executor / TTL-sweep
+    transitions.
+    """
+    from core.approval import get_approval_queue
+
+    try:
+        queue = get_approval_queue()
+        rows = queue.list_decisions(
+            action_id=args.action_id,
+            decided_by=args.by,
+            limit=args.limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("decision history lookup failed: %s", exc)
+        rows = []
+
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return
+
+    if not rows:
+        scope = (
+            f"for {args.action_id}" if args.action_id else "globally"
+        )
+        by = f" by={args.by!r}" if args.by else ""
+        print(f"No decisions recorded {scope}{by}.")
+        return
+
+    title = (
+        f"Decision history for {args.action_id} "
+        f"({len(rows)} transitions):"
+        if args.action_id
+        else f"Recent decisions ({len(rows)}):"
+    )
+    print(title)
+    now = time.time()
+    for r in rows:
+        ago = (
+            _format_age(now - r["occurred_at"])
+            if r.get("occurred_at") else "?"
+        )
+        actor = (r.get("decided_by") or "?")[:14]
+        decision = (r.get("decision") or "?")[:9]
+        reason = r.get("reason") or ""
+        # Global feed shows action_id; per-action feed omits it
+        # since every row shares the same id
+        if args.action_id:
+            line = (
+                f"  {decision:<9} by {actor:<14} {ago}"
+            )
+        else:
+            line = (
+                f"  {r['action_id'][:18]:<18} "
+                f"{decision:<9} by {actor:<14} {ago}"
+            )
+        if reason:
+            if len(reason) > 60:
+                reason = reason[:57] + "..."
+            line += f"  reason={reason}"
+        print(line)
 
 
 def _cmd_approvals_pending(args) -> None:
