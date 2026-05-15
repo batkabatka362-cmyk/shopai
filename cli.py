@@ -415,6 +415,10 @@ def build_parser() -> argparse.ArgumentParser:
     auto_p.add_argument("--loop", action="store_true", help="Run continuously")
     auto_p.add_argument("--interval", type=int, default=600, help="Loop interval (seconds)")
     auto_p.add_argument("--auto-approve", action="store_true", help="Auto-approve actions (DANGEROUS)")
+    auto_p.add_argument(
+        "--use-recommender", action="store_true",
+        help="Pick analysis engines via brain-stack recommender (vs legacy hardcoded list)",
+    )
 
     learn_p = sub.add_parser("learn", help="Show learning status")
     learn_p.add_argument("--details", action="store_true", help="Show detailed learning data")
@@ -1791,7 +1795,11 @@ def _cmd_auto(args) -> None:
     sm = _get_store_manager()
     from core.autonomous.controller import AutonomousController
 
-    controller = AutonomousController(sm, auto_approve=args.auto_approve)
+    controller = AutonomousController(
+        sm,
+        auto_approve=args.auto_approve,
+        use_engine_recommender=getattr(args, "use_recommender", False),
+    )
     controller.initialize()
 
     if args.auto_approve:
