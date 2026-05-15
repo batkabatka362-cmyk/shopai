@@ -34,6 +34,12 @@ from utils.logger import get_logger
 
 logger = get_logger("cli")
 
+# Bump this when releasing or cutting a milestone branch. The
+# version is surfaced by ``shopai version`` and embedded in
+# support-bundle output — operators reporting an issue can
+# include it so we know what code they're running.
+SHOPAI_VERSION = "0.31.0"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -328,6 +334,15 @@ def build_parser() -> argparse.ArgumentParser:
     server_p = sub.add_parser("server", help="Start API + webhook server")
     server_p.add_argument("--port", type=int, default=8080, help="Port (default 8080)")
     server_p.add_argument("--host", default="0.0.0.0", help="Host (default 0.0.0.0)")
+
+    version_p = sub.add_parser(
+        "version",
+        help="Show ShopAI version + runtime fingerprint",
+    )
+    version_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
 
     return parser
 
@@ -1805,6 +1820,48 @@ def _cmd_learn(args) -> None:
 
 # ── System Commands ──────────────────────────────────────────
 
+def _build_version_dict() -> dict:
+    """Gather a runtime fingerprint for support / debug.
+
+    Includes the static ShopAI version, the running Python
+    interpreter, the platform string, and a best-effort git SHA
+    (so operators can pin "they're running commit X" even when
+    they're on a non-tagged dev branch).
+    """
+    import platform
+    import subprocess
+
+    payload: dict = {
+        "shopai": SHOPAI_VERSION,
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+    }
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        if sha.returncode == 0 and sha.stdout.strip():
+            payload["git_sha"] = sha.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        # No git in PATH or repo unavailable — skip silently.
+        pass
+    return payload
+
+
+def _cmd_version(args) -> None:
+    """Render the version + runtime fingerprint."""
+    payload = _build_version_dict()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, default=str))
+        return
+    print(f"ShopAI  {payload['shopai']}")
+    print(f"Python  {payload['python']}")
+    print(f"Platform {payload['platform']}")
+    if "git_sha" in payload:
+        print(f"Git SHA {payload['git_sha']}")
+
+
 def _cmd_health() -> None:
     import importlib
     from engines.registry import engine_count
@@ -2208,6 +2265,10 @@ def main(argv: list[str] | None = None) -> None:
         result = orchestrator.run_workflow(args.workflow_name, params)
         print(json.dumps(result, indent=2, default=str))
         orchestrator.shutdown()
+        return
+
+    if args.command == "version":
+        _cmd_version(args)
         return
 
     if args.command == "server":
