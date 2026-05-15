@@ -204,6 +204,34 @@ jobs:
           grep -q "\[access_scopes\]" /tmp/ci-shopify.app.toml
           grep -q "\[webhooks\]" /tmp/ci-shopify.app.toml
 
+      - name: Release-bundle dry-run (capstone)
+        # End-to-end gate for the deploy-day capstone command.
+        # release-bundle re-uses snapshot + catalog --markdown +
+        # shopify-app-toml + the doctor, so this single CI step
+        # exercises every existing artifact-generation path in
+        # one shot. If the capstone breaks, a deploy-day run by
+        # an operator would also break -- catch it in CI.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py release-bundle \
+            --skip-live \
+            --output /tmp/ci-release \
+            --force \
+            --app-host https://shopai-ci.example.com
+          # Every artifact present
+          test -s /tmp/ci-release/snapshot.json
+          test -s /tmp/ci-release/catalog.md
+          test -s /tmp/ci-release/shopify.app.toml
+          test -s /tmp/ci-release/doctor.txt
+          test -s /tmp/ci-release/README.md
+          # JSON snapshot is valid
+          python -c "import json; json.load(open('/tmp/ci-release/snapshot.json'))"
+          # README links each artifact
+          grep -q "snapshot.json" /tmp/ci-release/README.md
+          grep -q "catalog.md" /tmp/ci-release/README.md
+          grep -q "shopify.app.toml" /tmp/ci-release/README.md
+
       - name: Config schema validation
         env:
           PYTHONPATH: ${{ github.workspace }}
