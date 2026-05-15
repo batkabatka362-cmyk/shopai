@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Any
 
 from engines._recovery_codes import mint_recovery_code as _mint
+from engines._writeback_recorder import record_writeback
 
 
 # Code prefix — distinguishes browse-recovery codes from
@@ -112,6 +113,27 @@ def mint_offer_codes(
             ttl_days=ttl_days,
             title=title,
         )
+
+        # Phase 8: feed the autonomous learning loop so the system
+        # can later correlate minted browse-recovery codes with
+        # redemption.
+        record_writeback(
+            engine="browse_recovery",
+            action_type="mint_browse_recovery_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params={
+                "token": token,
+                "value": discount_pct,
+                "value_kind": "percentage",
+                "ttl_days": ttl_days,
+                "likelihood": likelihood,
+            },
+            success=result is not None,
+            error=(
+                None if result is not None else "mint_returned_none"
+            ),
+        )
+
         if result is None:
             _stamp_skipped(offer)
             continue

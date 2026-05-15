@@ -38,6 +38,7 @@ from __future__ import annotations
 from typing import Any
 
 from engines._recovery_codes import mint_recovery_code as _mint
+from engines._writeback_recorder import record_writeback
 
 
 _CODE_PREFIX = "WHOLESALE"
@@ -79,7 +80,7 @@ def mint_wholesale_code(
         f"(customer {customer_id[:24]})"
     )
 
-    return _mint(
+    minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
         value=discount_pct,
@@ -87,6 +88,22 @@ def mint_wholesale_code(
         ttl_days=ttl_days,
         title=title,
     )
+
+    # Phase 8: feed the autonomous learning loop so the system
+    # can later correlate minted wholesale codes with redemption.
+    record_writeback(
+        engine="wholesale_b2b",
+        action_type="mint_wholesale_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params={
+            "customer_id": customer_id,
+            "discount_pct": discount_pct,
+            "ttl_days": ttl_days,
+        },
+        success=minted is not None,
+        error=None if minted is not None else "mint_returned_none",
+    )
+    return minted
 
 
 def enqueue_wholesale_for_approval(
