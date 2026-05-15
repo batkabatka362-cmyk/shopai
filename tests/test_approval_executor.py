@@ -67,9 +67,14 @@ class TestRegistry:
             "mint_campaign_code",
             "mint_wholesale_code",
             "apply_price_change",
+            "apply_strategic_price",
             "apply_tags",
+            "apply_inventory_tags",
             "apply_segment_tag",
             "apply_landing_page",
+            "apply_legal_document",
+            "apply_shipping_strategy",
+            "tag_return_decision",
             "pay_commission",
             "archive_declining_product",
             "apply_description",
@@ -728,6 +733,326 @@ class TestApplyLandingPageDispatcher:
         than passing it to the router."""
         success, result = _DISPATCHERS["apply_landing_page"]({
             "adapter_params": "not a dict",
+        })
+        assert success is False
+
+
+# ─── apply_inventory_tags (SHOPIFY_UPDATE_PRODUCT.tags) ────────
+
+
+class TestApplyInventoryTagsDispatcher:
+    """inventory enqueues {product_id, merged_tags, state_tags,
+    tags_added}; only id + tags reach Shopify. merged_tags is
+    already deduped on the engine side."""
+
+    def test_happy_path_forwards_merged_tags(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["capability"] = capability
+            captured["payload"] = payload
+            return True, {"id": "p1"}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, _ = _DISPATCHERS["apply_inventory_tags"]({
+                "product_id": "p1",
+                "merged_tags": ["low-stock", "needs-reorder"],
+                "state_tags": ["needs-reorder"],
+                "tags_added": 1,
+            })
+
+        assert success is True
+        assert captured["capability"] == "SHOPIFY_UPDATE_PRODUCT"
+        # state_tags / tags_added are operator-context, NOT sent
+        assert captured["payload"] == {
+            "id": "p1",
+            "tags": ["low-stock", "needs-reorder"],
+        }
+
+    def test_missing_product_id_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_inventory_tags"]({
+            "product_id": "",
+            "merged_tags": ["x"],
+        })
+        assert success is False
+        assert "missing_product_id_or_tags" in result["error"]
+
+    def test_empty_merged_tags_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_inventory_tags"]({
+            "product_id": "p1",
+            "merged_tags": [],
+        })
+        assert success is False
+
+
+# ─── apply_legal_document (SHOPIFY_CREATE_PAGE pre-built) ──────
+
+
+class TestApplyLegalDocumentDispatcher:
+    """Same pattern as apply_landing_page — adapter_params is
+    pre-built at proposal time and forwarded verbatim."""
+
+    def test_happy_path_forwards_adapter_params(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["capability"] = capability
+            captured["payload"] = payload
+            return True, {"id": "page_77"}
+
+        adapter_params = {
+            "title": "Privacy Policy",
+            "handle": "privacy-policy",
+            "body_html": "<p>Effective 2026-05-15</p>",
+        }
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, _ = _DISPATCHERS["apply_legal_document"]({
+                "type": "privacy",
+                "title": "Privacy Policy",
+                "handle": "privacy-policy",
+                "adapter_params": adapter_params,
+            })
+
+        assert success is True
+        assert captured["capability"] == "SHOPIFY_CREATE_PAGE"
+        assert captured["payload"] == adapter_params
+
+    def test_missing_adapter_params_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_legal_document"]({
+            "type": "tos",
+        })
+        assert success is False
+        assert "missing_adapter_params" in result["error"]
+
+
+# ─── apply_shipping_strategy (CREATE_AUTOMATIC_FREE_SHIPPING) ──
+
+
+class TestApplyShippingStrategyDispatcher:
+
+    def test_happy_path_forwards_adapter_params(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["capability"] = capability
+            captured["payload"] = payload
+            return True, {"id": "disc_99"}
+
+        adapter_params = {
+            "title": "Free shipping over $50",
+            "starts_at": "2026-05-15T00:00:00Z",
+            "ends_at": "2026-06-15T00:00:00Z",
+            "minimum_subtotal": 50.0,
+        }
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, _ = _DISPATCHERS["apply_shipping_strategy"]({
+                "strategy_id": "free_shipping_threshold",
+                "threshold": 50.0,
+                "title": "Free shipping over $50",
+                "starts_at": "2026-05-15T00:00:00Z",
+                "ends_at": "2026-06-15T00:00:00Z",
+                "ttl_days": 31,
+                "estimated_savings_monthly": 1200.0,
+                "adapter_params": adapter_params,
+            })
+
+        assert success is True
+        assert (
+            captured["capability"]
+            == "SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING"
+        )
+        assert captured["payload"] == adapter_params
+
+    def test_missing_adapter_params_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_shipping_strategy"]({
+            "strategy_id": "x",
+        })
+        assert success is False
+        assert "missing_adapter_params" in result["error"]
+
+
+# ─── apply_strategic_price (SHOPIFY_UPDATE_VARIANTS) ───────────
+
+
+class TestApplyStrategicPriceDispatcher:
+    """pricing enqueues {product_id, new_price, variant_ids, ...};
+    dispatcher re-assembles the bulk variant payload as
+    {product_id, variants: [{id, price}, ...]}."""
+
+    def test_happy_path_builds_variants_payload(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["capability"] = capability
+            captured["payload"] = payload
+            return True, {"product_id": "p1"}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, _ = _DISPATCHERS["apply_strategic_price"]({
+                "product_id": "gid://shopify/Product/1",
+                "new_price": 19.99,
+                "strategy": "demand_uplift",
+                "confidence": 0.91,
+                "variant_ids": [
+                    "gid://shopify/ProductVariant/11",
+                    "gid://shopify/ProductVariant/12",
+                ],
+                "old_price_examples": [22.0, 21.5],
+            })
+
+        assert success is True
+        assert captured["capability"] == "SHOPIFY_UPDATE_VARIANTS"
+        # Price formatted to 2dp, same as live applier
+        assert captured["payload"] == {
+            "product_id": "gid://shopify/Product/1",
+            "variants": [
+                {"id": "gid://shopify/ProductVariant/11", "price": "19.99"},
+                {"id": "gid://shopify/ProductVariant/12", "price": "19.99"},
+            ],
+        }
+
+    def test_price_formatted_to_two_decimals(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["payload"] = payload
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            _DISPATCHERS["apply_strategic_price"]({
+                "product_id": "p1",
+                "new_price": 10,  # bare int
+                "variant_ids": ["v1"],
+            })
+        assert captured["payload"]["variants"][0]["price"] == "10.00"
+
+    def test_missing_product_id_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_strategic_price"]({
+            "product_id": "",
+            "new_price": 5,
+            "variant_ids": ["v1"],
+        })
+        assert success is False
+        assert "missing_product_id_or_variants" in result["error"]
+
+    def test_empty_variants_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_strategic_price"]({
+            "product_id": "p1",
+            "new_price": 5,
+            "variant_ids": [],
+        })
+        assert success is False
+        assert "missing_product_id_or_variants" in result["error"]
+
+    def test_non_numeric_price_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["apply_strategic_price"]({
+            "product_id": "p1",
+            "new_price": "many dollars",
+            "variant_ids": ["v1"],
+        })
+        assert success is False
+        assert "invalid_new_price" in result["error"]
+
+    def test_non_positive_price_fails(self, loaded_dispatchers):
+        """Defensive: zero / negative prices shouldn't reach the
+        adapter — they're almost certainly a calculation bug
+        upstream, not a real desired write."""
+        success, result = _DISPATCHERS["apply_strategic_price"]({
+            "product_id": "p1",
+            "new_price": -5.0,
+            "variant_ids": ["v1"],
+        })
+        assert success is False
+        assert "non_positive_price" in result["error"]
+
+    def test_falsy_variant_ids_skipped(self, loaded_dispatchers):
+        """Empty-string / None variant ids filtered out before
+        building the payload — keeps the wire format clean."""
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["payload"] = payload
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, _ = _DISPATCHERS["apply_strategic_price"]({
+                "product_id": "p1",
+                "new_price": 9.99,
+                "variant_ids": ["v1", "", None, "v2"],
+            })
+        assert success is True
+        assert len(captured["payload"]["variants"]) == 2
+
+
+# ─── tag_return_decision (SHOPIFY_TAG_ORDER) ───────────────────
+
+
+class TestTagReturnDecisionDispatcher:
+    """returns_management enqueues {return_id, order_id, tags,
+    refund_amount, decision_status, rejection_reason}; only
+    order_id + tags reach Shopify."""
+
+    def test_happy_path_translates_to_order_id(self, loaded_dispatchers):
+        captured: dict = {}
+
+        def _stub(capability, payload):
+            captured["capability"] = capability
+            captured["payload"] = payload
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=_stub,
+        ):
+            success, _ = _DISPATCHERS["tag_return_decision"]({
+                "return_id": "ret_1",
+                "order_id": "gid://shopify/Order/123",
+                "tags": ["return-approved", "refund-issued"],
+                "refund_amount": 50.0,
+                "decision_status": "approved",
+                "rejection_reason": None,
+            })
+
+        assert success is True
+        assert captured["capability"] == "SHOPIFY_TAG_ORDER"
+        # Translation: order_id → id; only tags forwarded
+        assert captured["payload"] == {
+            "id": "gid://shopify/Order/123",
+            "tags": ["return-approved", "refund-issued"],
+        }
+
+    def test_missing_order_id_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["tag_return_decision"]({
+            "order_id": "",
+            "tags": ["x"],
+        })
+        assert success is False
+        assert "missing_order_id_or_tags" in result["error"]
+
+    def test_empty_tags_fails(self, loaded_dispatchers):
+        success, result = _DISPATCHERS["tag_return_decision"]({
+            "order_id": "o1",
+            "tags": [],
         })
         assert success is False
 
