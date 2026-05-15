@@ -134,3 +134,89 @@ class TestStatusTextMode:
         assert "Stores:" in out
         assert "Active:" in out
         assert "Auto-sync:" in out
+
+
+# ─── Phase 6/7 wiring snapshot (PR follows #216) ─────────────
+
+
+class TestWiringSnapshot:
+
+    def test_payload_includes_wired_advisory_dispatchers(self, cli):
+        """The status dict now exposes Phase 6/7 wiring counts
+        + dispatcher count for daily-glance visibility."""
+        payload = cli._build_status_dict()
+        for key in (
+            "engines_wired",
+            "engines_advisory",
+            "dispatchers",
+        ):
+            assert key in payload
+
+    def test_wired_count_matches_writeback_audit(self, cli):
+        from engines._writeback_audit import audit_writeback_coverage
+        payload = cli._build_status_dict()
+        wb = audit_writeback_coverage("engines")
+        assert payload["engines_wired"] == wb.wired_count
+        assert payload["engines_advisory"] == wb.advisory_count
+
+    def test_dispatcher_count_matches_registry(self, cli):
+        from core.approval.executor import (
+            _ensure_dispatchers_loaded,
+            list_registered_action_types,
+        )
+        _ensure_dispatchers_loaded()
+        payload = cli._build_status_dict()
+        assert payload["dispatchers"] == len(
+            list_registered_action_types(),
+        )
+
+    def test_text_view_renders_wired_line(self, cli):
+        out = _capture(cli._cmd_status, None)
+        # Wired/advisory line surfaces under "Engines:"
+        assert "wired:" in out.lower()
+        assert "advisory:" in out.lower()
+        # Dispatcher line
+        assert "Dispatchers:" in out
+
+    def test_payload_resilient_to_writeback_audit_failure(
+        self, cli,
+    ):
+        """A broken writeback audit surfaces as None (not a
+        crash). The status command still works for the rest."""
+        with patch(
+            "engines._writeback_audit.audit_writeback_coverage",
+            side_effect=RuntimeError("audit broken"),
+        ):
+            payload = cli._build_status_dict()
+        assert payload["engines_wired"] is None
+        assert payload["engines_advisory"] is None
+        # Other fields still populated
+        assert payload["engines"] > 0
+        assert payload["dispatchers"] is not None
+
+    def test_payload_resilient_to_dispatcher_probe_failure(
+        self, cli,
+    ):
+        with patch(
+            "core.approval.executor._ensure_dispatchers_loaded",
+            side_effect=RuntimeError("loader broken"),
+        ):
+            payload = cli._build_status_dict()
+        # Dispatcher probe failed but other fields intact
+        assert payload["dispatchers"] is None
+        assert payload["engines_wired"] is not None
+
+    def test_text_view_omits_wiring_line_on_failure(self, cli):
+        """When the writeback audit fails, the wired/advisory
+        line is absent (not rendered with None values)."""
+        with patch(
+            "engines._writeback_audit.audit_writeback_coverage",
+            side_effect=RuntimeError("audit broken"),
+        ):
+            out = _capture(cli._cmd_status, None)
+        # Engines header still appears
+        assert "Engines:" in out
+        # Wired/advisory line absent
+        assert "wired:" not in out.lower()
+        # Dispatcher line still rendered (independent collector)
+        assert "Dispatchers:" in out
