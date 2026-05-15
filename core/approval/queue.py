@@ -264,6 +264,7 @@ class ApprovalQueue:
         # Refresh ``action`` from the DB after the maybe-approve so
         # the returned object reflects the auto-decision (otherwise
         # callers see status=PENDING for an already-APPROVED row).
+        auto_approved = False
         try:
             from core.approval.auto_approve import maybe_auto_approve
             decision = maybe_auto_approve(
@@ -271,6 +272,7 @@ class ApprovalQueue:
                 engine=engine, confidence=confidence,
             )
             if decision.should_auto:
+                auto_approved = True
                 refreshed = self.get(action_id)
                 if refreshed is not None:
                     action = refreshed
@@ -279,6 +281,27 @@ class ApprovalQueue:
                 "auto-approve hook raised for %s: %s",
                 action_id, exc,
             )
+
+        # Quarantine evaluator (PR #162). Only checked when the
+        # auto-approve hook didn't already transition the action —
+        # an engine that just auto-approved had a healthy ratio at
+        # eval time, so the quarantine check would be redundant
+        # work and an unnecessary attempt to reject an APPROVED row.
+        if not auto_approved:
+            try:
+                from core.approval.quarantine import maybe_quarantine
+                q_decision = maybe_quarantine(
+                    queue=self, action_id=action_id, engine=engine,
+                )
+                if q_decision.should_quarantine:
+                    refreshed = self.get(action_id)
+                    if refreshed is not None:
+                        action = refreshed
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "quarantine hook raised for %s: %s",
+                    action_id, exc,
+                )
 
         return action
 
