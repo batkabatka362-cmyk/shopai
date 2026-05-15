@@ -81,6 +81,7 @@ class TestRegistry:
             "apply_description",
             "apply_seo_meta",
             "catalog_apply_tags",
+            "apply_fraud_tag",
         }
 
     def test_dispatchers_are_callables(self, loaded_dispatchers):
@@ -1268,3 +1269,170 @@ class TestApplyDescriptionFullBody:
         })
         assert success is False
         assert result["error"] == "missing_product_id"
+
+
+# ─── Executor records to Phase 8 (queue-path coverage) ──────────
+
+
+class TestExecutorRecordsToPhase8:
+    """The queue-path execution (engine enqueue -> operator
+    approve -> executor dispatch) used to skip
+    record_writeback entirely -- only the DIRECT-execute path
+    in each applier called it. This class is the regression
+    guard for the executor's recorder fan-out."""
+
+    def _approved_action(self, queue):
+        """Helper: enqueue + approve a tag_management action so
+        it's ready to execute."""
+        action = queue.enqueue(
+            engine="tag_management",
+            action_type="apply_tags",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            params={
+                "product_id": "gid://shopify/Product/1",
+                "merged_tags": ["promoted", "summer"],
+            },
+            narrative="Tag with promotion labels",
+            confidence=0.9,
+        )
+        queue.approve(action.id, decided_by="test", reason="")
+        return action
+
+    def test_successful_execution_calls_recorder(
+        self, isolated_queue, loaded_dispatchers,
+    ):
+        action = self._approved_action(isolated_queue)
+        # Stub the dispatcher to return success without actually
+        # hitting Shopify. Patch the live registry entry.
+        original = _DISPATCHERS["apply_tags"]
+        try:
+            _DISPATCHERS["apply_tags"] = (
+                lambda params: (True, {"id": params["product_id"]})
+            )
+            with patch(
+                "engines._writeback_recorder.record_writeback",
+            ) as recorder:
+                execute_action(action.id)
+        finally:
+            _DISPATCHERS["apply_tags"] = original
+        recorder.assert_called_once()
+        kwargs = recorder.call_args.kwargs
+        assert kwargs["engine"] == "tag_management"
+        assert kwargs["action_type"] == "apply_tags"
+        assert kwargs["capability"] == "SHOPIFY_UPDATE_PRODUCT"
+        assert kwargs["success"] is True
+        assert kwargs["error"] is None
+
+    def test_failed_execution_records_with_error(
+        self, isolated_queue, loaded_dispatchers,
+    ):
+        action = self._approved_action(isolated_queue)
+        original = _DISPATCHERS["apply_tags"]
+        try:
+            _DISPATCHERS["apply_tags"] = (
+                lambda params: (False, {"error": "shopify_5xx"})
+            )
+            with patch(
+                "engines._writeback_recorder.record_writeback",
+            ) as recorder:
+                execute_action(action.id)
+        finally:
+            _DISPATCHERS["apply_tags"] = original
+        recorder.assert_called_once()
+        kwargs = recorder.call_args.kwargs
+        assert kwargs["success"] is False
+        assert kwargs["error"] == "shopify_5xx"
+
+    def test_dispatcher_exception_records_with_error(
+        self, isolated_queue, loaded_dispatchers,
+    ):
+        action = self._approved_action(isolated_queue)
+        original = _DISPATCHERS["apply_tags"]
+
+        def _boom(params):
+            raise RuntimeError("network down")
+        try:
+            _DISPATCHERS["apply_tags"] = _boom
+            with patch(
+                "engines._writeback_recorder.record_writeback",
+            ) as recorder:
+                execute_action(action.id)
+        finally:
+            _DISPATCHERS["apply_tags"] = original
+        recorder.assert_called_once()
+        kwargs = recorder.call_args.kwargs
+        assert kwargs["success"] is False
+        assert "dispatcher_raised" in kwargs["error"]
+
+    def test_missing_dispatcher_records_with_error(
+        self, isolated_queue,
+    ):
+        """An action with no registered dispatcher is a known
+        failure mode (catches PR-#40-class capability-name
+        bugs). The executor's recorder still fires so Phase 8
+        learns 'this action_type has no dispatcher.'"""
+        action = isolated_queue.enqueue(
+            engine="x",
+            action_type="totally_made_up",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            params={},
+            narrative="",
+            confidence=0.5,
+        )
+        isolated_queue.approve(action.id, decided_by="test", reason="")
+        with patch(
+            "engines._writeback_recorder.record_writeback",
+        ) as recorder:
+            execute_action(action.id)
+        recorder.assert_called_once()
+        kwargs = recorder.call_args.kwargs
+        assert kwargs["success"] is False
+        assert "no executor registered" in kwargs["error"]
+
+    def test_recorder_failure_doesnt_break_dispatch(
+        self, isolated_queue, loaded_dispatchers,
+    ):
+        """The recorder is best-effort. If it raises, the queue
+        entry must STILL flip to EXECUTED (the Shopify mutation
+        already happened)."""
+        action = self._approved_action(isolated_queue)
+        original = _DISPATCHERS["apply_tags"]
+        try:
+            _DISPATCHERS["apply_tags"] = (
+                lambda params: (True, {"ok": True})
+            )
+            with patch(
+                "engines._writeback_recorder.record_writeback",
+                side_effect=RuntimeError("recorder broken"),
+            ):
+                result = execute_action(action.id)
+        finally:
+            _DISPATCHERS["apply_tags"] = original
+        # The dispatch outcome surfaces normally
+        assert result is not None
+        assert result.status == ApprovalStatus.EXECUTED
+
+    def test_recorder_receives_action_params_copy(
+        self, isolated_queue, loaded_dispatchers,
+    ):
+        """The recorder gets a COPY of action.params (not a
+        reference) so a downstream consumer can't mutate the
+        queue's stored params."""
+        action = self._approved_action(isolated_queue)
+        original = _DISPATCHERS["apply_tags"]
+        try:
+            _DISPATCHERS["apply_tags"] = (
+                lambda params: (True, {})
+            )
+            with patch(
+                "engines._writeback_recorder.record_writeback",
+            ) as recorder:
+                execute_action(action.id)
+        finally:
+            _DISPATCHERS["apply_tags"] = original
+        kwargs = recorder.call_args.kwargs
+        # Mutate the recorder's params arg; the queue's stored
+        # params must be unchanged.
+        kwargs["params"]["product_id"] = "MUTATED"
+        re_read = isolated_queue.get(action.id)
+        assert re_read.params["product_id"] == "gid://shopify/Product/1"

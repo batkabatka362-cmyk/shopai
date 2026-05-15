@@ -110,6 +110,17 @@ def execute_action(action_id: str) -> ApprovalAction | None:
 
     dispatcher = _DISPATCHERS.get(action.action_type)
     if dispatcher is None:
+        # Record the "no dispatcher" outcome so Phase 8 still
+        # learns about the failure mode (catches the regression
+        # where a new action_type lands without its dispatcher).
+        _record_outcome(
+            action=action,
+            success=False,
+            error=(
+                f"no executor registered for action_type="
+                f"{action.action_type}"
+            ),
+        )
         return queue.attach_result(
             action_id,
             success=False,
@@ -131,11 +142,68 @@ def execute_action(action_id: str) -> ApprovalAction | None:
         success = False
         result = {"error": f"dispatcher_raised: {exc}"}
 
+    # Phase 8: feed the autonomous learning loop with the queue-
+    # path execution outcome. Direct-execute appliers already
+    # call record_writeback themselves; this closes the parallel
+    # gap for the queue path (PR follows #205/#206).
+    _record_outcome(
+        action=action,
+        success=bool(success),
+        error=(
+            None if success
+            else _extract_error(result)
+        ),
+    )
+
     return queue.attach_result(
         action_id,
         success=bool(success),
         result=result if isinstance(result, dict) else {},
     )
+
+
+def _extract_error(result: Any) -> str | None:
+    """Pull a readable error string out of the dispatcher
+    result. Dispatchers return ``{"error": "..."}`` on failure;
+    fall back to a string repr when the result shape is
+    unexpected."""
+    if isinstance(result, dict):
+        err = result.get("error")
+        if isinstance(err, str) and err:
+            return err
+        return "dispatcher_returned_failure"
+    return "dispatcher_returned_failure"
+
+
+def _record_outcome(
+    *,
+    action: ApprovalAction,
+    success: bool,
+    error: str | None,
+) -> None:
+    """Fan the queue-path execution outcome into Phase 8.
+
+    Uses a lazy import so this module stays cheap. The recorder
+    itself is Pattern-J-gated (short-circuits under
+    ``PYTEST_CURRENT_TEST``) so test pollution isn't possible.
+    Best-effort: a recorder import / call failure is logged and
+    swallowed so it can never break the dispatch path.
+    """
+    try:
+        from engines._writeback_recorder import record_writeback
+        record_writeback(
+            engine=action.engine,
+            action_type=action.action_type,
+            capability=action.capability,
+            params=dict(action.params) if isinstance(action.params, dict) else {},
+            success=success,
+            error=error,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "executor recorder fan-out failed for %s: %s",
+            action.id, exc,
+        )
 
 
 _dispatchers_loaded = False
