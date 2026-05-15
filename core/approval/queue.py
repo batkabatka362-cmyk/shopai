@@ -1211,6 +1211,84 @@ class ApprovalQueue:
             }
         return result
 
+    def rejection_rate_stats(self) -> dict[str, dict[str, Any]]:
+        """Per-engine rejection rate — surfaces engines whose
+        proposals operators consistently veto.
+
+        Different signal from:
+          - PR #168 pending-latency: engines whose proposals
+            sit (operators IGNORE).
+          - PR #169 decision-latency: engines where decisions
+            are slow (operators STRUGGLE).
+          - PR #162 quarantine: engines whose EXECUTED outcomes
+            turn negative (downstream impact).
+
+        Rejection is the explicit "no, this is wrong" verdict
+        BEFORE execute — the operator is saying the proposal
+        itself is bad. High rejection rate = the engine is
+        misbehaving at the proposal stage.
+
+        Returns ``{engine: stats}`` for each engine with at
+        least one operator-decided action (APPROVED, REJECTED,
+        EXECUTED, FAILED). EXPIRED is excluded because it
+        wasn't an operator decision — the sweeper TTL'd it.
+
+        Each stats dict carries:
+          - ``decided_count`` (int): total operator-decided
+            actions for this engine
+          - ``rejected_count`` (int)
+          - ``approved_count`` (int): includes APPROVED +
+            EXECUTED + FAILED (all started as operator approve)
+          - ``rejection_rate`` (float): rejected / decided
+        """
+        operator_statuses = [
+            ApprovalStatus.APPROVED.value,
+            ApprovalStatus.REJECTED.value,
+            ApprovalStatus.EXECUTED.value,
+            ApprovalStatus.FAILED.value,
+        ]
+        placeholders = ",".join("?" for _ in operator_statuses)
+        with _LOCK:
+            rows = self._conn.execute(
+                f"""SELECT engine, status, COUNT(*) AS n
+                    FROM pending_actions
+                    WHERE status IN ({placeholders})
+                    GROUP BY engine, status""",
+                operator_statuses,
+            ).fetchall()
+
+        by_engine: dict[str, dict[str, int]] = {}
+        for r in rows:
+            engine = r["engine"]
+            entry = by_engine.setdefault(engine, {
+                "approved_count": 0,
+                "rejected_count": 0,
+                "decided_count": 0,
+            })
+            count = int(r["n"])
+            entry["decided_count"] += count
+            if r["status"] == ApprovalStatus.REJECTED.value:
+                entry["rejected_count"] += count
+            else:
+                # APPROVED + EXECUTED + FAILED all originate
+                # from an operator approve transition.
+                entry["approved_count"] += count
+
+        result: dict[str, dict[str, Any]] = {}
+        for engine, entry in by_engine.items():
+            decided = entry["decided_count"]
+            if decided == 0:
+                continue
+            result[engine] = {
+                "decided_count": decided,
+                "rejected_count": entry["rejected_count"],
+                "approved_count": entry["approved_count"],
+                "rejection_rate": round(
+                    entry["rejected_count"] / decided, 4,
+                ),
+            }
+        return result
+
     def list_recent_outcomes(
         self,
         *,
