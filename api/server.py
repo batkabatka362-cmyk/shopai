@@ -111,6 +111,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/stores": self._list_stores,
             "/api/pending-actions": self._list_pending_actions,
             "/api/pending-actions/stats": self._pending_actions_stats,
+            "/api/approvals/audit": self._approvals_audit,
             "/api/recommendations": self._list_recommendations,
             "/api/goal": self._get_goal,
             "/api/feedback/stats": self._feedback_stats,
@@ -154,6 +155,8 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             "/api/auto/cycle": self._auto_cycle,
             "/api/store/sync": self._store_sync,
             "/api/intent": self._classify_intent,
+            "/api/approvals/sweep": self._approvals_sweep,
+            "/api/approvals/approve-all": self._approvals_approve_all,
         }
 
         # /api/pending-actions/<id>/approve  /api/pending-actions/<id>/reject
@@ -821,6 +824,158 @@ class ShopAIHandler(BaseHTTPRequestHandler):
         self._json_response(200, {
             "status": result_action.status.value,
             "action": result_action.to_dict(),
+        })
+
+    def _approvals_sweep(self, body: dict) -> None:
+        """POST /api/approvals/sweep — bulk-expire stale PENDING actions.
+
+        Body (all optional):
+          - ``older_than``: age spec (``"60s"``/``"30m"``/``"24h"``/``"7d"``)
+            or bare integer seconds. Default ``"7d"``.
+          - ``dry_run``: bool. If true, return the candidate list
+            without writing. Default false.
+        """
+        from core.approval.queue import parse_age_spec
+        spec = body.get("older_than") or "7d"
+        max_age = parse_age_spec(str(spec))
+        if max_age is None:
+            self._json_response(400, {
+                "error": f"Invalid 'older_than': {spec!r}",
+                "hint": "Expected '60s', '30m', '24h', '7d', or integer seconds.",
+            })
+            return
+        dry_run = bool(body.get("dry_run", False))
+
+        from core.approval.queue import get_approval_queue
+        queue = get_approval_queue()
+
+        if dry_run:
+            import time as _time
+            cutoff = _time.time() - max_age
+            candidates = [
+                a for a in queue.list_pending(limit=10_000)
+                if a.proposed_at < cutoff
+            ]
+            self._json_response(200, {
+                "status": "dry_run",
+                "max_age_seconds": int(max_age),
+                "count": len(candidates),
+                "candidates": [a.to_dict() for a in candidates],
+            })
+            return
+
+        expired = queue.expire_stale(max_age_seconds=max_age)
+        self._json_response(200, {
+            "status": "swept",
+            "max_age_seconds": int(max_age),
+            "expired_count": len(expired),
+            "expired": [a.to_dict() for a in expired],
+        })
+
+    def _approvals_approve_all(self, body: dict) -> None:
+        """POST /api/approvals/approve-all — bulk-approve PENDING with filters.
+
+        Body (all optional):
+          - ``engine``: restrict to one engine name
+          - ``min_confidence``: float floor (0.0-1.0); None confidence
+            treated as 0.0 (gate cannot be bypassed by missing data)
+          - ``by``: operator name (default "operator")
+          - ``reason``: decision note (default "bulk_approve")
+          - ``execute``: bool, also run executor on each (default false)
+          - ``dry_run``: bool, preview without writing (default false)
+        """
+        engine = body.get("engine")
+        if engine is not None and not isinstance(engine, str):
+            self._json_response(400, {"error": "'engine' must be a string"})
+            return
+        try:
+            mc_raw = body.get("min_confidence")
+            min_confidence = float(mc_raw) if mc_raw is not None else None
+        except (TypeError, ValueError):
+            self._json_response(400, {
+                "error": "'min_confidence' must be a number",
+            })
+            return
+        decided_by = str(body.get("by") or "operator")[:80]
+        reason = str(body.get("reason") or "bulk_approve")[:500]
+        execute = bool(body.get("execute", False))
+        dry_run = bool(body.get("dry_run", False))
+
+        from core.approval.queue import get_approval_queue
+        queue = get_approval_queue()
+
+        candidates = queue.list_pending(engine=engine, limit=10_000)
+        if min_confidence is not None:
+            candidates = [
+                a for a in candidates
+                if (a.confidence or 0.0) >= min_confidence
+            ]
+
+        if dry_run:
+            self._json_response(200, {
+                "status": "dry_run",
+                "count": len(candidates),
+                "candidates": [a.to_dict() for a in candidates],
+            })
+            return
+
+        approved_ids: list[str] = []
+        executed_ids: list[str] = []
+        skipped_ids: list[str] = []
+        for a in candidates:
+            decision = queue.approve(
+                a.id, decided_by=decided_by, reason=reason,
+            )
+            if decision is None:
+                skipped_ids.append(a.id)
+                continue
+            approved_ids.append(a.id)
+            if execute:
+                from core.approval.executor import execute_action
+                from core.approval.queue import ApprovalStatus
+                result = execute_action(a.id)
+                if result is not None and result.status == (
+                    ApprovalStatus.EXECUTED
+                ):
+                    executed_ids.append(a.id)
+
+        self._json_response(200, {
+            "status": "approved",
+            "approved_count": len(approved_ids),
+            "executed_count": len(executed_ids) if execute else None,
+            "approved_ids": approved_ids,
+            "executed_ids": executed_ids if execute else [],
+            "skipped_ids": skipped_ids,
+        })
+
+    def _approvals_audit(self) -> None:
+        """GET /api/approvals/audit — dispatcher coverage audit.
+
+        Returns a JSON summary of which action_types engines enqueue
+        vs which the executor can dispatch. Surfaces Pattern K gaps
+        (silent execute failures).
+        """
+        from core.approval.coverage_audit import audit_coverage
+        try:
+            report = audit_coverage()
+        except Exception as exc:
+            self._json_response(500, {"error": f"Audit failed: {exc}"})
+            return
+        self._json_response(200, {
+            "enqueue_site_count": len(report.enqueued),
+            "registered_count": len(report.registered),
+            "registered": report.registered,
+            "missing": report.missing,
+            "orphaned": report.orphaned,
+            "has_gaps": report.has_gaps,
+            "enqueue_sites": [
+                {
+                    "action_type": s.action_type,
+                    "file_path": s.file_path,
+                    "line": s.line,
+                }
+                for s in report.enqueued
+            ],
         })
 
     def _classify_intent(self, body: dict) -> None:

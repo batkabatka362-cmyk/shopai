@@ -134,6 +134,7 @@ class AutonomousController:
         *,
         cognitive_mind: Any = None,
         cognitive_mode: str = "off",
+        use_engine_recommender: bool = False,
     ) -> None:
         """Build an autonomous controller.
 
@@ -155,6 +156,13 @@ class AutonomousController:
                              phase; the legacy loop still runs but
                              the cognitive report carries the
                              recommendation
+            use_engine_recommender: when True, the analysis phase
+                picks engines via the brain-stack recommender
+                (core.brain.engine_recommender) — letting the
+                goal-feedback / EMA loop actually drive what runs.
+                Falls back to the legacy hardcoded list on
+                recommender failure or empty pick list. Default
+                False for backward compatibility.
         """
         self._store_manager = store_manager
         self._auto_approve = auto_approve
@@ -177,6 +185,9 @@ class AutonomousController:
         self._cognitive_mode = cognitive_mode if cognitive_mode in (
             "off", "shadow", "primary",
         ) else "off"
+
+        # Brain-stack engine recommender opt-in
+        self._use_engine_recommender = use_engine_recommender
 
         # Wave 6 #19d: lock for lazy-init of _reflection_synth and
         # _error_buffer so concurrent cycle threads don't race on the
@@ -2550,14 +2561,53 @@ class AutonomousController:
 
         return data
 
+    _LEGACY_ANALYSIS_ENGINES = (
+        "pricing", "inventory", "product_ranking",
+        "customer_segmentation", "product_research",
+    )
+
+    def _select_analysis_engines(self) -> list[str]:
+        """Pick the analysis-phase engine list for this cycle.
+
+        Default: legacy 5-engine hardcoded list. When
+        ``use_engine_recommender=True``: consult the brain stack's
+        engine recommender so the goal-feedback / EMA loop actually
+        drives what runs. Recommender failure or empty pick list
+        falls back to the legacy list — the autonomous loop must
+        not silently run zero engines if the brain stack hiccups.
+        """
+        legacy = list(self._LEGACY_ANALYSIS_ENGINES)
+        if not self._use_engine_recommender:
+            return legacy
+        try:
+            from core.brain.engine_recommender import recommend_engines
+            result = recommend_engines(
+                limit=5, include_alternatives=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "engine recommender raised, falling back to legacy "
+                "analysis list: %s", exc,
+            )
+            return legacy
+        if not result.primary:
+            logger.debug(
+                "engine recommender returned empty picks; "
+                "using legacy analysis list",
+            )
+            return legacy
+        picks = [r.engine for r in result.primary]
+        logger.info(
+            "analysis engines (recommender-driven, goal=%s): %s",
+            result.active_goal, picks,
+        )
+        return picks
+
     def _phase_analyze(self, store_id: str, data: dict[str, Any]) -> dict[str, Any]:
         """Phase 2: Run key analysis engines + AI reasoning."""
         from engines.registry import get_engine
 
-        engines_to_run = [
-            "pricing", "inventory", "product_ranking",
-            "customer_segmentation", "product_research",
-        ]
+        engines_to_run = self._select_analysis_engines()
         results: dict[str, Any] = {}
 
         for engine_name in engines_to_run:

@@ -272,6 +272,46 @@ class ApprovalQueue:
                 ).fetchall()
         return [_row_to_action(r) for r in rows]
 
+    def list_by_status(
+        self,
+        status: "ApprovalStatus",
+        *,
+        engine: str | None = None,
+        limit: int = 500,
+    ) -> list[ApprovalAction]:
+        """Return actions in a given status, newest-first by decision
+        time (falling back to proposed_at for PENDING which has no
+        decision yet).
+
+        Generalisation of :meth:`list_pending` / :meth:`list_executed`
+        for operator triage queries — "show me the last 5 FAILED
+        actions" / "what expired this week?" — where the existing
+        pair didn't cover REJECTED / FAILED / EXPIRED.
+        """
+        order_by = (
+            "proposed_at" if status == ApprovalStatus.PENDING
+            else "decided_at"
+        )
+        # Sort PENDING oldest-first (review queue), everything else
+        # newest-first (recent activity feed).
+        direction = "ASC" if status == ApprovalStatus.PENDING else "DESC"
+        with _LOCK:
+            if engine:
+                rows = self._conn.execute(
+                    f"""SELECT * FROM pending_actions
+                       WHERE status = ? AND engine = ?
+                       ORDER BY {order_by} {direction} LIMIT ?""",
+                    (status.value, engine, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    f"""SELECT * FROM pending_actions
+                       WHERE status = ?
+                       ORDER BY {order_by} {direction} LIMIT ?""",
+                    (status.value, limit),
+                ).fetchall()
+        return [_row_to_action(r) for r in rows]
+
     def list_executed(
         self, *, engine: str | None = None, limit: int = 500,
     ) -> list[ApprovalAction]:
@@ -469,6 +509,32 @@ class ApprovalQueue:
         )
         return expired
 
+    def stats_by_engine(self) -> dict[str, dict[str, int]]:
+        """Counts per engine x status. Used by ``shopai approvals
+        stats --by-engine`` and the API endpoint that surfaces
+        per-engine triage signal (which engines have growing
+        rejection / expiry rates).
+
+        Returns a nested dict ``{engine: {status: count}}``. Engines
+        with no queue activity are absent; each present engine has
+        an entry per :class:`ApprovalStatus` (zeros included).
+        """
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT engine, status, COUNT(*) as n
+                   FROM pending_actions
+                   GROUP BY engine, status""",
+            ).fetchall()
+
+        all_statuses = [s.value for s in ApprovalStatus]
+        out: dict[str, dict[str, int]] = {}
+        for r in rows:
+            engine = r["engine"]
+            if engine not in out:
+                out[engine] = {s: 0 for s in all_statuses}
+            out[engine][r["status"]] = int(r["n"])
+        return out
+
     def record_outcome(
         self,
         action_id: str,
@@ -656,6 +722,30 @@ def reset_approval_queue() -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("approval queue close failed: %s", exc)
         _INSTANCE = None
+
+
+def parse_age_spec(spec: str) -> float | None:
+    """Parse an age spec like ``"7d"``, ``"30m"``, ``"24h"``, ``"60s"``
+    into seconds. Bare integers are treated as seconds. Returns
+    ``None`` on malformed input.
+
+    Shared between CLI (``shopai approvals sweep``) and HTTP
+    (``POST /api/approvals/sweep``) so both surfaces accept the
+    same human-friendly age strings.
+    """
+    if not spec:
+        return None
+    spec = spec.strip().lower()
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if spec[-1] in multipliers:
+        try:
+            return float(spec[:-1]) * multipliers[spec[-1]]
+        except ValueError:
+            return None
+    try:
+        return float(spec)
+    except ValueError:
+        return None
 
 
 def _safe_json(payload: Any) -> str:

@@ -313,8 +313,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Page size (default: 20)",
     )
 
-    approvals_sub.add_parser(
+    approvals_stats = approvals_sub.add_parser(
         "stats", help="Per-status counts in the approval queue",
+    )
+    approvals_stats.add_argument(
+        "--by-engine", action="store_true",
+        help="Break down counts per engine (triage signal)",
     )
 
     approvals_show = approvals_sub.add_parser(
@@ -370,6 +374,63 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show what would expire without writing",
     )
 
+    approvals_approve_all = approvals_sub.add_parser(
+        "approve-all",
+        help="Bulk-approve PENDING actions matching filters",
+    )
+    approvals_approve_all.add_argument(
+        "--engine", default=None,
+        help="Restrict to one engine (omit = all engines)",
+    )
+    approvals_approve_all.add_argument(
+        "--min-confidence", type=float, default=None,
+        help="Skip actions below this confidence (0.0-1.0)",
+    )
+    approvals_approve_all.add_argument(
+        "--by", default="operator",
+        help="Operator name attributed to each decision",
+    )
+    approvals_approve_all.add_argument(
+        "--reason", default="bulk_approve",
+        help="Decision reason attached to each approval",
+    )
+    approvals_approve_all.add_argument(
+        "--execute", action="store_true",
+        help="Immediately run the executor on each approval",
+    )
+    approvals_approve_all.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would approve without writing",
+    )
+
+    approvals_audit = approvals_sub.add_parser(
+        "audit",
+        help="Audit dispatcher coverage vs engine enqueue sites",
+    )
+    approvals_audit.add_argument(
+        "--engines-root", default="engines",
+        help="Path to engines directory (default: engines)",
+    )
+
+    approvals_recent = approvals_sub.add_parser(
+        "recent",
+        help="List recent actions filtered by status (operator triage)",
+    )
+    approvals_recent.add_argument(
+        "status",
+        choices=["pending", "approved", "rejected",
+                 "executed", "failed", "expired"],
+        help="Status to filter on",
+    )
+    approvals_recent.add_argument(
+        "--engine", default=None,
+        help="Restrict to one engine namespace",
+    )
+    approvals_recent.add_argument(
+        "--limit", type=int, default=10,
+        help="Page size (default: 10)",
+    )
+
     # ── Pipeline commands ────────────────────────────────────
     pipeline = sub.add_parser("pipeline", help="Run a data pipeline")
     pipeline.add_argument("pipeline_name", choices=["product", "marketing", "analytics"])
@@ -386,6 +447,10 @@ def build_parser() -> argparse.ArgumentParser:
     auto_p.add_argument("--loop", action="store_true", help="Run continuously")
     auto_p.add_argument("--interval", type=int, default=600, help="Loop interval (seconds)")
     auto_p.add_argument("--auto-approve", action="store_true", help="Auto-approve actions (DANGEROUS)")
+    auto_p.add_argument(
+        "--use-recommender", action="store_true",
+        help="Pick analysis engines via brain-stack recommender (vs legacy hardcoded list)",
+    )
 
     learn_p = sub.add_parser("learn", help="Show learning status")
     learn_p.add_argument("--details", action="store_true", help="Show detailed learning data")
@@ -1762,7 +1827,11 @@ def _cmd_auto(args) -> None:
     sm = _get_store_manager()
     from core.autonomous.controller import AutonomousController
 
-    controller = AutonomousController(sm, auto_approve=args.auto_approve)
+    controller = AutonomousController(
+        sm,
+        auto_approve=args.auto_approve,
+        use_engine_recommender=getattr(args, "use_recommender", False),
+    )
     controller.initialize()
 
     if args.auto_approve:
@@ -2267,15 +2336,27 @@ def _cmd_approvals(args) -> None:
     if verb == "sweep":
         _cmd_approvals_sweep(args)
         return
+    if verb == "approve-all":
+        _cmd_approvals_approve_all(args)
+        return
+    if verb == "audit":
+        _cmd_approvals_audit(args)
+        return
+    if verb == "recent":
+        _cmd_approvals_recent(args)
+        return
     print(
         "Usage:\n"
-        "  shopai approvals pending  [--engine NAME] [--limit N]\n"
-        "  shopai approvals stats\n"
-        "  shopai approvals show     <action_id>\n"
-        "  shopai approvals approve  <action_id> [--reason ...] [--by ...] [--execute]\n"
-        "  shopai approvals reject   <action_id> [--reason ...] [--by ...]\n"
-        "  shopai approvals execute  <action_id>\n"
-        "  shopai approvals sweep    [--older-than 7d] [--dry-run]"
+        "  shopai approvals pending     [--engine NAME] [--limit N]\n"
+        "  shopai approvals stats       [--by-engine]\n"
+        "  shopai approvals show        <action_id>\n"
+        "  shopai approvals approve     <action_id> [--reason ...] [--by ...] [--execute]\n"
+        "  shopai approvals reject      <action_id> [--reason ...] [--by ...]\n"
+        "  shopai approvals execute     <action_id>\n"
+        "  shopai approvals sweep       [--older-than 7d] [--dry-run]\n"
+        "  shopai approvals approve-all [--engine NAME] [--min-confidence 0.X] [--execute] [--dry-run]\n"
+        "  shopai approvals audit       [--engines-root PATH]\n"
+        "  shopai approvals recent      <status> [--engine NAME] [--limit N]"
     )
     sys.exit(1)
 
@@ -2305,7 +2386,35 @@ def _cmd_approvals_pending(args) -> None:
 
 def _cmd_approvals_stats(args) -> None:
     from core.approval import get_approval_queue
-    stats = get_approval_queue().stats()
+    queue = get_approval_queue()
+
+    if getattr(args, "by_engine", False):
+        by_engine = queue.stats_by_engine()
+        if not by_engine:
+            print("Approval queue is empty.")
+            return
+        statuses = ["pending", "approved", "executed",
+                    "failed", "rejected", "expired"]
+        col = 10
+        header = (
+            f"{'engine':<24}"
+            + "".join(f"{s:>{col}}" for s in statuses)
+        )
+        print("Approval queue by engine:")
+        print(f"  {header}")
+        print(f"  {'-' * len(header)}")
+        for engine in sorted(by_engine):
+            counts = by_engine[engine]
+            row = (
+                f"{engine:<24}"
+                + "".join(
+                    f"{counts.get(s, 0):>{col}}" for s in statuses
+                )
+            )
+            print(f"  {row}")
+        return
+
+    stats = queue.stats()
     print("Approval queue stats:")
     for status, count in sorted(stats.items()):
         print(f"  {status:<10} {count}")
@@ -2416,25 +2525,194 @@ def _cmd_approvals_sweep(args) -> None:
         print(f"  {a.id} {a.engine}/{a.action_type}")
 
 
-def _parse_age_spec(spec: str) -> float | None:
-    """Parse e.g. ``"7d"``, ``"30m"``, ``"24h"``, ``"60s"`` →
-    seconds. Returns ``None`` on malformed input.
+def _cmd_approvals_approve_all(args) -> None:
+    """Bulk-approve PENDING actions matching engine + confidence filters.
 
-    Bare integers are treated as seconds (so ``"3600"`` → ``3600``).
+    Saves the operator from clicking through dozens of high-confidence
+    proposals one at a time. Pairs naturally with ``--execute`` so a
+    triage round can land 20 dispatches in a single command.
     """
-    if not spec:
-        return None
-    spec = spec.strip().lower()
-    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    if spec[-1] in multipliers:
-        try:
-            return float(spec[:-1]) * multipliers[spec[-1]]
-        except ValueError:
-            return None
+    from core.approval.queue import get_approval_queue
+
+    queue = get_approval_queue()
+    candidates = queue.list_pending(engine=args.engine, limit=10_000)
+    if args.min_confidence is not None:
+        candidates = [
+            a for a in candidates
+            if (a.confidence or 0.0) >= args.min_confidence
+        ]
+
+    if not candidates:
+        filt = []
+        if args.engine:
+            filt.append(f"engine={args.engine}")
+        if args.min_confidence is not None:
+            filt.append(f"min_confidence={args.min_confidence}")
+        suffix = f" ({', '.join(filt)})" if filt else ""
+        print(f"No PENDING actions matched{suffix}.")
+        return
+
+    if args.dry_run:
+        print(
+            f"Dry run: {len(candidates)} action(s) would be approved:"
+        )
+        for a in candidates:
+            conf = (
+                f"conf={a.confidence:.2f}"
+                if a.confidence is not None else "conf=-"
+            )
+            print(
+                f"  {a.id} {a.engine}/{a.action_type} {conf}"
+            )
+        return
+
+    approved_count = 0
+    executed_count = 0
+    failed_ids: list[str] = []
+
+    for a in candidates:
+        decision = queue.approve(
+            a.id, decided_by=args.by, reason=args.reason,
+        )
+        if decision is None:
+            # Race: approved/rejected/expired between list and approve.
+            failed_ids.append(a.id)
+            continue
+        approved_count += 1
+        if args.execute:
+            from core.approval.executor import execute_action
+            from core.approval.queue import ApprovalStatus
+            result = execute_action(a.id)
+            if (
+                result is not None
+                and result.status == ApprovalStatus.EXECUTED
+            ):
+                executed_count += 1
+
+    print(
+        f"Approved {approved_count} action(s)"
+        + (f", executed {executed_count}" if args.execute else "")
+        + "."
+    )
+    if failed_ids:
+        print(f"  Skipped (state changed): {len(failed_ids)}")
+
+
+def _cmd_approvals_recent(args) -> None:
+    """List recent actions by status — operator triage feed.
+
+    PENDING is shown oldest-first (review queue order); everything
+    else is shown newest-first (recent activity).
+    """
+    import time as _time
+
+    from core.approval.queue import ApprovalStatus, get_approval_queue
+
     try:
-        return float(spec)
+        status = ApprovalStatus(args.status)
     except ValueError:
-        return None
+        print(f"Unknown status: {args.status}")
+        sys.exit(1)
+
+    queue = get_approval_queue()
+    actions = queue.list_by_status(
+        status, engine=args.engine, limit=args.limit,
+    )
+    if not actions:
+        suffix = f" for engine '{args.engine}'" if args.engine else ""
+        print(f"No {status.value.upper()} actions{suffix}.")
+        return
+
+    print(f"Recent {status.value.upper()} actions ({len(actions)}):")
+    now = _time.time()
+    for a in actions:
+        timestamp = a.decided_at if status != ApprovalStatus.PENDING else (
+            a.proposed_at
+        )
+        ago = _format_age(now - timestamp) if timestamp else "?"
+        label = f"{a.engine}/{a.action_type}"
+        if len(label) > 40:
+            label = label[:37] + "..."
+        line = f"  {a.id[:18]:<18} {label:<40} {ago}"
+        # For FAILED/REJECTED, also surface the reason or error
+        if status == ApprovalStatus.FAILED and a.result:
+            err = a.result.get("error") or a.result.get("status", "?")
+            line += f"  err={err}"
+        elif status == ApprovalStatus.REJECTED and a.decision_reason:
+            line += f"  reason={a.decision_reason}"
+        elif status == ApprovalStatus.EXPIRED and a.decision_reason:
+            line += f"  ({a.decision_reason})"
+        print(line)
+
+
+def _cmd_approvals_audit(args) -> None:
+    """Dispatcher coverage audit — flags Pattern K gaps.
+
+    Cross-references action_types enqueued in engines/ against the
+    registered dispatcher table. Exits 1 if any missing — useful as
+    a CI guard so a new engine writeback without a matching
+    dispatcher fails the build instead of failing silently at
+    execute time.
+    """
+    from pathlib import Path
+
+    from core.approval.coverage_audit import EnqueueCall, audit_coverage
+
+    report = audit_coverage(Path(args.engines_root))
+
+    print(
+        f"Dispatcher coverage audit ({args.engines_root})"
+    )
+    print(
+        f"  Engine enqueue sites:  {len(report.enqueued)}"
+    )
+    print(
+        f"  Registered dispatchers: {len(report.registered)}"
+    )
+    print(
+        f"  Missing: {len(report.missing)}    "
+        f"Orphaned: {len(report.orphaned)}"
+    )
+
+    if report.missing:
+        print()
+        print("Missing dispatchers (Pattern K — silent execute failures):")
+        # Group by action_type so each gap lists its call sites
+        by_type: dict[str, list[EnqueueCall]] = {}
+        for site in report.enqueued:
+            if site.action_type in report.missing:
+                by_type.setdefault(site.action_type, []).append(site)
+        for action_type in sorted(by_type):
+            print(f"  {action_type}")
+            for s in by_type[action_type]:
+                print(f"    {s.file_path}:{s.line}")
+
+    if report.orphaned:
+        print()
+        print("Orphaned dispatchers (no engine enqueues these):")
+        for o in report.orphaned:
+            print(f"  {o}")
+
+    if report.has_gaps:
+        print()
+        print(
+            "Audit failed: register dispatchers for the missing action_types "
+            "in core/approval/dispatchers.py."
+        )
+        sys.exit(1)
+
+    print()
+    print("Coverage OK — all enqueued action_types have dispatchers.")
+
+
+def _parse_age_spec(spec: str) -> float | None:
+    """Thin shim delegating to ``core.approval.queue.parse_age_spec``.
+
+    Kept for backward compat with existing tests that import this
+    by name; new callers should use the public function directly.
+    """
+    from core.approval.queue import parse_age_spec
+    return parse_age_spec(spec)
 
 
 def _run_execute(action_id: str) -> None:
