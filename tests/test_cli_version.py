@@ -130,3 +130,100 @@ class TestVersionCommand:
         )
         assert out.strip()[0] == "{"
         assert "ShopAI " not in out  # no text-view header in JSON
+
+
+# ─── --full system identity ──────────────────────────────────
+
+
+class TestFullFingerprint:
+
+    def test_default_omits_system_identity_keys(self, cli):
+        """Default (non-full) version dict should NOT include
+        engine_count / dispatcher_count / scope_hash. Those
+        fields are only added under --full so the default
+        command stays cheap."""
+        payload = cli._build_version_dict(full=False)
+        assert "engine_count" not in payload
+        assert "dispatcher_count" not in payload
+        assert "scope_hash" not in payload
+
+    def test_full_includes_system_identity_keys(self, cli):
+        payload = cli._build_version_dict(full=True)
+        # All identity blocks are present (may be None on
+        # collector failure, but the keys exist)
+        for key in (
+            "engine_count",
+            "dispatcher_count",
+            "scope_count",
+            "scope_hash",
+            "engines_wired",
+            "engines_advisory",
+        ):
+            assert key in payload
+
+    def test_full_engine_count_matches_registry(self, cli):
+        from engines.registry import engine_count
+        payload = cli._build_version_dict(full=True)
+        assert payload["engine_count"] == engine_count()
+
+    def test_full_dispatcher_count_matches_registry(self, cli):
+        from core.approval.executor import (
+            list_registered_action_types,
+            _ensure_dispatchers_loaded,
+        )
+        _ensure_dispatchers_loaded()
+        payload = cli._build_version_dict(full=True)
+        assert payload["dispatcher_count"] == len(
+            list_registered_action_types(),
+        )
+
+    def test_full_scope_hash_stable_across_calls(self, cli):
+        """Same code = same scope hash. Stable identity for
+        support tickets."""
+        a = cli._build_version_dict(full=True)
+        b = cli._build_version_dict(full=True)
+        assert a["scope_hash"] == b["scope_hash"]
+        # Hash is a 12-char hex string (sha256 truncated)
+        assert len(a["scope_hash"]) == 12
+
+    def test_full_text_render_shows_identity(self, cli):
+        out = _capture(
+            cli._cmd_version,
+            argparse.Namespace(json=False, full=True),
+        )
+        assert "System identity" in out
+        assert "Engines:" in out
+        assert "Dispatchers:" in out
+        assert "Scopes:" in out
+
+    def test_full_json_render_includes_identity(self, cli):
+        out = _capture(
+            cli._cmd_version,
+            argparse.Namespace(json=True, full=True),
+        )
+        data = json.loads(out)
+        assert "engine_count" in data
+        assert "dispatcher_count" in data
+        assert "scope_hash" in data
+
+    def test_full_resilient_to_collector_failure(self, cli):
+        """A single broken collector surfaces as ``None`` for
+        its field, doesn't break the rest of the fingerprint."""
+        with patch(
+            "engines.registry.engine_count",
+            side_effect=RuntimeError("broken"),
+        ):
+            payload = cli._build_version_dict(full=True)
+        # engine_count is None, but the other fields still
+        # populated
+        assert payload["engine_count"] is None
+        assert payload["dispatcher_count"] is not None
+        assert payload["scope_hash"] is not None
+
+    def test_default_text_render_omits_identity_block(self, cli):
+        out = _capture(
+            cli._cmd_version,
+            argparse.Namespace(json=False, full=False),
+        )
+        assert "System identity" not in out
+        assert "Dispatchers:" not in out
