@@ -1781,6 +1781,39 @@ def _print_engine_brain_stack(engine_name: str) -> None:
             f"  Effectiveness:  {ema:.2f} (over {samples} recorded outcomes)"
         )
 
+    # Per-engine outcome score — the recommender's tiebreaker
+    # signal added in the per-engine aggregator PR. Direct
+    # measurement of this engine's track record on real Shopify
+    # outcomes (orders/refunds tied back via discount code or
+    # product id).
+    try:
+        from core.approval import get_approval_queue
+        outcome_stats = (
+            get_approval_queue().engine_outcome_stats(engine_name)
+        )
+    except Exception as exc:
+        logger.debug("engine outcome stats lookup failed: %s", exc)
+        return
+
+    score = outcome_stats.get("outcome_score")
+    pos = outcome_stats.get("positive_count", 0)
+    neg = outcome_stats.get("negative_count", 0)
+    revenue = outcome_stats.get("total_revenue", 0.0)
+    if score is None and pos == 0 and neg == 0:
+        # No outcome data — show the line as "not measured" so the
+        # operator distinguishes "untested" from "measured at neutral".
+        print(
+            "  Outcome score:  (no matched outcomes yet)"
+        )
+    else:
+        score_str = (
+            f"{score:.2f}" if score is not None else "neutral"
+        )
+        print(
+            f"  Outcome score:  {score_str} "
+            f"({pos}+ / {neg}-, net ${revenue:,.2f})"
+        )
+
 
 def _cmd_run(args) -> None:
     sm = _get_store_manager()
