@@ -937,6 +937,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_trace = approvals_sub.add_parser(
+        "trace",
+        help=(
+            "Dry-run inspection: show what executing an action "
+            "would do (dispatcher + adapter + scopes + params) "
+            "without making any external calls"
+        ),
+    )
+    approvals_trace.add_argument(
+        "action_id",
+        help="Approval action id (e.g. appr_1234567890123)",
+    )
+    approvals_trace.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     approvals_doctor = approvals_sub.add_parser(
         "doctor",
         help=(
@@ -5890,6 +5907,9 @@ def _cmd_approvals(args) -> None:
     if verb == "doctor":
         _cmd_approvals_doctor(args)
         return
+    if verb == "trace":
+        _cmd_approvals_trace(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -5911,7 +5931,8 @@ def _cmd_approvals(args) -> None:
         "  shopai approvals decision-latency [--status approved|rejected|executed|failed|expired|all] [--json]\n"
         "  shopai approvals rejection-rates [--min-decisions N] [--threshold 0.5] [--json]\n"
         "  shopai approvals revenue-by-engine [--top N] [--sort net|gross|per-positive] [--json]\n"
-        "  shopai approvals doctor             [--stale-pending-hours H] [--failure-rate-warn R] [--json]"
+        "  shopai approvals doctor             [--stale-pending-hours H] [--failure-rate-warn R] [--json]\n"
+        "  shopai approvals trace              <action_id> [--json]"
     )
     sys.exit(1)
 
@@ -7049,6 +7070,219 @@ def _approvals_doctor_render_auto_approve(section: dict) -> None:
             f"[??] Auto-approve -- "
             f"{section.get('error', 'unavailable')}"
         )
+
+
+def _trace_action(action_id: str) -> dict[str, Any]:
+    """Build a dry-run trace of what executing ``action_id`` would
+    do, WITHOUT making any side-effecting call.
+
+    Returns a structured dict with:
+      - action: id + engine + action_type + capability + status
+        + narrative + confidence
+      - dispatcher: whether one is registered + its module/name
+      - adapter: which Shopify adapter would claim the capability
+        + its declared required_scopes
+      - params: the parked friendly-form params dict
+      - issues: any problems detected (not approved, no
+        dispatcher, no adapter, missing required keys)
+
+    The CLI render and the JSON envelope share this builder so
+    they stay consistent.
+    """
+    out: dict[str, Any] = {
+        "ok": True,
+        "issues": [],
+    }
+    try:
+        from core.approval import get_approval_queue
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        out["ok"] = False
+        out["issues"].append(f"queue_unavailable: {exc}")
+        return out
+
+    action = queue.get(action_id)
+    if action is None:
+        out["ok"] = False
+        out["issues"].append("unknown_action_id")
+        return out
+
+    out["action"] = {
+        "id": action.id,
+        "engine": action.engine,
+        "action_type": action.action_type,
+        "capability": action.capability,
+        "status": action.status.value,
+        "narrative": action.narrative,
+        "confidence": action.confidence,
+    }
+    out["params"] = action.params
+
+    if action.status.value not in {"pending", "approved"}:
+        out["issues"].append(
+            f"already_resolved: status={action.status.value} "
+            "(trace shows what would have happened)"
+        )
+
+    # ── Dispatcher lookup ────────────────────────────────────
+    try:
+        # Trigger lazy load so the registry is populated
+        from core.approval.executor import (
+            _DISPATCHERS,
+            _ensure_dispatchers_loaded,
+        )
+        _ensure_dispatchers_loaded()
+        fn = _DISPATCHERS.get(action.action_type)
+        if fn is None:
+            out["issues"].append(
+                f"no_dispatcher_registered: action_type="
+                f"{action.action_type}"
+            )
+            out["dispatcher"] = None
+        else:
+            out["dispatcher"] = {
+                "registered": True,
+                "module": getattr(fn, "__module__", "?"),
+                "qualname": getattr(fn, "__qualname__", "?"),
+            }
+    except Exception as exc:  # noqa: BLE001
+        out["issues"].append(f"dispatcher_lookup_failed: {exc}")
+        out["dispatcher"] = None
+
+    # ── Adapter / scope lookup ───────────────────────────────
+    cap_name = action.capability
+    try:
+        from core.adapters.shopify import bootstrap
+        adapters_claiming = []
+        all_scopes: set[str] = set()
+        for cls in bootstrap._SHOPIFY_ADAPTER_CLASSES:
+            for cap in getattr(cls, "capabilities", set()):
+                name = getattr(cap, "name", None) or str(cap)
+                if name == cap_name:
+                    scopes = sorted(
+                        getattr(cls, "required_scopes", frozenset()),
+                    )
+                    adapters_claiming.append({
+                        "name": getattr(cls, "name", cls.__name__),
+                        "module": cls.__module__,
+                        "required_scopes": scopes,
+                        "scope_independent": bool(
+                            getattr(cls, "scope_independent", False),
+                        ),
+                    })
+                    all_scopes.update(scopes)
+                    break
+        out["adapters"] = adapters_claiming
+        out["aggregate_required_scopes"] = sorted(all_scopes)
+        if not adapters_claiming:
+            out["issues"].append(
+                f"no_adapter_claims: capability={cap_name}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        out["issues"].append(f"adapter_lookup_failed: {exc}")
+        out["adapters"] = []
+        out["aggregate_required_scopes"] = []
+
+    if out["issues"]:
+        # Anything in issues warrants attention; ok stays True
+        # unless the trace itself couldn't render at all.
+        pass
+
+    return out
+
+
+def _cmd_approvals_trace(args) -> None:
+    """Dry-run inspection of an approval action.
+
+    Shows what executing ``action_id`` would do — dispatcher,
+    adapter, scopes, params — WITHOUT making any external call.
+    Useful before pushing the button on a high-stakes action
+    (price changes, product archives, gift-card mints).
+    """
+    trace = _trace_action(args.action_id)
+
+    if getattr(args, "json", False):
+        print(json.dumps(trace, indent=2, default=str))
+        if not trace.get("ok", False) or trace.get("issues"):
+            # Issues are advisory but useful as a non-zero
+            # exit so scripts can detect "would-fail" cases.
+            sys.exit(1 if not trace.get("ok", False) else 0)
+        return
+
+    if not trace.get("ok", True) or "action" not in trace:
+        for issue in trace.get("issues", []):
+            print(f"[error] {issue}")
+        sys.exit(1)
+
+    a = trace["action"]
+    print(f"Action {a['id']}")
+    print(f"  engine:        {a['engine']}")
+    print(f"  action_type:   {a['action_type']}")
+    print(f"  capability:    {a['capability']}")
+    print(f"  status:        {a['status']}")
+    if a.get("narrative"):
+        print(f"  narrative:     {a['narrative']}")
+    if a.get("confidence") is not None:
+        print(f"  confidence:    {a['confidence']:.2f}")
+    print()
+
+    disp = trace.get("dispatcher")
+    if disp:
+        print(
+            f"  dispatcher:    registered "
+            f"({disp.get('module', '?')}.{disp.get('qualname', '?')})"
+        )
+    else:
+        print("  dispatcher:    NOT REGISTERED")
+
+    adapters = trace.get("adapters", [])
+    if adapters:
+        print(f"  routes to:")
+        for ad in adapters:
+            scope_str = (
+                ", ".join(ad["required_scopes"])
+                if ad["required_scopes"]
+                else (
+                    "(scope-independent)" if ad["scope_independent"]
+                    else "(no scopes declared)"
+                )
+            )
+            print(
+                f"    {ad['name']} ({ad['module']})"
+            )
+            print(f"      scopes:   {scope_str}")
+        agg = trace.get("aggregate_required_scopes", [])
+        if agg:
+            print(f"  aggregate scopes: {', '.join(agg)}")
+    else:
+        print(f"  routes to:     NO ADAPTER CLAIMS {a['capability']}")
+
+    params = trace.get("params", {})
+    if params:
+        print()
+        print("  params:")
+        for k, v in params.items():
+            # Compact rendering — pull strings out
+            v_str = repr(v) if isinstance(v, (list, dict)) else v
+            print(f"    {k:<24} {v_str}")
+
+    issues = trace.get("issues", [])
+    if issues:
+        print()
+        print("  Issues:")
+        for i in issues:
+            print(f"    - {i}")
+
+    print()
+    print(
+        "  No side effects executed. "
+        f"Run `shopai approvals execute {a['id']}` to apply."
+    )
+
+    # Exit 1 if any issues were detected so scripts can gate on
+    # a clean trace.
+    if issues:
+        sys.exit(1)
 
 
 def _cmd_approvals_show(args) -> None:
