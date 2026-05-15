@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from engines._recovery_codes import mint_recovery_code as _mint
+from engines._writeback_recorder import record_writeback
 
 
 # Code-name prefix. Distinguishes recovery codes from operator-minted
@@ -75,7 +76,7 @@ def mint_recovery_code(
         f"{'%' if incentive_type == 'percentage' else ''} off"
     )
 
-    return _mint(
+    minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
         value=value,
@@ -83,6 +84,23 @@ def mint_recovery_code(
         ttl_days=ttl_days,
         title=title,
     )
+
+    # Phase 8: feed the autonomous learning loop so the system
+    # can later correlate minted recovery codes with redemption.
+    record_writeback(
+        engine="cart_recovery",
+        action_type="mint_cart_recovery_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params={
+            "token": token,
+            "value": value,
+            "value_kind": incentive_type,
+            "ttl_days": ttl_days,
+        },
+        success=minted is not None,
+        error=None if minted is not None else "mint_returned_none",
+    )
+    return minted
 
 
 def enqueue_recovery_for_approval(

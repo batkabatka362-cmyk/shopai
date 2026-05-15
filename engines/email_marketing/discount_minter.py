@@ -41,6 +41,7 @@ from __future__ import annotations
 from typing import Any
 
 from engines._recovery_codes import mint_recovery_code as _mint
+from engines._writeback_recorder import record_writeback
 
 
 _CODE_PREFIX = "EMAIL"
@@ -82,7 +83,7 @@ def mint_campaign_code(
         f"Email campaign: {value:g}{suffix} ({goal.strip() or 'general'})"
     )
 
-    return _mint(
+    minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
         value=value,
@@ -93,6 +94,23 @@ def mint_campaign_code(
         usage_limit=None,
         applies_once_per_customer=False,
     )
+
+    # Phase 8: feed the autonomous learning loop so the system
+    # can later correlate minted campaign codes with redemption.
+    record_writeback(
+        engine="email_marketing",
+        action_type="mint_campaign_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params={
+            "goal": goal,
+            "value": value,
+            "value_kind": kind,
+            "ttl_days": ttl_days,
+        },
+        success=minted is not None,
+        error=None if minted is not None else "mint_returned_none",
+    )
+    return minted
 
 
 def enqueue_campaign_for_approval(
