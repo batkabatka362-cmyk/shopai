@@ -12,17 +12,41 @@ Goals:
   - capture_opportunity: seasonal peak approaching, trending product
 
 Hysteresis: won't switch goals for 5 cycles minimum to prevent thrashing.
+
+Per-goal effectiveness EMA (``_goal_stats``) persists to
+``data/goal_state.json`` so the brain stack remembers what's
+working across process restarts. Without persistence, every
+restart resets every goal's EMA to 0.5 and the recommender goes
+back to flat tie-breaking until a fresh round of approvals accrues.
 """
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from utils.helpers import safe_float, safe_int
 from utils.logger import get_logger
 
 logger = get_logger("goals.manager")
+
+
+_DEFAULT_STATE_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "goal_state.json"
+)
+
+
+def _is_test_environment() -> bool:
+    """Mirror Pattern J — disk writes short-circuit under pytest so
+    each test run doesn't pollute the persisted goal-state file.
+    Tests that want to exercise persistence patch this to return
+    False (same pattern as the writeback recorder and hooks
+    dispatcher).
+    """
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
 def _section(situation: dict[str, Any], name: str) -> dict[str, Any]:
@@ -114,7 +138,7 @@ class GoalManager:
     # the last 20, so the cap can be just slightly larger.
     _MAX_SWITCH_HISTORY = 200
 
-    def __init__(self) -> None:
+    def __init__(self, state_path: Path | str | None = None) -> None:
         self._current_goal = "maximize_profit"
         self._goal_since_cycle = 0
         self._cycle_count = 0
@@ -127,6 +151,13 @@ class GoalManager:
         # plus dashboard reads previously raced on _current_goal
         # and _switch_history mutations.
         self._lock = threading.Lock()
+        # Persisted state path — JSON file, atomically rewritten
+        # on each record_goal_outcome (low write rate, no need
+        # for fancy debouncing). Tests pass a tmp_path.
+        self._state_path = (
+            Path(state_path) if state_path else _DEFAULT_STATE_PATH
+        )
+        self._load_state()
 
     def select_goal(self, situation: dict[str, Any], cycle_number: int = 0) -> dict[str, Any]:
         """Select the best goal based on current store situation.
@@ -267,6 +298,9 @@ class GoalManager:
                 "(success=%.1f, n=%d)",
                 goal, current, stats["ema"], success, stats["n"],
             )
+        # Persist outside the lock — _save_state takes the lock
+        # internally for its own snapshot read.
+        self._save_state()
 
     def get_effectiveness(self, goal: str) -> float:
         """Return the current EMA for ``goal`` (0.5 default)."""
@@ -285,6 +319,77 @@ class GoalManager:
                 }
                 for goal, stats in self._goal_stats.items()
             }
+
+    # ── Persistence ───────────────────────────────────────────
+
+    def _load_state(self) -> None:
+        """Hydrate ``_goal_stats`` from the JSON state file if it
+        exists. Best-effort — a missing or corrupt file leaves the
+        in-memory dict empty (same as a fresh start). Never raises.
+        """
+        if not self._state_path.exists():
+            return
+        try:
+            raw = self._state_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug(
+                "goal state load failed (%s); starting fresh: %s",
+                self._state_path, exc,
+            )
+            return
+        stats = data.get("goal_stats") if isinstance(data, dict) else None
+        if not isinstance(stats, dict):
+            return
+        # Only accept rows with the expected shape — older or
+        # corrupt entries are dropped silently.
+        clean: dict[str, dict[str, Any]] = {}
+        for goal, entry in stats.items():
+            if not isinstance(goal, str) or not isinstance(entry, dict):
+                continue
+            try:
+                ema = float(entry.get("ema", _EFFECTIVENESS_NEUTRAL))
+                n = int(entry.get("n", 0))
+            except (TypeError, ValueError):
+                continue
+            ema = max(0.0, min(1.0, ema))
+            if n < 0:
+                n = 0
+            clean[goal] = {"ema": ema, "n": n}
+        with self._lock:
+            self._goal_stats = clean
+        logger.debug(
+            "goal state loaded: %d goals", len(clean),
+        )
+
+    def _save_state(self) -> None:
+        """Persist ``_goal_stats`` to the JSON state file. Atomic
+        write (temp file + rename) so a partial write can't leave
+        the file unreadable. Under pytest, short-circuits so test
+        runs don't pollute the real ``data/goal_state.json``.
+        """
+        if _is_test_environment():
+            return
+        with self._lock:
+            snapshot = {
+                goal: dict(stats)
+                for goal, stats in self._goal_stats.items()
+            }
+        payload = {
+            "version": 1,
+            "saved_at": time.time(),
+            "goal_stats": snapshot,
+        }
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.replace(self._state_path)
+        except OSError as exc:
+            logger.debug(
+                "goal state save failed (%s): %s",
+                self._state_path, exc,
+            )
 
     def _evaluate_goals(self, situation: dict[str, Any]) -> dict[str, Any]:
         """Evaluate all goals and pick the best one."""
