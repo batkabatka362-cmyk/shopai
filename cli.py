@@ -272,6 +272,15 @@ def build_parser() -> argparse.ArgumentParser:
             "webhook) when collecting doctor verdicts."
         ),
     )
+    snapshot_p.add_argument(
+        "--diff", default=None, metavar="BASELINE_FILE",
+        help=(
+            "Compare the current snapshot against BASELINE_FILE "
+            "and emit only the differences. Operators commit a "
+            "snapshot at release N and run --diff against it at "
+            "release N+1 to surface drift."
+        ),
+    )
 
     eng_info = sub.add_parser("engine-info", help="Show engine details")
     eng_info.add_argument("engine_name", help="Engine name")
@@ -2722,6 +2731,128 @@ def _cmd_catalog(args) -> None:
         print()
 
 
+def _diff_snapshots(
+    baseline: dict[str, Any],
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    """Compute the operator-visible delta between two snapshots.
+
+    Surfaces the seven changes operators actually care about:
+
+      - ``overall_ok`` flipped
+      - engine counts changed (total / wired / advisory /
+        partial)
+      - catalog entries added / removed / changed
+      - per-audit ``ok`` flipped (each of pattern_k / oauth /
+        pattern_y / pattern_i / pattern_j)
+
+    Intentionally NOT a deep recursive diff: a release-to-release
+    review focuses on the seven listed signals; the raw JSON is
+    still available via the regular snapshot output for deep
+    forensic inspection. The diff envelope's ``has_changes`` flag
+    drives the CLI exit code (1 on diff, 0 on clean).
+    """
+    diff: dict[str, Any] = {
+        "baseline_generated_at": baseline.get("generated_at"),
+        "current_generated_at": current.get("generated_at"),
+        "changes": {},
+        "has_changes": False,
+    }
+
+    # overall_ok
+    if baseline.get("overall_ok") != current.get("overall_ok"):
+        diff["changes"]["overall_ok"] = {
+            "baseline": baseline.get("overall_ok"),
+            "current": current.get("overall_ok"),
+        }
+        diff["has_changes"] = True
+
+    # engine counts
+    b_counts = baseline.get("engine_counts") or {}
+    c_counts = current.get("engine_counts") or {}
+    count_changes: dict[str, Any] = {}
+    for key in ("total", "wired", "advisory", "partial"):
+        if b_counts.get(key) != c_counts.get(key):
+            count_changes[key] = {
+                "baseline": b_counts.get(key),
+                "current": c_counts.get(key),
+            }
+    if count_changes:
+        diff["changes"]["engine_counts"] = count_changes
+        diff["has_changes"] = True
+
+    # catalog entries (compare by action_type key)
+    b_entries = {
+        e["action_type"]: e
+        for e in (baseline.get("catalog") or {}).get("entries", [])
+    }
+    c_entries = {
+        e["action_type"]: e
+        for e in (current.get("catalog") or {}).get("entries", [])
+    }
+    added = sorted(set(c_entries) - set(b_entries))
+    removed = sorted(set(b_entries) - set(c_entries))
+    changed: list[dict[str, Any]] = []
+    for action_type in sorted(set(b_entries) & set(c_entries)):
+        b = b_entries[action_type]
+        c = c_entries[action_type]
+        # Compare the fields that matter for operator review:
+        # capability, adapter list, scopes, emitting engines.
+        # Ignore dispatcher qualname changes (refactors).
+        per_change: dict[str, Any] = {}
+        for field in (
+            "capabilities",
+            "aggregate_scopes",
+            "emitting_engines",
+        ):
+            if list(b.get(field, [])) != list(c.get(field, [])):
+                per_change[field] = {
+                    "baseline": b.get(field),
+                    "current": c.get(field),
+                }
+        b_adapters = sorted(
+            (a.get("name", "") for a in b.get("adapters", [])),
+        )
+        c_adapters = sorted(
+            (a.get("name", "") for a in c.get("adapters", [])),
+        )
+        if b_adapters != c_adapters:
+            per_change["adapters"] = {
+                "baseline": b_adapters,
+                "current": c_adapters,
+            }
+        if per_change:
+            changed.append({
+                "action_type": action_type,
+                "changes": per_change,
+            })
+    if added or removed or changed:
+        diff["changes"]["catalog"] = {
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+        }
+        diff["has_changes"] = True
+
+    # audits (each ok flag)
+    b_audits = baseline.get("audits") or {}
+    c_audits = current.get("audits") or {}
+    audit_flips: dict[str, Any] = {}
+    for name in sorted(set(b_audits) | set(c_audits)):
+        b_ok = (b_audits.get(name) or {}).get("ok")
+        c_ok = (c_audits.get(name) or {}).get("ok")
+        if b_ok != c_ok:
+            audit_flips[name] = {
+                "baseline": b_ok,
+                "current": c_ok,
+            }
+    if audit_flips:
+        diff["changes"]["audits"] = audit_flips
+        diff["has_changes"] = True
+
+    return diff
+
+
 def _cmd_snapshot(args) -> None:
     """Capture the complete system state in one committable JSON
     artifact.
@@ -2911,6 +3042,62 @@ def _cmd_snapshot(args) -> None:
         snapshot.get("doctor_shopify", {}).get("ok", True)
         and snapshot.get("doctor_approvals", {}).get("ok", True)
     )
+
+    # ── Diff mode: compare against a committed baseline ─────
+    diff_path = getattr(args, "diff", None)
+    if diff_path:
+        from pathlib import Path as _DP
+        baseline_path = _DP(diff_path)
+        try:
+            baseline = json.loads(
+                baseline_path.read_text(encoding="utf-8"),
+            )
+        except FileNotFoundError:
+            print(f"Baseline file not found: {baseline_path}")
+            sys.exit(1)
+        except json.JSONDecodeError as exc:
+            print(f"Baseline is not valid JSON: {exc}")
+            sys.exit(1)
+        except OSError as exc:
+            print(f"Failed to read {baseline_path}: {exc}")
+            sys.exit(1)
+        diff = _diff_snapshots(baseline, snapshot)
+        diff_serialised = json.dumps(diff, indent=2, default=str) + "\n"
+        target = getattr(args, "output", None)
+        if not target:
+            sys.stdout.write(diff_serialised)
+        else:
+            target_path = _DP(target)
+            if (
+                target_path.exists()
+                and not getattr(args, "force", False)
+            ):
+                print(
+                    f"Refusing to overwrite {target_path} -- "
+                    "pass --force to overwrite, or pick a "
+                    "different path."
+                )
+                sys.exit(1)
+            try:
+                target_path.parent.mkdir(
+                    parents=True, exist_ok=True,
+                )
+                target_path.write_text(
+                    diff_serialised, encoding="utf-8",
+                )
+            except OSError as exc:
+                print(f"Failed to write {target_path}: {exc}")
+                sys.exit(1)
+            print(
+                f"Wrote diff to {target_path} "
+                f"({len(diff_serialised.splitlines())} lines)"
+            )
+        # Exit code reflects whether anything changed: 0 for
+        # clean (no diff), 1 for diff present, 2 for hard errors
+        # (which already exited above). Lets CI alert on drift.
+        if diff.get("has_changes"):
+            sys.exit(1)
+        return
 
     serialised = json.dumps(snapshot, indent=2, default=str) + "\n"
 
