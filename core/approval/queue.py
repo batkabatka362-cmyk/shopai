@@ -880,6 +880,161 @@ class ApprovalQueue:
             entry["total_revenue"] = round(entry["total_revenue"], 2)
         return agg
 
+    def engine_confidence_calibration(
+        self,
+        engine_name: str,
+    ) -> dict[str, Any]:
+        """Per-engine confidence-bucket calibration check.
+
+        Engines self-assign each proposed action a ``confidence``
+        score in [0, 1]. Whether that confidence is actually
+        meaningful — i.e. whether high-confidence actions DO
+        outperform low-confidence ones — is the calibration
+        question. A well-calibrated engine shows monotonically
+        increasing outcome_score across confidence buckets; a
+        miscalibrated one (e.g. high-confidence actions doing
+        worse than mid-confidence) is a red flag.
+
+        Operators use this surface for three things:
+          1. Sanity-check trust before opting an engine into
+             auto-approve (PR #161). The MIN_CONFIDENCE floor
+             only works if confidence means something.
+          2. Spot regressions — calibration shape suddenly
+             flipping is an early warning a model degraded.
+          3. Compare engines — pick whichever's better calibrated
+             when two engines compete for the same goal.
+
+        Bucketing: half-open intervals
+        ``[0.0, 0.5), [0.5, 0.6), [0.6, 0.7), [0.7, 0.8),
+        [0.8, 0.9), [0.9, 1.001)`` — the last bucket is inclusive
+        of 1.0 so confidence=1.0 actions don't fall off the chart.
+
+        Returns:
+            {
+              "engine": "<name>",
+              "buckets": [
+                {
+                  "label": "0.0-0.5", "low": 0.0, "high": 0.5,
+                  "action_count": int,
+                  "positive_outcomes": int,
+                  "negative_outcomes": int,
+                  "outcome_score": float | None,
+                },
+                ...
+              ],
+              "monotonic_increasing": bool | None,
+                # True if non-None bucket scores rise across
+                # confidence (well-calibrated); False if any
+                # adjacent pair inverts; None when < 2 buckets
+                # have outcome data.
+            }
+        """
+        if not isinstance(engine_name, str) or not engine_name:
+            return {
+                "engine": engine_name or "",
+                "buckets": [],
+                "monotonic_increasing": None,
+            }
+
+        # Edges define half-open ranges except the topmost which
+        # nudges up to include exactly-1.0 confidences.
+        edges = [0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 1.001]
+        bucket_count = len(edges) - 1
+        action_counts = [0] * bucket_count
+        positive = [0] * bucket_count
+        negative = [0] * bucket_count
+        seen_actions: set[str] = set()
+
+        with _LOCK:
+            rows = self._conn.execute(
+                """SELECT p.id, p.confidence,
+                          o.polarity
+                   FROM pending_actions p
+                   LEFT JOIN action_outcomes o
+                          ON o.action_id = p.id
+                   WHERE p.engine = ?
+                     AND p.confidence IS NOT NULL""",
+                (engine_name,),
+            ).fetchall()
+
+        for r in rows:
+            try:
+                conf = float(r["confidence"])
+            except (TypeError, ValueError):
+                continue
+            if conf < 0.0 or conf > 1.0:
+                continue
+            # Locate bucket: first edge[i] such that conf < edge[i+1]
+            idx = 0
+            for i in range(bucket_count):
+                if conf < edges[i + 1]:
+                    idx = i
+                    break
+            else:
+                idx = bucket_count - 1
+
+            # Count each action once toward the bucket's action
+            # count (LEFT JOIN can produce duplicate rows when an
+            # action has multiple outcomes).
+            action_id = r["id"]
+            if action_id not in seen_actions:
+                action_counts[idx] += 1
+                seen_actions.add(action_id)
+
+            # Count each outcome row toward the bucket's polarity
+            # counts.
+            polarity = r["polarity"]
+            if polarity == "positive":
+                positive[idx] += 1
+            elif polarity == "negative":
+                negative[idx] += 1
+
+        buckets: list[dict[str, Any]] = []
+        for i in range(bucket_count):
+            low = edges[i]
+            # Display "1.0" rather than "1.001" for the top edge
+            high_display = (
+                1.0 if edges[i + 1] > 1.0 else edges[i + 1]
+            )
+            signal = positive[i] + negative[i]
+            outcome_score: float | None = (
+                round(positive[i] / signal, 4)
+                if signal > 0 else None
+            )
+            buckets.append({
+                "label": f"{low:.1f}-{high_display:.1f}",
+                "low": low,
+                "high": high_display,
+                "action_count": action_counts[i],
+                "positive_outcomes": positive[i],
+                "negative_outcomes": negative[i],
+                "outcome_score": outcome_score,
+            })
+
+        # Calibration quality check: outcome_score should rise
+        # (or at least not fall) across consecutive buckets that
+        # have signal. A single inversion flips this to False —
+        # the operator sees the shape in the table and decides
+        # the severity.
+        scores_in_order = [
+            b["outcome_score"] for b in buckets
+            if b["outcome_score"] is not None
+        ]
+        monotonic_increasing: bool | None
+        if len(scores_in_order) < 2:
+            monotonic_increasing = None
+        else:
+            monotonic_increasing = all(
+                scores_in_order[i] <= scores_in_order[i + 1]
+                for i in range(len(scores_in_order) - 1)
+            )
+
+        return {
+            "engine": engine_name,
+            "buckets": buckets,
+            "monotonic_increasing": monotonic_increasing,
+        }
+
     def list_recent_outcomes(
         self,
         *,
