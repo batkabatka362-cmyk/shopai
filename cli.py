@@ -280,6 +280,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    shopify_webhooks_live_p = sub.add_parser(
+        "shopify-webhooks-live-check",
+        help=(
+            "Compare declared webhook subscriptions vs the live "
+            "app's registered topics (catches outcome attribution "
+            "drift + GDPR subscription gaps)"
+        ),
+    )
+    shopify_webhooks_live_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     shopify_doctor_p = sub.add_parser(
         "shopify-doctor",
         help=(
@@ -2522,6 +2535,138 @@ def _cmd_shopify_scopes_live_check(args) -> None:
     )
 
 
+def _cmd_shopify_webhooks_live_check(args) -> None:
+    """Compare the webhook registry's declared topics against
+    the live app installation's registered subscriptions.
+
+    Mirrors ``shopify-scopes-live-check`` (PR #179) for the
+    webhook surface. The registry tells us what topics the
+    app SHOULD subscribe to; this checks what it ACTUALLY does
+    on Shopify's side. Drift surfaces:
+
+      - ``missing_on_app``: declared but not registered. Bridge
+        never receives these events; outcome attribution stalls.
+      - ``extra_on_app``: registered but not declared. App
+        receives events it doesn't handle (legacy install
+        residue).
+      - ``gdpr_missing``: GDPR-mandatory topics not registered
+        — review-blocking failure for public-distribution apps.
+
+    Exits 1 when ``missing_on_app`` is non-empty (operational
+    alert). Exits 0 with a warning for extras only. Exits 0
+    with a friendly message when the webhooks adapter isn't
+    configured (dev environments without live creds).
+    """
+    try:
+        from core.feedback.webhook_health import compare_to_live
+        report = compare_to_live()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("webhook health check raised: %s", exc)
+        report = None
+
+    if report is None:
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "ok": None,
+                "error": "live_data_unavailable",
+                "message": (
+                    "webhooks adapter not configured or live API "
+                    "call failed; cannot compare subscriptions"
+                ),
+            }, indent=2))
+        else:
+            print(
+                "Live webhook check unavailable — the Shopify "
+                "webhooks adapter is not configured (or the "
+                "live call failed). Configure "
+                "SHOPAI_SHOPIFY_URL + SHOPAI_SHOPIFY_KEY and "
+                "re-run."
+            )
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": report.is_healthy,
+            "registered_count": len(report.registered_topics),
+            "declared_count": len(report.declared_topics),
+            "missing_on_app": report.missing_on_app,
+            "extra_on_app": report.extra_on_app,
+            "gdpr_missing": report.gdpr_missing,
+        }, indent=2))
+        if report.missing_on_app:
+            sys.exit(1)
+        return
+
+    if report.is_healthy and not report.extra_on_app:
+        print(
+            f"Live webhook check OK — all "
+            f"{len(report.declared_topics)} declared topics "
+            "are registered on the live app installation."
+        )
+        return
+
+    if report.missing_on_app:
+        print(
+            f"Live webhook check FAILED: "
+            f"{len(report.missing_on_app)} topic(s) declared "
+            "but NOT registered on the live install. Outcome "
+            "attribution will silently miss these events."
+        )
+        if report.gdpr_missing:
+            print()
+            print(
+                f"GDPR ALERT: {len(report.gdpr_missing)} "
+                "mandatory topic(s) NOT registered. Shopify "
+                "will reject the install for public-distribution "
+                "apps."
+            )
+            for s in report.gdpr_missing:
+                print(f"  {s}")
+        print()
+        print("Missing topics:")
+        for s in report.missing_on_app:
+            tag = (
+                " [GDPR-mandatory]"
+                if s in report.gdpr_missing else ""
+            )
+            print(f"  {s}{tag}")
+        if report.extra_on_app:
+            print()
+            print(
+                f"Also: {len(report.extra_on_app)} extra "
+                "subscription(s) registered that the registry "
+                "doesn't declare."
+            )
+            for s in report.extra_on_app:
+                print(f"  {s}")
+        print()
+        print(
+            "Fix: regenerate the webhook manifest with "
+            "`shopai shopify-webhook-manifest` and re-deploy "
+            "the app's subscription config to Shopify."
+        )
+        sys.exit(1)
+
+    # is_healthy True + extras exist → warning, not fatal
+    print(
+        f"Live webhook check OK with warnings — all "
+        f"{len(report.declared_topics)} declared topics are "
+        f"registered, but {len(report.extra_on_app)} extra "
+        "subscription(s) are present that the registry doesn't "
+        "declare."
+    )
+    print()
+    print("Extra (un-declared) topics:")
+    for s in report.extra_on_app:
+        print(f"  {s}")
+    print()
+    print(
+        "Fix (optional): if these are legacy subscriptions, "
+        "remove them via the Shopify Partners dashboard or "
+        "by re-applying a clean webhook manifest."
+    )
+
+
 def _cmd_capabilities_audit(args) -> None:
     """CI gate (Pattern Y): exit 1 if any ``Capability.SHOPIFY_*``
     enum value is unclaimed by every adapter.
@@ -2775,6 +2920,51 @@ def _cmd_shopify_doctor(args) -> None:
                 "error": str(exc),
             }
 
+    # ── Live webhook drift ───────────────────────────────────
+    if getattr(args, "skip_live", False):
+        sections["live_webhook_drift"] = {
+            "status": "skipped",
+            "reason": "--skip-live flag set",
+        }
+    else:
+        try:
+            from core.feedback.webhook_health import (
+                compare_to_live as webhook_compare_to_live,
+            )
+            wh_report = webhook_compare_to_live()
+            if wh_report is None:
+                sections["live_webhook_drift"] = {
+                    "status": "skipped",
+                    "reason": (
+                        "webhooks adapter not configured or "
+                        "live API call failed"
+                    ),
+                }
+            else:
+                sections["live_webhook_drift"] = {
+                    "status": (
+                        "pass" if wh_report.is_healthy
+                        else "fail"
+                    ),
+                    "missing_on_app": wh_report.missing_on_app,
+                    "extra_on_app": wh_report.extra_on_app,
+                    "gdpr_missing": wh_report.gdpr_missing,
+                    "registered_count": (
+                        len(wh_report.registered_topics)
+                    ),
+                    "declared_count": (
+                        len(wh_report.declared_topics)
+                    ),
+                }
+                if not wh_report.is_healthy:
+                    overall_ok = False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("live webhook probe raised: %s", exc)
+            sections["live_webhook_drift"] = {
+                "status": "unavailable",
+                "error": str(exc),
+            }
+
     if getattr(args, "json", False):
         print(json.dumps({
             "ok": overall_ok,
@@ -2792,6 +2982,7 @@ def _cmd_shopify_doctor(args) -> None:
     _doctor_render_oauth(sections.get("oauth_scope_coverage", {}))
     _doctor_render_pattern_y(sections.get("pattern_y_capabilities", {}))
     _doctor_render_live(sections.get("live_scope_drift", {}))
+    _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
 
     print()
     if overall_ok:
@@ -2902,6 +3093,45 @@ def _doctor_render_live(section: dict) -> None:
     else:
         print(
             f"[??] Live scope drift — "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_webhook_live(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Live webhook drift — "
+            f"{section.get('declared_count', 0)}/"
+            f"{section.get('declared_count', 0)} "
+            "topics registered; no drift"
+        )
+        extras = section.get("extra_on_app", [])
+        if extras:
+            print(
+                f"       (warning: {len(extras)} extra "
+                "subscription(s) registered but not declared)"
+            )
+    elif status == "fail":
+        missing = section.get("missing_on_app", [])
+        gdpr_missing = section.get("gdpr_missing", [])
+        suffix = (
+            f" (incl. {len(gdpr_missing)} GDPR-mandatory)"
+            if gdpr_missing else ""
+        )
+        print(
+            f"[FAIL] Live webhook drift — "
+            f"{len(missing)} topic(s) declared but NOT "
+            f"registered{suffix}"
+        )
+    elif status == "skipped":
+        print(
+            f"[skip] Live webhook drift — "
+            f"{section.get('reason', 'unknown')}"
+        )
+    else:
+        print(
+            f"[??] Live webhook drift — "
             f"{section.get('error', 'unavailable')}"
         )
 
@@ -6256,6 +6486,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-scopes-live-check":
         _cmd_shopify_scopes_live_check(args)
+        return
+
+    if args.command == "shopify-webhooks-live-check":
+        _cmd_shopify_webhooks_live_check(args)
         return
 
     if args.command == "shopify-install-manifest":

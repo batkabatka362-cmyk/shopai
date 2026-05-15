@@ -101,6 +101,7 @@ class TestJson:
             "oauth_scope_coverage",
             "pattern_y_capabilities",
             "live_scope_drift",
+            "live_webhook_drift",
         }
 
     def test_json_pattern_k_section(self, cli):
