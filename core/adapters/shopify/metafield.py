@@ -69,6 +69,19 @@ _BATCH_SIZE = 25
 class ShopifyMetafieldAdapter(ShopifyBaseAdapter):
     name = "shopify_metafield"
     capabilities = {Capability.SHOPIFY_SET_METAFIELD}
+    # Metafields are owner-scoped: the scope you need depends on
+    # the owner type (product, order, customer, etc.). The common
+    # cases ride on read/write_products / read/write_orders /
+    # read/write_customers, plus the metaobject scopes for those
+    # owners. Declaring the union here so the app install covers
+    # any owner type — over-requesting is acceptable for this
+    # specific mutation surface where the alternative is failing
+    # at first call.
+    required_scopes = frozenset({
+        "read_products", "write_products",
+        "read_orders", "write_orders",
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,

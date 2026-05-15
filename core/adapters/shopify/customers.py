@@ -218,6 +218,10 @@ class ShopifyCustomersAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UNTAG_CUSTOMER,
         Capability.SHOPIFY_DELETE_CUSTOMER,
     }
+    # read_customers / write_customers cover the whole CRUD +
+    # tagging surface. No PII-level escalation needed here —
+    # protected-customer-data is its own gate.
+    required_scopes = frozenset({"read_customers", "write_customers"})
 
     def _execute(
         self,

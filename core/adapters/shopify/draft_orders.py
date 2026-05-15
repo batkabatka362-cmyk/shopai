@@ -143,6 +143,10 @@ class ShopifyDraftOrdersAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_COMPLETE_DRAFT_ORDER,
         Capability.SHOPIFY_LIST_DRAFT_ORDERS,
     }
+    # Draft orders use the same scope pair as orders.
+    required_scopes = frozenset({
+        "read_draft_orders", "write_draft_orders",
+    })
 
     def _execute(
         self,

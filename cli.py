@@ -207,6 +207,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    shopify_scopes_p = sub.add_parser(
+        "shopify-scopes",
+        help=(
+            "OAuth scope manifest aggregated across every "
+            "Shopify adapter (install-time install requirements)"
+        ),
+    )
+    shopify_scopes_p.add_argument(
+        "--per-adapter", action="store_true",
+        help=(
+            "Render scopes grouped per adapter (default: union "
+            "list suitable for an install manifest)"
+        ),
+    )
+    shopify_scopes_p.add_argument(
+        "--show-gaps", action="store_true",
+        help=(
+            "Include the list of adapters that haven't wired "
+            "required_scopes yet (rollout tracking)"
+        ),
+    )
+    shopify_scopes_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     eng_calibration = sub.add_parser(
         "engine-calibration",
         help=(
@@ -2070,6 +2096,107 @@ def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
         print(f"Outputs: {payload['outputs']}")
 
     _print_engine_brain_stack(engine_name)
+
+
+def _cmd_shopify_scopes(args) -> None:
+    """Render the aggregated Shopify OAuth scope manifest.
+
+    Answers "which OAuth scopes does this app need at install
+    time?" without reading every adapter file's docstring.
+
+    Three modes:
+      - default: union list of every scope any adapter needs
+        (operator-friendly install manifest)
+      - ``--per-adapter``: grouped breakdown showing exactly
+        which adapter pulls in which scope (useful for shrinking
+        the install footprint by removing adapters)
+      - ``--show-gaps``: lists adapters that haven't declared
+        ``required_scopes`` yet (rollout tracking — the wireup
+        is incremental and the gap report drives follow-up PRs)
+
+    Over-requesting scopes makes merchants nervous and Shopify's
+    review team flag it; under-requesting causes the adapter to
+    fail with ACCESS_DENIED at first live call. This surface
+    keeps the manifest correct as adapters change.
+    """
+    try:
+        from core.adapters.shopify.scope_registry import collect_manifest
+        manifest = collect_manifest()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("scope manifest collection raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print("Scope manifest unavailable")
+        return
+
+    if getattr(args, "json", False):
+        payload = {
+            "all_scopes": sorted(manifest.all_scopes),
+            "by_scope": manifest.by_scope,
+            "by_adapter": manifest.by_adapter,
+            "undeclared_adapters": (
+                manifest.undeclared_adapters
+                if getattr(args, "show_gaps", False) else None
+            ),
+            "total_adapters": manifest.total_adapters,
+            "declared_adapter_count": (
+                manifest.total_adapters
+                - len(manifest.undeclared_adapters)
+            ),
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    declared_count = (
+        manifest.total_adapters
+        - len(manifest.undeclared_adapters)
+    )
+    print(
+        f"Shopify OAuth scope manifest "
+        f"({declared_count}/{manifest.total_adapters} adapters "
+        f"declared):"
+    )
+    print()
+
+    if getattr(args, "per_adapter", False):
+        # Grouped: adapter → its scopes
+        declared = [
+            (a, scopes)
+            for a, scopes in manifest.by_adapter.items()
+            if scopes
+        ]
+        declared.sort(key=lambda kv: kv[0])
+        for adapter, scopes in declared:
+            print(f"  {adapter}:")
+            for s in scopes:
+                print(f"    {s}")
+    else:
+        # Default: flat union, install-manifest-ready
+        if not manifest.all_scopes:
+            print("  (no scopes declared yet)")
+        else:
+            for s in sorted(manifest.all_scopes):
+                # Show how many adapters pull this scope — helps
+                # operators decide whether removing one adapter
+                # could shrink the manifest.
+                adapter_count = len(manifest.by_scope.get(s, []))
+                print(f"  {s:<48} (used by {adapter_count})")
+
+    if getattr(args, "show_gaps", False):
+        gaps = manifest.undeclared_adapters
+        print()
+        print(
+            f"Adapters without declared scopes ({len(gaps)}) — "
+            "rollout gaps:"
+        )
+        if not gaps:
+            print("  (none)")
+        else:
+            for a in gaps[:40]:
+                print(f"  {a}")
+            if len(gaps) > 40:
+                print(f"  ... and {len(gaps) - 40} more")
 
 
 def _cmd_engine_calibration(args) -> None:
@@ -5192,6 +5319,10 @@ def main(argv: list[str] | None = None) -> None:
             args.engine_name,
             as_json=getattr(args, "json", False),
         )
+        return
+
+    if args.command == "shopify-scopes":
+        _cmd_shopify_scopes(args)
         return
 
     if args.command == "engine-calibration":

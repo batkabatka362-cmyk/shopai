@@ -108,6 +108,14 @@ mutation FulfillmentCancel($id: ID!) {
 class ShopifyFulfillmentAdapter(ShopifyBaseAdapter):
     name = "shopify_fulfillment"
     capabilities = {Capability.SHOPIFY_CREATE_FULFILLMENT}
+    # Creating a fulfillment is a two-step against orders +
+    # fulfillment-orders. Needs write_merchant_managed_fulfillment
+    # _orders for the mutation surface plus read_orders to look up
+    # the parent order.
+    required_scopes = frozenset({
+        "read_orders",
+        "write_merchant_managed_fulfillment_orders",
+    })
 
     def _execute(
         self,

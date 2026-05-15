@@ -143,6 +143,9 @@ class ShopifyCustomerMarketingAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_CUSTOMER_SMS_MARKETING_CONSENT,
         Capability.SHOPIFY_SEND_CUSTOMER_ACCOUNT_INVITE,
     }
+    required_scopes = frozenset({
+        "read_customers", "write_customers",
+    })
 
     def _execute(
         self,
