@@ -32,6 +32,52 @@ def _is_valid_action_id(action_id: str) -> bool:
     return bool(action_id and _ACTION_ID_RE.match(action_id))
 
 
+def _engine_brain_stack(engine_name: str) -> dict[str, Any]:
+    """Resolve an engine's brain-stack attribution (primary goal +
+    current effectiveness EMA).
+
+    Returns ``{"goal": "<name>" | None, "effectiveness": float | None,
+    "samples": int}``. Best-effort: a broken goals layer surfaces
+    as ``{"goal": None, ...}`` rather than 500ing the engine endpoint.
+    """
+    payload: dict[str, Any] = {
+        "goal": None,
+        "effectiveness": None,
+        "samples": 0,
+    }
+
+    try:
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine_goal_map unavailable: %s", exc)
+        return payload
+
+    goal = ENGINE_GOAL_MAP.get(engine_name)
+    if goal is None:
+        # Unmapped engine: actions don't attribute to any goal's EMA
+        return payload
+    payload["goal"] = goal
+
+    try:
+        from core.goals.goal_manager import GoalManager
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("GoalManager unavailable: %s", exc)
+        return payload
+    try:
+        manager = GoalManager()
+        stats = manager.get_effectiveness_stats()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("effectiveness stats lookup failed: %s", exc)
+        return payload
+
+    goal_stats = stats.get(goal, {})
+    ema = goal_stats.get("effectiveness")
+    if ema is not None:
+        payload["effectiveness"] = float(ema)
+        payload["samples"] = int(goal_stats.get("n", 0))
+    return payload
+
+
 class ShopAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for ShopAI API."""
 
@@ -161,12 +207,21 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             return
         try:
             engine = get_engine(engine_name)
-            self._json_response(200, {
-                "name": engine.engine_name,
+            # Engines expose their name via ENGINE_NAME or
+            # engine_name; fall back to the registry name. Matches
+            # the CLI's engine-info handler so behavior is uniform.
+            name = getattr(
+                engine, "ENGINE_NAME",
+                getattr(engine, "engine_name", engine_name),
+            )
+            payload = {
+                "name": name,
                 "class": engine.__class__.__name__,
-                "inputs": engine.required_input_fields,
-                "outputs": engine.required_output_fields,
-            })
+                "inputs": getattr(engine, "required_input_fields", []),
+                "outputs": getattr(engine, "required_output_fields", []),
+                "brain_stack": _engine_brain_stack(engine_name),
+            }
+            self._json_response(200, payload)
         except Exception as exc:
             logger.warning("engine info failed: %s", exc)
             self._json_response(500, {"error": str(exc)})
