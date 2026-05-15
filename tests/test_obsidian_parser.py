@@ -246,7 +246,9 @@ class TestWriteNote:
             folder="ShopAI/Learned",
         )
         assert written.exists()
-        assert "ShopAI/Learned" in str(written)
+        # Path uses ``\`` on Windows, ``/`` on POSIX — compare via
+        # ``as_posix()`` so the substring assertion is OS-agnostic.
+        assert "ShopAI/Learned" in written.as_posix()
 
     def test_frontmatter_defaults(self, tmp_path: Path):
         written = write_note(tmp_path, "Defaults", "Body")

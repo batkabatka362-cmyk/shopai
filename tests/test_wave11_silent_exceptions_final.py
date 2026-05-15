@@ -39,10 +39,13 @@ class TestNoBareExceptPassInCore:
         violations: list[str] = []
         for path in self._collect_python_files():
             try:
-                src = path.read_text()
+                # Force UTF-8 on every platform — ``read_text``
+                # without an encoding uses cp1252 on Windows and
+                # crashes on any byte > 0x7F in a source file.
+                src = path.read_text(encoding="utf-8")
                 tree = ast.parse(src, filename=str(path))
-            except SyntaxError:
-                continue  # skip unparseable files
+            except (SyntaxError, UnicodeDecodeError):
+                continue  # skip unparseable / unreadable files
 
             for node in ast.walk(tree):
                 if not isinstance(node, ast.ExceptHandler):
