@@ -4454,6 +4454,56 @@ def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
             "error": str(exc),
         }
 
+    # ── Pattern J test pollution ─────────────────────────────
+    try:
+        from engines._pattern_j_audit import audit_pattern_j
+        j_report = audit_pattern_j()
+        sections["pattern_j_test_pollution"] = {
+            "status": (
+                "pass" if not j_report.has_violations else "fail"
+            ),
+            "scanned_modules": j_report.scanned_modules,
+            "recorder_sites": len(j_report.recorder_sites),
+            "guarded_sites": len(j_report.guarded_sites),
+            "unguarded_sites": [
+                f"{s.file}:{s.lineno} {s.receiver_expr}.{s.method}()"
+                for s in j_report.unguarded_sites
+            ],
+        }
+        if j_report.has_violations:
+            overall_ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern J probe raised: %s", exc)
+        sections["pattern_j_test_pollution"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
+    # ── Pattern Z writer-recorder parity ────────────────────
+    try:
+        from engines._pattern_z_audit import audit_pattern_z
+        z_report = audit_pattern_z()
+        sections["pattern_z_writer_recorder"] = {
+            "status": (
+                "pass" if not z_report.has_violations else "fail"
+            ),
+            "scanned_writers": z_report.scanned_writers,
+            "clean_writers": len(z_report.clean_writers),
+            "skipped_no_mutation": len(z_report.skipped_no_mutation),
+            "missing_recorder": [
+                f"{s.file} {list(s.mutation_calls)}"
+                for s in z_report.missing_recorder
+            ],
+        }
+        if z_report.has_violations:
+            overall_ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern Z probe raised: %s", exc)
+        sections["pattern_z_writer_recorder"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
     # ── Live scope drift ─────────────────────────────────────
     if getattr(args, "skip_live", False):
         sections["live_scope_drift"] = {
@@ -4598,6 +4648,12 @@ def _cmd_shopify_doctor(args) -> None:
     _doctor_render_pattern_i(
         sections.get("pattern_i_engine_capabilities", {})
     )
+    _doctor_render_pattern_j(
+        sections.get("pattern_j_test_pollution", {})
+    )
+    _doctor_render_pattern_z(
+        sections.get("pattern_z_writer_recorder", {})
+    )
     _doctor_render_live(sections.get("live_scope_drift", {}))
     _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
     _doctor_render_writebacks(sections.get("engines_writebacks", {}))
@@ -4663,6 +4719,12 @@ def _cmd_unified_doctor(args) -> None:
     )
     _doctor_render_pattern_i(
         shopify_sections.get("pattern_i_engine_capabilities", {}),
+    )
+    _doctor_render_pattern_j(
+        shopify_sections.get("pattern_j_test_pollution", {}),
+    )
+    _doctor_render_pattern_z(
+        shopify_sections.get("pattern_z_writer_recorder", {}),
     )
     _doctor_render_live(
         shopify_sections.get("live_scope_drift", {}),
@@ -4825,6 +4887,65 @@ def _doctor_render_pattern_i(section: dict) -> None:
     else:
         print(
             f"[??] Pattern I engine capabilities -- "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_pattern_j(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Pattern J test pollution -- "
+            f"{section.get('recorder_sites', 0)} recorder + "
+            f"{section.get('guarded_sites', 0)} guarded site(s); "
+            "no unguarded writes"
+        )
+    elif status == "fail":
+        unguarded = section.get("unguarded_sites", [])
+        print(
+            f"[FAIL] Pattern J test pollution -- "
+            f"{len(unguarded)} unguarded write-site(s)"
+        )
+        for site in unguarded[:3]:
+            print(f"       {site}")
+        print(
+            "       fix: delegate through "
+            "`engines._writeback_recorder.record_writeback()` "
+            "or add an `_is_test_environment()` guard "
+            "(see `shopai pattern-j-audit`)"
+        )
+    else:
+        print(
+            f"[??] Pattern J test pollution -- "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_pattern_z(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        print(
+            f"[pass] Pattern Z writer-recorder -- "
+            f"{section.get('clean_writers', 0)}/"
+            f"{section.get('scanned_writers', 0)} "
+            "writer module(s) call record_writeback"
+        )
+    elif status == "fail":
+        missing = section.get("missing_recorder", [])
+        print(
+            f"[FAIL] Pattern Z writer-recorder -- "
+            f"{len(missing)} writer(s) missing recorder"
+        )
+        for site in missing[:3]:
+            print(f"       {site}")
+        print(
+            "       fix: add `record_writeback(...)` adjacent to "
+            "the mutation in each flagged writer "
+            "(see `shopai pattern-z-audit`)"
+        )
+    else:
+        print(
+            f"[??] Pattern Z writer-recorder -- "
             f"{section.get('error', 'unavailable')}"
         )
 
@@ -5219,6 +5340,12 @@ def _cmd_shopify_prepare_deploy(args) -> None:
     _doctor_render_pattern_y(sections.get("pattern_y_capabilities", {}))
     _doctor_render_pattern_i(
         sections.get("pattern_i_engine_capabilities", {})
+    )
+    _doctor_render_pattern_j(
+        sections.get("pattern_j_test_pollution", {})
+    )
+    _doctor_render_pattern_z(
+        sections.get("pattern_z_writer_recorder", {})
     )
     _doctor_render_live(sections.get("live_scope_drift", {}))
     _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
