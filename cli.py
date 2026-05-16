@@ -292,6 +292,43 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Decision-retrieval (RAG) commands ────────────────────
+    recall_p = sub.add_parser(
+        "memory-recall",
+        help=(
+            "Decision-time RAG: retrieve past decisions similar "
+            "to a query, joined with their outcomes. Layer 2 of "
+            "the AGI orchestration stack."
+        ),
+    )
+    recall_p.add_argument(
+        "--engine", required=True,
+        help="Engine to retrieve decisions from (required)",
+    )
+    recall_p.add_argument(
+        "--action-type", default="", dest="action_type",
+        help="Filter / boost by action_type (optional)",
+    )
+    recall_p.add_argument(
+        "--capability", default="",
+        help="Filter / boost by capability name (optional)",
+    )
+    recall_p.add_argument(
+        "--params-json", default="", dest="params_json",
+        help=(
+            "JSON dict of params to compute overlap against "
+            "(optional). e.g. --params-json '{\"discount_pct\": 10}'"
+        ),
+    )
+    recall_p.add_argument(
+        "-k", "--k", type=int, default=5,
+        help="Number of results to return (default: 5)",
+    )
+    recall_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw retrieval list as JSON",
+    )
+
     # ── Sync commands ────────────────────────────────────────
     sync_p = sub.add_parser("sync", help="Sync data from Shopify")
     sync_p.add_argument("store_id", nargs="?", help="Store ID (default: active)")
@@ -2738,6 +2775,123 @@ def _cmd_world_model_show(args) -> None:
             print(f"  Recent: {n}  Last: {ago}")
     else:
         print(f"  (unavailable: {decisions.get('error', 'unknown')})")
+
+
+def _cmd_memory_recall(args) -> None:
+    """Decision-time RAG: retrieve top-k past decisions similar
+    to a query, joined with their outcomes.
+
+    Read-only. Engines call ``DecisionRetrieval().retrieve(...)``
+    directly; this CLI is for operators to inspect what the
+    retriever would surface for a given engine + action.
+    """
+    as_json = bool(getattr(args, "json", False))
+
+    params: dict | None = None
+    raw = getattr(args, "params_json", "") or ""
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                if as_json:
+                    print(json.dumps(
+                        {"status": "error",
+                         "error": "--params-json must be a JSON object"},
+                        indent=2, default=str,
+                    ))
+                else:
+                    print("Error: --params-json must be a JSON object.")
+                sys.exit(1)
+                return
+            params = parsed
+        except json.JSONDecodeError as exc:
+            msg = f"--params-json is not valid JSON: {exc}"
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2, default=str,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+
+    from core.decision_retrieval import DecisionRetrieval
+
+    retriever = DecisionRetrieval()
+    results = retriever.retrieve(
+        engine=args.engine,
+        action_type=getattr(args, "action_type", "") or None,
+        capability=getattr(args, "capability", "") or None,
+        params=params,
+        k=int(getattr(args, "k", 5) or 5),
+    )
+
+    if as_json:
+        print(json.dumps({
+            "engine": args.engine,
+            "query": {
+                "action_type": getattr(args, "action_type", "") or None,
+                "capability": getattr(args, "capability", "") or None,
+                "params": params,
+            },
+            "k": int(getattr(args, "k", 5) or 5),
+            "results": results,
+        }, indent=2, default=str))
+        return
+
+    print(f"Memory recall: engine={args.engine}  k={args.k}")
+    filters = []
+    if getattr(args, "action_type", ""):
+        filters.append(f"action_type={args.action_type}")
+    if getattr(args, "capability", ""):
+        filters.append(f"capability={args.capability}")
+    if params:
+        filters.append(f"params={sorted(params.keys())}")
+    if filters:
+        print("  Query: " + ", ".join(filters))
+    print()
+    if not results:
+        print("(no similar past decisions found)")
+        return
+    for i, entry in enumerate(results, 1):
+        rel = entry.get("relevance", 0.0)
+        action_type = entry.get("action_type", "?")
+        capability = entry.get("capability", "?")
+        status = entry.get("status", "?")
+        decided_at = entry.get("decided_at") or 0
+        age_str = "?"
+        if decided_at:
+            age = time.time() - float(decided_at)
+            age_str = (
+                f"{int(age)}s ago" if age < 60
+                else f"{int(age/60)}m ago" if age < 3600
+                else f"{int(age/3600)}h ago" if age < 86400
+                else f"{int(age/86400)}d ago"
+            )
+        print(
+            f"  [{i}] rel={rel:.2f}  {action_type}  "
+            f"({capability})  status={status}  {age_str}"
+        )
+        summary = entry.get("outcome_summary") or {}
+        oc = summary.get("count", 0)
+        if oc:
+            polarity = summary.get("polarity_counts", {})
+            rev = summary.get("total_revenue", 0.0)
+            print(
+                f"      outcomes: {oc}  "
+                f"+{polarity.get('positive', 0)} / "
+                f"-{polarity.get('negative', 0)} / "
+                f"={polarity.get('neutral', 0)}  "
+                f"revenue=${rev:.2f}"
+            )
+        components = entry.get("score_components", {})
+        if components:
+            comp_line = "      breakdown: " + ", ".join(
+                f"{k}={v:.2f}"
+                for k, v in components.items()
+            )
+            print(comp_line)
 
 
 def _cmd_store_verify(args) -> None:
@@ -11524,6 +11678,10 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_world_model_show(args)
             return
         print("Usage: shopai world-model {show}")
+        return
+
+    if args.command == "memory-recall":
+        _cmd_memory_recall(args)
         return
 
     if args.command == "db":
