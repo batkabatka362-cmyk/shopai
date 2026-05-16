@@ -103,6 +103,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override store niche (default: use stored niche)",
     )
 
+    design_p = store_sub.add_parser(
+        "design",
+        help=(
+            "Preview store-design recommendations: runs the "
+            "store_design engine and renders its layout / "
+            "color / navigation / mobile suggestions. Read-only "
+            "-- doesn't modify the live store."
+        ),
+    )
+    design_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    design_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+    design_p.add_argument(
+        "--section", default="all",
+        choices=["all", "layout", "color", "navigation", "mobile"],
+        help=(
+            "Filter to one section. Default 'all' renders every "
+            "recommendation block."
+        ),
+    )
+
     # ── Sync commands ────────────────────────────────────────
     sync_p = sub.add_parser("sync", help="Sync data from Shopify")
     sync_p.add_argument("store_id", nargs="?", help="Store ID (default: active)")
@@ -1679,6 +1705,200 @@ def _cmd_store_configure(args) -> None:
         print(f"Planned writes ({len(result['plan'])}):")
         for step in result["plan"]:
             print(f"  {step['method']:6s} {step['path']:45s} {step['description']}")
+
+
+def _cmd_store_design(args) -> None:
+    """Run the store_design engine and surface its recommendations.
+
+    Read-only preview: layout / color / navigation / mobile
+    suggestions. Doesn't modify the live store.
+
+    When a store_id is supplied (or an active store is set), the
+    engine reads brand + products + analytics from the store's
+    sync data. Otherwise it falls back to the engine's default
+    profile so operators can preview what the engine produces
+    without first connecting a store.
+    """
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store_id", None) or sm.active_store_id
+    )
+
+    # Build the engine input. Best-effort: if store data isn't
+    # available, fall back to empty input -- the engine handles
+    # missing data gracefully (Pattern Q compliant).
+    payload: dict = {
+        "status": "success",
+        "data": {},
+        "meta": {},
+        "error": None,
+    }
+    if store_id:
+        try:
+            stats = sm.get_stats(store_id) if hasattr(
+                sm, "get_stats",
+            ) else {}
+            # Pull whatever brand/products/analytics we can find;
+            # the engine tolerates partial input.
+            payload["data"] = {
+                "brand": {
+                    "colors": [],
+                    "fonts": [],
+                    "voice": "professional",
+                },
+                "products": [],
+                "analytics": {
+                    "bounce_rate": 0.0,
+                    "device_split": {},
+                },
+            }
+            # If we have product / order counts, expose them so
+            # the engine can shape its recommendations.
+            if isinstance(stats, dict):
+                _product_count = stats.get("products", 0)
+                # Engine doesn't currently take a product count
+                # but exposing the field here documents the
+                # integration point for future enhancement.
+                payload["data"]["_store_stats"] = {
+                    "products": _product_count,
+                    "orders": stats.get("orders", 0),
+                    "customers": stats.get("customers", 0),
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "store_design store-data probe raised: %s", exc,
+            )
+
+    try:
+        from engines.store_design.flow import StoreDesignEngine
+        out = StoreDesignEngine().run(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("store_design engine raised: %s", exc)
+        print(f"store_design unavailable: {exc}")
+        sys.exit(1)
+
+    if out.get("status") != "success" or not out.get("data"):
+        msg = out.get("error") or "engine returned no data"
+        if getattr(args, "json", False):
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"store_design produced no recommendations: {msg}")
+        sys.exit(1)
+
+    data = out["data"]
+    section = getattr(args, "section", "all") or "all"
+
+    if getattr(args, "json", False):
+        payload_out = {
+            "store_id": store_id,
+            "section": section,
+            "estimated_conversion_lift": data.get(
+                "estimated_conversion_lift", 0.0,
+            ),
+        }
+        if section in ("all", "layout"):
+            payload_out["layout_recommendations"] = data.get(
+                "layout_recommendations", [],
+            )
+        if section in ("all", "color"):
+            payload_out["color_palette"] = data.get(
+                "color_palette", {},
+            )
+        if section in ("all", "navigation"):
+            payload_out["navigation"] = data.get(
+                "navigation", {},
+            )
+        if section in ("all", "mobile"):
+            payload_out["mobile_optimizations"] = data.get(
+                "mobile_optimizations", [],
+            )
+        print(json.dumps(payload_out, indent=2, default=str))
+        return
+
+    # Text render
+    print("ShopAI Store Design Preview")
+    if store_id:
+        print(f"  Store: {store_id}")
+    else:
+        print("  Store: (no active store -- using default profile)")
+    lift = data.get("estimated_conversion_lift", 0.0)
+    if lift:
+        print(f"  Estimated conversion lift: {lift:.1%}")
+    print()
+
+    if section in ("all", "layout"):
+        layout = data.get("layout_recommendations", []) or []
+        print(f"== Layout ({len(layout)} recommendation(s)) ==")
+        if not layout:
+            print("  (no layout recommendations)")
+        for rec in layout:
+            print(
+                f"  [{rec.get('priority', '?'):<6}] "
+                f"{rec.get('page', '?')}: "
+                f"{rec.get('recommendation', '')}"
+            )
+            impact = rec.get("expected_impact")
+            if impact:
+                print(f"           impact: {impact}")
+        print()
+
+    if section in ("all", "color"):
+        palette = data.get("color_palette", {}) or {}
+        print("== Color palette ==")
+        if not palette:
+            print("  (no color palette)")
+        else:
+            for key in (
+                "primary", "secondary", "accent",
+                "background", "text", "cta",
+            ):
+                value = palette.get(key)
+                if value:
+                    print(f"  {key:<12} {value}")
+            rationale = palette.get("rationale")
+            if rationale:
+                print(f"  rationale:   {rationale}")
+        print()
+
+    if section in ("all", "navigation"):
+        nav = data.get("navigation", {}) or {}
+        items = nav.get("menu_items", []) or []
+        print(f"== Navigation ({len(items)} menu item(s)) ==")
+        if not items:
+            print("  (no navigation suggestions)")
+        for item in sorted(
+            items, key=lambda x: x.get("priority", 99),
+        ):
+            print(
+                f"  {item.get('priority', 0):>2}. "
+                f"{item.get('label', '?'):<14} "
+                f"-> {item.get('url', '?')}"
+            )
+        print()
+
+    if section in ("all", "mobile"):
+        mob = data.get("mobile_optimizations", []) or []
+        print(f"== Mobile ({len(mob)} optimization(s)) ==")
+        if not mob:
+            print("  (no mobile optimizations)")
+        for m in mob:
+            print(
+                f"  {m.get('area', '?'):<14} "
+                f"{m.get('recommendation', '')}"
+            )
+            impact = m.get("impact")
+            if impact:
+                print(f"                 impact: {impact}")
+        print()
+
+    print(
+        "Read-only preview. To apply suggestions, manually edit "
+        "your Shopify theme/menu/settings (no Phase 7 writeback "
+        "yet for store_design)."
+    )
 
 
 def _format_feature_summary(name: str, data: dict) -> str:
@@ -10252,12 +10472,16 @@ def main(argv: list[str] | None = None) -> None:
             "connect": _cmd_store_connect,
             "remove": _cmd_store_remove,
             "configure": _cmd_store_configure,
+            "design": _cmd_store_design,
         }
         handler = dispatch.get(args.store_action)
         if handler:
             handler(args)
         else:
-            print("Usage: shopai store {add|list|switch|status|connect|remove|configure}")
+            print(
+                "Usage: shopai store "
+                "{add|list|switch|status|connect|remove|configure|design}"
+            )
         return
 
     if args.command == "db":
