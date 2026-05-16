@@ -253,8 +253,11 @@ class TestControllerCognitiveBrainDecisionsBug:
         import textwrap
         from core.autonomous.controller import AutonomousController
 
+        # Post-PR #244 the cycle body lives in
+        # _run_cycle_internal; the public run_cycle is the
+        # thin active-store wrapper.
         source = textwrap.dedent(
-            inspect.getsource(AutonomousController.run_cycle),
+            inspect.getsource(AutonomousController._run_cycle_internal),
         )
         tree = ast.parse(source)
 

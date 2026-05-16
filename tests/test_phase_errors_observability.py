@@ -196,8 +196,9 @@ class TestNoBareDebugLogsInRunCycle:
         import textwrap
         from core.autonomous.controller import AutonomousController
 
+        # Post-PR #244 the body is in _run_cycle_internal.
         source = textwrap.dedent(
-            inspect.getsource(AutonomousController.run_cycle),
+            inspect.getsource(AutonomousController._run_cycle_internal),
         )
         tree = ast.parse(source)
 
@@ -244,10 +245,16 @@ class TestNoBareDebugLogsInRunCycle:
 
     def test_record_helper_exists_in_run_cycle(self):
         """The local ``_record`` helper must be defined inside
-        run_cycle so each phase can call it."""
+        the cycle body so each phase can call it.
+
+        Post-PR #244 the body lives in ``_run_cycle_internal``
+        (the public ``run_cycle`` is now a thin wrapper that
+        sets the active-store context). The observability
+        contract is on the body, so we inspect there.
+        """
         import inspect
         from core.autonomous.controller import AutonomousController
-        src = inspect.getsource(AutonomousController.run_cycle)
+        src = inspect.getsource(AutonomousController._run_cycle_internal)
         assert "def _record(" in src
         assert "phase_errors[phase_name]" in src
         assert "logger.warning(" in src
@@ -255,5 +262,5 @@ class TestNoBareDebugLogsInRunCycle:
     def test_phase_errors_dict_initialised_in_run_cycle(self):
         import inspect
         from core.autonomous.controller import AutonomousController
-        src = inspect.getsource(AutonomousController.run_cycle)
+        src = inspect.getsource(AutonomousController._run_cycle_internal)
         assert "phase_errors: dict[str, str] = {}" in src
