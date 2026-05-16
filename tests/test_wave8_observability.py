@@ -44,22 +44,31 @@ class TestControllerNewRecordPhases:
 
     def test_all_wave8_phase_names_in_run_cycle_source(self):
         """Every Wave 8 phase name appears as a ``_record(...)``
-        argument in the run_cycle source."""
+        argument in the cycle body.
+
+        Post-PR #244 the body lives in ``_run_cycle_internal``;
+        the public ``run_cycle`` is the active-store wrapper.
+        """
         from core.autonomous.controller import AutonomousController
 
-        src = inspect.getsource(AutonomousController.run_cycle)
+        src = inspect.getsource(
+            AutonomousController._run_cycle_internal,
+        )
         for phase in self.WAVE8_PHASES:
             assert f'_record("{phase}"' in src, (
-                f"phase {phase!r} not wired to _record() in run_cycle"
+                f"phase {phase!r} not wired to _record() in "
+                "_run_cycle_internal"
             )
 
     def test_no_bare_except_pass_in_run_cycle(self):
-        """AST check: run_cycle must not contain any bare
+        """AST check: cycle body must not contain any bare
         ``except Exception: pass`` handlers (the pre-Wave-8 pattern)."""
         from core.autonomous.controller import AutonomousController
 
         source = textwrap.dedent(
-            inspect.getsource(AutonomousController.run_cycle),
+            inspect.getsource(
+                AutonomousController._run_cycle_internal,
+            ),
         )
         tree = ast.parse(source)
 
@@ -78,16 +87,19 @@ class TestControllerNewRecordPhases:
 
         _Visitor().visit(tree)
         assert not bare_passes, (
-            f"run_cycle still has {len(bare_passes)} bare "
-            f"'except: pass' handlers at relative lines {bare_passes}"
+            f"_run_cycle_internal still has {len(bare_passes)} "
+            f"bare 'except: pass' handlers at relative lines "
+            f"{bare_passes}"
         )
 
     def test_record_helper_defined_before_first_use(self):
         """``_record`` must be defined before the working_memory_clear
-        block (which is the first user of _record in the cycle)."""
+        block (the first user of _record in the cycle)."""
         from core.autonomous.controller import AutonomousController
 
-        src = inspect.getsource(AutonomousController.run_cycle)
+        src = inspect.getsource(
+            AutonomousController._run_cycle_internal,
+        )
         record_pos = src.index("def _record(")
         first_use = src.index('_record("working_memory_clear"')
         assert record_pos < first_use

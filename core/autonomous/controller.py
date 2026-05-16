@@ -450,11 +450,35 @@ class AutonomousController:
     # ── Single Cycle ─────────────────────────────────────────
 
     def run_cycle(self, store_id: str = "") -> dict[str, Any]:
-        """Run one full autonomous cycle."""
-        sid = store_id or (self._store_manager.active_store_id if self._store_manager else "")
+        """Run one full autonomous cycle.
+
+        Thin wrapper that resolves the active store and wraps the
+        cycle body in the ``active_store`` thread-local context so
+        every ``enqueue`` / ``record_writeback`` during the cycle
+        auto-tags ``store_id=sid`` (empire-AGI threading; see
+        PR #243).
+        """
+        sid = store_id or (
+            self._store_manager.active_store_id
+            if self._store_manager else ""
+        )
         if not sid:
             return {"status": "error", "error": "No store specified"}
 
+        from core.context import active_store
+        with active_store(sid):
+            return self._run_cycle_internal(sid)
+
+    def _run_cycle_internal(self, sid: str) -> dict[str, Any]:
+        """Inner cycle body. Public callers go through ``run_cycle``
+        which wraps this in ``active_store(sid)``.
+
+        Kept separate (vs inlining via a bare ``with`` block) so the
+        cycle body's indentation stays the same as before the
+        empire-AGI context-threading work, and so the test/audit
+        surfaces that target the body specifically can call this
+        directly without re-entering the context manager.
+        """
         self._cycle_count += 1
         cycle_id = f"cycle_{self._cycle_count}_{int(time.time())}"
         start = time.monotonic()
