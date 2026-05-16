@@ -71,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_p = store_sub.add_parser("status", help="Show store stats")
     status_p.add_argument("store_id", nargs="?", help="Store ID (default: active store)")
+    status_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
 
     connect_p = store_sub.add_parser("connect", help="Test Shopify connection")
     connect_p.add_argument("store_id", nargs="?", help="Store ID (default: active store)")
@@ -1610,19 +1614,96 @@ def _cmd_store_switch(args) -> None:
 
 
 def _cmd_store_status(args) -> None:
+    """Per-store status: counts + last-sync recency + metadata.
+
+    Default text view is operator-friendly. ``--json`` emits a
+    structured envelope for automation (CI smoke tests,
+    monitoring dashboards, etc.).
+    """
+    as_json = bool(getattr(args, "json", False))
     sm = _get_store_manager()
     store_id = args.store_id or sm.active_store_id
     if not store_id:
+        if as_json:
+            print(json.dumps(
+                {
+                    "status": "error",
+                    "error": "no_store_selected",
+                },
+                indent=2, default=str,
+            ))
+            return
         print("No store selected. Add one with: shopai store add")
         return
-    stats = sm.get_stats(store_id)
-    store = sm.get_store(store_id)
+
+    stats = sm.get_stats(store_id) or {}
+    store = sm.get_store(store_id) or {}
+
+    # Last-sync recency -- pull from the SyncService just like
+    # the global ``shopai status`` does. Best-effort: a missing
+    # sync service surfaces as ``null`` rather than crashing.
+    last_sync_at: float | None = None
+    last_sync_status: str | None = None
+    last_sync_age_seconds: float | None = None
+    try:
+        from data_pipeline.store.sync_service import SyncService
+        sync = SyncService(sm)
+        sync_status = sync.get_status() or {}
+        for si in sync_status.get("stores", []):
+            if si.get("store_id") == store_id:
+                last_sync_at = si.get("last_sync")
+                last_sync_status = si.get("last_status")
+                if last_sync_at:
+                    last_sync_age_seconds = time.time() - last_sync_at
+                break
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("store status sync probe raised: %s", exc)
+
+    if as_json:
+        print(json.dumps({
+            "store_id": store_id,
+            "shop_url": store.get("shop_url", ""),
+            "niche": store.get("niche", ""),
+            "store_type": store.get("store_type", ""),
+            "is_active": bool(store.get("is_active")),
+            "stats": {
+                "products": stats.get("products", 0),
+                "orders": stats.get("orders", 0),
+                "customers": stats.get("customers", 0),
+                "total_revenue": float(stats.get("total_revenue", 0.0)),
+            },
+            "last_sync_at": last_sync_at,
+            "last_sync_status": last_sync_status,
+            "last_sync_age_seconds": last_sync_age_seconds,
+        }, indent=2, default=str))
+        return
+
     print(f"Store: {store_id}")
-    print(f"  URL: {store.get('shop_url', '-') if store else '-'}")
-    print(f"  Products:  {stats['products']}")
-    print(f"  Orders:    {stats['orders']}")
-    print(f"  Customers: {stats['customers']}")
-    print(f"  Revenue:   ${stats['total_revenue']:,.2f}")
+    print(f"  URL:       {store.get('shop_url', '-')}")
+    niche = store.get("niche") or "-"
+    store_type = store.get("store_type") or "-"
+    print(f"  Niche:     {niche}")
+    print(f"  Type:      {store_type}")
+    if store.get("is_active"):
+        print(f"  Active:    yes")
+    print()
+    print(f"  Products:  {stats.get('products', 0)}")
+    print(f"  Orders:    {stats.get('orders', 0)}")
+    print(f"  Customers: {stats.get('customers', 0)}")
+    print(f"  Revenue:   ${stats.get('total_revenue', 0.0):,.2f}")
+    print()
+    if last_sync_at is None:
+        print("  Last sync: never")
+    else:
+        age = last_sync_age_seconds or 0
+        ago = (
+            f"{int(age)}s ago" if age < 60
+            else f"{int(age/60)}m ago" if age < 3600
+            else f"{int(age/3600)}h ago" if age < 86400
+            else f"{int(age/86400)}d ago"
+        )
+        status_str = last_sync_status or "unknown"
+        print(f"  Last sync: {ago} ({status_str})")
 
 
 def _cmd_store_connect(args) -> None:
