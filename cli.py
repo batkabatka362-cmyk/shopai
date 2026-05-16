@@ -310,6 +310,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Daily-brief command ──────────────────────────────────
+    daily_p = sub.add_parser(
+        "daily-brief",
+        help=(
+            "Empire-scale operator summary: per-store stats + "
+            "engine activity + pending approvals + alerts, in "
+            "one shot. The 'what happened across my fleet?' "
+            "command."
+        ),
+    )
+    daily_p.add_argument(
+        "--window-hours", type=int, default=24,
+        dest="window_hours",
+        help="Activity window in hours (default: 24).",
+    )
+    daily_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw brief as JSON.",
+    )
+
     # ── Model-router commands ────────────────────────────────
     mr_p = sub.add_parser(
         "model-router",
@@ -1888,6 +1908,223 @@ def _cmd_store_add(args) -> None:
     print(f"  Type: {args.store_type}")
     if args.niche:
         print(f"  Niche: {args.niche}")
+
+
+def _cmd_daily_brief(args) -> None:
+    """Empire-scale operator summary: per-store + per-engine
+    rollup over a recent window.
+
+    Three sections:
+      1. Per-store rows: stats + sync recency + connection (cheap,
+         from cached state).
+      2. Engine activity in the window: executed / failed counts
+         across the fleet.
+      3. Alerts: sync stale (>24h) / pending overflow (>5) /
+         recent failures (>3 in window).
+
+    Pure consumer of StoreManager + SyncService + ApprovalQueue.
+    No live Shopify probe -- this is the "fast morning scan"
+    command, designed to be cron-able.
+    """
+    as_json = bool(getattr(args, "json", False))
+    window_hours = max(1, int(getattr(args, "window_hours", 24) or 24))
+    cutoff = time.time() - window_hours * 3600.0
+
+    sm = _get_store_manager()
+    stores = sm.list_stores() or []
+
+    # ── Per-store rows ─────────────────────────────────────
+    sync_by_store: dict[str, dict] = {}
+    try:
+        from data_pipeline.store.sync_service import SyncService
+        sync_status = SyncService(sm).get_status() or {}
+        for si in sync_status.get("stores", []):
+            sid = si.get("store_id")
+            if sid:
+                sync_by_store[sid] = {
+                    "last_sync": si.get("last_sync"),
+                    "last_status": si.get("last_status"),
+                }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("daily-brief sync probe raised: %s", exc)
+
+    store_rows: list[dict] = []
+    for s in stores:
+        sid = s.get("store_id", "")
+        stats = sm.get_stats(sid) or {}
+        sync = sync_by_store.get(sid) or {}
+        last_sync = sync.get("last_sync")
+        age = time.time() - float(last_sync) if last_sync else None
+        store_rows.append({
+            "store_id": sid,
+            "shop_url": s.get("shop_url", ""),
+            "niche": s.get("niche") or None,
+            "is_active": bool(s.get("is_active")),
+            "products": int(stats.get("products", 0)),
+            "orders": int(stats.get("orders", 0)),
+            "revenue": float(stats.get("total_revenue", 0.0)),
+            "last_sync_age_seconds": age,
+            "last_sync_status": sync.get("last_status"),
+        })
+
+    # ── Engine activity in the window ──────────────────────
+    activity_by_engine: dict[str, dict[str, int]] = {}
+    pending_by_engine: dict[str, int] = {}
+    try:
+        from core.approval.queue import (
+            ApprovalStatus, get_approval_queue,
+        )
+        queue = get_approval_queue()
+        for status in (
+            ApprovalStatus.EXECUTED, ApprovalStatus.FAILED,
+        ):
+            try:
+                rows = queue.list_by_status(status, limit=2000)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "daily-brief list_by_status raised: %s", exc,
+                )
+                continue
+            for a in rows:
+                ts = a.decided_at or a.proposed_at or 0
+                if ts < cutoff:
+                    continue
+                bucket = activity_by_engine.setdefault(
+                    a.engine, {"executed": 0, "failed": 0},
+                )
+                bucket[status.value] = bucket.get(status.value, 0) + 1
+        per_engine_stats = queue.stats_by_engine() or {}
+        for engine, counts in per_engine_stats.items():
+            pending = int(counts.get("pending", 0))
+            if pending:
+                pending_by_engine[engine] = pending
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief approval queue probe raised: %s", exc,
+        )
+
+    # ── Alerts ─────────────────────────────────────────────
+    alerts: list[dict] = []
+    for r in store_rows:
+        age = r["last_sync_age_seconds"]
+        if age and age > 86400.0:
+            alerts.append({
+                "kind": "sync_stale",
+                "store_id": r["store_id"],
+                "detail": f"sync {int(age/3600)}h ago",
+            })
+        if age is None:
+            alerts.append({
+                "kind": "never_synced",
+                "store_id": r["store_id"],
+                "detail": "no sync recorded",
+            })
+    total_pending = sum(pending_by_engine.values())
+    if total_pending > 5:
+        alerts.append({
+            "kind": "pending_overflow",
+            "store_id": None,
+            "detail": f"{total_pending} pending approvals across fleet",
+        })
+    for engine, counts in activity_by_engine.items():
+        failed = counts.get("failed", 0)
+        if failed >= 3:
+            alerts.append({
+                "kind": "recent_failures",
+                "store_id": None,
+                "engine": engine,
+                "detail": f"{failed} failures in {window_hours}h",
+            })
+
+    # ── Totals ─────────────────────────────────────────────
+    totals = {
+        "stores": len(store_rows),
+        "revenue": sum(r["revenue"] for r in store_rows),
+        "orders": sum(r["orders"] for r in store_rows),
+        "products": sum(r["products"] for r in store_rows),
+        "executed": sum(
+            c.get("executed", 0) for c in activity_by_engine.values()
+        ),
+        "failed": sum(
+            c.get("failed", 0) for c in activity_by_engine.values()
+        ),
+        "pending": total_pending,
+    }
+
+    # ── JSON envelope ──────────────────────────────────────
+    if as_json:
+        print(json.dumps({
+            "window_hours": window_hours,
+            "stores": store_rows,
+            "engine_activity": activity_by_engine,
+            "pending_by_engine": pending_by_engine,
+            "totals": totals,
+            "alerts": alerts,
+        }, indent=2, default=str))
+        return
+
+    # ── Text render ────────────────────────────────────────
+    print(
+        f"Daily brief (last {window_hours}h) "
+        f"-- {totals['stores']} store(s)"
+    )
+    print()
+    print(
+        f"  Totals: {totals['orders']} orders, "
+        f"${totals['revenue']:,.2f} revenue, "
+        f"{totals['products']} products"
+    )
+    print(
+        f"  Activity: {totals['executed']} executed, "
+        f"{totals['failed']} failed, "
+        f"{totals['pending']} pending"
+    )
+    print()
+
+    # Per-store table (compact)
+    print("Stores:")
+    print(
+        f"  {'STORE':<22s} {'ORD':>5s} {'REVENUE':>11s} "
+        f"{'SYNC':>9s}"
+    )
+    print("  " + "-" * 50)
+    for r in sorted(store_rows, key=lambda x: -x["revenue"]):
+        age = r["last_sync_age_seconds"]
+        sync_str = (
+            "never" if age is None
+            else f"{int(age/3600)}h" if age < 86400
+            else f"{int(age/86400)}d"
+        )
+        print(
+            f"  {r['store_id']:<22s} {r['orders']:>5d} "
+            f"${r['revenue']:>10,.2f} {sync_str:>9s}"
+        )
+    print()
+
+    # Top-activity engines
+    if activity_by_engine:
+        print(f"Top engines (last {window_hours}h):")
+        ranked = sorted(
+            activity_by_engine.items(),
+            key=lambda kv: -(kv[1].get("executed", 0)
+                             + kv[1].get("failed", 0)),
+        )
+        for engine, counts in ranked[:5]:
+            print(
+                f"  {engine:25s} "
+                f"executed={counts.get('executed', 0):>3d}  "
+                f"failed={counts.get('failed', 0):>3d}"
+            )
+        print()
+
+    # Alerts
+    if alerts:
+        print(f"Alerts ({len(alerts)}):")
+        for a in alerts:
+            target = a.get("store_id") or a.get("engine") or "-"
+            print(f"  [{a['kind']:<18s}] {target:<22s} {a['detail']}")
+    else:
+        print("Alerts: (none)")
 
 
 def _cmd_store_fleet(args) -> None:
@@ -12256,6 +12493,10 @@ def main(argv: list[str] | None = None) -> None:
                 "Usage: shopai store "
                 "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
             )
+        return
+
+    if args.command == "daily-brief":
+        _cmd_daily_brief(args)
         return
 
     if args.command == "world-model":
