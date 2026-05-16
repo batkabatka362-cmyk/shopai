@@ -103,7 +103,31 @@ def record_writeback(
     if _is_test_environment():
         return
 
-    score = _compute_score(success=success, metrics=metrics)
+    # AGI Phase 2: auto-capture the decision-retrieval context if
+    # the caller didn't supply metrics explicitly. Engines that
+    # want to use the captured signal at decision time should call
+    # ``capture_decision_context`` directly and pass the metrics
+    # in. Engines that just want the context to flow into the
+    # learning loop get it for free here. Belt-and-braces: an
+    # outer try/except wraps ``_auto_capture_context`` so a future
+    # change that removes the helper's own guard can't break the
+    # recorder.
+    if not metrics:
+        try:
+            merged_metrics = _auto_capture_context(
+                engine=engine, action_type=action_type,
+                capability=capability, params=params,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "record_writeback auto_capture wrapper caught: %s",
+                exc,
+            )
+            merged_metrics = {}
+    else:
+        merged_metrics = dict(metrics)
+
+    score = _compute_score(success=success, metrics=merged_metrics)
     result_data: dict[str, Any] = {
         "success": bool(success),
         "capability": capability,
@@ -111,8 +135,8 @@ def record_writeback(
     }
     if error is not None:
         result_data["error"] = str(error)
-    if metrics:
-        result_data.update({k: v for k, v in metrics.items()})
+    if merged_metrics:
+        result_data.update({k: v for k, v in merged_metrics.items()})
 
     action_data: dict[str, Any] = {
         "engine": engine,
@@ -145,8 +169,35 @@ def record_writeback(
         action_type=action_type,
         action_data=action_data,
         result_data=result_data,
-        metrics=metrics,
+        metrics=merged_metrics or None,
     )
+
+
+def _auto_capture_context(
+    *, engine: str, action_type: str, capability: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Capture AGI-stack context for writers that didn't supply
+    their own metrics.
+
+    Returns a flat metrics dict (similar_count, recent_positive,
+    recent_negative, avg_relevance) or empty dict on any
+    failure.
+    """
+    try:
+        from engines._agi_context import capture_decision_context
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("auto_capture import failed: %s", exc)
+        return {}
+    try:
+        ctx = capture_decision_context(
+            engine=engine, action_type=action_type,
+            capability=capability, params=params,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("auto_capture raised: %s", exc)
+        return {}
+    return ctx.get("metrics") or {}
 
 
 # ── Score ──────────────────────────────────────────────────────

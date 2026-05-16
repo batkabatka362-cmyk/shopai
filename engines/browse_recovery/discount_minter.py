@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from engines._agi_context import capture_decision_context
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -105,6 +106,25 @@ def mint_offer_codes(
             f"Browse recovery: {discount_pct:g}% off "
             f"({likelihood} intent)"
         )
+        mint_params = {
+            "token": token,
+            "value": discount_pct,
+            "value_kind": "percentage",
+            "ttl_days": ttl_days,
+            "likelihood": likelihood,
+        }
+
+        # AGI Phase 2: observational context capture (loyalty +
+        # cart_recovery reference pattern). Browse_recovery mints
+        # one code per offer, so we capture per offer -- gives the
+        # learning loop per-likelihood-tier signal.
+        agi_context = capture_decision_context(
+            engine="browse_recovery",
+            action_type="mint_browse_recovery_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=mint_params,
+        )
+
         result = _mint(
             token=token,
             code_prefix=_CODE_PREFIX,
@@ -121,17 +141,12 @@ def mint_offer_codes(
             engine="browse_recovery",
             action_type="mint_browse_recovery_code",
             capability="SHOPIFY_CREATE_DISCOUNT",
-            params={
-                "token": token,
-                "value": discount_pct,
-                "value_kind": "percentage",
-                "ttl_days": ttl_days,
-                "likelihood": likelihood,
-            },
+            params=mint_params,
             success=result is not None,
             error=(
                 None if result is not None else "mint_returned_none"
             ),
+            metrics=agi_context.get("metrics") or None,
         )
 
         if result is None:
