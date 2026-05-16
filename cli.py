@@ -141,6 +141,37 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    verify_p = store_sub.add_parser(
+        "verify",
+        help=(
+            "Read-only audit: compares the live store against "
+            "what the configurator would set up and reports the "
+            "drift. Exits 1 when drift exists -- useful for CI / "
+            "scheduled drift detection."
+        ),
+    )
+    verify_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    verify_p.add_argument(
+        "--only", default="",
+        help=(
+            "Comma-separated features to verify. Valid: "
+            "collections, discounts, shipping, content, "
+            "product_tags, ai_config, gifts, loyalty, referral, "
+            "emails, payments. Default: all."
+        ),
+    )
+    verify_p.add_argument(
+        "--niche", default="",
+        help="Override store niche (default: use stored niche)",
+    )
+    verify_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw drift report as JSON.",
+    )
+
     # ── Sync commands ────────────────────────────────────────
     sync_p = sub.add_parser("sync", help="Sync data from Shopify")
     sync_p.add_argument("store_id", nargs="?", help="Store ID (default: active)")
@@ -2045,6 +2076,198 @@ def _cmd_store_design(args) -> None:
         "your Shopify theme/menu/settings (no Phase 7 writeback "
         "yet for store_design)."
     )
+
+
+def _cmd_store_verify(args) -> None:
+    """Read-only drift audit.
+
+    Runs the configurator in dry_run mode and reports what would
+    be written. A non-empty plan = drift between live state and
+    recommended config. Exits 1 on drift, 0 when clean -- useful
+    for CI and scheduled health checks.
+    """
+    as_json = bool(getattr(args, "json", False))
+
+    def _emit_error(msg: str, *, exit_code: int = 1) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(exit_code)
+
+    sm = _get_store_manager()
+    store_id = args.store_id or sm.active_store_id
+    if not store_id:
+        _emit_error("No store specified and no active store set.")
+        return
+
+    creds = sm.get_credentials(store_id)
+    if not creds or not creds.get("shop_url"):
+        _emit_error(
+            f"Store {store_id!r} not found or has no shop_url.",
+        )
+        return
+    token = creds.get("api_key") or ""
+    if not token and creds.get("client_id") and creds.get("client_secret"):
+        try:
+            from core.auth.shopify_auth import ShopifyAuth
+            token = ShopifyAuth(
+                creds["shop_url"], creds["client_id"], creds["client_secret"],
+            ).get_token()
+        except Exception as exc:  # noqa: BLE001
+            _emit_error(f"Could not resolve OAuth token: {exc}")
+            return
+    if not token:
+        _emit_error(
+            f"Store {store_id!r} has no usable credentials.",
+        )
+        return
+
+    store_info = sm.db.get_store(store_id) if hasattr(sm, "db") else {}
+    niche = args.niche or (store_info or {}).get("niche") or "general"
+    store_name = (store_info or {}).get("name") or store_id
+
+    features = None
+    if args.only:
+        features = [f.strip() for f in args.only.split(",") if f.strip()]
+
+    from execution.store_configurator import StoreConfigurator, ALL_FEATURES
+
+    configurator = StoreConfigurator(dry_run=True)
+    result = configurator.configure(
+        creds["shop_url"], token,
+        niche=niche, store_name=store_name, features=features,
+    )
+
+    plan = result.get("plan") or []
+    # Bucket the plan entries by which feature they belong to. The
+    # configurator doesn't tag plan entries directly, so we derive
+    # feature membership by inspecting the path: collections.json /
+    # discount_codes / shipping_zones / etc.
+    drift_by_feature: dict[str, list[dict]] = {
+        name: [] for name in (features or ALL_FEATURES)
+    }
+    for entry in plan:
+        path = (entry.get("path") or "").lower()
+        bucket = _classify_plan_entry(path)
+        drift_by_feature.setdefault(bucket, []).append(entry)
+
+    clean_features = [
+        name for name, entries in drift_by_feature.items()
+        if not entries
+    ]
+    drift_features = [
+        name for name, entries in drift_by_feature.items()
+        if entries
+    ]
+
+    if as_json:
+        envelope = {
+            "store_id": store_id,
+            "shop_url": creds["shop_url"],
+            "niche": niche,
+            "checked_features": sorted(drift_by_feature.keys()),
+            "clean_features": sorted(clean_features),
+            "drift_features": sorted(drift_features),
+            "total_planned_writes": len(plan),
+            "drift_by_feature": {
+                name: {
+                    "count": len(entries),
+                    "writes": entries,
+                }
+                for name, entries in drift_by_feature.items()
+            },
+            "has_drift": bool(plan),
+        }
+        print(json.dumps(envelope, indent=2, default=str))
+        sys.exit(1 if plan else 0)
+        return
+
+    # ── Text render ─────────────────────────────────────────
+    print(f"Store: {store_id}  ({creds['shop_url']})")
+    print(f"Niche: {niche}")
+    print()
+    print(
+        f"Verified {len(drift_by_feature)} feature(s); "
+        f"{len(plan)} planned write(s) total."
+    )
+    print()
+    if clean_features:
+        print(f"Clean ({len(clean_features)}):")
+        for name in sorted(clean_features):
+            print(f"  [ok] {name}")
+        print()
+    if drift_features:
+        print(f"Drift ({len(drift_features)}):")
+        for name in sorted(drift_features):
+            entries = drift_by_feature[name]
+            print(f"  [drift] {name:14s} {len(entries)} write(s) staged")
+            for entry in entries[:3]:
+                method = entry.get("method", "?")
+                path = entry.get("path", "?")
+                desc = entry.get("description", "")
+                print(f"            {method:6s} {path:35s} {desc}")
+            if len(entries) > 3:
+                print(f"            ... and {len(entries) - 3} more")
+        print()
+        print(
+            f"Verdict: drift detected. Run `shopai store configure "
+            f"{store_id}` to apply (or `--dry-run` to preview)."
+        )
+        sys.exit(1)
+    else:
+        print("Verdict: store fully aligned with recommended config.")
+        sys.exit(0)
+
+
+def _classify_plan_entry(path: str) -> str:
+    """Map a configurator plan entry's path to its feature bucket.
+
+    The plan entries don't carry their feature name directly, so
+    we derive it from the path heuristically. Falls back to
+    'other' so unknown buckets still surface in the report.
+    """
+    path = path.lower()
+    if "smart_collections" in path or "custom_collections" in path or "collections.json" in path:
+        return "collections"
+    if "discount" in path or "price_rules" in path:
+        return "discounts"
+    if "shipping" in path:
+        return "shipping"
+    if "pages" in path or "blogs" in path or "articles" in path:
+        return "content"
+    if "metafield" in path:
+        # Most metafields the configurator writes are ai_config /
+        # gifts / loyalty / referral / shipping / payments. Match
+        # by metafield namespace.
+        if "shopai.ai_config" in path or "ai_config" in path:
+            return "ai_config"
+        if "shopai.gifts" in path or "free_gift" in path:
+            return "gifts"
+        if "shopai.loyalty" in path or "loyalty" in path:
+            return "loyalty"
+        if "shopai.referral" in path or "referral" in path:
+            return "referral"
+        if "shopai.shipping" in path:
+            return "shipping"
+        if "shopai.payments" in path or "payments" in path:
+            return "payments"
+        if "shopai.emails" in path or "email" in path:
+            return "emails"
+        return "ai_config"
+    if "products" in path and "tags" in path:
+        return "product_tags"
+    if "products/" in path:
+        # tag writes go through products/{id}.json
+        return "product_tags"
+    if "email" in path:
+        return "emails"
+    if "payment" in path:
+        return "payments"
+    return "other"
 
 
 def _format_feature_summary(name: str, data: dict) -> str:
@@ -10619,6 +10842,7 @@ def main(argv: list[str] | None = None) -> None:
             "remove": _cmd_store_remove,
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
+            "verify": _cmd_store_verify,
         }
         handler = dispatch.get(args.store_action)
         if handler:
@@ -10626,7 +10850,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design}"
+                "{add|list|switch|status|connect|remove|configure|design|verify}"
             )
         return
 
