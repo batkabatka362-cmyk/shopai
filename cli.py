@@ -141,6 +141,70 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    setup_p = store_sub.add_parser(
+        "setup",
+        help=(
+            "End-to-end setup wizard: add credentials, test "
+            "connection, plan the configurator, and optionally "
+            "apply. Single command replaces add + connect + "
+            "configure for first-time onboarding."
+        ),
+    )
+    setup_p.add_argument(
+        "store_id",
+        help="Unique store identifier (e.g. my-store)",
+    )
+    setup_p.add_argument(
+        "shop_url",
+        help="Shopify store URL (e.g. mystore.myshopify.com)",
+    )
+    setup_p.add_argument(
+        "--api-key", default="",
+        help="Legacy API token (pre-2026)",
+    )
+    setup_p.add_argument(
+        "--client-id", default="",
+        help="OAuth Client ID (2026+)",
+    )
+    setup_p.add_argument(
+        "--client-secret", default="",
+        help="OAuth Client Secret (2026+)",
+    )
+    setup_p.add_argument(
+        "--name", default="",
+        help="Store display name",
+    )
+    setup_p.add_argument(
+        "--niche", default="general",
+        help=(
+            "Store niche (drives the configurator templates). "
+            "Default: general."
+        ),
+    )
+    setup_p.add_argument(
+        "--type", default="dropshipping", dest="store_type",
+        choices=["dropshipping", "brand", "niche", "general"],
+        help="Store type. Default: dropshipping.",
+    )
+    setup_p.add_argument(
+        "--only", default="",
+        help=(
+            "Comma-separated features to plan/apply. Default: "
+            "all 11 features."
+        ),
+    )
+    setup_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "After planning, actually apply the configurator. "
+            "Default: plan-only (safe)."
+        ),
+    )
+    setup_p.add_argument(
+        "--json", action="store_true",
+        help="Emit a structured per-stage JSON envelope.",
+    )
+
     verify_p = store_sub.add_parser(
         "verify",
         help=(
@@ -2076,6 +2140,191 @@ def _cmd_store_design(args) -> None:
         "your Shopify theme/menu/settings (no Phase 7 writeback "
         "yet for store_design)."
     )
+
+
+def _cmd_store_setup(args) -> None:
+    """End-to-end setup wizard.
+
+    Five stages: add → connect → plan → (optionally) apply →
+    status. Stops on the first failing stage and exits 1.
+    By default the configurator runs in dry_run mode so this
+    command is safe to invoke without ``--apply``.
+
+    JSON mode (``--json``) emits a structured per-stage envelope
+    instead of the human-readable progress lines.
+    """
+    as_json = bool(getattr(args, "json", False))
+    stages: list[dict] = []
+
+    def _stage(name: str, **fields) -> dict:
+        entry = {"stage": name, **fields}
+        stages.append(entry)
+        if not as_json:
+            verdict = "ok" if fields.get("ok", True) else "fail"
+            label = fields.get("label") or name
+            extra = fields.get("detail", "")
+            print(f"  [{verdict:4s}] {label}" + (f"  {extra}" if extra else ""))
+        return entry
+
+    def _emit(success: bool, error: str | None = None) -> None:
+        if as_json:
+            envelope = {
+                "store_id": args.store_id,
+                "shop_url": args.shop_url,
+                "niche": args.niche,
+                "applied": bool(args.apply) and success,
+                "success": success,
+                "error": error,
+                "stages": stages,
+            }
+            print(json.dumps(envelope, indent=2, default=str))
+        else:
+            print()
+            if success:
+                if args.apply:
+                    print(f"Setup complete for {args.store_id}.")
+                else:
+                    print(
+                        f"Setup planned for {args.store_id}. Re-run "
+                        f"with --apply to actually configure."
+                    )
+            else:
+                print(f"Setup failed: {error or 'unknown error'}")
+        sys.exit(0 if success else 1)
+
+    # ── Pre-flight credential validation ────────────────────
+    if not args.api_key and not (args.client_id and args.client_secret):
+        _emit(
+            False,
+            error=(
+                "Must supply --api-key OR both --client-id and "
+                "--client-secret."
+            ),
+        )
+        return
+
+    if not as_json:
+        print(f"Setting up {args.store_id} ({args.shop_url})")
+        print(f"  Niche: {args.niche}  Type: {args.store_type}")
+        print()
+
+    sm = _get_store_manager()
+
+    # ── Stage 1: add ───────────────────────────────────────
+    try:
+        sm.add_store(
+            args.store_id, args.shop_url,
+            api_key=args.api_key,
+            client_id=args.client_id,
+            client_secret=args.client_secret,
+            name=args.name, niche=args.niche,
+            store_type=args.store_type,
+        )
+        _stage(
+            "add", ok=True, label="Store added",
+            detail=f"id={args.store_id}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _stage("add", ok=False, label="Store add failed",
+               detail=str(exc))
+        _emit(False, error=f"add: {exc}")
+        return
+
+    # ── Stage 2: connect ───────────────────────────────────
+    try:
+        conn = sm.test_connection(args.store_id) or {}
+    except Exception as exc:  # noqa: BLE001
+        _stage("connect", ok=False, label="Connection probe raised",
+               detail=str(exc))
+        _emit(False, error=f"connect: {exc}")
+        return
+    if not conn.get("connected"):
+        err = conn.get("error", "unknown")
+        _stage("connect", ok=False,
+               label="Connection failed", detail=str(err))
+        _emit(False, error=f"connect: {err}")
+        return
+    _stage(
+        "connect", ok=True, label="Connection verified",
+        detail=f"shop={conn.get('shop', args.store_id)}",
+    )
+
+    # ── Stage 3: plan ──────────────────────────────────────
+    features = None
+    if args.only:
+        features = [f.strip() for f in args.only.split(",") if f.strip()]
+
+    creds = sm.get_credentials(args.store_id) or {}
+    token = creds.get("api_key") or ""
+    if not token and creds.get("client_id") and creds.get("client_secret"):
+        try:
+            from core.auth.shopify_auth import ShopifyAuth
+            token = ShopifyAuth(
+                creds["shop_url"], creds["client_id"], creds["client_secret"],
+            ).get_token()
+        except Exception as exc:  # noqa: BLE001
+            _stage(
+                "plan", ok=False, label="OAuth token resolution failed",
+                detail=str(exc),
+            )
+            _emit(False, error=f"plan: oauth: {exc}")
+            return
+    if not token:
+        _stage("plan", ok=False, label="No usable credentials")
+        _emit(False, error="plan: no usable credentials")
+        return
+
+    from execution.store_configurator import StoreConfigurator, ALL_FEATURES
+    try:
+        configurator = StoreConfigurator(dry_run=True)
+        plan_result = configurator.configure(
+            args.shop_url, token,
+            niche=args.niche, store_name=args.name or args.store_id,
+            features=features,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _stage("plan", ok=False, label="Configurator dry-run raised",
+               detail=str(exc))
+        _emit(False, error=f"plan: {exc}")
+        return
+    plan_count = len(plan_result.get("plan") or [])
+    feature_count = len(plan_result.get("results") or {})
+    _stage(
+        "plan", ok=True, label="Configurator planned",
+        detail=f"{feature_count} feature(s), {plan_count} write(s) staged",
+        plan_count=plan_count,
+        feature_count=feature_count,
+    )
+
+    # ── Stage 4: apply (only when --apply) ─────────────────
+    if not args.apply:
+        _stage(
+            "apply", ok=True, label="Apply skipped",
+            detail="(re-run with --apply to write)",
+            skipped=True,
+        )
+        _emit(True)
+        return
+
+    try:
+        configurator = StoreConfigurator(dry_run=False)
+        apply_result = configurator.configure(
+            args.shop_url, token,
+            niche=args.niche, store_name=args.name or args.store_id,
+            features=features,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _stage("apply", ok=False, label="Configurator apply raised",
+               detail=str(exc))
+        _emit(False, error=f"apply: {exc}")
+        return
+    status = apply_result.get("status")
+    _stage(
+        "apply", ok=(status == "configured"),
+        label=f"Configurator status={status}",
+        detail=f"{len(apply_result.get('results') or {})} feature(s) applied",
+    )
+    _emit(status == "configured", error=None if status == "configured" else f"apply: status={status}")
 
 
 def _cmd_store_verify(args) -> None:
@@ -10843,6 +11092,7 @@ def main(argv: list[str] | None = None) -> None:
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
             "verify": _cmd_store_verify,
+            "setup": _cmd_store_setup,
         }
         handler = dispatch.get(args.store_action)
         if handler:
@@ -10850,7 +11100,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify}"
+                "{add|list|switch|status|connect|remove|configure|design|verify|setup}"
             )
         return
 
