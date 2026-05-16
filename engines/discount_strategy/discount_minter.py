@@ -45,6 +45,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from engines._agi_context import capture_decision_context
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -116,6 +117,26 @@ def mint_strategy_code(
 
     title = f"Storewide promo: {percentage:g}% off ({audience})"
 
+    mint_params = {
+        "audience": audience,
+        "percentage": percentage,
+        "ttl_days": ttl_days,
+        "cannibalization_risk": cannibalization_risk,
+        "confidence": confidence,
+    }
+
+    # AGI Phase 2: observational context capture (6th and final of
+    # the discount-minter sibling set). Storewide promos are the
+    # highest-blast-radius writes, so the captured signal
+    # (similar past promos + their revenue outcomes) is especially
+    # valuable for future strategy decisions.
+    agi_context = capture_decision_context(
+        engine="discount_strategy",
+        action_type="mint_strategy_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params=mint_params,
+    )
+
     minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
@@ -134,15 +155,10 @@ def mint_strategy_code(
         engine="discount_strategy",
         action_type="mint_strategy_code",
         capability="SHOPIFY_CREATE_DISCOUNT",
-        params={
-            "audience": audience,
-            "percentage": percentage,
-            "ttl_days": ttl_days,
-            "cannibalization_risk": cannibalization_risk,
-            "confidence": confidence,
-        },
+        params=mint_params,
         success=minted is not None,
         error=None if minted is not None else "mint_returned_none",
+        metrics=agi_context.get("metrics") or None,
     )
 
     return minted

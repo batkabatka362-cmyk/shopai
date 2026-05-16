@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from engines._agi_context import capture_decision_context
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -80,6 +81,23 @@ def mint_wholesale_code(
         f"(customer {customer_id[:24]})"
     )
 
+    mint_params = {
+        "customer_id": customer_id,
+        "discount_pct": discount_pct,
+        "ttl_days": ttl_days,
+    }
+
+    # AGI Phase 2: observational context capture (5th of the
+    # discount-minter sibling set following loyalty, cart_recovery,
+    # browse_recovery, email_marketing). Per-customer + per-tier
+    # signal feeds the learning loop.
+    agi_context = capture_decision_context(
+        engine="wholesale_b2b",
+        action_type="mint_wholesale_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params=mint_params,
+    )
+
     minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
@@ -95,13 +113,10 @@ def mint_wholesale_code(
         engine="wholesale_b2b",
         action_type="mint_wholesale_code",
         capability="SHOPIFY_CREATE_DISCOUNT",
-        params={
-            "customer_id": customer_id,
-            "discount_pct": discount_pct,
-            "ttl_days": ttl_days,
-        },
+        params=mint_params,
         success=minted is not None,
         error=None if minted is not None else "mint_returned_none",
+        metrics=agi_context.get("metrics") or None,
     )
     return minted
 

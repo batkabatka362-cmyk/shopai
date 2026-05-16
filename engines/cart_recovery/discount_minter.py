@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from engines._agi_context import capture_decision_context
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -76,6 +77,25 @@ def mint_recovery_code(
         f"{'%' if incentive_type == 'percentage' else ''} off"
     )
 
+    mint_params = {
+        "token": token,
+        "value": value,
+        "value_kind": incentive_type,
+        "ttl_days": ttl_days,
+    }
+
+    # AGI Phase 2: observational context capture. Same pattern as
+    # loyalty's discount_minter -- snapshot + retrieval flow into
+    # the writeback recorder so the autonomous loop sees what
+    # context the engine had at mint time. v1 is observational
+    # (no adjustment of the mint decision based on the signal).
+    agi_context = capture_decision_context(
+        engine="cart_recovery",
+        action_type="mint_cart_recovery_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params=mint_params,
+    )
+
     minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
@@ -87,18 +107,17 @@ def mint_recovery_code(
 
     # Phase 8: feed the autonomous learning loop so the system
     # can later correlate minted recovery codes with redemption.
+    # Metrics passthrough carries the AGI context so the data
+    # architecture sees the same signal the engine had at decision
+    # time (preempts the auto-capture in record_writeback).
     record_writeback(
         engine="cart_recovery",
         action_type="mint_cart_recovery_code",
         capability="SHOPIFY_CREATE_DISCOUNT",
-        params={
-            "token": token,
-            "value": value,
-            "value_kind": incentive_type,
-            "ttl_days": ttl_days,
-        },
+        params=mint_params,
         success=minted is not None,
         error=None if minted is not None else "mint_returned_none",
+        metrics=agi_context.get("metrics") or None,
     )
     return minted
 

@@ -235,6 +235,134 @@ class TestRecordWritebackFanout:
 # ─── Graceful no-op when systems are unavailable ─────────────────
 
 
+class TestAutoCaptureContext:
+    """When a writer doesn't supply its own ``metrics``,
+    record_writeback auto-captures the AGI decision-retrieval
+    context. Engines that DO supply metrics keep theirs verbatim.
+    """
+
+    def test_no_metrics_triggers_auto_capture(self):
+        from engines._writeback_recorder import record_writeback
+
+        mock_intel = MagicMock()
+        mock_arch = MagicMock()
+        mock_loop = MagicMock()
+
+        # Patch the inner helper directly -- the patches inside
+        # capture_decision_context itself have their own test-env
+        # guard that's harder to disable cleanly.
+        with patch(
+            "engines._writeback_recorder._get_memory_intel",
+            return_value=mock_intel,
+        ), patch(
+            "engines._writeback_recorder._get_data_arch",
+            return_value=mock_arch,
+        ), patch(
+            "engines._writeback_recorder._get_learning_loop",
+            return_value=mock_loop,
+        ), patch(
+            "engines._writeback_recorder._auto_capture_context",
+            return_value={
+                "similar_count": 2,
+                "recent_positive": True,
+                "recent_negative": False,
+                "avg_relevance": 0.7,
+            },
+        ) as cap:
+            record_writeback(
+                engine="loyalty",
+                action_type="mint_loyalty_code",
+                capability="SHOPIFY_CREATE_DISCOUNT",
+                params={"customer_id": "x"},
+                success=True,
+            )
+
+        # _auto_capture_context was called because no metrics were
+        # supplied
+        cap.assert_called_once()
+        # The captured metrics flow into result_data (which is
+        # what gets surfaced as ``result`` in the learning-loop
+        # payload).
+        intel_kwargs = mock_intel.create_from_decision.call_args.kwargs
+        result = intel_kwargs.get("result", {})
+        assert result.get("similar_count") == 2
+        assert result.get("recent_positive") is True
+
+    def test_caller_supplied_metrics_skip_auto_capture(self):
+        from engines._writeback_recorder import record_writeback
+
+        with patch(
+            "engines._writeback_recorder._get_memory_intel",
+            return_value=MagicMock(),
+        ), patch(
+            "engines._writeback_recorder._get_data_arch",
+            return_value=MagicMock(),
+        ), patch(
+            "engines._writeback_recorder._get_learning_loop",
+            return_value=MagicMock(),
+        ), patch(
+            "engines._writeback_recorder._auto_capture_context",
+        ) as cap:
+            record_writeback(
+                engine="loyalty",
+                action_type="mint_loyalty_code",
+                capability="SHOPIFY_CREATE_DISCOUNT",
+                params={},
+                success=True,
+                metrics={"revenue_change_pct": 5.0},
+            )
+
+        # The caller-supplied metrics preempt the auto-capture
+        cap.assert_not_called()
+
+    def test_auto_capture_failure_degrades_silently(self):
+        """If the AGI context module raises, record_writeback
+        still proceeds with empty metrics -- writeback recording
+        must never propagate AGI-stack failures."""
+        from engines._writeback_recorder import record_writeback
+
+        mock_intel = MagicMock()
+        mock_arch = MagicMock()
+        mock_loop = MagicMock()
+
+        with patch(
+            "engines._writeback_recorder._get_memory_intel",
+            return_value=mock_intel,
+        ), patch(
+            "engines._writeback_recorder._get_data_arch",
+            return_value=mock_arch,
+        ), patch(
+            "engines._writeback_recorder._get_learning_loop",
+            return_value=mock_loop,
+        ), patch(
+            "engines._writeback_recorder._auto_capture_context",
+            side_effect=RuntimeError("agi down"),
+        ):
+            # Auto-capture is best-effort: if its INTERNAL
+            # try/except didn't catch, record_writeback itself
+            # would also need to swallow. v1 puts the try/except
+            # inside _auto_capture_context, so a direct raise
+            # would propagate. Force the helper to raise here to
+            # verify record_writeback wraps it.
+            try:
+                record_writeback(
+                    engine="loyalty",
+                    action_type="mint_loyalty_code",
+                    capability="SHOPIFY_CREATE_DISCOUNT",
+                    params={},
+                    success=True,
+                )
+                raised = False
+            except RuntimeError:
+                raised = True
+            # The helper has its own try/except, so the outer
+            # call should NOT raise. If it does, the helper
+            # itself needs an additional guard.
+            assert raised is False
+        # Fan-out still happened with empty metrics
+        mock_intel.create_from_decision.assert_called_once()
+
+
 class TestEnvironmentGuard:
     """The PYTEST_CURRENT_TEST short-circuit is the boundary
     between unit-test pollution and real production recording.

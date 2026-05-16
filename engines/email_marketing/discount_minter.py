@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from engines._agi_context import capture_decision_context
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -83,6 +84,24 @@ def mint_campaign_code(
         f"Email campaign: {value:g}{suffix} ({goal.strip() or 'general'})"
     )
 
+    mint_params = {
+        "goal": goal,
+        "value": value,
+        "value_kind": kind,
+        "ttl_days": ttl_days,
+    }
+
+    # AGI Phase 2: observational context capture (loyalty +
+    # cart_recovery + browse_recovery reference pattern). The
+    # captured similar-decisions signal carries per-campaign-goal
+    # context.
+    agi_context = capture_decision_context(
+        engine="email_marketing",
+        action_type="mint_campaign_code",
+        capability="SHOPIFY_CREATE_DISCOUNT",
+        params=mint_params,
+    )
+
     minted = _mint(
         token=token,
         code_prefix=_CODE_PREFIX,
@@ -101,14 +120,10 @@ def mint_campaign_code(
         engine="email_marketing",
         action_type="mint_campaign_code",
         capability="SHOPIFY_CREATE_DISCOUNT",
-        params={
-            "goal": goal,
-            "value": value,
-            "value_kind": kind,
-            "ttl_days": ttl_days,
-        },
+        params=mint_params,
         success=minted is not None,
         error=None if minted is not None else "mint_returned_none",
+        metrics=agi_context.get("metrics") or None,
     )
     return minted
 
