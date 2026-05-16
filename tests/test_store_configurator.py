@@ -1228,8 +1228,23 @@ class TestConfigureCLI:
     def test_configure_missing_store_reports_error(
         self, tmp_path, monkeypatch, capsys,
     ):
-        self._setup_store(tmp_path, monkeypatch)
+        sm = self._setup_store(tmp_path, monkeypatch)
         _install_fake_client(monkeypatch)
+        # ``StoreManager.get_credentials`` falls back to env-var
+        # creds for unknown stores. A dev machine with ``.env``
+        # loaded (or any shell-level shopify creds) would
+        # accidentally return a real shop_url for "ghost" and
+        # the test would pass through the credential check.
+        # Stub the StoreManager method directly so the test
+        # surfaces the "not found" error regardless of host env.
+        original_get_credentials = sm.get_credentials
+
+        def _gated_get_credentials(store_id=""):
+            if store_id == "ghost":
+                return None
+            return original_get_credentials(store_id)
+
+        monkeypatch.setattr(sm, "get_credentials", _gated_get_credentials)
 
         import cli
         cli.main(["store", "configure", "ghost", "--dry-run"])

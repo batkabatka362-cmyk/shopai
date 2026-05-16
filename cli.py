@@ -102,6 +102,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--niche", default="",
         help="Override store niche (default: use stored niche)",
     )
+    configure_p.add_argument(
+        "--json", action="store_true",
+        help=(
+            "Emit the raw configurator result as JSON instead "
+            "of the human-readable table. Useful for "
+            "scripting / CI."
+        ),
+    )
 
     design_p = store_sub.add_parser(
         "design",
@@ -1638,16 +1646,34 @@ def _cmd_store_remove(args) -> None:
 
 
 def _cmd_store_configure(args) -> None:
-    """Run the auto-configurator against a registered store."""
+    """Run the auto-configurator against a registered store.
+
+    Text render (default) shows the human-readable per-feature
+    table + planned writes. ``--json`` emits the raw
+    configurator result for scripts and CI consumers.
+    """
+    as_json = bool(getattr(args, "json", False))
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+
     sm = _get_store_manager()
     store_id = args.store_id or sm.active_store_id
     if not store_id:
-        print("No store specified and no active store set.")
+        _emit_error("No store specified and no active store set.")
         return
 
     creds = sm.get_credentials(store_id)
     if not creds or not creds.get("shop_url"):
-        print(f"Store {store_id!r} not found or has no shop_url.")
+        _emit_error(
+            f"Store {store_id!r} not found or has no shop_url.",
+        )
         return
     token = creds.get("api_key") or ""
     if not token and creds.get("client_id") and creds.get("client_secret"):
@@ -1658,10 +1684,12 @@ def _cmd_store_configure(args) -> None:
                 creds["shop_url"], creds["client_id"], creds["client_secret"],
             ).get_token()
         except Exception as exc:  # noqa: BLE001
-            print(f"Could not resolve OAuth token: {exc}")
+            _emit_error(f"Could not resolve OAuth token: {exc}")
             return
     if not token:
-        print(f"Store {store_id!r} has no usable credentials.")
+        _emit_error(
+            f"Store {store_id!r} has no usable credentials.",
+        )
         return
 
     store_info = sm.db.get_store(store_id) if hasattr(sm, "db") else {}
@@ -1674,14 +1702,15 @@ def _cmd_store_configure(args) -> None:
 
     from execution.store_configurator import StoreConfigurator, ALL_FEATURES
 
-    if args.dry_run:
-        print(f"Dry-run: configuring {store_id} (niche={niche})")
-    else:
-        print(f"Configuring {store_id} (niche={niche})...")
-    if features:
-        print(f"  Features: {', '.join(features)}")
-    else:
-        print(f"  Features: all ({len(ALL_FEATURES)})")
+    if not as_json:
+        if args.dry_run:
+            print(f"Dry-run: configuring {store_id} (niche={niche})")
+        else:
+            print(f"Configuring {store_id} (niche={niche})...")
+        if features:
+            print(f"  Features: {', '.join(features)}")
+        else:
+            print(f"  Features: all ({len(ALL_FEATURES)})")
 
     configurator = StoreConfigurator(dry_run=args.dry_run)
     result = configurator.configure(
@@ -1689,14 +1718,31 @@ def _cmd_store_configure(args) -> None:
         niche=niche, store_name=store_name, features=features,
     )
 
-    # Summary
+    # ── JSON envelope (early return) ────────────────────────
+    if as_json:
+        # Enrich the raw result with operator context fields so
+        # scripts have everything in one envelope.
+        envelope = {
+            "store_id": store_id,
+            "niche": niche,
+            "dry_run": bool(args.dry_run),
+            "feature_count": len(
+                result.get("results", {}) or {},
+            ),
+            **result,
+        }
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    # ── Text render ─────────────────────────────────────────
     print()
     print(f"Status: {result['status']}")
     print(f"Niche:  {result['niche']}")
     print()
     print("Feature results:")
-    for name in sorted(result.get("results", {}).keys()):
-        data = result["results"][name]
+    results = result.get("results", {}) or {}
+    for name in sorted(results.keys()):
+        data = results[name]
         summary = _format_feature_summary(name, data)
         print(f"  {name:15s} {summary}")
 
@@ -1705,6 +1751,25 @@ def _cmd_store_configure(args) -> None:
         print(f"Planned writes ({len(result['plan'])}):")
         for step in result["plan"]:
             print(f"  {step['method']:6s} {step['path']:45s} {step['description']}")
+
+    # Final one-line summary so operators see the verdict at a
+    # glance. Counts feature outcomes (configurator may attach
+    # 'created', 'skipped', 'failed' counters per feature).
+    feature_count = len(results)
+    plan_count = len(result.get("plan", []) or [])
+    print()
+    if args.dry_run:
+        print(
+            f"Summary: {feature_count} feature(s) planned, "
+            f"{plan_count} write(s) staged"
+            f"  -- pass --json for machine-readable output"
+        )
+    else:
+        print(
+            f"Summary: {feature_count} feature(s) applied "
+            f"(status={result['status']})"
+            f"  -- pass --json for machine-readable output"
+        )
 
 
 def _cmd_store_design(args) -> None:
