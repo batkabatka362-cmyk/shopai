@@ -77,6 +77,7 @@ class DecisionRetrieval:
         k: int = 5,
         candidate_pool: int = 100,
         statuses: tuple[str, ...] = ("executed", "failed"),
+        store_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return top-k similar past decisions for an engine.
 
@@ -102,11 +103,17 @@ class DecisionRetrieval:
                 outcome to learn from). Pass
                 ``("executed", "failed", "rejected")`` for a
                 wider net.
+            store_id: Optional per-store filter. When supplied,
+                only retrieves past decisions tagged with this
+                store_id (rows enqueued before per-store tagging
+                landed have store_id=NULL and are excluded).
+                Without it, retrieval is fleet-wide -- useful for
+                cross-store transfer learning.
 
         Returns:
             List of dicts ordered by relevance desc. Each dict has:
               - action_id, engine, action_type, capability, params,
-                status, decided_at
+                status, decided_at, store_id
               - outcomes: list of recorded outcome rows
               - outcome_summary: aggregate {polarity_counts,
                 total_revenue, has_positive, has_negative}
@@ -118,7 +125,7 @@ class DecisionRetrieval:
         # ── Pull candidates ─────────────────────────────────
         candidates = self._pull_candidates(
             queue, engine=engine, statuses=statuses,
-            limit=candidate_pool,
+            limit=candidate_pool, store_id=store_id,
         )
         if not candidates:
             return []
@@ -162,12 +169,19 @@ class DecisionRetrieval:
     def _pull_candidates(
         self, queue: Any, *,
         engine: str, statuses: tuple[str, ...], limit: int,
+        store_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Pull a flat list of candidate decisions for an engine.
 
         Uses ``ApprovalQueue.list_by_status`` for each requested
-        status and merges. Each candidate is a flat dict (NOT an
-        ApprovalAction) with the fields the scorer needs.
+        status and merges. ``store_id`` is forwarded so the SQL
+        layer applies the per-store filter. Each candidate is a
+        flat dict (NOT an ApprovalAction) with the fields the
+        scorer needs.
+
+        Older fake queues used in tests (pre-store_id) may not
+        accept the kwarg -- we fall back to a kwarg-free call so
+        existing test stubs keep working.
         """
         try:
             from core.approval.queue import ApprovalStatus
@@ -185,9 +199,26 @@ class DecisionRetrieval:
             except ValueError:
                 continue
             try:
-                actions = queue.list_by_status(
-                    status, engine=engine, limit=limit,
-                )
+                if store_id is not None:
+                    try:
+                        actions = queue.list_by_status(
+                            status, engine=engine, limit=limit,
+                            store_id=store_id,
+                        )
+                    except TypeError:
+                        # Fake queue doesn't support store_id;
+                        # fetch unfiltered then filter in-Python.
+                        actions = queue.list_by_status(
+                            status, engine=engine, limit=limit,
+                        )
+                        actions = [
+                            a for a in actions
+                            if getattr(a, "store_id", None) == store_id
+                        ]
+                else:
+                    actions = queue.list_by_status(
+                        status, engine=engine, limit=limit,
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "decision_retrieval: list_by_status raised: %s",
@@ -205,6 +236,7 @@ class DecisionRetrieval:
                     "action_id": d.get("id") or d.get("action_id"),
                     "engine": d.get("engine"),
                     "action_type": d.get("action_type"),
+                    "store_id": d.get("store_id"),
                     "capability": d.get("capability"),
                     "params": d.get("params") or {},
                     "status": d.get("status"),
@@ -335,6 +367,7 @@ def retrieve_similar(
     capability: str | None = None,
     params: dict | None = None,
     k: int = 5,
+    store_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Module-level convenience: equivalent to
     ``DecisionRetrieval().retrieve(...)`` using the process-wide
@@ -346,4 +379,5 @@ def retrieve_similar(
         capability=capability,
         params=params,
         k=k,
+        store_id=store_id,
     )

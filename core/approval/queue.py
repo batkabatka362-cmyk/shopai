@@ -101,6 +101,7 @@ class ApprovalAction:
     decided_by: str | None
     decision_reason: str | None
     result: dict[str, Any] | None
+    store_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +112,7 @@ class ApprovalAction:
             "params": self.params,
             "narrative": self.narrative,
             "confidence": self.confidence,
+            "store_id": self.store_id,
             "status": self.status.value,
             "proposed_at": self.proposed_at,
             "decided_at": self.decided_at,
@@ -154,7 +156,8 @@ class ApprovalQueue:
                     decided_at      REAL,
                     decided_by      TEXT,
                     decision_reason TEXT,
-                    result_json     TEXT
+                    result_json     TEXT,
+                    store_id        TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_pending_status
                     ON pending_actions(status, proposed_at);
@@ -202,6 +205,28 @@ class ApprovalQueue:
                     ON decision_log(decided_by, occurred_at);
             """)
             self._conn.commit()
+            # Idempotent migration for pre-existing DBs that were
+            # created before the ``store_id`` column was part of
+            # the schema. New DBs get the column from the CREATE
+            # TABLE above; older DBs need an ALTER TABLE that we
+            # only run when the column is genuinely missing.
+            cols = {
+                r["name"] for r in self._conn.execute(
+                    "PRAGMA table_info(pending_actions)",
+                ).fetchall()
+            }
+            if "store_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE pending_actions "
+                    "ADD COLUMN store_id TEXT"
+                )
+            # Index creation is safe on both new and migrated DBs
+            # since the column now exists in both cases.
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pending_store "
+                "ON pending_actions(store_id, status)",
+            )
+            self._conn.commit()
 
     # ── Public API ─────────────────────────────────────────────
 
@@ -214,12 +239,21 @@ class ApprovalQueue:
         params: dict[str, Any],
         narrative: str = "",
         confidence: float | None = None,
+        store_id: str | None = None,
     ) -> ApprovalAction:
         """Park a proposed action for human review.
 
         Returns the persisted :class:`ApprovalAction`. The queue
         does NOT execute anything — the caller still owns the
         downstream effect once approval lands.
+
+        ``store_id`` is optional but recommended at multi-store
+        scale. When supplied, the action is filterable by store
+        on every read surface (``list_by_status``, retrieval,
+        world-model snapshot's approvals/decisions sections).
+        Callers that don't know which store an action belongs
+        to (most engines today) can omit it; the row is still
+        queryable cross-engine.
         """
         action_id = f"appr_{int(time.time() * 1000)}_{_short_uuid()}"
         now = time.time()
@@ -228,18 +262,20 @@ class ApprovalQueue:
             self._conn.execute(
                 """INSERT INTO pending_actions
                    (id, engine, action_type, capability, params_json,
-                    narrative, confidence, status, proposed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    narrative, confidence, status, proposed_at,
+                    store_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     action_id, engine, action_type, capability,
                     params_json, narrative, confidence,
                     ApprovalStatus.PENDING.value, now,
+                    store_id,
                 ),
             )
             self._conn.commit()
         logger.info(
-            "approval enqueued: %s engine=%s action=%s",
-            action_id, engine, action_type,
+            "approval enqueued: %s engine=%s action=%s store=%s",
+            action_id, engine, action_type, store_id or "-",
         )
         action = ApprovalAction(
             id=action_id, engine=engine, action_type=action_type,
@@ -247,7 +283,7 @@ class ApprovalQueue:
             narrative=narrative, confidence=confidence,
             status=ApprovalStatus.PENDING, proposed_at=now,
             decided_at=None, decided_by=None, decision_reason=None,
-            result=None,
+            result=None, store_id=store_id,
         )
         _emit_hook("approval.queued", {
             "action_id": action_id,
@@ -315,28 +351,33 @@ class ApprovalQueue:
 
     def list_pending(
         self, *, engine: str | None = None, limit: int = 100,
+        store_id: str | None = None,
     ) -> list[ApprovalAction]:
         """Return open (pending) actions oldest-first.
 
         ``engine`` filters to a single engine namespace; ``limit``
-        caps the page size. The API surface uses this to render the
-        merchant's review queue.
+        caps the page size. ``store_id`` filters to a single
+        store (post-launch addition; rows enqueued before the
+        column existed have store_id=NULL and are excluded from
+        the filtered result). The API surface uses this to
+        render the merchant's review queue.
         """
+        clauses = ["status = ?"]
+        params: list[Any] = [ApprovalStatus.PENDING.value]
+        if engine:
+            clauses.append("engine = ?")
+            params.append(engine)
+        if store_id is not None:
+            clauses.append("store_id = ?")
+            params.append(store_id)
+        params.append(limit)
+        sql = (
+            "SELECT * FROM pending_actions WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY proposed_at ASC LIMIT ?"
+        )
         with _LOCK:
-            if engine:
-                rows = self._conn.execute(
-                    """SELECT * FROM pending_actions
-                       WHERE status = ? AND engine = ?
-                       ORDER BY proposed_at ASC LIMIT ?""",
-                    (ApprovalStatus.PENDING.value, engine, limit),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    """SELECT * FROM pending_actions
-                       WHERE status = ?
-                       ORDER BY proposed_at ASC LIMIT ?""",
-                    (ApprovalStatus.PENDING.value, limit),
-                ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_action(r) for r in rows]
 
     def list_by_status(
@@ -345,6 +386,7 @@ class ApprovalQueue:
         *,
         engine: str | None = None,
         limit: int = 500,
+        store_id: str | None = None,
     ) -> list[ApprovalAction]:
         """Return actions in a given status, newest-first by decision
         time (falling back to proposed_at for PENDING which has no
@@ -354,6 +396,10 @@ class ApprovalQueue:
         for operator triage queries — "show me the last 5 FAILED
         actions" / "what expired this week?" — where the existing
         pair didn't cover REJECTED / FAILED / EXPIRED.
+
+        ``store_id`` filters to one store (post-launch addition;
+        rows enqueued before the column existed have store_id=NULL
+        and are excluded from the filtered result).
         """
         order_by = (
             "proposed_at" if status == ApprovalStatus.PENDING
@@ -362,21 +408,22 @@ class ApprovalQueue:
         # Sort PENDING oldest-first (review queue), everything else
         # newest-first (recent activity feed).
         direction = "ASC" if status == ApprovalStatus.PENDING else "DESC"
+        clauses = ["status = ?"]
+        params: list[Any] = [status.value]
+        if engine:
+            clauses.append("engine = ?")
+            params.append(engine)
+        if store_id is not None:
+            clauses.append("store_id = ?")
+            params.append(store_id)
+        params.append(limit)
+        sql = (
+            "SELECT * FROM pending_actions WHERE "
+            + " AND ".join(clauses)
+            + f" ORDER BY {order_by} {direction} LIMIT ?"
+        )
         with _LOCK:
-            if engine:
-                rows = self._conn.execute(
-                    f"""SELECT * FROM pending_actions
-                       WHERE status = ? AND engine = ?
-                       ORDER BY {order_by} {direction} LIMIT ?""",
-                    (status.value, engine, limit),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    f"""SELECT * FROM pending_actions
-                       WHERE status = ?
-                       ORDER BY {order_by} {direction} LIMIT ?""",
-                    (status.value, limit),
-                ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_action(r) for r in rows]
 
     def list_executed(
@@ -1716,6 +1763,14 @@ def _short_uuid() -> str:
 
 
 def _row_to_action(row: sqlite3.Row) -> ApprovalAction:
+    # store_id is a post-launch addition (PR ~#239). Older rows
+    # without the column resolve to None, which the dataclass
+    # default accepts. ``KeyError`` rather than ``IndexError`` is
+    # what ``sqlite3.Row`` raises on missing keys.
+    try:
+        store_id = row["store_id"]
+    except (IndexError, KeyError):
+        store_id = None
     return ApprovalAction(
         id=row["id"],
         engine=row["engine"],
@@ -1730,6 +1785,7 @@ def _row_to_action(row: sqlite3.Row) -> ApprovalAction:
         decided_by=row["decided_by"],
         decision_reason=row["decision_reason"],
         result=_safe_loads(row["result_json"]) if row["result_json"] else None,
+        store_id=store_id,
     )
 
 
