@@ -437,6 +437,39 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # Singular ``engine`` (vs plural ``engines``): drill into a
+    # single engine's activity + outcomes. Sibling commands like
+    # ``engine activity-window`` / ``engine outcomes`` can live
+    # under this same parent.
+    engine_p = sub.add_parser(
+        "engine",
+        help=(
+            "Drill into a single engine: activity + outcomes + "
+            "effectiveness over a recent window"
+        ),
+    )
+    engine_sub = engine_p.add_subparsers(dest="engine_action")
+
+    engine_summary_p = engine_sub.add_parser(
+        "summary",
+        help=(
+            "Per-engine summary: queue counts by status, recent "
+            "actions, outcome rollup + effectiveness score"
+        ),
+    )
+    engine_summary_p.add_argument(
+        "engine_name",
+        help="Engine to drill into (e.g. loyalty, cart_recovery)",
+    )
+    engine_summary_p.add_argument(
+        "--recent-n", type=int, default=5, dest="recent_n",
+        help="How many recent actions to list. Default: 5.",
+    )
+    engine_summary_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw summary envelope as JSON",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -4105,6 +4138,143 @@ def _cmd_engines(*, by_goal: bool = False, unmapped: bool = False) -> None:
     print(f"Registered engines: {engine_count()}\n")
     for i, name in enumerate(engines, 1):
         print(f"  {i:3d}. {name}")
+
+
+def _cmd_engine_summary(args) -> None:
+    """Per-engine drilldown: queue counts + recent actions + outcomes.
+
+    Combines three existing queue probes into one summary:
+      - ``stats_by_engine()`` for per-status counts.
+      - ``list_by_status(EXECUTED, engine=N, limit=recent_n)`` for
+        the most recent activity.
+      - ``engine_outcome_stats()`` for the effectiveness signal.
+
+    Useful as the "is this engine pulling its weight?" verdict for
+    operators triaging which engines deserve more / less autonomy.
+    """
+    as_json = bool(getattr(args, "json", False))
+    engine_name = args.engine_name
+    recent_n = max(1, int(getattr(args, "recent_n", 5) or 5))
+
+    try:
+        from core.approval.queue import (
+            ApprovalStatus, get_approval_queue,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"approval queue unavailable: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    queue = get_approval_queue()
+
+    # Per-status counts for this engine.
+    all_engine_stats = queue.stats_by_engine() or {}
+    per_engine = all_engine_stats.get(engine_name, {})
+    counts = {
+        s.value: int(per_engine.get(s.value, 0))
+        for s in ApprovalStatus
+    }
+    total_activity = sum(counts.values())
+
+    # Outcome rollup (success / failure / revenue).
+    outcomes = queue.engine_outcome_stats(engine_name) or {}
+
+    # Recent actions across the two most informative statuses --
+    # EXECUTED first (the "what's been shipped" feed) then FAILED
+    # (the "what's been breaking" feed). Capped at recent_n total.
+    recent: list[dict] = []
+    for status in (ApprovalStatus.EXECUTED, ApprovalStatus.FAILED):
+        try:
+            actions = queue.list_by_status(
+                status, engine=engine_name, limit=recent_n,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine summary list_by_status raised: %s", exc,
+            )
+            continue
+        for a in actions:
+            recent.append({
+                "action_id": a.id,
+                "action_type": a.action_type,
+                "capability": a.capability,
+                "status": a.status.value,
+                "decided_at": a.decided_at,
+                "decided_by": a.decided_by,
+                "error": (a.result or {}).get("error")
+                         if a.result else None,
+            })
+    # Sort newest-first by decided_at, then truncate.
+    recent.sort(key=lambda r: -(r.get("decided_at") or 0))
+    recent = recent[:recent_n]
+
+    if as_json:
+        print(json.dumps({
+            "engine": engine_name,
+            "counts_by_status": counts,
+            "total_activity": total_activity,
+            "outcomes": outcomes,
+            "recent": recent,
+        }, indent=2, default=str))
+        return
+
+    # ── Text render ────────────────────────────────────────
+    print(f"Engine: {engine_name}")
+    print()
+    if not total_activity:
+        print(
+            f"  (no recorded activity yet for {engine_name})"
+        )
+        return
+    print("Queue counts:")
+    for status_value, n in counts.items():
+        if n:
+            print(f"  {status_value:<10s} {n}")
+    print(f"  TOTAL      {total_activity}")
+    print()
+    pos = outcomes.get("positive_count", 0)
+    neg = outcomes.get("negative_count", 0)
+    neu = outcomes.get("neutral_count", 0)
+    total_oc = outcomes.get("total_outcomes", 0)
+    revenue = outcomes.get("total_revenue", 0.0)
+    score = outcomes.get("outcome_score")
+    print("Outcomes:")
+    print(
+        f"  positive={pos}  negative={neg}  "
+        f"neutral={neu}  total={total_oc}"
+    )
+    print(f"  revenue: ${revenue:,.2f}")
+    if score is not None:
+        print(f"  effectiveness score: {score:.1%}")
+    else:
+        print("  effectiveness score: n/a (no polarised outcomes)")
+    print()
+    if recent:
+        print(f"Recent activity ({len(recent)}):")
+        now = time.time()
+        for r in recent:
+            ts = r.get("decided_at") or 0
+            age = now - float(ts) if ts else 0
+            ago = (
+                f"{int(age)}s ago" if age < 60
+                else f"{int(age/60)}m ago" if age < 3600
+                else f"{int(age/3600)}h ago" if age < 86400
+                else f"{int(age/86400)}d ago"
+            )
+            line = (
+                f"  {r['status']:<9s} "
+                f"{r['action_type']:<28s} {ago}"
+            )
+            if r.get("error"):
+                line += f"  err={r['error']}"
+            print(line)
 
 
 def _cmd_engines_writebacks(args) -> None:
@@ -11771,6 +11941,14 @@ def main(argv: list[str] | None = None) -> None:
             by_goal=getattr(args, "by_goal", False),
             unmapped=getattr(args, "unmapped", False),
         )
+        return
+
+    if args.command == "engine":
+        action = getattr(args, "engine_action", None)
+        if action == "summary":
+            _cmd_engine_summary(args)
+            return
+        print("Usage: shopai engine {summary}")
         return
 
     if args.command == "engines-writebacks":
