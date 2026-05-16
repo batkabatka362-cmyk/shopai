@@ -845,6 +845,125 @@ propagate failures.
 failed `router.execute`. The recorder takes care of routing
 to the right learning system.
 
+Phase 9 (AGI orchestration stack) — **shipped, modules + wiring**:
+
+Three orchestration layers that turn the autonomous loop from
+"execute capability X" into "decide what to do today across N
+stores cost-effectively". The layers are independent — engines
+can adopt one without the others — but they're designed to
+compose at decision time.
+
+### Layer 1 — Per-store world model (`core/world_model/`)
+
+Single dict snapshot that captures everything an AI orchestrator
+needs to know about a store at decision time. Read-only.
+
+```python
+from core.world_model import WorldModel
+
+snap = WorldModel().snapshot("store-id", skip_live=False)
+# → {store_id, fetched_at, store, stats, sync, connection,
+#    config (drift), design, approvals, decisions}
+```
+
+Each section carries a `checked: bool` so callers can distinguish
+"checked and empty" from "skipped". Live probes (connection +
+config drift) opt out via `skip_live=True`. Approvals + decisions
+are GLOBAL (no per-store column on `pending_actions` yet — see
+v1 limitation note in the module docstring).
+
+CLI: `shopai world-model show <store_id> [--json] [--skip-live]`.
+
+### Layer 2 — Decision-time retrieval (`core/decision_retrieval/`)
+
+Top-k retrieval of past similar decisions, joined with their
+measured outcomes.
+
+```python
+from core.decision_retrieval import DecisionRetrieval
+
+similar = DecisionRetrieval().retrieve(
+    engine="loyalty",
+    action_type="mint_loyalty_code",
+    capability="SHOPIFY_CREATE_DISCOUNT",
+    params={"discount_pct": 10},
+    k=5,
+)
+# → [{action_id, engine, action_type, capability, params, status,
+#     decided_at, outcomes, outcome_summary, relevance,
+#     score_components}, ...]
+```
+
+Deterministic scoring (no embeddings, no network):
+
+- action_type match: 40%
+- capability match: 20%
+- params overlap (key Jaccard + value equality): 25%
+- recency decay (7-day half-life): 15%
+
+The retrieval contract is stable; a future revision can swap to
+embeddings without breaking callers.
+
+CLI: `shopai memory-recall --engine X [--action-type Y]
+[--capability Z] [--params-json '{...}'] [-k N]`.
+
+### Layer 3 — Cost-aware model router (`core/model_router/`)
+
+Policy layer that classifies each AI call as local (cheap, fast)
+or cloud (deep reasoning) based on prompt complexity. Doesn't
+execute models — caller still runs the chosen model and
+`record_usage` afterwards. Tracks daily cloud-token budget; cap
+exhaustion downgrades cloud → local with `downgraded=True` flag.
+
+```python
+from core.model_router import ModelRouter, ModelHint
+
+decision = ModelRouter().classify(prompt, hint=ModelHint.AUTO)
+# → RoutingDecision(tier, reason, estimated_tokens,
+#                   complexity_score, downgraded, components)
+```
+
+CLI: `shopai model-router {classify|budget}`.
+
+### Engine wiring: two patterns
+
+**Auto-capture (zero-touch).** `engines/_writeback_recorder.py`
+auto-captures the decision-retrieval context whenever a writer
+calls `record_writeback` without explicit `metrics=`. The
+captured signal (similar_count, recent_positive, recent_negative,
+avg_relevance) flows into MemoryIntel + DataArch + LearningLoop
+automatically. **No per-writer code change needed** — every
+existing writer benefits.
+
+**Explicit capture (opt-in for decision-time use).** Engines that
+want to USE the captured signal at decision time (not just
+observe it) call `engines._agi_context.capture_decision_context`
+directly. The returned dict carries the snapshot + similar list,
+and the engine passes `metrics=ctx["metrics"]` to
+`record_writeback` to preempt the auto-capture. See
+`engines/loyalty/discount_minter.py` for the reference
+implementation.
+
+**Pattern J guard.** Both `capture_decision_context` and
+`record_writeback`'s auto-capture short-circuit under pytest
+(same `PYTEST_CURRENT_TEST` guard as the writeback recorder).
+Test fixtures don't pollute the AGI databases.
+
+### Patterns introduced in Phase 9
+
+- **Pattern K-prime: ASCII conflict markers in CLAUDE.md** —
+  unrelated to GraphQL, but worth noting: when stacking parallel
+  PRs that all modify `cli.py`, rebasing each on the new main
+  after the previous merges is required. GitHub's "merge in web
+  editor" loses semantic context; rebase locally, run the
+  branch's tests, then push --force-with-lease.
+- **Pattern J (test-environment guard) extends to AGI helpers**
+  — `engines._agi_context.capture_decision_context` and the
+  `_writeback_recorder._auto_capture_context` wrapper both
+  short-circuit under pytest. Without these guards, every unit
+  test that exercises an applier would write a synthetic row to
+  the world-model / decision-retrieval databases.
+
 ## Reading order for a fresh session
 
 1. This file.
