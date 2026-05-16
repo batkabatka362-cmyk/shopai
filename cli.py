@@ -330,6 +330,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw brief as JSON.",
     )
 
+    # ── Transfer (cross-store) commands ──────────────────────
+    transfer_p = sub.add_parser(
+        "transfer",
+        help=(
+            "Cross-store transfer learning: identify actions "
+            "that worked on one store and suggest porting them "
+            "to another. The empire-AGI payoff command."
+        ),
+    )
+    transfer_sub = transfer_p.add_subparsers(dest="transfer_action")
+
+    transfer_suggest_p = transfer_sub.add_parser(
+        "suggest",
+        help=(
+            "Suggest action types that succeeded on the source "
+            "store but haven't been tried on the target."
+        ),
+    )
+    transfer_suggest_p.add_argument(
+        "--from", required=True, dest="from_store",
+        help="Source store ID (the one that has the success data)",
+    )
+    transfer_suggest_p.add_argument(
+        "--to", required=True, dest="to_store",
+        help="Target store ID (the one to suggest actions for)",
+    )
+    transfer_suggest_p.add_argument(
+        "--engine", default="",
+        help=(
+            "Optional: filter to one engine. Default: scan all "
+            "engines."
+        ),
+    )
+    transfer_suggest_p.add_argument(
+        "-k", "--k", type=int, default=5,
+        help="Number of suggestions to return (default: 5).",
+    )
+    transfer_suggest_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw suggestions as JSON.",
+    )
+
     # ── Model-router commands ────────────────────────────────
     mr_p = sub.add_parser(
         "model-router",
@@ -1908,6 +1950,213 @@ def _cmd_store_add(args) -> None:
     print(f"  Type: {args.store_type}")
     if args.niche:
         print(f"  Niche: {args.niche}")
+
+
+def _cmd_transfer(args) -> None:
+    """Dispatcher for ``shopai transfer <verb>``."""
+    verb = getattr(args, "transfer_action", None)
+    if verb == "suggest":
+        _cmd_transfer_suggest(args)
+        return
+    print("Usage: shopai transfer {suggest}")
+
+
+def _cmd_transfer_suggest(args) -> None:
+    """Cross-store transfer recommender.
+
+    For each (engine, action_type) tuple that succeeded on the
+    ``--from`` store and was NOT tried on the ``--to`` store,
+    surface it as a transfer candidate. Ranked by success count
+    + measured revenue.
+
+    Empire-AGI payoff command: "Store A had revenue lift from
+    loyalty mints; suggest minting equivalents on Store B."
+    """
+    as_json = bool(getattr(args, "json", False))
+    from_store = args.from_store
+    to_store = args.to_store
+    engine_filter = getattr(args, "engine", "") or None
+    k = max(1, int(getattr(args, "k", 5) or 5))
+
+    if from_store == to_store:
+        msg = "--from and --to must be different stores"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    try:
+        from core.approval.queue import (
+            ApprovalStatus, get_approval_queue,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"approval queue unavailable: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    queue = get_approval_queue()
+
+    # ── Step 1: pull EXECUTED actions on the source store ───
+    try:
+        source_executed = queue.list_by_status(
+            ApprovalStatus.EXECUTED,
+            engine=engine_filter,
+            store_id=from_store,
+            limit=2000,
+        )
+    except TypeError:
+        # Pre-#239 queue without store_id kwarg — bail with a
+        # clear error rather than silently crossing stores.
+        msg = (
+            "approval queue does not support per-store filter "
+            "(needs PR #239 or later)"
+        )
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    # ── Step 2: aggregate by (engine, action_type, capability) ─
+    success_groups: dict[tuple, dict] = {}
+    for a in source_executed:
+        key = (a.engine, a.action_type, a.capability)
+        bucket = success_groups.setdefault(key, {
+            "engine": a.engine,
+            "action_type": a.action_type,
+            "capability": a.capability,
+            "success_count": 0,
+            "positive_outcomes": 0,
+            "negative_outcomes": 0,
+            "total_revenue": 0.0,
+            "sample_params": a.params,
+        })
+        bucket["success_count"] += 1
+        # Pull outcomes for revenue + polarity rollup.
+        try:
+            outcomes = queue.get_outcomes(a.id) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("transfer-suggest outcomes raised: %s", exc)
+            outcomes = []
+        for o in outcomes:
+            polarity = o.get("polarity", "neutral")
+            if polarity == "positive":
+                bucket["positive_outcomes"] += 1
+            elif polarity == "negative":
+                bucket["negative_outcomes"] += 1
+            metrics = o.get("metrics") or {}
+            rev = metrics.get("revenue")
+            if rev is not None:
+                try:
+                    bucket["total_revenue"] += float(rev)
+                except (TypeError, ValueError) as exc:
+                    logger.debug(
+                        "transfer-suggest revenue parse: %s", exc,
+                    )
+
+    # ── Step 3: filter out anything already tried on target ─
+    # Pull every status on the target store and build the
+    # already-tried set of (engine, action_type) pairs.
+    already_tried: set[tuple] = set()
+    for status in (
+        ApprovalStatus.EXECUTED, ApprovalStatus.FAILED,
+        ApprovalStatus.PENDING, ApprovalStatus.APPROVED,
+        ApprovalStatus.REJECTED,
+    ):
+        try:
+            target_actions = queue.list_by_status(
+                status, engine=engine_filter,
+                store_id=to_store, limit=2000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "transfer-suggest target list_by_status raised: %s",
+                exc,
+            )
+            continue
+        for a in target_actions:
+            already_tried.add((a.engine, a.action_type))
+
+    # Filter + rank.
+    candidates = [
+        v for k_tuple, v in success_groups.items()
+        if (v["engine"], v["action_type"]) not in already_tried
+    ]
+    candidates.sort(
+        key=lambda v: (
+            -(v["positive_outcomes"]),
+            -v["total_revenue"],
+            -v["success_count"],
+        ),
+    )
+    suggestions = candidates[:k]
+
+    # ── JSON envelope ─────────────────────────────────────
+    if as_json:
+        print(json.dumps({
+            "from_store": from_store,
+            "to_store": to_store,
+            "engine_filter": engine_filter,
+            "k": k,
+            "source_executed_count": len(source_executed),
+            "source_unique_actions": len(success_groups),
+            "already_tried_count": len(already_tried),
+            "suggestions": suggestions,
+        }, indent=2, default=str))
+        return
+
+    # ── Text render ────────────────────────────────────────
+    print(
+        f"Transfer suggest: {from_store} -> {to_store}"
+        + (f"  (engine={engine_filter})" if engine_filter else "")
+    )
+    print(
+        f"  Source executed: {len(source_executed)}  "
+        f"unique action types: {len(success_groups)}  "
+        f"already tried on target: {len(already_tried)}"
+    )
+    print()
+    if not suggestions:
+        print(
+            f"(no transfer candidates -- target store has tried "
+            f"every action that succeeded on the source)"
+        )
+        return
+    print(f"Top {len(suggestions)} suggestion(s):")
+    for i, s in enumerate(suggestions, 1):
+        rev_str = (
+            f" revenue=${s['total_revenue']:,.2f}"
+            if s["total_revenue"] else ""
+        )
+        outcome_str = (
+            f" +{s['positive_outcomes']}/-{s['negative_outcomes']}"
+        )
+        print(
+            f"  [{i}] {s['engine']}/{s['action_type']}"
+        )
+        print(
+            f"      capability={s['capability']}  "
+            f"runs={s['success_count']}{outcome_str}{rev_str}"
+        )
+        if s.get("sample_params"):
+            keys = sorted(s["sample_params"].keys())[:5]
+            print(f"      sample params: {', '.join(keys)}")
 
 
 def _cmd_daily_brief(args) -> None:
@@ -12497,6 +12746,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "daily-brief":
         _cmd_daily_brief(args)
+        return
+
+    if args.command == "transfer":
+        _cmd_transfer(args)
         return
 
     if args.command == "world-model":
