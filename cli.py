@@ -310,6 +310,53 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Model-router commands ────────────────────────────────
+    mr_p = sub.add_parser(
+        "model-router",
+        help=(
+            "Cost-aware model router: classify prompts as local "
+            "vs cloud and inspect daily budget. Layer 3 of the "
+            "AGI orchestration stack."
+        ),
+    )
+    mr_sub = mr_p.add_subparsers(dest="mr_action")
+
+    mr_classify_p = mr_sub.add_parser(
+        "classify",
+        help="Classify a prompt (text on stdin or --prompt)",
+    )
+    mr_classify_p.add_argument(
+        "--prompt", default="",
+        help="Prompt text (omit to read from stdin)",
+    )
+    mr_classify_p.add_argument(
+        "--hint", default="auto",
+        choices=["auto", "local_only", "cloud_required"],
+        help="Caller hint that overrides automatic classification",
+    )
+    mr_classify_p.add_argument(
+        "--purpose", default="",
+        help="Optional purpose label for the usage log",
+    )
+    mr_classify_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the routing decision as JSON",
+    )
+
+    mr_budget_p = mr_sub.add_parser(
+        "budget",
+        help="Show recent usage + remaining cloud-budget estimate",
+    )
+    mr_budget_p.add_argument(
+        "--window-hours", type=int, default=24,
+        dest="window_hours",
+        help="Rolling window in hours (default: 24)",
+    )
+    mr_budget_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the budget report as JSON",
+    )
+
     # ── Decision-retrieval (RAG) commands ────────────────────
     recall_p = sub.add_parser(
         "memory-recall",
@@ -2995,6 +3042,111 @@ def _cmd_world_model_show(args) -> None:
             print(f"  Recent: {n}  Last: {ago}")
     else:
         print(f"  (unavailable: {decisions.get('error', 'unknown')})")
+
+
+def _cmd_model_router(args) -> None:
+    """Dispatcher for ``shopai model-router <verb>``."""
+    verb = getattr(args, "mr_action", None)
+    if verb == "classify":
+        _cmd_model_router_classify(args)
+        return
+    if verb == "budget":
+        _cmd_model_router_budget(args)
+        return
+    print("Usage: shopai model-router {classify|budget}")
+
+
+def _cmd_model_router_classify(args) -> None:
+    """Classify a prompt and print the routing decision."""
+    as_json = bool(getattr(args, "json", False))
+
+    prompt = getattr(args, "prompt", "") or ""
+    if not prompt:
+        try:
+            prompt = sys.stdin.read()
+        except Exception as exc:  # noqa: BLE001
+            msg = f"could not read prompt from stdin: {exc}"
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2, default=str,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+    if not prompt.strip():
+        msg = "prompt is empty (use --prompt or pipe text on stdin)"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    from core.model_router import ModelRouter, ModelHint
+
+    try:
+        hint = ModelHint(args.hint)
+    except ValueError:
+        hint = ModelHint.AUTO
+
+    router = ModelRouter()
+    decision = router.classify(
+        prompt, hint=hint,
+        purpose=getattr(args, "purpose", "") or None,
+    )
+
+    if as_json:
+        print(json.dumps(decision.to_dict(), indent=2, default=str))
+        return
+
+    print(f"Tier:              {decision.tier.value}")
+    print(f"Reason:            {decision.reason}")
+    print(f"Estimated tokens:  {decision.estimated_tokens}")
+    print(f"Complexity score:  {decision.complexity_score:.2f}")
+    if decision.downgraded:
+        print("Downgraded:        YES (cloud budget hit cap)")
+    print(f"Components:        {decision.components}")
+
+
+def _cmd_model_router_budget(args) -> None:
+    """Print the rolling-window usage rollup."""
+    as_json = bool(getattr(args, "json", False))
+
+    from core.model_router import ModelRouter
+
+    router = ModelRouter()
+    report = router.budget_report(
+        window_hours=int(getattr(args, "window_hours", 24) or 24),
+    )
+
+    if as_json:
+        print(json.dumps(report, indent=2, default=str))
+        return
+
+    window = report["window_hours"]
+    print(f"Model-router budget (last {window}h):")
+    for tier, stats in report["by_tier"].items():
+        print(
+            f"  {tier:6s} "
+            f"calls={stats['calls']:>4d}  "
+            f"est={stats['estimated_tokens']:>8d}tok  "
+            f"actual={stats['actual_tokens']:>8d}tok  "
+            f"downgrades={stats['downgrades']}"
+        )
+    cap = report["cloud_tokens_per_24h"]
+    used = report["cloud_tokens_used"]
+    pct = report["cloud_remaining_estimate_pct"]
+    print()
+    print(
+        f"Cloud cap: {cap:,} tok / 24h  "
+        f"used: {used:,}  "
+        f"remaining: ~{pct:.1%}"
+    )
 
 
 def _cmd_memory_recall(args) -> None:
@@ -12040,6 +12192,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "memory-recall":
         _cmd_memory_recall(args)
+        return
+
+    if args.command == "model-router":
+        _cmd_model_router(args)
         return
 
     if args.command == "db":
