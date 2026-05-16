@@ -332,23 +332,32 @@ class TestDesignSection:
 class TestApprovalsSection:
 
     def test_populates_pending_counts(self):
+        """When ``store_id`` is supplied to snapshot(), the section
+        operates in per_store scope: it rolls up pending actions
+        from list_pending(store_id=...) instead of the global
+        stats_by_engine."""
         sm = _fake_sm()
-        q = _fake_queue(
-            pending=5,
-            pending_by_engine={
-                "loyalty": {"pending": 3},
-                "dynamic_pricing": {"pending": 2},
-                "tag_management": {"pending": 0},  # filtered out
-            },
-        )
+        # Build per-store pending actions: 3 for loyalty, 2 for
+        # dynamic_pricing.
+        pending_actions = []
+        for _ in range(3):
+            a = MagicMock()
+            a.engine = "loyalty"
+            pending_actions.append(a)
+        for _ in range(2):
+            a = MagicMock()
+            a.engine = "dynamic_pricing"
+            pending_actions.append(a)
+        q = MagicMock()
+        q.list_pending.return_value = pending_actions
         wm = WorldModel(sm=sm, queue=q)
         with _patch_external():
             snap = wm.snapshot("test-store", skip_live=True)
         a = snap["approvals"]
         assert a["checked"] is True
-        assert a["scope"] == "global"
+        assert a["scope"] == "per_store"
+        assert a["store_id"] == "test-store"
         assert a["pending_total"] == 5
-        # Zero-counts dropped
         assert a["pending_by_engine"] == {
             "loyalty": 3, "dynamic_pricing": 2,
         }
@@ -356,27 +365,65 @@ class TestApprovalsSection:
     def test_queue_raise_degrades(self):
         sm = _fake_sm()
         q = MagicMock()
-        q.stats.side_effect = RuntimeError("queue down")
+        q.list_pending.side_effect = RuntimeError("queue down")
         wm = WorldModel(sm=sm, queue=q)
         with _patch_external():
             snap = wm.snapshot("test-store", skip_live=True)
         assert snap["approvals"]["checked"] is False
         assert "queue down" in snap["approvals"]["error"]
 
+    def test_legacy_queue_without_store_id_falls_back_to_global(self):
+        """Legacy queues without store_id kwarg fall back to the
+        global pending count from stats()."""
+        sm = _fake_sm()
+        q = MagicMock()
+        # Simulate a fake queue that doesn't accept store_id
+        q.list_pending.side_effect = TypeError(
+            "unexpected keyword argument 'store_id'"
+        )
+        q.stats.return_value = {"pending": 7}
+        q.stats_by_engine.return_value = {
+            "loyalty": {"pending": 7},
+        }
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        a = snap["approvals"]
+        # Falls back to global scope
+        assert a["scope"] == "global"
+        assert a["pending_total"] == 7
+
 
 class TestDecisionsSection:
 
     def test_populates_recent(self):
+        """Per-store decisions section pulls EXECUTED + FAILED
+        actions tagged with the snapshot store_id."""
         sm = _fake_sm()
-        q = _fake_queue()
+        now = time.time()
+        executed = MagicMock()
+        executed.decided_at = now - 30.0
+        failed = MagicMock()
+        failed.decided_at = now - 120.0
+        q = MagicMock()
+
+        def _list_by_status(status, *, store_id=None, limit=25, **kw):
+            from core.approval.queue import ApprovalStatus
+            if status == ApprovalStatus.EXECUTED:
+                return [executed]
+            if status == ApprovalStatus.FAILED:
+                return [failed]
+            return []
+
+        q.list_by_status.side_effect = _list_by_status
         wm = WorldModel(sm=sm, queue=q)
         with _patch_external():
             snap = wm.snapshot("test-store", skip_live=True)
         d = snap["decisions"]
         assert d["checked"] is True
+        assert d["scope"] == "per_store"
         assert d["recent_count"] == 2
         assert d["last_occurred_at"] is not None
-        assert d["scope"] == "global"
 
     def test_no_decisions(self):
         sm = _fake_sm()

@@ -201,13 +201,42 @@ class WorldModel:
             ),
         }
 
-    def _section_approvals(self) -> dict:
-        """Pending action counts. GLOBAL (not per-store) -- the
-        pending_actions schema has no store_id column yet, so we
-        report engine-level rollups instead of per-store.
+    def _section_approvals(self, *, store_id: str | None = None) -> dict:
+        """Pending action counts. PER-STORE when ``store_id`` is
+        supplied (rows with that store_id only); GLOBAL otherwise.
+
+        Rows enqueued before the store_id column existed have
+        ``store_id=NULL`` and are excluded from filtered results.
         """
         try:
             queue = self._approval_queue()
+            if store_id is not None:
+                # Per-store: count pending for this store directly
+                # via list_pending(store_id=...). The fleet-wide
+                # stats_by_engine() can't filter per-store, so we
+                # roll up from the listed actions.
+                try:
+                    pending_actions = queue.list_pending(
+                        store_id=store_id, limit=10_000,
+                    )
+                except TypeError:
+                    # Legacy fake queues without store_id kwarg
+                    # → fall back to global; better than crash.
+                    return self._section_approvals(store_id=None)
+                per_engine: dict[str, int] = {}
+                for a in pending_actions:
+                    eng = (
+                        a.engine if hasattr(a, "engine")
+                        else a.get("engine", "?")
+                    )
+                    per_engine[eng] = per_engine.get(eng, 0) + 1
+                return {
+                    "checked": True,
+                    "scope": "per_store",
+                    "store_id": store_id,
+                    "pending_total": len(pending_actions),
+                    "pending_by_engine": per_engine,
+                }
             stats = queue.stats() or {}
             by_engine = queue.stats_by_engine() or {}
         except Exception as exc:  # noqa: BLE001
@@ -226,12 +255,61 @@ class WorldModel:
             "pending_by_engine": per_engine,
         }
 
-    def _section_decisions(self, *, limit: int = 25) -> dict:
-        """Recent decision-log entries. GLOBAL (same caveat as
-        approvals).
+    def _section_decisions(
+        self, *, limit: int = 25, store_id: str | None = None,
+    ) -> dict:
+        """Recent decision-log entries. PER-STORE when ``store_id``
+        is supplied (executed/failed actions tagged with this
+        store_id); GLOBAL otherwise.
+
+        For per-store mode, we derive recent activity from
+        ``list_by_status(EXECUTED + FAILED)`` filtered by store_id
+        rather than the global ``list_decisions`` (which has no
+        store_id link). For global mode, behavior is unchanged.
         """
         try:
             queue = self._approval_queue()
+            if store_id is not None:
+                # Per-store: derive from list_by_status.
+                try:
+                    from core.approval.queue import ApprovalStatus
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "world_model decisions per-store import "
+                        "failed: %s", exc,
+                    )
+                    return {"checked": False, "error": str(exc)}
+                actions: list = []
+                for st in (
+                    ApprovalStatus.EXECUTED, ApprovalStatus.FAILED,
+                ):
+                    try:
+                        actions.extend(queue.list_by_status(
+                            st, store_id=store_id, limit=limit,
+                        ))
+                    except TypeError:
+                        # Legacy fake queue without store_id kwarg
+                        # → fall back to global.
+                        return self._section_decisions(
+                            limit=limit, store_id=None,
+                        )
+                # Most recent first
+                actions.sort(
+                    key=lambda a: -(getattr(a, "decided_at", 0) or 0),
+                )
+                actions = actions[:limit]
+                last = (
+                    actions[0].decided_at
+                    if actions and hasattr(actions[0], "decided_at")
+                    else None
+                )
+                return {
+                    "checked": True,
+                    "scope": "per_store",
+                    "store_id": store_id,
+                    "recent_count": len(actions),
+                    "last_occurred_at": last,
+                }
             recent = queue.list_decisions(limit=limit) or []
         except Exception as exc:  # noqa: BLE001
             logger.debug("world_model decisions probe raised: %s", exc)
@@ -293,8 +371,12 @@ class WorldModel:
                 }
 
         design = self._section_design()
-        approvals = self._section_approvals()
-        decisions = self._section_decisions()
+        # Per-store scope for approvals + decisions when the
+        # store_id maps to actual tagged rows. Sections fall back
+        # to global if the queue layer or actions don't carry
+        # store_id (pre-migration data).
+        approvals = self._section_approvals(store_id=store_id)
+        decisions = self._section_decisions(store_id=store_id)
 
         return {
             "store_id": store_id,
