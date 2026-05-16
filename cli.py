@@ -205,6 +205,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit a structured per-stage JSON envelope.",
     )
 
+    report_p = store_sub.add_parser(
+        "report",
+        help=(
+            "One-shot per-store report: stats + last sync + drift "
+            "count + design lift + connection probe. The 'what's "
+            "the state of this store?' command. Read-only."
+        ),
+    )
+    report_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    report_p.add_argument(
+        "--json", action="store_true",
+        help="Emit a structured report envelope for automation.",
+    )
+    report_p.add_argument(
+        "--skip-live", action="store_true",
+        help=(
+            "Skip live probes (verify + connection). Use when "
+            "the store is offline or you only want cached state."
+        ),
+    )
+
     verify_p = store_sub.add_parser(
         "verify",
         help=(
@@ -2325,6 +2349,240 @@ def _cmd_store_setup(args) -> None:
         detail=f"{len(apply_result.get('results') or {})} feature(s) applied",
     )
     _emit(status == "configured", error=None if status == "configured" else f"apply: status={status}")
+
+
+def _cmd_store_report(args) -> None:
+    """One-shot per-store report.
+
+    Bundles stats + sync recency + drift count + design lift +
+    connection probe into a single text or JSON envelope. Read-
+    only. Built as the foundation for the per-store world-model
+    layer (each section maps directly to a slice of state the
+    AGI orchestrator needs at decision time).
+    """
+    as_json = bool(getattr(args, "json", False))
+    skip_live = bool(getattr(args, "skip_live", False))
+
+    sm = _get_store_manager()
+    store_id = args.store_id or sm.active_store_id
+    if not store_id:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": "no_store_selected"},
+                indent=2, default=str,
+            ))
+        else:
+            print("No store selected. Add one with: shopai store add")
+        sys.exit(1)
+        return
+
+    # ── Section 1: stats + sync recency ────────────────────
+    stats = sm.get_stats(store_id) or {}
+    store = sm.get_store(store_id) or {}
+
+    last_sync_at: float | None = None
+    last_sync_status: str | None = None
+    last_sync_age_seconds: float | None = None
+    try:
+        from data_pipeline.store.sync_service import SyncService
+        sync = SyncService(sm)
+        sync_status = sync.get_status() or {}
+        for si in sync_status.get("stores", []):
+            if si.get("store_id") == store_id:
+                last_sync_at = si.get("last_sync")
+                last_sync_status = si.get("last_status")
+                if last_sync_at:
+                    last_sync_age_seconds = time.time() - last_sync_at
+                break
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("store report sync probe raised: %s", exc)
+
+    # ── Section 2: connection probe (live) ─────────────────
+    connection: dict = {"checked": False}
+    if not skip_live:
+        try:
+            conn_result = sm.test_connection(store_id) or {}
+            connection = {
+                "checked": True,
+                "connected": bool(conn_result.get("connected")),
+                "shop": conn_result.get("shop", ""),
+                "error": conn_result.get("error", "") or None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("store report connect probe raised: %s", exc)
+            connection = {
+                "checked": True,
+                "connected": False,
+                "shop": "",
+                "error": str(exc),
+            }
+
+    # ── Section 3: drift count (live) ──────────────────────
+    drift: dict = {"checked": False}
+    if not skip_live and connection.get("connected"):
+        creds = sm.get_credentials(store_id) or {}
+        token = creds.get("api_key") or ""
+        if not token and creds.get("client_id") and creds.get("client_secret"):
+            try:
+                from core.auth.shopify_auth import ShopifyAuth
+                token = ShopifyAuth(
+                    creds["shop_url"], creds["client_id"], creds["client_secret"],
+                ).get_token()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("store report token resolution raised: %s", exc)
+                token = ""
+        if token and creds.get("shop_url"):
+            try:
+                from execution.store_configurator import StoreConfigurator
+                configurator = StoreConfigurator(dry_run=True)
+                plan_result = configurator.configure(
+                    creds["shop_url"], token,
+                    niche=store.get("niche") or "general",
+                    store_name=store.get("name") or store_id,
+                )
+                plan = plan_result.get("plan") or []
+                drift = {
+                    "checked": True,
+                    "planned_writes": len(plan),
+                    "has_drift": bool(plan),
+                    "features_in_drift": _drift_feature_count(plan),
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("store report drift probe raised: %s", exc)
+                drift = {"checked": True, "error": str(exc)}
+
+    # ── Section 4: design conversion lift (cheap) ──────────
+    design: dict = {"checked": False}
+    try:
+        from engines.store_design.flow import StoreDesignEngine
+        engine_input = {
+            "status": "success",
+            "data": {},
+            "meta": {},
+            "error": None,
+        }
+        out = StoreDesignEngine().run(engine_input)
+        if out.get("status") == "success" and out.get("data"):
+            data = out["data"]
+            design = {
+                "checked": True,
+                "estimated_conversion_lift": data.get(
+                    "estimated_conversion_lift", 0.0,
+                ),
+                "layout_recommendations_count": len(
+                    data.get("layout_recommendations", []) or [],
+                ),
+                "mobile_optimizations_count": len(
+                    data.get("mobile_optimizations", []) or [],
+                ),
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("store report design probe raised: %s", exc)
+
+    # ── JSON envelope (early return) ───────────────────────
+    if as_json:
+        envelope = {
+            "store_id": store_id,
+            "shop_url": store.get("shop_url", ""),
+            "niche": store.get("niche", "") or None,
+            "store_type": store.get("store_type", "") or None,
+            "is_active": bool(store.get("is_active")),
+            "stats": {
+                "products": stats.get("products", 0),
+                "orders": stats.get("orders", 0),
+                "customers": stats.get("customers", 0),
+                "total_revenue": float(stats.get("total_revenue", 0.0)),
+            },
+            "last_sync_at": last_sync_at,
+            "last_sync_status": last_sync_status,
+            "last_sync_age_seconds": last_sync_age_seconds,
+            "connection": connection,
+            "drift": drift,
+            "design": design,
+        }
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    # ── Text render ────────────────────────────────────────
+    print(f"Store report: {store_id}")
+    print(f"  URL:    {store.get('shop_url', '-')}")
+    print(f"  Niche:  {store.get('niche') or '-'}")
+    print(f"  Type:   {store.get('store_type') or '-'}")
+    print()
+    print("Stats:")
+    print(f"  Products:  {stats.get('products', 0)}")
+    print(f"  Orders:    {stats.get('orders', 0)}")
+    print(f"  Customers: {stats.get('customers', 0)}")
+    print(f"  Revenue:   ${stats.get('total_revenue', 0.0):,.2f}")
+    print()
+    if last_sync_at is None:
+        print("Sync:")
+        print("  Last sync: never")
+    else:
+        age = last_sync_age_seconds or 0
+        ago = (
+            f"{int(age)}s ago" if age < 60
+            else f"{int(age/60)}m ago" if age < 3600
+            else f"{int(age/3600)}h ago" if age < 86400
+            else f"{int(age/86400)}d ago"
+        )
+        print("Sync:")
+        print(
+            f"  Last sync: {ago} ({last_sync_status or 'unknown'})"
+        )
+    print()
+    print("Live probes:")
+    if connection.get("checked"):
+        verdict = "ok" if connection.get("connected") else "fail"
+        line = f"  [{verdict:4s}] connection"
+        shop = connection.get("shop") or ""
+        err = connection.get("error") or ""
+        if shop:
+            line += f"  (shop={shop})"
+        elif err:
+            line += f"  ({err})"
+        print(line)
+    else:
+        print("  [skip] connection")
+    if drift.get("checked"):
+        if "error" in drift:
+            print(f"  [skip] drift  ({drift['error']})")
+        else:
+            writes = drift.get("planned_writes", 0)
+            verdict = "drift" if drift.get("has_drift") else "ok"
+            print(f"  [{verdict:4s}] drift  ({writes} planned write(s))")
+    else:
+        print("  [skip] drift")
+    if design.get("checked"):
+        lift = design.get("estimated_conversion_lift", 0.0) or 0.0
+        print(
+            f"  [ok  ] design  (estimated lift: {lift:.1%}, "
+            f"{design.get('layout_recommendations_count', 0)} layout, "
+            f"{design.get('mobile_optimizations_count', 0)} mobile)"
+        )
+    print()
+
+    # Verdict line
+    issues = []
+    if connection.get("checked") and not connection.get("connected"):
+        issues.append("connection")
+    if drift.get("checked") and drift.get("has_drift"):
+        issues.append(f"{drift.get('planned_writes', 0)} drift")
+    if last_sync_age_seconds and last_sync_age_seconds > 86400:
+        issues.append("sync stale")
+    if issues:
+        print(f"Verdict: attention needed -- {', '.join(issues)}")
+    else:
+        print("Verdict: healthy.")
+
+
+def _drift_feature_count(plan: list[dict]) -> int:
+    """Count distinct features represented in a configurator plan."""
+    seen = set()
+    for entry in plan:
+        bucket = _classify_plan_entry(entry.get("path", ""))
+        seen.add(bucket)
+    return len(seen)
 
 
 def _cmd_store_verify(args) -> None:
@@ -11093,6 +11351,7 @@ def main(argv: list[str] | None = None) -> None:
             "design": _cmd_store_design,
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
+            "report": _cmd_store_report,
         }
         handler = dispatch.get(args.store_action)
         if handler:
@@ -11100,7 +11359,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup}"
+                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report}"
             )
         return
 
