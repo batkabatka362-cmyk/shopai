@@ -1,0 +1,476 @@
+"""Tests for the per-store world-model snapshot
+(``core.world_model``).
+
+This is the foundation of the AGI orchestration layer -- the
+single dict that every engine + the autonomous loop reads
+before making a decision. The tests verify each section
+populates correctly, skip-live works, and the resilience
+contract (no section throws; everything degrades to
+``{"checked": False, "error": ...}``) is upheld.
+"""
+from __future__ import annotations
+
+import time
+from unittest.mock import patch, MagicMock
+
+from core.world_model import WorldModel, snapshot
+
+
+# ─── Fakes ───────────────────────────────────────────────────
+
+
+def _fake_sm(
+    *,
+    shop_url="example.myshopify.com",
+    niche="beauty",
+    store_type="dropshipping",
+    is_active=True,
+    products=42, orders=10, customers=15, revenue=999.99,
+    connected=True,
+    api_key="shpat_token",
+):
+    sm = MagicMock()
+    sm.get_store.return_value = {
+        "shop_url": shop_url, "niche": niche,
+        "store_type": store_type, "is_active": is_active,
+        "name": "Test Store",
+    }
+    sm.get_stats.return_value = {
+        "products": products, "orders": orders,
+        "customers": customers, "total_revenue": revenue,
+    }
+    sm.test_connection.return_value = {
+        "connected": connected,
+        "shop": shop_url,
+        "error": "" if connected else "401",
+    }
+    sm.get_credentials.return_value = {
+        "shop_url": shop_url, "api_key": api_key,
+    }
+    return sm
+
+
+def _fake_queue(
+    *,
+    pending=3,
+    pending_by_engine=None,
+    decisions=None,
+):
+    q = MagicMock()
+    q.stats.return_value = {
+        "pending": pending,
+        "approved": 5,
+        "rejected": 1,
+        "executed": 12,
+        "failed": 0,
+        "expired": 2,
+    }
+    q.stats_by_engine.return_value = (
+        pending_by_engine
+        if pending_by_engine is not None
+        else {
+            "loyalty": {"pending": 2, "executed": 5},
+            "dynamic_pricing": {"pending": 1, "executed": 3},
+        }
+    )
+    q.list_decisions.return_value = (
+        decisions
+        if decisions is not None
+        else [
+            {"action_id": "a1", "decision": "approved",
+             "decided_by": "operator", "reason": "",
+             "occurred_at": time.time() - 30.0},
+            {"action_id": "a2", "decision": "executed",
+             "decided_by": "system", "reason": "",
+             "occurred_at": time.time() - 120.0},
+        ]
+    )
+    return q
+
+
+def _fake_sync_status(store_id, *, age_seconds=120.0, status="success"):
+    return {
+        "stores": [{
+            "store_id": store_id,
+            "last_sync": time.time() - age_seconds,
+            "last_status": status,
+        }],
+    }
+
+
+def _fake_plan_result(plan_count=5):
+    return {
+        "status": "planned",
+        "niche": "beauty",
+        "features": ["collections"],
+        "results": {"collections": {}, "discounts": {}},
+        "plan": [
+            {"method": "POST", "path": "smart_collections.json",
+             "description": "c", "body_preview": {}}
+            for _ in range(plan_count)
+        ],
+    }
+
+
+# ─── Section-by-section coverage ─────────────────────────────
+
+
+class TestStoreSection:
+
+    def test_populates_store_fields(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        store = snap["store"]
+        assert store["shop_url"] == "example.myshopify.com"
+        assert store["niche"] == "beauty"
+        assert store["store_type"] == "dropshipping"
+        assert store["is_active"] is True
+
+    def test_missing_store_returns_empty_shape(self):
+        sm = MagicMock()
+        sm.get_store.return_value = None
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("ghost", skip_live=True)
+        # All fields present, just empty
+        assert snap["store"]["shop_url"] == ""
+        assert snap["store"]["niche"] is None
+
+
+class TestStatsSection:
+
+    def test_populates_stats(self):
+        sm = _fake_sm(products=42, orders=10, customers=15, revenue=999.99)
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        s = snap["stats"]
+        assert s["products"] == 42
+        assert s["orders"] == 10
+        assert s["customers"] == 15
+        assert s["total_revenue"] == 999.99
+
+    def test_stats_probe_failure_returns_zeros(self):
+        sm = MagicMock()
+        sm.get_store.return_value = {"shop_url": "x"}
+        sm.get_stats.side_effect = RuntimeError("db down")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert snap["stats"]["products"] == 0
+        assert snap["stats"]["total_revenue"] == 0.0
+
+
+class TestSyncSection:
+
+    def test_populates_sync(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.get_status.return_value = (
+                _fake_sync_status("test-store", age_seconds=120.0)
+            )
+            snap = wm.snapshot("test-store", skip_live=True)
+        s = snap["sync"]
+        assert s["last_sync_at"] is not None
+        assert s["last_sync_status"] == "success"
+        # Age should be ~120
+        assert 100 < s["age_seconds"] < 200
+
+    def test_never_synced(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.get_status.return_value = {"stores": []}
+            snap = wm.snapshot("test-store", skip_live=True)
+        s = snap["sync"]
+        assert s["last_sync_at"] is None
+        assert s["age_seconds"] is None
+
+
+# ─── Live probes ─────────────────────────────────────────────
+
+
+class TestConnectionSection:
+
+    def test_skip_live_marks_unchecked(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert snap["connection"]["checked"] is False
+
+    def test_live_connection_success(self):
+        sm = _fake_sm(connected=True)
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(plan_result=_fake_plan_result()):
+            snap = wm.snapshot("test-store", skip_live=False)
+        assert snap["connection"]["checked"] is True
+        assert snap["connection"]["connected"] is True
+
+    def test_live_connection_failure(self):
+        sm = _fake_sm(connected=False)
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=False)
+        assert snap["connection"]["checked"] is True
+        assert snap["connection"]["connected"] is False
+
+
+class TestConfigSection:
+
+    def test_drift_count_populates(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(plan_result=_fake_plan_result(plan_count=7)):
+            snap = wm.snapshot("test-store", skip_live=False)
+        c = snap["config"]
+        assert c["checked"] is True
+        assert c["planned_writes"] == 7
+        assert c["has_drift"] is True
+
+    def test_clean_store_has_no_drift(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(plan_result=_fake_plan_result(plan_count=0)):
+            snap = wm.snapshot("test-store", skip_live=False)
+        c = snap["config"]
+        assert c["has_drift"] is False
+        assert c["planned_writes"] == 0
+
+    def test_skips_when_connection_failed(self):
+        sm = _fake_sm(connected=False)
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=False)
+        # When connection fails, config probe is skipped without
+        # touching the configurator
+        c = snap["config"]
+        assert c["checked"] is False
+        assert c["error"] == "connection_failed"
+
+    def test_skip_live_marks_unchecked(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert snap["config"]["checked"] is False
+
+    def test_configurator_raise_surfaces_as_error(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls, patch(
+            "execution.store_configurator.StoreConfigurator",
+            side_effect=RuntimeError("config broke"),
+        ), patch(
+            "engines.store_design.flow.StoreDesignEngine",
+        ) as design_cls:
+            sync_cls.return_value.get_status.return_value = {"stores": []}
+            design_cls.return_value.run.return_value = {
+                "status": "success", "data": {}, "meta": {}, "error": None,
+            }
+            snap = wm.snapshot("test-store", skip_live=False)
+        c = snap["config"]
+        assert c["checked"] is True
+        assert "config broke" in c["error"]
+
+
+# ─── Design / approvals / decisions ──────────────────────────
+
+
+class TestDesignSection:
+
+    def test_populates_from_engine(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls, patch(
+            "engines.store_design.flow.StoreDesignEngine",
+        ) as design_cls:
+            sync_cls.return_value.get_status.return_value = {"stores": []}
+            design_cls.return_value.run.return_value = {
+                "status": "success",
+                "data": {
+                    "estimated_conversion_lift": 0.18,
+                    "layout_recommendations": [1, 2, 3],
+                    "mobile_optimizations": [1, 2],
+                },
+                "meta": {}, "error": None,
+            }
+            snap = wm.snapshot("test-store", skip_live=True)
+        d = snap["design"]
+        assert d["checked"] is True
+        assert d["estimated_conversion_lift"] == 0.18
+        assert d["layout_count"] == 3
+        assert d["mobile_count"] == 2
+
+    def test_engine_raise_surfaces(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls, patch(
+            "engines.store_design.flow.StoreDesignEngine",
+            side_effect=RuntimeError("engine down"),
+        ):
+            sync_cls.return_value.get_status.return_value = {"stores": []}
+            snap = wm.snapshot("test-store", skip_live=True)
+        # Section never throws -- just marked checked=False
+        assert snap["design"]["checked"] is False
+        assert "engine down" in snap["design"]["error"]
+
+
+class TestApprovalsSection:
+
+    def test_populates_pending_counts(self):
+        sm = _fake_sm()
+        q = _fake_queue(
+            pending=5,
+            pending_by_engine={
+                "loyalty": {"pending": 3},
+                "dynamic_pricing": {"pending": 2},
+                "tag_management": {"pending": 0},  # filtered out
+            },
+        )
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        a = snap["approvals"]
+        assert a["checked"] is True
+        assert a["scope"] == "global"
+        assert a["pending_total"] == 5
+        # Zero-counts dropped
+        assert a["pending_by_engine"] == {
+            "loyalty": 3, "dynamic_pricing": 2,
+        }
+
+    def test_queue_raise_degrades(self):
+        sm = _fake_sm()
+        q = MagicMock()
+        q.stats.side_effect = RuntimeError("queue down")
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert snap["approvals"]["checked"] is False
+        assert "queue down" in snap["approvals"]["error"]
+
+
+class TestDecisionsSection:
+
+    def test_populates_recent(self):
+        sm = _fake_sm()
+        q = _fake_queue()
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        d = snap["decisions"]
+        assert d["checked"] is True
+        assert d["recent_count"] == 2
+        assert d["last_occurred_at"] is not None
+        assert d["scope"] == "global"
+
+    def test_no_decisions(self):
+        sm = _fake_sm()
+        q = _fake_queue(decisions=[])
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        d = snap["decisions"]
+        assert d["recent_count"] == 0
+        assert d["last_occurred_at"] is None
+
+
+# ─── Top-level snapshot envelope ─────────────────────────────
+
+
+class TestSnapshotEnvelope:
+
+    def test_has_canonical_keys(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        for key in (
+            "store_id", "fetched_at", "store", "stats", "sync",
+            "connection", "config", "design", "approvals", "decisions",
+        ):
+            assert key in snap
+
+    def test_fetched_at_is_close_to_now(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert abs(snap["fetched_at"] - time.time()) < 1.0
+
+    def test_module_level_snapshot_function(self):
+        """The module-level ``snapshot()`` is a thin shim over
+        ``WorldModel().snapshot()`` -- uses real singletons by
+        default, so we patch the resolution path."""
+        # No fakes injected -- module-level function uses real
+        # singletons. We only test that calling it works at all
+        # (doesn't crash on import paths) since the section
+        # logic is already covered above.
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+        ) as sm_cls, patch(
+            "core.approval.queue.get_approval_queue",
+        ) as gaq, patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls, patch(
+            "engines.store_design.flow.StoreDesignEngine",
+        ) as design_cls:
+            sm_cls.return_value = _fake_sm()
+            gaq.return_value = _fake_queue()
+            sync_cls.return_value.get_status.return_value = {"stores": []}
+            design_cls.return_value.run.return_value = {
+                "status": "success", "data": {}, "meta": {}, "error": None,
+            }
+            snap = snapshot("test-store", skip_live=True)
+        assert snap["store_id"] == "test-store"
+
+
+# ─── Helper: patch every external probe ──────────────────────
+
+
+def _patch_external(*, plan_result=None):
+    """Return a context manager that patches the four external
+    integrations (sync service, configurator, design engine,
+    oauth) so each test only needs to opt in to the ones it
+    cares about."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        with patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls, patch(
+            "execution.store_configurator.StoreConfigurator",
+        ) as configurator_cls, patch(
+            "engines.store_design.flow.StoreDesignEngine",
+        ) as design_cls:
+            sync_cls.return_value.get_status.return_value = {"stores": []}
+            configurator_cls.return_value.configure.return_value = (
+                plan_result or _fake_plan_result(plan_count=0)
+            )
+            design_cls.return_value.run.return_value = {
+                "status": "success",
+                "data": {
+                    "estimated_conversion_lift": 0.10,
+                    "layout_recommendations": [],
+                    "mobile_optimizations": [],
+                },
+                "meta": {}, "error": None,
+            }
+            yield
+
+    return _ctx()
