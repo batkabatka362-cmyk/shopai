@@ -1340,6 +1340,22 @@ def build_parser() -> argparse.ArgumentParser:
             "outcomes for EXECUTED actions)"
         ),
     )
+    approvals_show.add_argument(
+        "--with-context", action="store_true", dest="with_context",
+        help=(
+            "Embed the AGI decision-retrieval context: top-k "
+            "similar past decisions + their outcomes. Useful for "
+            "operator triage of PENDING actions -- shows how "
+            "similar past actions turned out."
+        ),
+    )
+    approvals_show.add_argument(
+        "--context-k", type=int, default=3, dest="context_k",
+        help=(
+            "How many similar past decisions to retrieve when "
+            "--with-context is supplied. Default: 3."
+        ),
+    )
 
     approvals_approve = approvals_sub.add_parser(
         "approve",
@@ -11789,7 +11805,67 @@ def _cmd_approvals_show(args) -> None:
             logger.debug("outcome lookup failed: %s", exc)
             payload["outcomes"] = []
 
+    # AGI decision-retrieval context (opt-in via --with-context).
+    # When operator is triaging a PENDING action, the top-k
+    # similar past decisions + their outcome rollup answers
+    # "how did similar past actions turn out?" -- the cheapest
+    # decision-support signal we can surface.
+    if getattr(args, "with_context", False):
+        try:
+            from core.decision_retrieval import DecisionRetrieval
+            k = int(getattr(args, "context_k", 3) or 3)
+            similar = DecisionRetrieval().retrieve(
+                engine=action.engine,
+                action_type=action.action_type,
+                capability=action.capability,
+                params=action.params,
+                k=k,
+            )
+            payload["agi_context"] = {
+                "k": k,
+                "similar": similar,
+                "summary": _summarize_context(similar),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("agi_context lookup failed: %s", exc)
+            payload["agi_context"] = {"error": str(exc)}
+
     print(json.dumps(payload, indent=2, default=str))
+
+
+def _summarize_context(similar: list[dict]) -> dict:
+    """Flat-summary rollup of a decision-retrieval result list.
+
+    Mirrors the shape ``engines._agi_context._summarize_similar``
+    produces, but kept here as a thin wrapper so this handler
+    doesn't introduce a CLI -> engines/* dependency.
+    """
+    if not similar:
+        return {
+            "similar_count": 0,
+            "recent_positive": False,
+            "recent_negative": False,
+            "avg_relevance": 0.0,
+            "total_revenue": 0.0,
+        }
+    total_relevance = 0.0
+    has_pos = has_neg = False
+    total_revenue = 0.0
+    for entry in similar:
+        total_relevance += float(entry.get("relevance", 0.0) or 0.0)
+        summary = entry.get("outcome_summary") or {}
+        if summary.get("has_positive"):
+            has_pos = True
+        if summary.get("has_negative"):
+            has_neg = True
+        total_revenue += float(summary.get("total_revenue", 0.0) or 0.0)
+    return {
+        "similar_count": len(similar),
+        "recent_positive": has_pos,
+        "recent_negative": has_neg,
+        "avg_relevance": round(total_relevance / len(similar), 4),
+        "total_revenue": round(total_revenue, 2),
+    }
 
 
 def _cmd_approvals_approve(args) -> None:
