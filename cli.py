@@ -229,6 +229,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    fleet_p = store_sub.add_parser(
+        "fleet",
+        help=(
+            "Cross-store summary: aggregate stats + sync recency "
+            "for every registered store in one view. The 'how is "
+            "my whole empire doing?' command."
+        ),
+    )
+    fleet_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw fleet report as JSON.",
+    )
+    fleet_p.add_argument(
+        "--sort-by", default="revenue",
+        choices=["revenue", "products", "orders", "customers", "name"],
+        help="Sort row order. Default: revenue (high to low).",
+    )
+
     verify_p = store_sub.add_parser(
         "verify",
         help=(
@@ -1737,6 +1755,175 @@ def _cmd_store_add(args) -> None:
     print(f"  Type: {args.store_type}")
     if args.niche:
         print(f"  Niche: {args.niche}")
+
+
+def _cmd_store_fleet(args) -> None:
+    """Cross-store summary: aggregate per-store metrics + sync
+    recency across every registered store.
+
+    Renders one row per store (text mode) with revenue, counts,
+    last-sync age, and shop URL. Aggregate row at the bottom
+    sums totals + flags the freshest / stalest sync. ``--json``
+    emits the raw report dict for automation.
+
+    Pure consumer of StoreManager + SyncService; no AGI-stack
+    dependency. Useful even before per-store world-model lands.
+    """
+    as_json = bool(getattr(args, "json", False))
+    sort_by = getattr(args, "sort_by", "revenue")
+
+    sm = _get_store_manager()
+    stores = sm.list_stores()
+    if not stores:
+        if as_json:
+            print(json.dumps(
+                {"status": "ok", "stores": [], "totals": {}},
+                indent=2, default=str,
+            ))
+        else:
+            print(
+                "No stores configured. Add one with: "
+                "shopai store add <id> <url> <key>"
+            )
+        return
+
+    # ── Pull sync recency once ─────────────────────────────
+    sync_by_store: dict[str, dict] = {}
+    try:
+        from data_pipeline.store.sync_service import SyncService
+        sync_status = SyncService(sm).get_status() or {}
+        for si in sync_status.get("stores", []):
+            sid = si.get("store_id")
+            if sid:
+                sync_by_store[sid] = {
+                    "last_sync": si.get("last_sync"),
+                    "last_status": si.get("last_status"),
+                }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("fleet sync probe raised: %s", exc)
+
+    # ── Build per-store rows ───────────────────────────────
+    rows: list[dict] = []
+    for s in stores:
+        sid = s.get("store_id", "")
+        stats = sm.get_stats(sid) or {}
+        sync = sync_by_store.get(sid) or {}
+        last_sync = sync.get("last_sync")
+        age = (
+            time.time() - float(last_sync)
+            if last_sync else None
+        )
+        rows.append({
+            "store_id": sid,
+            "shop_url": s.get("shop_url", ""),
+            "niche": s.get("niche", "") or None,
+            "store_type": s.get("store_type", "") or None,
+            "is_active": bool(s.get("is_active")),
+            "products": int(stats.get("products", 0)),
+            "orders": int(stats.get("orders", 0)),
+            "customers": int(stats.get("customers", 0)),
+            "revenue": float(stats.get("total_revenue", 0.0)),
+            "last_sync_at": last_sync,
+            "last_sync_status": sync.get("last_status"),
+            "last_sync_age_seconds": age,
+        })
+
+    # ── Sort ───────────────────────────────────────────────
+    _sort_key_map = {
+        "revenue": lambda r: -r["revenue"],
+        "products": lambda r: -r["products"],
+        "orders": lambda r: -r["orders"],
+        "customers": lambda r: -r["customers"],
+        "name": lambda r: r["store_id"],
+    }
+    rows.sort(key=_sort_key_map.get(sort_by, _sort_key_map["revenue"]))
+
+    # ── Totals + spotlight ─────────────────────────────────
+    totals = {
+        "stores": len(rows),
+        "products": sum(r["products"] for r in rows),
+        "orders": sum(r["orders"] for r in rows),
+        "customers": sum(r["customers"] for r in rows),
+        "revenue": sum(r["revenue"] for r in rows),
+    }
+    fresh = min(
+        (r for r in rows if r["last_sync_age_seconds"] is not None),
+        key=lambda r: r["last_sync_age_seconds"],
+        default=None,
+    )
+    stale = max(
+        (r for r in rows if r["last_sync_age_seconds"] is not None),
+        key=lambda r: r["last_sync_age_seconds"],
+        default=None,
+    )
+    never_synced = [r for r in rows if r["last_sync_age_seconds"] is None]
+
+    # ── JSON envelope ──────────────────────────────────────
+    if as_json:
+        print(json.dumps({
+            "status": "ok",
+            "sort_by": sort_by,
+            "stores": rows,
+            "totals": totals,
+            "spotlight": {
+                "freshest_sync": fresh["store_id"] if fresh else None,
+                "stalest_sync": stale["store_id"] if stale else None,
+                "never_synced": [r["store_id"] for r in never_synced],
+            },
+        }, indent=2, default=str))
+        return
+
+    # ── Text render ────────────────────────────────────────
+    print(f"Fleet ({len(rows)} store(s); sorted by {sort_by})")
+    print()
+    # Header
+    print(
+        f"  {'STORE':<22s} {'NICHE':<10s} "
+        f"{'PROD':>6s} {'ORD':>5s} {'CUST':>5s} "
+        f"{'REVENUE':>11s} {'SYNC':>9s}"
+    )
+    print("  " + "-" * 75)
+    for r in rows:
+        age = r["last_sync_age_seconds"]
+        sync_str = (
+            "never" if age is None
+            else f"{int(age)}s" if age < 60
+            else f"{int(age/60)}m" if age < 3600
+            else f"{int(age/3600)}h" if age < 86400
+            else f"{int(age/86400)}d"
+        )
+        active_marker = "*" if r["is_active"] else " "
+        print(
+            f"  {active_marker}{r['store_id']:<21s} "
+            f"{(r['niche'] or '-'):<10s} "
+            f"{r['products']:>6d} {r['orders']:>5d} {r['customers']:>5d} "
+            f"${r['revenue']:>10,.2f} "
+            f"{sync_str:>9s}"
+        )
+    print("  " + "-" * 75)
+    print(
+        f"  {'TOTAL':<22s} {'':<10s} "
+        f"{totals['products']:>6d} {totals['orders']:>5d} "
+        f"{totals['customers']:>5d} ${totals['revenue']:>10,.2f}"
+    )
+    print()
+    # Spotlight
+    if fresh and stale and fresh["store_id"] != stale["store_id"]:
+        print(
+            f"  Freshest sync: {fresh['store_id']} "
+            f"({int((fresh['last_sync_age_seconds'] or 0)/60)}m ago)"
+        )
+        print(
+            f"  Stalest sync:  {stale['store_id']} "
+            f"({int((stale['last_sync_age_seconds'] or 0)/3600)}h ago)"
+        )
+    if never_synced:
+        ids = ", ".join(r["store_id"] for r in never_synced[:3])
+        more = (
+            f" + {len(never_synced) - 3} more"
+            if len(never_synced) > 3 else ""
+        )
+        print(f"  Never synced:  {ids}{more}")
 
 
 def _cmd_store_list(args) -> None:
@@ -11507,6 +11694,7 @@ def main(argv: list[str] | None = None) -> None:
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
+            "fleet": _cmd_store_fleet,
         }
         handler = dispatch.get(args.store_action)
         if handler:
@@ -11514,7 +11702,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report}"
+                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
             )
         return
 
