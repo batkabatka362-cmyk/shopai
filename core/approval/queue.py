@@ -254,7 +254,23 @@ class ApprovalQueue:
         Callers that don't know which store an action belongs
         to (most engines today) can omit it; the row is still
         queryable cross-engine.
+
+        If the caller doesn't pass ``store_id`` AND the
+        autonomous loop has set an active-store context (via
+        ``core.context.active_store``), the action picks up that
+        store_id automatically. This lets the autonomous loop
+        tag every per-store iteration without changing every
+        engine's call signature.
         """
+        if store_id is None:
+            try:
+                from core.context import get_active_store_id
+                store_id = get_active_store_id()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "enqueue: active-store context fetch raised: %s",
+                    exc,
+                )
         action_id = f"appr_{int(time.time() * 1000)}_{_short_uuid()}"
         now = time.time()
         params_json = _safe_json(params)
