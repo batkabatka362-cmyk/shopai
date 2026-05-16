@@ -260,6 +260,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw drift report as JSON.",
     )
 
+    # ── World-model commands ─────────────────────────────────
+    world_p = sub.add_parser(
+        "world-model",
+        help=(
+            "Per-store world model: single dict that the AGI "
+            "orchestrator reads before making decisions. "
+            "Foundation for cross-store reasoning."
+        ),
+    )
+    world_sub = world_p.add_subparsers(dest="world_action")
+
+    world_show_p = world_sub.add_parser(
+        "show",
+        help="Render the world-model snapshot for one store",
+    )
+    world_show_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    world_show_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw snapshot dict as JSON",
+    )
+    world_show_p.add_argument(
+        "--skip-live", action="store_true",
+        help=(
+            "Skip live probes (connection + drift). Sync / "
+            "design / approvals / decisions are local reads "
+            "and always run."
+        ),
+    )
+
     # ── Sync commands ────────────────────────────────────────
     sync_p = sub.add_parser("sync", help="Sync data from Shopify")
     sync_p.add_argument("store_id", nargs="?", help="Store ID (default: active)")
@@ -2583,6 +2615,129 @@ def _drift_feature_count(plan: list[dict]) -> int:
         bucket = _classify_plan_entry(entry.get("path", ""))
         seen.add(bucket)
     return len(seen)
+
+
+def _cmd_world_model_show(args) -> None:
+    """Render the per-store world-model snapshot.
+
+    Read-only. Default text view summarises each section in one
+    line; ``--json`` emits the full snapshot dict for automation
+    or AI orchestration.
+    """
+    as_json = bool(getattr(args, "json", False))
+    skip_live = bool(getattr(args, "skip_live", False))
+
+    sm = _get_store_manager()
+    store_id = args.store_id or sm.active_store_id
+    if not store_id:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": "no_store_selected"},
+                indent=2, default=str,
+            ))
+        else:
+            print("No store selected. Add one with: shopai store add")
+        sys.exit(1)
+        return
+
+    from core.world_model import WorldModel
+
+    snap = WorldModel(sm=sm).snapshot(store_id, skip_live=skip_live)
+
+    if as_json:
+        print(json.dumps(snap, indent=2, default=str))
+        return
+
+    # ── Text render ────────────────────────────────────────
+    store = snap["store"]
+    stats = snap["stats"]
+    sync = snap["sync"]
+    conn = snap["connection"]
+    config = snap["config"]
+    design = snap["design"]
+    approvals = snap["approvals"]
+    decisions = snap["decisions"]
+
+    print(f"World model: {store_id}")
+    print(f"  URL:    {store.get('shop_url', '-')}")
+    print(f"  Niche:  {store.get('niche') or '-'}")
+    print(f"  Type:   {store.get('store_type') or '-'}")
+    print()
+    print("Stats:")
+    print(f"  Products:  {stats['products']}")
+    print(f"  Orders:    {stats['orders']}")
+    print(f"  Customers: {stats['customers']}")
+    print(f"  Revenue:   ${stats['total_revenue']:,.2f}")
+    print()
+    if sync["last_sync_at"] is None:
+        print("Sync:        never")
+    else:
+        age = sync["age_seconds"] or 0
+        ago = (
+            f"{int(age)}s ago" if age < 60
+            else f"{int(age/60)}m ago" if age < 3600
+            else f"{int(age/3600)}h ago" if age < 86400
+            else f"{int(age/86400)}d ago"
+        )
+        print(
+            f"Sync:        {ago} ({sync['last_sync_status'] or 'unknown'})"
+        )
+    print()
+    print("Live probes:")
+    if conn.get("checked"):
+        verdict = "ok" if conn.get("connected") else "fail"
+        shop = conn.get("shop") or ""
+        err = conn.get("error") or ""
+        detail = f"  shop={shop}" if shop else (f"  ({err})" if err else "")
+        print(f"  [{verdict:4s}] connection{detail}")
+    else:
+        print("  [skip] connection")
+    if config.get("checked") and "error" not in config:
+        verdict = "drift" if config.get("has_drift") else "ok"
+        print(
+            f"  [{verdict:4s}] config  "
+            f"({config.get('planned_writes', 0)} planned write(s))"
+        )
+    else:
+        why = config.get("error", "skipped")
+        print(f"  [skip] config  ({why})")
+    if design.get("checked") and "error" not in design:
+        lift = design.get("estimated_conversion_lift", 0.0)
+        print(
+            f"  [ok  ] design  (estimated lift: {lift:.1%}, "
+            f"{design.get('layout_count', 0)} layout, "
+            f"{design.get('mobile_count', 0)} mobile)"
+        )
+    print()
+    print("Approvals (global):")
+    if approvals.get("checked"):
+        total = approvals.get("pending_total", 0)
+        print(f"  Pending total: {total}")
+        for engine, n in sorted(
+            (approvals.get("pending_by_engine") or {}).items(),
+            key=lambda kv: -kv[1],
+        )[:5]:
+            print(f"    {engine:25s} {n}")
+    else:
+        print(f"  (unavailable: {approvals.get('error', 'unknown')})")
+    print()
+    print("Decisions (global):")
+    if decisions.get("checked"):
+        n = decisions.get("recent_count", 0)
+        last = decisions.get("last_occurred_at")
+        if last is None:
+            print(f"  Recent: {n}  (no recent activity)")
+        else:
+            age = time.time() - float(last)
+            ago = (
+                f"{int(age)}s ago" if age < 60
+                else f"{int(age/60)}m ago" if age < 3600
+                else f"{int(age/3600)}h ago" if age < 86400
+                else f"{int(age/86400)}d ago"
+            )
+            print(f"  Recent: {n}  Last: {ago}")
+    else:
+        print(f"  (unavailable: {decisions.get('error', 'unknown')})")
 
 
 def _cmd_store_verify(args) -> None:
@@ -11361,6 +11516,14 @@ def main(argv: list[str] | None = None) -> None:
                 "Usage: shopai store "
                 "{add|list|switch|status|connect|remove|configure|design|verify|setup|report}"
             )
+        return
+
+    if args.command == "world-model":
+        action = getattr(args, "world_action", None)
+        if action == "show":
+            _cmd_world_model_show(args)
+            return
+        print("Usage: shopai world-model {show}")
         return
 
     if args.command == "db":
