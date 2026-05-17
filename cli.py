@@ -745,6 +745,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the fleet report as JSON.",
     )
 
+    engine_compare_p = engine_sub.add_parser(
+        "compare",
+        help=(
+            "Head-to-head fleet comparison of two engines. "
+            "Surfaces which one performs better (executed / "
+            "outcome polarity / revenue) across the fleet "
+            "for engine-selection decisions."
+        ),
+    )
+    engine_compare_p.add_argument(
+        "engine_a", help="First engine to compare",
+    )
+    engine_compare_p.add_argument(
+        "engine_b", help="Second engine to compare",
+    )
+    engine_compare_p.add_argument(
+        "--window-hours", type=int, default=168,
+        dest="window_hours",
+        help="Activity window in hours (default: 168 = 7 days).",
+    )
+    engine_compare_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the compare report as JSON.",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -6021,6 +6046,200 @@ def _cmd_engine_fleet(args) -> None:
         f"score={score_str}, "
         f"rev=${rollup['total_revenue']:,.2f}"
     )
+
+
+def _cmd_engine_compare(args) -> None:
+    """Head-to-head fleet comparison of two engines.
+
+    For each engine, compute fleet-wide totals over the window:
+    executed / failed / pending counts + outcome polarity +
+    revenue. Surface side-by-side with a winner per metric so
+    operators see at a glance "engine A executes more but
+    engine B has better outcome polarity -- maybe B's the
+    right pick for new stores".
+    """
+    as_json = bool(getattr(args, "json", False))
+    engine_a = (getattr(args, "engine_a", "") or "").strip()
+    engine_b = (getattr(args, "engine_b", "") or "").strip()
+    window_hours = max(
+        1, int(getattr(args, "window_hours", 168) or 168),
+    )
+    cutoff = time.time() - window_hours * 3600.0
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    if not engine_a or not engine_b:
+        _emit_error("both engine_a and engine_b are required")
+        return
+    if engine_a == engine_b:
+        _emit_error("engine_a and engine_b must be different")
+        return
+
+    try:
+        from core.approval.queue import get_approval_queue
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    queue = get_approval_queue()
+
+    def _profile(engine: str) -> dict:
+        bucket = {
+            "engine": engine,
+            "executed": 0, "failed": 0, "pending": 0,
+            "positive_outcomes": 0,
+            "negative_outcomes": 0,
+            "neutral_outcomes": 0,
+            "revenue": 0.0,
+        }
+        try:
+            with queue._conn:
+                rows = queue._conn.execute(
+                    """SELECT id, status FROM pending_actions
+                       WHERE engine = ?
+                         AND (decided_at >= ? OR
+                              (decided_at IS NULL
+                               AND proposed_at >= ?))""",
+                    (engine, cutoff, cutoff),
+                ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine compare scan raised: %s", exc,
+            )
+            rows = []
+        for r in rows:
+            status = (r["status"] or "").lower()
+            if status == "executed":
+                bucket["executed"] += 1
+                try:
+                    outcomes = queue.get_outcomes(r["id"]) or []
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "engine compare outcomes raised: %s", exc,
+                    )
+                    outcomes = []
+                for o in outcomes:
+                    pol = o.get("polarity")
+                    if pol == "positive":
+                        bucket["positive_outcomes"] += 1
+                    elif pol == "negative":
+                        bucket["negative_outcomes"] += 1
+                    elif pol == "neutral":
+                        bucket["neutral_outcomes"] += 1
+                    m = o.get("metrics") or {}
+                    try:
+                        bucket["revenue"] += float(
+                            m.get("revenue", 0) or 0,
+                        )
+                    except (TypeError, ValueError):
+                        pass
+            elif status == "failed":
+                bucket["failed"] += 1
+            elif status in {"pending", "approved"}:
+                bucket["pending"] += 1
+        pos = bucket["positive_outcomes"]
+        neg = bucket["negative_outcomes"]
+        bucket["outcome_score"] = (
+            pos / (pos + neg) if (pos + neg) > 0 else None
+        )
+        return bucket
+
+    prof_a = _profile(engine_a)
+    prof_b = _profile(engine_b)
+
+    def _winner(key: str, higher_is_better: bool = True) -> str:
+        va = prof_a.get(key)
+        vb = prof_b.get(key)
+        # Treat None as "no data" -> not winner
+        if va is None and vb is None:
+            return "tie"
+        if va is None:
+            return engine_b
+        if vb is None:
+            return engine_a
+        if va == vb:
+            return "tie"
+        if higher_is_better:
+            return engine_a if va > vb else engine_b
+        return engine_a if va < vb else engine_b
+
+    winners = {
+        "executed": _winner("executed"),
+        "failed": _winner("failed", higher_is_better=False),
+        "positive_outcomes": _winner("positive_outcomes"),
+        "negative_outcomes": _winner(
+            "negative_outcomes", higher_is_better=False,
+        ),
+        "outcome_score": _winner("outcome_score"),
+        "revenue": _winner("revenue"),
+    }
+
+    envelope = {
+        "engine_a": prof_a,
+        "engine_b": prof_b,
+        "window_hours": window_hours,
+        "winners": winners,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    print(
+        f"Engine compare (last {window_hours}h):  "
+        f"{engine_a}  vs  {engine_b}"
+    )
+    print()
+
+    def _score_str(s):
+        return "n/a" if s is None else f"{s:.0%}"
+
+    rows = [
+        ("executed", prof_a["executed"], prof_b["executed"],
+         winners["executed"], False),
+        ("failed", prof_a["failed"], prof_b["failed"],
+         winners["failed"], False),
+        ("pending", prof_a["pending"], prof_b["pending"],
+         "-", False),
+        ("positive_outcomes",
+         prof_a["positive_outcomes"],
+         prof_b["positive_outcomes"],
+         winners["positive_outcomes"], False),
+        ("negative_outcomes",
+         prof_a["negative_outcomes"],
+         prof_b["negative_outcomes"],
+         winners["negative_outcomes"], False),
+        ("outcome_score",
+         _score_str(prof_a["outcome_score"]),
+         _score_str(prof_b["outcome_score"]),
+         winners["outcome_score"], False),
+        ("revenue",
+         f"${prof_a['revenue']:,.2f}",
+         f"${prof_b['revenue']:,.2f}",
+         winners["revenue"], False),
+    ]
+
+    a_label = engine_a[:15]
+    b_label = engine_b[:15]
+    print(
+        f"  {'METRIC':<20s} {a_label:>15s} {b_label:>15s} "
+        f"{'WINNER':>20s}"
+    )
+    print("  " + "-" * 73)
+    for metric, va, vb, w, _ in rows:
+        print(
+            f"  {metric:<20s} {str(va):>15s} {str(vb):>15s} "
+            f"{w[:20]:>20s}"
+        )
+
 
 
 def _cmd_engines_writebacks(args) -> None:
@@ -13779,7 +13998,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "fleet":
             _cmd_engine_fleet(args)
             return
-        print("Usage: shopai engine {summary|guardrail|fleet}")
+        if action == "compare":
+            _cmd_engine_compare(args)
+            return
+        print("Usage: shopai engine {summary|guardrail|fleet|compare}")
         return
 
     if args.command == "engines-writebacks":
