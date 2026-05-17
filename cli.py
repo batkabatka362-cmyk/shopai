@@ -310,6 +310,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    world_fleet_p = world_sub.add_parser(
+        "fleet",
+        help=(
+            "Cross-store world-model summary: render the "
+            "snapshot for every registered store, side by side. "
+            "The 'how does my whole fleet look right now?' "
+            "command."
+        ),
+    )
+    world_fleet_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw fleet snapshot dict as JSON",
+    )
+    world_fleet_p.add_argument(
+        "--skip-live", action="store_true",
+        help=(
+            "Skip live probes per store. Live probes can be "
+            "slow at fleet scale (one connection test + "
+            "configurator dry-run per store), so operators may "
+            "want this flag for fast cron-able runs."
+        ),
+    )
+
     # ── Daily-brief command ──────────────────────────────────
     daily_p = sub.add_parser(
         "daily-brief",
@@ -3439,6 +3462,135 @@ def _drift_feature_count(plan: list[dict]) -> int:
         bucket = _classify_plan_entry(entry.get("path", ""))
         seen.add(bucket)
     return len(seen)
+
+
+def _cmd_world_model_fleet(args) -> None:
+    """Cross-store world-model snapshot.
+
+    Runs ``WorldModel().snapshot()`` for every registered store
+    and renders a compact comparison table. The empire-scale
+    equivalent of ``world-model show``: instead of one store's
+    full snapshot, one row per store with the key signals.
+
+    Each row carries: stats counts, sync recency, drift count
+    (when live probes are on), design lift, pending approvals,
+    recent decisions.
+    """
+    as_json = bool(getattr(args, "json", False))
+    skip_live = bool(getattr(args, "skip_live", False))
+
+    sm = _get_store_manager()
+    stores = sm.list_stores() or []
+
+    if not stores:
+        if as_json:
+            print(json.dumps(
+                {"status": "ok", "stores": []},
+                indent=2, default=str,
+            ))
+        else:
+            print(
+                "No stores configured. Add one with: "
+                "shopai store add <id> <url> <key>"
+            )
+        return
+
+    from core.world_model import WorldModel
+
+    wm = WorldModel(sm=sm)
+    rows: list[dict] = []
+    for s in stores:
+        sid = s.get("store_id", "")
+        try:
+            snap = wm.snapshot(sid, skip_live=skip_live)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world-model fleet: snapshot raised for %s: %s",
+                sid, exc,
+            )
+            snap = {
+                "store_id": sid,
+                "error": str(exc),
+            }
+        rows.append(snap)
+
+    if as_json:
+        print(json.dumps({
+            "skip_live": skip_live,
+            "stores": rows,
+        }, indent=2, default=str))
+        return
+
+    # ── Text render ────────────────────────────────────────
+    print(
+        f"World model fleet ({len(rows)} store(s)"
+        + ("; live probes on" if not skip_live else "; live probes skipped")
+        + ")"
+    )
+    print()
+    print(
+        f"  {'STORE':<22s} {'NICHE':<10s} {'PROD':>5s} "
+        f"{'ORD':>4s} {'REVENUE':>11s} {'SYNC':>6s} "
+        f"{'DRIFT':>6s} {'APPRV':>5s} {'DESIGN':>8s}"
+    )
+    print("  " + "-" * 87)
+    for snap in rows:
+        if "error" in snap:
+            print(
+                f"  {snap['store_id']:<22s} (snapshot error: "
+                f"{snap['error']})"
+            )
+            continue
+        store = snap.get("store", {})
+        stats = snap.get("stats", {})
+        sync = snap.get("sync", {})
+        config = snap.get("config", {})
+        design = snap.get("design", {})
+        approvals = snap.get("approvals", {})
+
+        age = sync.get("age_seconds")
+        sync_str = (
+            "never" if age is None
+            else f"{int(age/3600)}h" if age < 86400
+            else f"{int(age/86400)}d"
+        )
+        drift_str = (
+            f"{config.get('planned_writes', 0)}"
+            if config.get("checked") and "error" not in config
+            else "-"
+        )
+        pending_str = (
+            f"{approvals.get('pending_total', 0)}"
+            if approvals.get("checked") else "-"
+        )
+        lift = design.get("estimated_conversion_lift")
+        design_str = (
+            f"{lift:.1%}" if isinstance(lift, (int, float))
+            else "-"
+        )
+        print(
+            f"  {snap['store_id']:<22s} "
+            f"{(store.get('niche') or '-'):<10s} "
+            f"{stats.get('products', 0):>5d} "
+            f"{stats.get('orders', 0):>4d} "
+            f"${stats.get('total_revenue', 0.0):>10,.2f} "
+            f"{sync_str:>6s} {drift_str:>6s} "
+            f"{pending_str:>5s} {design_str:>8s}"
+        )
+    print()
+    # Quick aggregates
+    total_revenue = sum(
+        r.get("stats", {}).get("total_revenue", 0.0)
+        for r in rows if "error" not in r
+    )
+    total_pending = sum(
+        r.get("approvals", {}).get("pending_total", 0)
+        for r in rows if "error" not in r
+    )
+    print(
+        f"  Total: ${total_revenue:,.2f} revenue, "
+        f"{total_pending} pending approval(s) across fleet"
+    )
 
 
 def _cmd_world_model_show(args) -> None:
@@ -12889,7 +13041,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "show":
             _cmd_world_model_show(args)
             return
-        print("Usage: shopai world-model {show}")
+        if action == "fleet":
+            _cmd_world_model_fleet(args)
+            return
+        print("Usage: shopai world-model {show|fleet}")
         return
 
     if args.command == "memory-recall":
