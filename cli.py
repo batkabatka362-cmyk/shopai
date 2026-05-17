@@ -440,6 +440,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the enqueued-action envelope as JSON.",
     )
 
+    transfer_sources_p = transfer_sub.add_parser(
+        "sources",
+        help=(
+            "For a target store, rank OTHER stores in the "
+            "fleet by transferable surface area: count of "
+            "successful (engine, action_type) tuples on source "
+            "that target hasn't tried. Tells operators which "
+            "store to point ``transfer suggest --from`` at."
+        ),
+    )
+    transfer_sources_p.add_argument(
+        "--to", required=True, dest="to_store",
+        help="Target store ID (the one to find sources for)",
+    )
+    transfer_sources_p.add_argument(
+        "-k", "--k", type=int, default=5,
+        help="Number of sources to return (default: 5).",
+    )
+    transfer_sources_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the ranked sources as JSON.",
+    )
+
     # ── Model-router commands ────────────────────────────────
     mr_p = sub.add_parser(
         "model-router",
@@ -2055,7 +2078,10 @@ def _cmd_transfer(args) -> None:
     if verb == "apply":
         _cmd_transfer_apply(args)
         return
-    print("Usage: shopai transfer {suggest|apply}")
+    if verb == "sources":
+        _cmd_transfer_sources(args)
+        return
+    print("Usage: shopai transfer {suggest|apply|sources}")
 
 
 def _cmd_transfer_suggest(args) -> None:
@@ -2428,6 +2454,165 @@ def _cmd_transfer_apply(args) -> None:
     print(
         "  Review with:  "
         f"shopai approvals show {action.id} --with-context"
+    )
+
+
+def _cmd_transfer_sources(args) -> None:
+    """Rank stores in the fleet by transferable surface area
+    toward the target.
+
+    Operators currently have to guess which source store to point
+    ``transfer suggest --from`` at. This command tells them: 'these
+    are the stores with the most successful actions that target
+    hasn't tried yet'. Run before ``transfer suggest`` to pick a
+    high-yield source.
+
+    Scoring per candidate source store:
+      - transferable_count = unique (engine, action_type) tuples
+        that EXECUTED on source AND have NOT been tried on target
+        in any status (mirrors the exclusion logic in
+        ``transfer suggest``).
+      - source_executed_total = total EXECUTED action count on
+        source (raw activity signal).
+    Ranking: transferable_count desc, then source_executed_total
+    desc, then source_id asc.
+    """
+    as_json = bool(getattr(args, "json", False))
+    to_store = (getattr(args, "to_store", "") or "").strip()
+    k = max(1, int(getattr(args, "k", 5) or 5))
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    if not to_store:
+        _emit_error("--to is required")
+        return
+
+    try:
+        from core.approval.queue import (
+            ApprovalStatus, get_approval_queue,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    sm = _get_store_manager()
+    fleet = sm.list_stores() or []
+    candidate_ids = [
+        s.get("store_id") for s in fleet
+        if s.get("store_id") and s.get("store_id") != to_store
+    ]
+
+    queue = get_approval_queue()
+
+    # Build the target's "already tried" set: every (engine,
+    # action_type) tuple in ANY status on the target. Same
+    # exclusion semantics as ``transfer suggest``.
+    target_tried: set[tuple[str, str]] = set()
+    for status in (
+        ApprovalStatus.EXECUTED, ApprovalStatus.FAILED,
+        ApprovalStatus.PENDING, ApprovalStatus.APPROVED,
+        ApprovalStatus.REJECTED, ApprovalStatus.EXPIRED,
+    ):
+        try:
+            rows = queue.list_by_status(
+                status, store_id=to_store, limit=2000,
+            )
+        except TypeError:
+            _emit_error(
+                "approval queue does not support per-store filter "
+                "(needs PR #239 or later)"
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "transfer sources target probe raised: %s", exc,
+            )
+            rows = []
+        for a in rows:
+            target_tried.add((a.engine, a.action_type))
+
+    # For each candidate source, count transferable actions.
+    sources: list[dict] = []
+    for sid in candidate_ids:
+        try:
+            src_rows = queue.list_by_status(
+                ApprovalStatus.EXECUTED,
+                store_id=sid, limit=2000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "transfer sources source probe raised: %s", exc,
+            )
+            src_rows = []
+
+        unique_actions: set[tuple[str, str]] = set()
+        transferable: set[tuple[str, str]] = set()
+        for a in src_rows:
+            key = (a.engine, a.action_type)
+            unique_actions.add(key)
+            if key not in target_tried:
+                transferable.add(key)
+
+        sources.append({
+            "store_id": sid,
+            "source_executed_total": len(src_rows),
+            "source_unique_actions": len(unique_actions),
+            "transferable_count": len(transferable),
+            "sample_transferable": sorted(
+                f"{e}/{at}" for e, at in transferable
+            )[:5],
+        })
+
+    sources.sort(key=lambda s: (
+        -s["transferable_count"],
+        -s["source_executed_total"],
+        s["store_id"],
+    ))
+    top = sources[:k]
+
+    envelope = {
+        "to_store": to_store,
+        "k": k,
+        "target_already_tried_count": len(target_tried),
+        "candidate_count": len(candidate_ids),
+        "sources": top,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    print(
+        f"Transfer sources for target '{to_store}' "
+        f"(top {len(top)} of {len(candidate_ids)} candidates):"
+    )
+    print()
+    if not top:
+        print("  No candidate stores in fleet.")
+        return
+    for i, s in enumerate(top, start=1):
+        print(
+            f"  [{i}] {s['store_id']}  "
+            f"transferable={s['transferable_count']}  "
+            f"(of {s['source_unique_actions']} unique actions, "
+            f"{s['source_executed_total']} total executed)"
+        )
+        if s["sample_transferable"]:
+            sample = ", ".join(s["sample_transferable"])
+            print(f"      sample: {sample}")
+    print()
+    print(
+        "  Next step:  "
+        f"shopai transfer suggest --from {top[0]['store_id']} "
+        f"--to {to_store}"
     )
 
 
