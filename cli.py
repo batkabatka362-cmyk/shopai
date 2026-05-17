@@ -616,6 +616,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw summary envelope as JSON",
     )
 
+    engine_guardrail_p = engine_sub.add_parser(
+        "guardrail",
+        help=(
+            "Show AGI v2 guardrail state across all engines + "
+            "recent-block counts. The 'is the AGI signal "
+            "actually refusing actions?' command."
+        ),
+    )
+    engine_guardrail_p.add_argument(
+        "--window-hours", type=int, default=24,
+        dest="window_hours",
+        help="Block-count window in hours (default: 24).",
+    )
+    engine_guardrail_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw guardrail report as JSON",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -5083,6 +5101,120 @@ def _cmd_engine_summary(args) -> None:
             if r.get("error"):
                 line += f"  err={r['error']}"
             print(line)
+
+
+def _cmd_engine_guardrail(args) -> None:
+    """Show AGI v2 guardrail state + recent-block counts across
+    all engines that have opted in.
+
+    Default text view renders one row per engine: env-var state
+    (ON/OFF) + count of guardrail-blocked actions in the recent
+    window. ``--json`` emits the raw report.
+
+    The block count reads ``pending_actions`` rows whose ``result_json``
+    payload's error field starts with ``agi_guardrail_blocked:`` --
+    that's the marker the v2 wiring records when it refuses to
+    mint.
+    """
+    as_json = bool(getattr(args, "json", False))
+    window_hours = max(1, int(getattr(args, "window_hours", 24) or 24))
+    cutoff = time.time() - window_hours * 3600.0
+
+    # Engines that have v2 guardrail wiring (in main commit history).
+    # Add new engines here as their PRs merge.
+    guardrail_engines = [
+        "loyalty",
+        "cart_recovery",
+        "browse_recovery",
+        "email_marketing",
+        "wholesale_b2b",
+        "discount_strategy",
+    ]
+
+    # Per-engine env-var state.
+    try:
+        from engines._agi_context import guardrail_enabled
+    except Exception as exc:  # noqa: BLE001
+        # Pre-PR-#247 codebase doesn't have the helper. Fall
+        # back to manual env var read.
+        logger.debug(
+            "engine guardrail status: import failed: %s", exc,
+        )
+
+        def guardrail_enabled(name: str) -> bool:
+            return os.environ.get(
+                f"SHOPAI_{name.upper()}_AGI_GUARDRAIL", "",
+            ) in {"1", "true", "yes", "on"}
+
+    # Recent-block counts: scan pending_actions for failures
+    # tagged with the agi_guardrail_blocked marker.
+    blocks_by_engine: dict[str, int] = {e: 0 for e in guardrail_engines}
+    try:
+        from core.approval.queue import get_approval_queue
+        queue = get_approval_queue()
+        with queue._conn:
+            rows = queue._conn.execute(
+                """SELECT engine, COUNT(*) as n
+                   FROM pending_actions
+                   WHERE status = 'failed'
+                     AND decided_at >= ?
+                     AND decision_reason LIKE 'agi_guardrail_blocked:%'
+                   GROUP BY engine""",
+                (cutoff,),
+            ).fetchall()
+        for r in rows:
+            if r["engine"] in blocks_by_engine:
+                blocks_by_engine[r["engine"]] = int(r["n"])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine guardrail status: queue read raised: %s", exc,
+        )
+
+    report = [
+        {
+            "engine": engine,
+            "guardrail_enabled": guardrail_enabled(engine),
+            "blocks_in_window": blocks_by_engine.get(engine, 0),
+            "env_var": f"SHOPAI_{engine.upper()}_AGI_GUARDRAIL",
+        }
+        for engine in guardrail_engines
+    ]
+
+    if as_json:
+        print(json.dumps({
+            "window_hours": window_hours,
+            "engines": report,
+        }, indent=2, default=str))
+        return
+
+    enabled_count = sum(1 for e in report if e["guardrail_enabled"])
+    total_blocks = sum(e["blocks_in_window"] for e in report)
+    print(
+        f"AGI v2 guardrail status (window: {window_hours}h)"
+    )
+    print(
+        f"  {enabled_count}/{len(report)} engine(s) enabled; "
+        f"{total_blocks} block(s) recorded"
+    )
+    print()
+    print(
+        f"  {'ENGINE':<22s} {'STATE':<6s} {'BLOCKS':>7s}  "
+        f"ENV VAR"
+    )
+    print("  " + "-" * 70)
+    for e in report:
+        state = "ON" if e["guardrail_enabled"] else "off"
+        marker = "*" if e["guardrail_enabled"] else " "
+        print(
+            f"  {marker}{e['engine']:<21s} {state:<6s} "
+            f"{e['blocks_in_window']:>7d}  {e['env_var']}"
+        )
+    print()
+    if enabled_count == 0:
+        print(
+            "  Enable any engine via env var, e.g.:\n"
+            "    export SHOPAI_LOYALTY_AGI_GUARDRAIL=1"
+        )
 
 
 def _cmd_engines_writebacks(args) -> None:
@@ -12832,7 +12964,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "summary":
             _cmd_engine_summary(args)
             return
-        print("Usage: shopai engine {summary}")
+        if action == "guardrail":
+            _cmd_engine_guardrail(args)
+            return
+        print("Usage: shopai engine {summary|guardrail}")
         return
 
     if args.command == "engines-writebacks":
