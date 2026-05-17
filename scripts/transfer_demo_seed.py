@@ -74,7 +74,30 @@ _TEMPLATES = [
 ]
 
 
-def _seed(from_store: str, to_store: str, n: int, clean: bool) -> int:
+def _outcome_for(i: int, realism: bool) -> tuple[str, float] | None:
+    """Return ``(polarity, revenue)`` for the i-th seeded action,
+    or ``None`` to skip outcome attachment entirely.
+
+    Default (realism=False) → always positive, monotonic revenue.
+    Realistic mode (realism=True) → mixed distribution:
+      i % 5 == 0 → no outcome (executed-but-feedback-pending)
+      i % 5 == 1 → negative outcome (refund-like)
+      else      → positive outcome (the typical case)
+    """
+    if not realism:
+        return ("positive", 50.0 * (i + 1))
+    bucket = i % 5
+    if bucket == 0:
+        return None
+    if bucket == 1:
+        return ("negative", -10.0 * (i + 1))
+    return ("positive", 50.0 * (i + 1))
+
+
+def _seed(
+    from_store: str, to_store: str, n: int, clean: bool,
+    *, realism: bool = False,
+) -> int:
     from core.approval.queue import (
         ApprovalStatus, get_approval_queue,
     )
@@ -85,11 +108,16 @@ def _seed(from_store: str, to_store: str, n: int, clean: bool) -> int:
         deleted = _clean_demo_rows(queue, [from_store, to_store])
         print(f"Cleaned {deleted} DEMO row(s) from prior runs.")
 
+    mode_label = "realistic" if realism else "happy-path"
     print(
         f"Seeding {n} executed action(s) per template on "
-        f"{from_store!r} ({len(_TEMPLATES)} templates)..."
+        f"{from_store!r} ({len(_TEMPLATES)} templates, "
+        f"{mode_label} outcomes)..."
     )
     seeded_ids: list[str] = []
+    positive_count = 0
+    negative_count = 0
+    no_outcome_count = 0
     for engine, action_type, capability, params in _TEMPLATES:
         for i in range(n):
             # Enqueue, then transition straight to EXECUTED via
@@ -112,27 +140,47 @@ def _seed(from_store: str, to_store: str, n: int, clean: bool) -> int:
                         time.time(), "demo_seed", action.id,
                     ),
                 )
-            # Attach a positive outcome so transfer-suggest's
-            # ranking has revenue / polarity signal.
-            try:
-                queue.record_outcome(
-                    action.id,
-                    topic="orders/create",
-                    polarity="positive",
-                    metrics={"revenue": 50.0 * (i + 1)},
-                    source_event="demo_seed",
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"  warning: outcome attach failed: {exc}")
+            outcome = _outcome_for(i, realism)
+            if outcome is None:
+                no_outcome_count += 1
+            else:
+                polarity, revenue = outcome
+                try:
+                    queue.record_outcome(
+                        action.id,
+                        topic="orders/create",
+                        polarity=polarity,
+                        metrics={"revenue": revenue},
+                        source_event="demo_seed",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"  warning: outcome attach failed: {exc}",
+                    )
+                if polarity == "positive":
+                    positive_count += 1
+                else:
+                    negative_count += 1
             seeded_ids.append(action.id)
 
     print(f"\nSeeded {len(seeded_ids)} action(s).")
+    if realism:
+        print(
+            f"  Polarity: +{positive_count} positive  "
+            f"-{negative_count} negative  "
+            f"{no_outcome_count} no-outcome-yet"
+        )
     print()
     print("Verify with:")
     print(
         f"  python -m cli transfer suggest "
         f"--from {from_store} --to {to_store}"
     )
+    if realism:
+        print(
+            f"  python -m cli transfer outcomes "
+            f"--from {from_store}"
+        )
     print()
     print(
         "To clean up afterwards, re-run with --clean (or use "
@@ -202,6 +250,15 @@ def main() -> int:
             "re-seeding."
         ),
     )
+    parser.add_argument(
+        "--realism", action="store_true",
+        help=(
+            "Realistic outcome distribution instead of "
+            "all-positive. ~60%% positive, ~20%% negative, "
+            "~20%% no-outcome-yet. Gives ``transfer outcomes`` "
+            "and ``daily-brief`` polarity rollups real signal."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -219,6 +276,7 @@ def main() -> int:
         to_store=args.to_store,
         n=max(0, int(args.n)),
         clean=args.clean,
+        realism=args.realism,
     )
 
 
