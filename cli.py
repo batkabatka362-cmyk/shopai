@@ -472,6 +472,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the ranked sources as JSON.",
     )
 
+    transfer_history_p = transfer_sub.add_parser(
+        "history",
+        help=(
+            "List recent cross-store transfer apply events. "
+            "Scans the approval queue for actions enqueued via "
+            "``shopai transfer apply`` (narrative starts with "
+            "``Transfer suggestion:``)."
+        ),
+    )
+    transfer_history_p.add_argument(
+        "--from", default="", dest="from_store",
+        help="Filter to transfers originating from this store",
+    )
+    transfer_history_p.add_argument(
+        "--to", default="", dest="to_store",
+        help="Filter to transfers targeting this store",
+    )
+    transfer_history_p.add_argument(
+        "--engine", default="",
+        help="Filter to transfers of this engine",
+    )
+    transfer_history_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Cap on history rows (default 20).",
+    )
+    transfer_history_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the history rows as JSON.",
+    )
+
     # ── Model-router commands ────────────────────────────────
     mr_p = sub.add_parser(
         "model-router",
@@ -2173,7 +2203,10 @@ def _cmd_transfer(args) -> None:
     if verb == "sources":
         _cmd_transfer_sources(args)
         return
-    print("Usage: shopai transfer {suggest|apply|sources}")
+    if verb == "history":
+        _cmd_transfer_history(args)
+        return
+    print("Usage: shopai transfer {suggest|apply|sources|history}")
 
 
 def _cmd_transfer_suggest(args) -> None:
@@ -2740,6 +2773,171 @@ def _cmd_transfer_sources(args) -> None:
         f"shopai transfer suggest --from {top[0]['store_id']} "
         f"--to {to_store}"
     )
+
+
+def _cmd_transfer_history(args) -> None:
+    """List recent cross-store transfer apply events.
+
+    Scans ``pending_actions`` for rows whose ``narrative`` starts
+    with ``Transfer suggestion:`` -- the marker that
+    ``shopai transfer apply`` writes when it enqueues. Parses the
+    narrative to extract from/to stores, then surfaces a chronological
+    audit trail of cross-store transfers.
+
+    Filters: ``--from``, ``--to``, ``--engine`` narrow the scan;
+    ``--limit`` caps row count (default 20).
+    """
+    as_json = bool(getattr(args, "json", False))
+    from_store = (getattr(args, "from_store", "") or "").strip()
+    to_store = (getattr(args, "to_store", "") or "").strip()
+    engine = (getattr(args, "engine", "") or "").strip()
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+
+    try:
+        from core.approval.queue import get_approval_queue
+    except Exception as exc:  # noqa: BLE001
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": str(exc)},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: approval queue unavailable: {exc}")
+        sys.exit(1)
+        return
+
+    rows: list[dict] = []
+    try:
+        queue = get_approval_queue()
+        clauses = ["narrative LIKE 'Transfer suggestion:%' "
+                   "OR narrative LIKE '%||  Transfer suggestion:%'"]
+        params: list = []
+        if engine:
+            clauses.append("engine = ?")
+            params.append(engine)
+        if to_store:
+            # store_id on the row IS the target store (transfer
+            # apply always enqueues with store_id=to_store).
+            clauses.append("store_id = ?")
+            params.append(to_store)
+        params.append(limit)
+        sql = (
+            "SELECT id, engine, action_type, capability, "
+            "store_id, status, narrative, proposed_at, "
+            "decided_at FROM pending_actions WHERE "
+            + " AND ".join(f"({c})" for c in clauses)
+            + " ORDER BY proposed_at DESC LIMIT ?"
+        )
+        with queue._conn:
+            raw_rows = queue._conn.execute(sql, params).fetchall()
+        for r in raw_rows:
+            parsed_from = _parse_from_store_from_narrative(
+                r["narrative"] or "",
+            )
+            # --from filter is applied AFTER narrative parse since
+            # the source store isn't in any indexed column.
+            if from_store and parsed_from != from_store:
+                continue
+            rows.append({
+                "action_id": r["id"],
+                "engine": r["engine"],
+                "action_type": r["action_type"],
+                "capability": r["capability"],
+                "from_store": parsed_from,
+                "to_store": r["store_id"],
+                "status": r["status"],
+                "proposed_at": r["proposed_at"],
+                "decided_at": r["decided_at"],
+                "narrative": r["narrative"] or "",
+            })
+    except Exception as exc:  # noqa: BLE001
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": str(exc)},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: queue scan failed: {exc}")
+        sys.exit(1)
+        return
+
+    envelope = {
+        "filters": {
+            "from_store": from_store,
+            "to_store": to_store,
+            "engine": engine,
+            "limit": limit,
+        },
+        "count": len(rows),
+        "rows": rows,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    if not rows:
+        bits = []
+        if from_store:
+            bits.append(f"from={from_store}")
+        if to_store:
+            bits.append(f"to={to_store}")
+        if engine:
+            bits.append(f"engine={engine}")
+        scope = f" ({', '.join(bits)})" if bits else ""
+        print(f"No transfer history{scope}.")
+        return
+
+    print(f"Transfer history ({len(rows)} row(s)):")
+    print()
+    now = time.time()
+    for r in rows:
+        ts = r["proposed_at"] or 0.0
+        try:
+            age_h = max(0.0, (now - float(ts)) / 3600.0)
+            age_str = (
+                f"{age_h:.1f}h ago" if age_h < 48
+                else f"{age_h / 24:.1f}d ago"
+            )
+        except (TypeError, ValueError):
+            age_str = "?"
+        print(
+            f"  {r['engine']}/{r['action_type']}  "
+            f"{r['from_store'] or '?'} -> {r['to_store'] or '?'}  "
+            f"[{r['status']}]  {age_str}"
+        )
+        print(f"      action_id: {r['action_id']}")
+
+
+def _parse_from_store_from_narrative(narrative: str) -> str:
+    """Extract the source store from a transfer apply narrative.
+
+    Narrative shape produced by ``_cmd_transfer_apply``:
+        ``Transfer suggestion: <engine>/<action> from <A> to <B>. ...``
+    or with operator prefix:
+        ``<note>  ||  Transfer suggestion: ... from <A> to <B>. ...``
+
+    Returns the source store name or ``""`` if parse fails. The
+    parser is permissive on purpose -- a future narrative format
+    bump shouldn't crash history.
+    """
+    if not narrative:
+        return ""
+    marker = "Transfer suggestion:"
+    idx = narrative.find(marker)
+    if idx < 0:
+        return ""
+    tail = narrative[idx + len(marker):]
+    # ".. from <A> to <B>. .."
+    from_idx = tail.find(" from ")
+    if from_idx < 0:
+        return ""
+    after_from = tail[from_idx + len(" from "):]
+    to_idx = after_from.find(" to ")
+    if to_idx < 0:
+        return ""
+    return after_from[:to_idx].strip()
+
 
 
 def _cmd_daily_brief(args) -> None:
