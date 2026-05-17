@@ -439,6 +439,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit the enqueued-action envelope as JSON.",
     )
+    transfer_apply_p.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help=(
+            "Preview the transfer without enqueueing. Shows the "
+            "source template, merged params, and narrative that "
+            "would be written. Same validation gates fire (source "
+            "lookup, target duplicate-protection)."
+        ),
+    )
 
     # ── Model-router commands ────────────────────────────────
     mr_p = sub.add_parser(
@@ -2386,6 +2395,40 @@ def _cmd_transfer_apply(args) -> None:
     )
     if operator_note:
         narrative = f"{operator_note}  ||  {narrative}"
+
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    if dry_run:
+        if as_json:
+            print(json.dumps({
+                "status": "dry_run",
+                "would_enqueue": True,
+                "engine": engine,
+                "action_type": action_type,
+                "capability": capability,
+                "from_store": from_store,
+                "to_store": to_store,
+                "source_action_id": template.id,
+                "source_run_count": len(matching),
+                "params": base_params,
+                "narrative": narrative,
+            }, indent=2, default=str))
+            return
+        print(
+            f"DRY RUN -- would transfer: "
+            f"{engine}/{action_type}  "
+            f"{from_store} -> {to_store}"
+        )
+        print(
+            f"  source template id: {template.id}  "
+            f"capability: {capability}"
+        )
+        print(f"  source runs: {len(matching)}")
+        print(f"  params:    {base_params}")
+        print(f"  narrative: {narrative}")
+        print()
+        print("  Re-run without --dry-run to enqueue.")
+        return
 
     try:
         action = queue.enqueue(
