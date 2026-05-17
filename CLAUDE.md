@@ -1051,16 +1051,37 @@ mint = lost revenue).
 
 | Command | Scope | PR |
 |---|---|---|
-| `shopai world-model show <store>` | Per-store snapshot | #230, #241 |
+| `shopai world-model show <store>` | Per-store snapshot (incl. transfers section) | #230, #241, #266 |
 | `shopai world-model fleet` | All stores, side by side | #251 |
 | `shopai store fleet` | Fleet stats summary | #233 |
-| `shopai daily-brief` | Cron-able activity rollup | #238 |
+| `shopai daily-brief` | Cron-able activity rollup (incl. transfer activity) | #238, #258 |
+| `shopai transfer sources --to B` | Rank fleet stores by transferable surface area | #260 |
 | `shopai transfer suggest --from A --to B` | Cross-store recommender | #242 |
+| `shopai transfer apply --dry-run` | Preview a transfer before enqueueing | #262 |
+| `shopai transfer apply` | Enqueue a transfer as PENDING on target | #254 |
+| `shopai transfer history` | Audit trail of past transfers | #265 |
+| `shopai transfer outcomes` | Did transferred actions pay off on the target? | #257 |
 | `shopai engine summary <engine>` | Single-engine drilldown | #234 |
-| `shopai engine guardrail` | v2 guardrail state + blocks/24h | #249 |
+| `shopai engine guardrail` | v2 guardrail state + recent blocks | #249, #253 |
+| `shopai engine fleet <engine>` | One engine × all stores (where's it winning?) | #259 |
+| `shopai engine compare <a> <b>` | Head-to-head fleet comparison | #263 |
+| `shopai engine ranking` | Fleet-wide engine leaderboard by outcome score | #264 |
 | `shopai approvals show <id> --with-context` | Action + similar past | #237 |
-| `shopai memory-recall --engine X` | RAG retrieval inspector | #231 |
+| `shopai memory-recall --engine X [--store S]` | RAG retrieval inspector | #231, #261 |
 | `shopai model-router classify` | Local-vs-cloud tier inspector | #232 |
+
+The full cross-store empire-AGI workflow chains these commands:
+
+```bash
+shopai transfer sources --to B           # 1. pick best source A
+shopai transfer suggest --from A --to B  # 2. see candidates
+shopai transfer apply ... --dry-run      # 3. preview
+shopai transfer apply ...                # 4. enqueue PENDING
+shopai approvals show <id>               # 5. operator review
+# (approval → execution → outcome capture)
+shopai transfer history                  # 6. audit
+shopai transfer outcomes                 # 7. measure payoff
+```
 
 ### Schema migration patterns
 
