@@ -11,11 +11,14 @@ import pytest
 
 from core.transfer_narrative import (
     SQL_LIKE_CLAUSE,
+    TransferRecord,
     format_narrative,
     is_transfer_narrative,
     parse_engine_action,
+    parse_source_run_count,
     parse_source_store,
     parse_target_store,
+    record_from_narrative,
 )
 
 
@@ -262,3 +265,152 @@ class TestRoundTrip:
             "loyalty", "mint_loyalty_code",
         )
         assert is_transfer_narrative(n) is True
+        # Round-trip the source_run_count too.
+        assert parse_source_run_count(n) == 5
+
+
+# ─── parse_source_run_count ──────────────────────────────────
+
+
+class TestParseSourceRunCount:
+
+    def test_canonical_form_single_digit(self):
+        n = format_narrative(
+            engine="loyalty", action_type="x",
+            from_store="a", to_store="b",
+            source_run_count=3,
+        )
+        assert parse_source_run_count(n) == 3
+
+    def test_canonical_form_multi_digit(self):
+        n = format_narrative(
+            engine="loyalty", action_type="x",
+            from_store="a", to_store="b",
+            source_run_count=147,
+        )
+        assert parse_source_run_count(n) == 147
+
+    def test_zero_run_count(self):
+        """``0 prior successful run(s)`` is a valid value -- when
+        a transfer is applied against a source with no prior
+        successful executions yet (edge case)."""
+        n = format_narrative(
+            engine="loyalty", action_type="x",
+            from_store="a", to_store="b",
+            source_run_count=0,
+        )
+        assert parse_source_run_count(n) == 0
+
+    def test_operator_prefix_form(self):
+        n = format_narrative(
+            engine="loyalty", action_type="x",
+            from_store="a", to_store="b",
+            source_run_count=4,
+            operator_note="parity push",
+        )
+        assert parse_source_run_count(n) == 4
+
+    def test_malformed_returns_none(self):
+        # Not a transfer narrative at all.
+        assert parse_source_run_count("") is None
+        assert parse_source_run_count("random text") is None
+        # Marker present but no "Source had N" phrase.
+        assert (
+            parse_source_run_count(
+                "Transfer suggestion: loyalty/x from a to b."
+            )
+            is None
+        )
+
+    def test_phrase_present_no_digits_returns_none(self):
+        """If the phrase 'Source had ' appears but isn't followed
+        by digits, return None rather than guessing."""
+        bad = (
+            "Transfer suggestion: loyalty/x from a to b. "
+            "Source had several prior successful run(s)."
+        )
+        assert parse_source_run_count(bad) is None
+
+    def test_non_transfer_marker_returns_none(self):
+        """The phrase 'Source had ' shouldn't be parsed in
+        narratives that aren't transfer narratives -- avoid
+        false-positive parses on unrelated text."""
+        bad = "Source had 5 prior successful runs (not a transfer)."
+        assert parse_source_run_count(bad) is None
+
+
+# ─── TransferRecord + record_from_narrative ──────────────────
+
+
+class TestRecordFromNarrative:
+
+    def test_canonical_narrative_returns_full_record(self):
+        n = format_narrative(
+            engine="loyalty",
+            action_type="mint_loyalty_code",
+            from_store="store-alpha",
+            to_store="store-beta",
+            source_run_count=3,
+        )
+        rec = record_from_narrative(n)
+        assert rec is not None
+        assert isinstance(rec, TransferRecord)
+        assert rec.narrative == n
+        assert rec.engine == "loyalty"
+        assert rec.action_type == "mint_loyalty_code"
+        assert rec.from_store == "store-alpha"
+        assert rec.to_store == "store-beta"
+        assert rec.source_run_count == 3
+
+    def test_operator_prefix_returns_full_record(self):
+        n = format_narrative(
+            engine="cart_recovery",
+            action_type="mint_cart_recovery_code",
+            from_store="x", to_store="y",
+            source_run_count=7,
+            operator_note="parity push",
+        )
+        rec = record_from_narrative(n)
+        assert rec is not None
+        assert rec.engine == "cart_recovery"
+        assert rec.from_store == "x"
+        assert rec.to_store == "y"
+        assert rec.source_run_count == 7
+
+    def test_non_transfer_returns_none(self):
+        """Anything without the marker isn't a transfer record."""
+        assert record_from_narrative("") is None
+        assert record_from_narrative("just some narrative") is None
+        # Empty body but contains the literal marker text -- still
+        # surface as a record (with degraded fields). The
+        # is-transfer-or-not boundary lives at the marker check.
+        rec = record_from_narrative("Transfer suggestion:")
+        assert rec is not None
+        assert rec.engine == ""
+        assert rec.from_store == ""
+
+    def test_partial_narrative_returns_partial_record(self):
+        """Narrative with the marker but a malformed tail
+        returns a record with empty / None fields -- matches
+        the permissive contract of the individual parsers."""
+        bad = (
+            "Transfer suggestion: loyalty/mint_loyalty_code "
+            "from alpha to beta."
+        )  # missing "Source had N..." tail
+        rec = record_from_narrative(bad)
+        assert rec is not None
+        assert rec.engine == "loyalty"
+        assert rec.action_type == "mint_loyalty_code"
+        assert rec.from_store == "alpha"
+        assert rec.to_store == "beta"
+        # Run count was missing → None.
+        assert rec.source_run_count is None
+
+    def test_record_is_frozen(self):
+        rec = record_from_narrative(format_narrative(
+            engine="loyalty", action_type="x",
+            from_store="a", to_store="b",
+            source_run_count=1,
+        ))
+        with pytest.raises(Exception):
+            rec.engine = "modified"  # type: ignore[misc]
