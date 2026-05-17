@@ -395,6 +395,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw suggestions as JSON.",
     )
 
+    transfer_apply_p = transfer_sub.add_parser(
+        "apply",
+        help=(
+            "Enqueue a transfer suggestion as a PENDING action "
+            "on the target store. Operator reviews via "
+            "``shopai approvals show`` and approves/rejects."
+        ),
+    )
+    transfer_apply_p.add_argument(
+        "--from", required=True, dest="from_store",
+        help="Source store ID (the one with the success data)",
+    )
+    transfer_apply_p.add_argument(
+        "--to", required=True, dest="to_store",
+        help="Target store ID (where the action will be queued)",
+    )
+    transfer_apply_p.add_argument(
+        "--engine", required=True,
+        help="Engine to transfer from (e.g. loyalty)",
+    )
+    transfer_apply_p.add_argument(
+        "--action-type", required=True, dest="action_type",
+        help="Specific action_type to transfer (e.g. mint_loyalty_code)",
+    )
+    transfer_apply_p.add_argument(
+        "--params-json", default="", dest="params_json",
+        help=(
+            "Optional JSON dict to override the source-store "
+            "params. e.g. ``--params-json '{\"customer_id\": "
+            "\"new-id\"}'``. Omit to use the source's most "
+            "recent successful params verbatim."
+        ),
+    )
+    transfer_apply_p.add_argument(
+        "--narrative", default="",
+        help=(
+            "Optional operator note prepended to the auto-"
+            "generated transfer narrative."
+        ),
+    )
+    transfer_apply_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the enqueued-action envelope as JSON.",
+    )
+
     # ── Model-router commands ────────────────────────────────
     mr_p = sub.add_parser(
         "model-router",
@@ -2007,7 +2052,10 @@ def _cmd_transfer(args) -> None:
     if verb == "suggest":
         _cmd_transfer_suggest(args)
         return
-    print("Usage: shopai transfer {suggest}")
+    if verb == "apply":
+        _cmd_transfer_apply(args)
+        return
+    print("Usage: shopai transfer {suggest|apply}")
 
 
 def _cmd_transfer_suggest(args) -> None:
@@ -2206,6 +2254,181 @@ def _cmd_transfer_suggest(args) -> None:
         if s.get("sample_params"):
             keys = sorted(s["sample_params"].keys())[:5]
             print(f"      sample params: {', '.join(keys)}")
+
+
+def _cmd_transfer_apply(args) -> None:
+    """Enqueue a transfer suggestion as a PENDING action on the
+    target store.
+
+    Closes the suggest→action loop: ``transfer suggest`` shows
+    recommendations, this command turns one of them into a real
+    pending action that operators review via ``shopai approvals
+    show`` and approve/reject.
+
+    Reads the most recent successful execution of the matching
+    (engine, action_type) on the source store to pull a params
+    template, then enqueues a new PENDING action on the target
+    store with those params (or operator-supplied overrides).
+    No Shopify mutation runs -- this is a queue write only.
+    """
+    as_json = bool(getattr(args, "json", False))
+    from_store = args.from_store
+    to_store = args.to_store
+    engine = args.engine
+    action_type = args.action_type
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    if from_store == to_store:
+        _emit_error("--from and --to must be different stores")
+        return
+
+    # Optional operator-supplied param overrides.
+    override_params: dict | None = None
+    raw = getattr(args, "params_json", "") or ""
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                _emit_error(
+                    "--params-json must be a JSON object",
+                )
+                return
+            override_params = parsed
+        except json.JSONDecodeError as exc:
+            _emit_error(f"--params-json is not valid JSON: {exc}")
+            return
+
+    try:
+        from core.approval.queue import (
+            ApprovalStatus, get_approval_queue,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    queue = get_approval_queue()
+
+    # Find the most recent EXECUTED action on the source store
+    # matching the engine + action_type. That's our template.
+    try:
+        source_actions = queue.list_by_status(
+            ApprovalStatus.EXECUTED,
+            engine=engine,
+            store_id=from_store,
+            limit=200,
+        )
+    except TypeError:
+        _emit_error(
+            "approval queue does not support per-store filter "
+            "(needs PR #239 or later)"
+        )
+        return
+
+    matching = [
+        a for a in source_actions
+        if a.action_type == action_type
+    ]
+    if not matching:
+        _emit_error(
+            f"no successful {action_type!r} found on source store "
+            f"{from_store!r} for engine {engine!r}"
+        )
+        return
+
+    # Reject if the same (engine, action_type) is already on
+    # target store in ANY status (operator may have already
+    # tried this transfer or run the action organically).
+    for status in (
+        ApprovalStatus.EXECUTED, ApprovalStatus.FAILED,
+        ApprovalStatus.PENDING, ApprovalStatus.APPROVED,
+        ApprovalStatus.REJECTED,
+    ):
+        try:
+            existing = queue.list_by_status(
+                status, engine=engine, store_id=to_store,
+                limit=200,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "transfer apply: target probe raised: %s", exc,
+            )
+            existing = []
+        if any(a.action_type == action_type for a in existing):
+            _emit_error(
+                f"{engine}/{action_type} already exists on target "
+                f"store {to_store!r} (status={status.value}); "
+                "skipping to avoid duplicate enqueue"
+            )
+            return
+
+    template = matching[0]  # most recent by decided_at desc
+    capability = template.capability
+    base_params = dict(template.params or {})
+    if override_params:
+        base_params.update(override_params)
+
+    operator_note = (
+        getattr(args, "narrative", "") or ""
+    ).strip()
+    narrative = (
+        f"Transfer suggestion: {engine}/{action_type} "
+        f"from {from_store} to {to_store}. "
+        f"Source had {len(matching)} prior successful run(s)."
+    )
+    if operator_note:
+        narrative = f"{operator_note}  ||  {narrative}"
+
+    try:
+        action = queue.enqueue(
+            engine=engine,
+            action_type=action_type,
+            capability=capability,
+            params=base_params,
+            narrative=narrative,
+            store_id=to_store,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"enqueue failed: {exc}")
+        return
+
+    if as_json:
+        print(json.dumps({
+            "status": "ok",
+            "action_id": action.id,
+            "engine": engine,
+            "action_type": action_type,
+            "capability": capability,
+            "from_store": from_store,
+            "to_store": to_store,
+            "params": base_params,
+            "narrative": narrative,
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Transfer applied: {engine}/{action_type}  "
+        f"{from_store} -> {to_store}"
+    )
+    print(f"  action_id: {action.id}")
+    print(
+        f"  source runs: {len(matching)}  "
+        f"capability: {capability}"
+    )
+    print(f"  narrative:  {narrative}")
+    print()
+    print(
+        "  Review with:  "
+        f"shopai approvals show {action.id} --with-context"
+    )
 
 
 def _cmd_daily_brief(args) -> None:
