@@ -1,5 +1,48 @@
 # Changelog
 
+## v3.0.0 (2026-05-17)
+
+### Empire-AGI: Cross-store learning + full operator surface
+
+**AGI orchestration stack (Phase 9 + 10)**
+- 3-layer AGI: per-store world model, decision-time RAG retrieval, cost-aware model router (PRs #230/#231/#232)
+- `pending_actions.store_id` column + idempotent ALTER TABLE migration (PR #239)
+- Thread-local `active_store` context + enqueue auto-fill (PR #243); autonomous loop wraps `run_cycle` (PR #244)
+- v2 AGI guardrail — engines REFUSE on unambiguous-negative signal (PRs #245, #247, #250); env-var opt-in per engine
+
+**Cross-store transfer workflow (end-to-end)**
+- `shopai transfer sources --to B` — rank fleet stores by transferable surface area (PR #260)
+- `shopai transfer suggest --from A --to B` — cross-store recommender (PR #242)
+- `shopai transfer apply --dry-run` — preview transfer before enqueueing (PR #262)
+- `shopai transfer apply` — enqueue PENDING action on target store, closes suggest→action loop (PR #254)
+- `shopai transfer history` — audit trail of past transfers (PR #265)
+- `shopai transfer outcomes` — measure whether transfers paid off on target (PR #257)
+- `scripts/transfer_demo_seed.py` — synthetic seed for end-to-end live verification (PR #246)
+
+**Engine-level fleet diagnostics**
+- `shopai engine summary <engine>` — per-engine drilldown (PR #234)
+- `shopai engine guardrail [--recent N]` — v2 state + block events (PRs #249, #253)
+- `shopai engine fleet <engine>` — one engine × all stores (PR #259)
+- `shopai engine compare <a> <b>` — head-to-head fleet comparison (PR #263)
+- `shopai engine ranking` — fleet-wide leaderboard by outcome score (PR #264)
+
+**Operator situational awareness**
+- `shopai world-model show <store>` — per-store snapshot incl. transfers section (PRs #230, #241, #266)
+- `shopai world-model fleet` — multi-store snapshot view (PR #251)
+- `shopai store fleet` — fleet stats summary (PR #233)
+- `shopai daily-brief` — cron-able morning rollup incl. transfer activity (PRs #238, #258)
+- `shopai approvals show <id> --with-context` — action + similar past decisions (PR #237)
+- `shopai memory-recall --engine X [--store S]` — RAG retrieval inspector (PRs #231, #261)
+
+**Architecture**
+- `core/transfer_narrative.py` — single source of truth for transfer narrative format/parse/SQL pattern (PR #268)
+- `core.world_model._section_transfers` — narrative-based transfer detection per store
+- Empire-AGI workflow: `sources → suggest → dry-run → apply → review → history → outcomes`
+
+**Stats**
+- 23+ PRs in the empire-AGI rollup
+- Full cross-store learning loop: discover → preview → execute → audit → measure outcomes
+
 ## v2.0.0 (2026-03-31)
 
 ### Full Autonomous Mode
