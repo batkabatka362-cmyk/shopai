@@ -2109,6 +2109,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Page size (default: 10)",
     )
 
+    approvals_outcome = approvals_sub.add_parser(
+        "outcome",
+        help=(
+            "Manually record an outcome on an executed action. "
+            "Use when Shopify webhooks miss an event or for "
+            "retroactive corrections."
+        ),
+    )
+    approvals_outcome.add_argument(
+        "action_id",
+        help="Action ID (e.g. ``appr_1779011988196_09728cbb``)",
+    )
+    approvals_outcome.add_argument(
+        "--polarity", required=True,
+        choices=["positive", "negative", "neutral"],
+        help="Outcome polarity",
+    )
+    approvals_outcome.add_argument(
+        "--revenue", type=float, default=0.0,
+        help=(
+            "Revenue impact in dollars (positive for gains, "
+            "negative for refunds). Default 0."
+        ),
+    )
+    approvals_outcome.add_argument(
+        "--topic", default="manual",
+        help=(
+            "Outcome topic / event tag (default: ``manual``). "
+            "Mirrors the Shopify webhook topic field "
+            "(e.g. ``orders/create``, ``refunds/create``)."
+        ),
+    )
+    approvals_outcome.add_argument(
+        "--source", default="operator",
+        dest="source_event",
+        help=(
+            "Source event tag (default: ``operator``). Helps "
+            "downstream queries distinguish manual entries "
+            "from webhook-attributed outcomes."
+        ),
+    )
+    approvals_outcome.add_argument(
+        "--json", action="store_true",
+        help="Emit the recorded outcome as JSON.",
+    )
+
     # ── Pipeline commands ────────────────────────────────────
     pipeline = sub.add_parser("pipeline", help="Run a data pipeline")
     pipeline.add_argument("pipeline_name", choices=["product", "marketing", "analytics"])
@@ -13110,6 +13156,9 @@ def _cmd_approvals(args) -> None:
     if verb == "trace":
         _cmd_approvals_trace(args)
         return
+    if verb == "outcome":
+        _cmd_approvals_outcome(args)
+        return
     print(
         "Usage:\n"
         "  shopai approvals pending     [--engine NAME] [--limit N]\n"
@@ -14787,6 +14836,111 @@ def _cmd_approvals_recent(args) -> None:
         elif status == ApprovalStatus.EXPIRED and a.decision_reason:
             line += f"  ({a.decision_reason})"
         print(line)
+
+
+def _cmd_approvals_outcome(args) -> None:
+    """Manually record an outcome on an executed action.
+
+    Use cases:
+      - Shopify webhooks missed an event and the action's
+        learning signal is incomplete.
+      - Retroactive correction (operator marks an action as
+        positive/negative after observing real-world impact).
+      - Manual override during operator-driven testing.
+
+    Writes a row to ``action_outcomes`` via the canonical
+    ``queue.record_outcome(...)`` API -- same path as the
+    webhook-driven recorder, so the AGI signal flows through
+    ``DecisionRetrieval`` + ``MemoryIntelligence`` identically.
+    """
+    as_json = bool(getattr(args, "json", False))
+    action_id = args.action_id
+    polarity = args.polarity
+    revenue = float(getattr(args, "revenue", 0.0) or 0.0)
+    topic = (getattr(args, "topic", "manual") or "manual").strip()
+    source_event = (
+        getattr(args, "source_event", "operator") or "operator"
+    ).strip()
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    try:
+        from core.approval.queue import get_approval_queue
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    queue = get_approval_queue()
+
+    # Verify the action exists before recording the outcome --
+    # ``record_outcome`` silently no-ops on unknown ids, which
+    # makes operator typos invisible. The CLI surface should
+    # surface them.
+    try:
+        action = queue.get(action_id)
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"action lookup failed: {exc}")
+        return
+
+    if action is None:
+        _emit_error(f"action {action_id!r} not found")
+        return
+
+    metrics = {}
+    if revenue != 0.0:
+        metrics["revenue"] = revenue
+    metrics["manually_recorded"] = True
+
+    try:
+        recorded = queue.record_outcome(
+            action_id,
+            topic=topic,
+            polarity=polarity,
+            metrics=metrics,
+            source_event=source_event,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"record_outcome failed: {exc}")
+        return
+
+    if not recorded:
+        _emit_error(
+            f"queue.record_outcome returned falsy for {action_id!r} "
+            "(action may not be executed yet)"
+        )
+        return
+
+    envelope = {
+        "status": "ok",
+        "action_id": action_id,
+        "engine": getattr(action, "engine", None),
+        "action_type": getattr(action, "action_type", None),
+        "polarity": polarity,
+        "topic": topic,
+        "source_event": source_event,
+        "metrics": metrics,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    print(f"Outcome recorded on {action_id}")
+    print(
+        f"  {action.engine}/{action.action_type}  "
+        f"polarity={polarity}  topic={topic}"
+    )
+    if revenue:
+        print(f"  revenue=${revenue:.2f}")
+    print(f"  source_event={source_event}")
 
 
 def _cmd_approvals_audit(args) -> None:
