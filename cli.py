@@ -532,6 +532,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the outcomes rollup as JSON.",
     )
 
+    transfer_credit_p = transfer_sub.add_parser(
+        "credit",
+        help=(
+            "Attribute downstream transfer outcomes back to "
+            "source actions. Answers 'which of my engine "
+            "actions on store-A inspired successful transfers "
+            "across the fleet?' Read-side analytics over the "
+            "credit graph (PR #284)."
+        ),
+    )
+    transfer_credit_p.add_argument(
+        "--source-store", default="", dest="source_store",
+        help=(
+            "Optional: only credits for transfers originating "
+            "from this store"
+        ),
+    )
+    transfer_credit_p.add_argument(
+        "--engine", default="",
+        help="Optional: only credits for one engine",
+    )
+    transfer_credit_p.add_argument(
+        "--limit", type=int, default=20,
+        help=(
+            "Cap on credit rows returned (default 20). The "
+            "underlying scan covers up to 500 target actions."
+        ),
+    )
+    transfer_credit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the credit graph as JSON.",
+    )
+
     # ── Model-router commands ────────────────────────────────
     mr_p = sub.add_parser(
         "model-router",
@@ -2342,7 +2375,13 @@ def _cmd_transfer(args) -> None:
     if verb == "outcomes":
         _cmd_transfer_outcomes(args)
         return
-    print("Usage: shopai transfer {suggest|apply|sources|history|outcomes}")
+    if verb == "credit":
+        _cmd_transfer_credit(args)
+        return
+    print(
+        "Usage: shopai transfer "
+        "{suggest|apply|sources|history|outcomes|credit}"
+    )
 
 
 def _cmd_transfer_suggest(args) -> None:
@@ -3244,6 +3283,122 @@ def _cmd_transfer_outcomes(args) -> None:
         f"rev=${rollup['revenue_total']:.2f}"
     )
 
+
+def _cmd_transfer_credit(args) -> None:
+    """Attribute downstream transfer outcomes back to source
+    actions.
+
+    Walks the chain backward via ``core.transfer_credit``: for
+    every target-side transfer-applied action, parses the
+    narrative to find the source (engine, action_type, store)
+    and aggregates the action's outcomes back to that source
+    tuple. Operators see "loyalty/mint on store-A inspired 5
+    successful transfers with $250 attributed revenue."
+    """
+    as_json = bool(getattr(args, "json", False))
+    source_store = (
+        getattr(args, "source_store", "") or ""
+    ).strip()
+    engine = (getattr(args, "engine", "") or "").strip()
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    try:
+        from core.approval.queue import get_approval_queue
+        from core.transfer_credit import compute_transfer_credits
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    queue = get_approval_queue()
+
+    try:
+        credits = compute_transfer_credits(
+            queue,
+            source_store=source_store or None,
+            engine=engine or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"credit graph computation failed: {exc}")
+        return
+
+    top = credits[:limit]
+    rows = [
+        {
+            "source_store": c.source_store,
+            "engine": c.engine,
+            "action_type": c.action_type,
+            "transfer_count": c.transfer_count,
+            "executed_count": c.executed_count,
+            "positive_outcomes": c.positive_outcomes,
+            "negative_outcomes": c.negative_outcomes,
+            "revenue": c.revenue,
+            "score": c.score,
+        }
+        for c in top
+    ]
+
+    envelope = {
+        "filters": {
+            "source_store": source_store,
+            "engine": engine,
+            "limit": limit,
+        },
+        "total_returned": len(rows),
+        "total_keys": len(credits),
+        "rows": rows,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    if not rows:
+        bits = []
+        if source_store:
+            bits.append(f"source={source_store}")
+        if engine:
+            bits.append(f"engine={engine}")
+        scope = f" ({', '.join(bits)})" if bits else ""
+        print(f"No transfer credit attributable{scope}.")
+        return
+
+    label = (
+        f"Transfer credit ({len(rows)} of "
+        f"{len(credits)} source action(s) ranked):"
+    )
+    print(label)
+    print()
+    for i, r in enumerate(rows, start=1):
+        score_str = (
+            "n/a" if r["score"] is None
+            else f"{r['score']:.0%}"
+        )
+        rev_str = (
+            f"  rev=${r['revenue']:,.2f}"
+            if r["revenue"]
+            else ""
+        )
+        print(
+            f"  [{i}] {r['source_store']}/{r['engine']}/"
+            f"{r['action_type']}"
+        )
+        print(
+            f"      transfers={r['transfer_count']}  "
+            f"executed={r['executed_count']}  "
+            f"+{r['positive_outcomes']} / "
+            f"-{r['negative_outcomes']}  "
+            f"score={score_str}{rev_str}"
+        )
 
 
 def _cmd_daily_brief(args) -> None:
