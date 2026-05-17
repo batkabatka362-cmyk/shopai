@@ -155,6 +155,38 @@ GUARDRAIL_MIN_SIMILAR = 3
 _GUARDRAIL_TRUTHY = {"1", "true", "yes", "on"}
 
 
+# Canonical roster of engines with v2 guardrail wiring. New
+# engines that import ``guardrail_enabled`` /
+# ``should_block_unambiguous_negative`` and gate their main
+# action call on them should be appended here so the operator
+# CLI (``shopai engine guardrail``) surfaces them in the report.
+#
+# Source of truth — DO NOT hardcode this list elsewhere. The
+# CLI handler reads from it via ``guardrail_state()``.
+GUARDRAIL_ENGINES: tuple[str, ...] = (
+    "loyalty",
+    "cart_recovery",
+    "browse_recovery",
+    "email_marketing",
+    "wholesale_b2b",
+    "discount_strategy",
+)
+
+
+def guardrail_state() -> dict[str, bool]:
+    """Return ``{engine_name: enabled_bool}`` for every engine
+    in :data:`GUARDRAIL_ENGINES`.
+
+    Convenience for the CLI surfaces that report per-engine
+    guardrail state. Cheap (env-var reads only); safe to call
+    in hot paths since it doesn't touch the queue / world-model.
+    """
+    return {
+        engine: guardrail_enabled(engine)
+        for engine in GUARDRAIL_ENGINES
+    }
+
+
 def guardrail_enabled(engine_name: str) -> bool:
     """Per-engine env-var opt-in for the v2 guardrail.
 
