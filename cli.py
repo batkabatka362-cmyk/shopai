@@ -7230,9 +7230,13 @@ def _cmd_engine_alerts(args) -> None:
         )
         return
 
+    # Delegate the detection logic to the shared module
+    # (PR #282). Module raises ValueError on baseline<=recent
+    # which we already validated above. Other queue exceptions
+    # propagate -- we catch them here for the CLI envelope.
     try:
-        from core.approval.outcome_aggregator import (
-            aggregate_outcomes,
+        from core.approval.outcome_trends import (
+            compute_engine_alerts,
         )
         from core.approval.queue import get_approval_queue
     except Exception as exc:  # noqa: BLE001
@@ -7240,117 +7244,69 @@ def _cmd_engine_alerts(args) -> None:
         return
 
     queue = get_approval_queue()
-    now = time.time()
-    recent_cutoff = now - recent_hours * 3600.0
-    baseline_cutoff = now - baseline_hours * 3600.0
-
-    # One scan over the full baseline window; rows are bucketed
-    # into recent + baseline. The recent bucket is a SUBSET of
-    # the baseline bucket -- we deliberately compare recent vs
-    # the FULL baseline (incl. recent) rather than recent vs
-    # baseline-minus-recent. That choice gives a stable
-    # comparison even when recent activity is sparse.
-    per_engine: dict[str, dict] = {}
-
-    def _bucket(name: str) -> dict:
-        if name not in per_engine:
-            per_engine[name] = {
-                "recent_outcomes": [],
-                "baseline_outcomes": [],
-                "recent_executed": 0,
-                "baseline_executed": 0,
-            }
-        return per_engine[name]
 
     try:
-        with queue._conn:
-            rows = queue._conn.execute(
-                """SELECT id, engine, decided_at
-                   FROM pending_actions
-                   WHERE status = 'executed'
-                     AND decided_at >= ?""",
-                (baseline_cutoff,),
-            ).fetchall()
+        engine_alerts = compute_engine_alerts(
+            queue,
+            recent_hours=float(recent_hours),
+            baseline_hours=float(baseline_hours),
+            threshold=threshold,
+            min_recent=min_recent,
+        )
     except Exception as exc:  # noqa: BLE001
         _emit_error(f"queue scan failed: {exc}")
         return
 
-    for r in rows:
-        engine = r["engine"] or "(unknown)"
-        bucket = _bucket(engine)
-        bucket["baseline_executed"] += 1
-        decided_at = float(r["decided_at"] or 0)
-        is_recent = decided_at >= recent_cutoff
-        if is_recent:
-            bucket["recent_executed"] += 1
-        try:
-            outcomes = queue.get_outcomes(r["id"]) or []
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "engine alerts outcomes raised: %s", exc,
+    # Count distinct engines surveyed (same baseline window).
+    # The module doesn't expose this; one cheap COUNT keeps the
+    # envelope's ``engine_count`` field stable for callers.
+    # Defensive: ``row["n"]`` might come back as a non-number
+    # under MagicMock-based test fakes, so we type-check before
+    # coercing.
+    baseline_cutoff = time.time() - baseline_hours * 3600.0
+    engine_count = 0
+    try:
+        with queue._conn:
+            row = queue._conn.execute(
+                """SELECT COUNT(DISTINCT engine) AS n
+                   FROM pending_actions
+                   WHERE status = 'executed'
+                     AND decided_at >= ?""",
+                (baseline_cutoff,),
+            ).fetchone()
+        if row is not None:
+            raw_n = (
+                row["n"] if hasattr(row, "__getitem__") else None
             )
-            outcomes = []
-        bucket["baseline_outcomes"].extend(outcomes)
-        if is_recent:
-            bucket["recent_outcomes"].extend(outcomes)
-
-    alerts: list[dict] = []
-    surveyed: list[dict] = []
-    for engine, b in per_engine.items():
-        recent_stats = aggregate_outcomes(b["recent_outcomes"])
-        baseline_stats = aggregate_outcomes(b["baseline_outcomes"])
-        recent_polarised = recent_stats.positive + recent_stats.negative
-        baseline_polarised = (
-            baseline_stats.positive + baseline_stats.negative
+            if isinstance(raw_n, (int, float)):
+                engine_count = int(raw_n)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine alerts engine_count probe raised: %s", exc,
         )
 
-        row = {
-            "engine": engine,
-            "recent_executed": b["recent_executed"],
-            "baseline_executed": b["baseline_executed"],
-            "recent_score": recent_stats.outcome_score,
-            "baseline_score": baseline_stats.outcome_score,
-            "recent_polarised": recent_polarised,
-            "baseline_polarised": baseline_polarised,
+    alerts = [
+        {
+            "engine": a.engine,
+            "recent_executed": a.recent_executed,
+            "baseline_executed": a.baseline_executed,
+            "recent_score": a.recent_score,
+            "baseline_score": a.baseline_score,
+            "recent_polarised": a.recent_polarised,
+            "baseline_polarised": a.baseline_polarised,
+            "drop": a.drop,
+            "kind": a.kind,
+            "detail": a.detail,
         }
-        surveyed.append(row)
-
-        if recent_polarised < min_recent:
-            continue
-        if baseline_polarised < min_recent:
-            continue
-        if (
-            recent_stats.outcome_score is None
-            or baseline_stats.outcome_score is None
-        ):
-            continue
-
-        drop = (
-            baseline_stats.outcome_score
-            - recent_stats.outcome_score
-        )
-        if drop < threshold:
-            continue
-
-        alerts.append({
-            **row,
-            "drop": drop,
-            "kind": "outcome_score_degraded",
-            "detail": (
-                f"{recent_stats.outcome_score:.0%} recent vs "
-                f"{baseline_stats.outcome_score:.0%} baseline "
-                f"(drop {drop:.0%})"
-            ),
-        })
-
-    alerts.sort(key=lambda a: -a["drop"])
+        for a in engine_alerts
+    ]
 
     envelope = {
         "recent_hours": recent_hours,
         "baseline_hours": baseline_hours,
         "threshold": threshold,
         "min_recent": min_recent,
-        "engine_count": len(per_engine),
+        "engine_count": engine_count,
         "alert_count": len(alerts),
         "alerts": alerts,
     }
@@ -7365,11 +7321,11 @@ def _cmd_engine_alerts(args) -> None:
     )
     print()
     if not alerts:
-        if not per_engine:
+        if engine_count == 0:
             print(f"No engine activity in last {baseline_hours}h.")
         else:
             print(
-                f"No alerts. {len(per_engine)} engine(s) surveyed; "
+                f"No alerts. {engine_count} engine(s) surveyed; "
                 "no recent score drops past threshold."
             )
         return

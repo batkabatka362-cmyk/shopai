@@ -73,12 +73,23 @@ def _fake_queue(*, rows=None, outcomes=None, scan_raises=None):
     fake_conn = MagicMock()
     fake_conn.__enter__ = lambda self: self
     fake_conn.__exit__ = lambda *a: None
-    fake_cursor = MagicMock()
+    # Pre-compute distinct engines for the COUNT(DISTINCT) path.
+    distinct_engines = len({r.get("engine", "?") for r in rows})
     if scan_raises is not None:
         fake_conn.execute.side_effect = scan_raises
     else:
-        fake_cursor.fetchall.return_value = rows
-        fake_conn.execute.return_value = fake_cursor
+        def _execute(sql, params=()):
+            cursor = MagicMock()
+            # Detect the engine_count COUNT query: it asks for
+            # ``COUNT(DISTINCT engine)``. Everything else uses
+            # the rows-via-fetchall path.
+            if "COUNT(DISTINCT engine)" in sql:
+                count_row = {"n": distinct_engines}
+                cursor.fetchone.return_value = count_row
+            else:
+                cursor.fetchall.return_value = rows
+            return cursor
+        fake_conn.execute.side_effect = _execute
     q._conn = fake_conn
     q.get_outcomes.side_effect = lambda aid: outcomes.get(aid, [])
     return q
