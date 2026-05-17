@@ -964,6 +964,125 @@ Test fixtures don't pollute the AGI databases.
   test that exercises an applier would write a synthetic row to
   the world-model / decision-retrieval databases.
 
+Phase 10 (empire-AGI: cross-store + v2 guardrail) — **shipped**:
+
+Phase 9 gave the system a captured AGI signal per writer. Phase
+10 makes that signal **per-store** and **actionable** — the
+empire-AGI realization where one store's wins suggest moves
+for another, and engines refuse on unambiguous-negative history.
+
+### Per-store data + retrieval
+
+- **`pending_actions.store_id`** column (PR #239) — idempotent
+  ALTER TABLE migration; rows without store_id (pre-migration)
+  resolve to NULL and are excluded from filtered reads.
+- **`ApprovalQueue.enqueue(..., store_id=...)`** and
+  per-store filters on `list_pending`, `list_by_status`.
+- **`DecisionRetrieval.retrieve(..., store_id=...)`** — fleet-
+  wide when omitted (cross-store transfer use case),
+  per-store when supplied.
+- **`WorldModel._section_approvals/_section_decisions`** —
+  per-store scope when `snapshot(store_id=...)` is called
+  (PR #241). `scope="per_store"` in the section dict.
+
+### Active-store thread-local context
+
+`core/context/active_store.py`:
+
+```python
+from core.context import active_store, get_active_store_id
+
+with active_store(sid):
+    engine.run(input_data)
+    # every enqueue inside auto-tags store_id=sid
+```
+
+Per-thread (concurrent loop iterations are safe). Restored on
+exit. `ApprovalQueue.enqueue` reads it as a fallback when
+caller doesn't pass `store_id`. **Single integration point**:
+the autonomous controller's `run_cycle` wraps its body in
+`active_store(sid)` (PR #244). ~50 engines stay store-agnostic.
+
+### Cross-store transfer recommender
+
+`shopai transfer suggest --from <A> --to <B>` (PR #242):
+
+- Pulls EXECUTED actions tagged with store-A
+- Aggregates by (engine, action_type, capability) with outcome
+  rollups (positive_count, total_revenue, sample_params)
+- Excludes anything already tried on store-B (any status)
+- Ranks: positive_outcomes desc → revenue desc → success_count
+- Returns top-k transferable actions
+
+End-to-end verified via `scripts/transfer_demo_seed.py`
+(PR #246).
+
+### v2 guardrail (engines act on the signal)
+
+`engines._agi_context` exposes (PR #247):
+
+- `guardrail_enabled(engine_name)` — env-var opt-in:
+  `SHOPAI_<ENGINE>_AGI_GUARDRAIL=1`. Per-engine, default OFF.
+- `should_block_unambiguous_negative(metrics)` — strict block:
+  similar_count ≥ 3 AND recent_negative AND NOT recent_positive.
+- `explain_guardrail_block(metrics)` — audit reason.
+
+Wired across all 6 Phase 6/7 minters (PR #245 loyalty
+reference + PR #250 the other 5). The pattern:
+
+```python
+agi_context = capture_decision_context(engine="...", ...)
+agi_metrics = agi_context.get("metrics") or {}
+if guardrail_enabled("<engine>") and \
+        should_block_unambiguous_negative(agi_metrics):
+    record_writeback(
+        ..., success=False,
+        error=explain_guardrail_block(agi_metrics),
+        metrics=agi_metrics,
+    )
+    return None
+```
+
+Conservative on purpose: false negatives (allow-when-should-
+block) are cheaper than false positives (refuse a legitimate
+mint = lost revenue).
+
+### Empire-AGI operator surface
+
+| Command | Scope | PR |
+|---|---|---|
+| `shopai world-model show <store>` | Per-store snapshot | #230, #241 |
+| `shopai world-model fleet` | All stores, side by side | #251 |
+| `shopai store fleet` | Fleet stats summary | #233 |
+| `shopai daily-brief` | Cron-able activity rollup | #238 |
+| `shopai transfer suggest --from A --to B` | Cross-store recommender | #242 |
+| `shopai engine summary <engine>` | Single-engine drilldown | #234 |
+| `shopai engine guardrail` | v2 guardrail state + blocks/24h | #249 |
+| `shopai approvals show <id> --with-context` | Action + similar past | #237 |
+| `shopai memory-recall --engine X` | RAG retrieval inspector | #231 |
+| `shopai model-router classify` | Local-vs-cloud tier inspector | #232 |
+
+### Schema migration patterns
+
+- **Idempotent ALTER TABLE** (PR #239): when adding a column,
+  do the CREATE TABLE in `executescript` but the ALTER inside a
+  separate transaction guarded by `PRAGMA table_info` so the
+  migration is no-op on a fresh DB and a one-time add on an old
+  one.
+- **Backward-compat row reads** (PR #239): when the schema
+  gains a column, wrap the row-to-object mapper's column read in
+  `try: row["new_col"] except (IndexError, KeyError):` so older
+  rows (or test fakes) without the column still load.
+
+### v1 contracts that stay (observational still ships)
+
+Phase 9's auto-capture in `record_writeback` is unchanged --
+every Phase 6/7 writer gets the AGI signal flowing into
+MemoryIntelligence + DataArchitecture + LearningLoop regardless
+of v2 guardrail status. v2 is purely additive: when enabled,
+engines also refuse on unambiguous-negative; when disabled, v1
+behaviour preserved.
+
 ## Reading order for a fresh session
 
 1. This file.
