@@ -354,10 +354,8 @@ class WorldModel:
             )
             return {"checked": False, "error": str(exc)}
 
-        like_clause = (
-            "(narrative LIKE 'Transfer suggestion:%' "
-            "OR narrative LIKE '%||  Transfer suggestion:%')"
-        )
+        from core.transfer_narrative import SQL_LIKE_CLAUSE
+        like_clause = SQL_LIKE_CLAUSE
 
         def _bucketise(rows: list) -> dict:
             bucket = {
