@@ -2524,6 +2524,64 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief approval queue probe raised: %s", exc,
         )
 
+    # ── Transfer activity ──────────────────────────────────
+    # Scan for cross-store transfer apply events in the window.
+    # The empire-AGI loop's morning view: how many transfers were
+    # applied, how many have executed, did any pay off?
+    transfer_activity: dict = {
+        "applied_in_window": 0,
+        "pending": 0,
+        "executed": 0,
+        "failed": 0,
+        "rejected_or_expired": 0,
+        "positive_outcomes": 0,
+        "negative_outcomes": 0,
+    }
+    try:
+        from core.approval.queue import get_approval_queue
+        queue = get_approval_queue()
+        with queue._conn:
+            t_rows = queue._conn.execute(
+                """SELECT id, status, proposed_at
+                   FROM pending_actions
+                   WHERE proposed_at >= ?
+                     AND (narrative LIKE 'Transfer suggestion:%'
+                          OR narrative LIKE
+                             '%||  Transfer suggestion:%')""",
+                (cutoff,),
+            ).fetchall()
+        for tr in t_rows:
+            transfer_activity["applied_in_window"] += 1
+            status = (tr["status"] or "").lower()
+            if status == "executed":
+                transfer_activity["executed"] += 1
+                # Roll polarity for executed transfers only --
+                # pending / failed have no outcomes.
+                try:
+                    outcomes = queue.get_outcomes(tr["id"]) or []
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "daily-brief transfer outcomes raised: %s",
+                        exc,
+                    )
+                    outcomes = []
+                for o in outcomes:
+                    pol = o.get("polarity")
+                    if pol == "positive":
+                        transfer_activity["positive_outcomes"] += 1
+                    elif pol == "negative":
+                        transfer_activity["negative_outcomes"] += 1
+            elif status == "failed":
+                transfer_activity["failed"] += 1
+            elif status in {"pending", "approved"}:
+                transfer_activity["pending"] += 1
+            else:
+                transfer_activity["rejected_or_expired"] += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief transfer probe raised: %s", exc,
+        )
+
     # ── Alerts ─────────────────────────────────────────────
     alerts: list[dict] = []
     for r in store_rows:
@@ -2579,6 +2637,7 @@ def _cmd_daily_brief(args) -> None:
             "stores": store_rows,
             "engine_activity": activity_by_engine,
             "pending_by_engine": pending_by_engine,
+            "transfer_activity": transfer_activity,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -2635,6 +2694,28 @@ def _cmd_daily_brief(args) -> None:
                 f"  {engine:25s} "
                 f"executed={counts.get('executed', 0):>3d}  "
                 f"failed={counts.get('failed', 0):>3d}"
+            )
+        print()
+
+    # Transfer activity (empire-AGI loop signal)
+    if transfer_activity["applied_in_window"]:
+        print(
+            f"Cross-store transfers (last {window_hours}h):"
+        )
+        print(
+            f"  {transfer_activity['applied_in_window']} applied  "
+            f"({transfer_activity['executed']} executed, "
+            f"{transfer_activity['pending']} pending, "
+            f"{transfer_activity['failed']} failed)"
+        )
+        if (
+            transfer_activity["positive_outcomes"]
+            or transfer_activity["negative_outcomes"]
+        ):
+            print(
+                f"  Outcomes:  "
+                f"+{transfer_activity['positive_outcomes']}  "
+                f"-{transfer_activity['negative_outcomes']}"
             )
         print()
 

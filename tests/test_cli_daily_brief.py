@@ -369,3 +369,148 @@ class TestResilience:
         # No engine activity, no pending, no failure alerts
         assert data["engine_activity"] == {}
         assert data["pending_by_engine"] == {}
+
+
+# ─── Transfer activity section ───────────────────────────────
+
+
+def _fake_queue_with_transfers(rows, outcomes=None):
+    """Build a queue that exposes ``_conn`` with the transfer
+    rows used by the daily-brief transfer-activity probe.
+
+    Each row is a dict with id/status/proposed_at; outcomes is
+    optional ``{id: [{polarity, metrics}, ...]}``.
+    """
+    outcomes = outcomes or {}
+    q = MagicMock()
+
+    # Existing daily-brief paths (list_by_status / stats_by_engine).
+    q.list_by_status.side_effect = lambda *a, **kw: []
+    q.stats_by_engine.return_value = {}
+
+    fake_conn = MagicMock()
+    fake_conn.__enter__ = lambda self: self
+    fake_conn.__exit__ = lambda *a: None
+    fake_cursor = MagicMock()
+    fake_cursor.fetchall.return_value = rows
+    fake_conn.execute.return_value = fake_cursor
+    q._conn = fake_conn
+    q.get_outcomes.side_effect = lambda aid: outcomes.get(aid, [])
+    return q
+
+
+class TestTransferActivitySection:
+
+    def test_no_transfers_in_window(self, cli):
+        """Empty transfer scan → all counters at zero, but the
+        section still appears in the JSON envelope."""
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue_with_transfers([]),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert "transfer_activity" in data
+        assert data["transfer_activity"]["applied_in_window"] == 0
+        assert data["transfer_activity"]["positive_outcomes"] == 0
+
+    def test_mixed_status_transfers_counted(self, cli):
+        sm = _fake_sm([])
+        rows = [
+            {"id": "t1", "status": "executed",
+             "proposed_at": time.time() - 3600.0},
+            {"id": "t2", "status": "executed",
+             "proposed_at": time.time() - 7200.0},
+            {"id": "t3", "status": "pending",
+             "proposed_at": time.time() - 1800.0},
+            {"id": "t4", "status": "failed",
+             "proposed_at": time.time() - 900.0},
+            {"id": "t5", "status": "rejected",
+             "proposed_at": time.time() - 600.0},
+        ]
+        outcomes = {
+            "t1": [
+                {"polarity": "positive", "metrics": {"revenue": 50.0}},
+            ],
+            "t2": [
+                {"polarity": "negative", "metrics": {}},
+            ],
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue_with_transfers(rows, outcomes),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        ta = data["transfer_activity"]
+        assert ta["applied_in_window"] == 5
+        assert ta["executed"] == 2
+        assert ta["pending"] == 1
+        assert ta["failed"] == 1
+        assert ta["rejected_or_expired"] == 1
+        assert ta["positive_outcomes"] == 1
+        assert ta["negative_outcomes"] == 1
+
+    def test_text_mode_shows_transfer_section(self, cli):
+        sm = _fake_sm([])
+        rows = [
+            {"id": "t1", "status": "executed",
+             "proposed_at": time.time() - 1800.0},
+        ]
+        outcomes = {
+            "t1": [
+                {"polarity": "positive", "metrics": {"revenue": 20.0}},
+            ],
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue_with_transfers(rows, outcomes),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Cross-store transfers" in out
+        assert "1 applied" in out
+        assert "+1" in out
+
+    def test_text_mode_skips_section_when_empty(self, cli):
+        """Don't clutter the morning brief with a zero-row
+        section when nothing was transferred in the window."""
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue_with_transfers([]),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Cross-store transfers" not in out
+
+    def test_outcomes_raise_doesnt_break_section(self, cli):
+        """If get_outcomes raises mid-loop, the row still counts
+        toward executed but polarity stays at zero (degrades
+        gracefully)."""
+        sm = _fake_sm([])
+        rows = [
+            {"id": "t1", "status": "executed",
+             "proposed_at": time.time() - 1800.0},
+        ]
+        q = _fake_queue_with_transfers(rows)
+        q.get_outcomes.side_effect = RuntimeError("outcomes table missing")
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        ta = data["transfer_activity"]
+        assert ta["executed"] == 1
+        assert ta["positive_outcomes"] == 0
+        assert ta["negative_outcomes"] == 0
