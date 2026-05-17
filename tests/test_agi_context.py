@@ -16,6 +16,9 @@ from unittest.mock import patch
 
 from engines._agi_context import (
     capture_decision_context,
+    GUARDRAIL_ENGINES,
+    guardrail_enabled,
+    guardrail_state,
     _summarize_similar,
 )
 
@@ -176,3 +179,94 @@ class TestCaptureContext:
             )
         assert "snapshot" not in result
         wm_cls.assert_not_called()
+
+
+# ─── Guardrail roster + state ────────────────────────────────
+
+
+class TestGuardrailRoster:
+    """``GUARDRAIL_ENGINES`` is the canonical list of engines
+    with v2 guardrail wiring. ``guardrail_state()`` is the
+    cheap env-var fan-out the operator CLI consumes."""
+
+    def test_roster_is_immutable_tuple(self):
+        """A tuple, not a list — accidental mutation would
+        silently corrupt downstream callers."""
+        assert isinstance(GUARDRAIL_ENGINES, tuple)
+        # All entries are non-empty strings.
+        assert all(
+            isinstance(e, str) and e
+            for e in GUARDRAIL_ENGINES
+        )
+
+    def test_roster_includes_phase_6_7_minters(self):
+        """The six minters wired up in PRs #245 + #250 must all
+        be in the roster. If a future PR drops one, this test
+        catches the regression."""
+        for engine in (
+            "loyalty",
+            "cart_recovery",
+            "browse_recovery",
+            "email_marketing",
+            "wholesale_b2b",
+            "discount_strategy",
+        ):
+            assert engine in GUARDRAIL_ENGINES
+
+    def test_state_keys_match_roster(self, monkeypatch):
+        """``guardrail_state()`` returns one entry per roster
+        engine, no extras."""
+        for engine in GUARDRAIL_ENGINES:
+            monkeypatch.delenv(
+                f"SHOPAI_{engine.upper()}_AGI_GUARDRAIL",
+                raising=False,
+            )
+        state = guardrail_state()
+        assert set(state.keys()) == set(GUARDRAIL_ENGINES)
+
+    def test_state_all_off_by_default(self, monkeypatch):
+        for engine in GUARDRAIL_ENGINES:
+            monkeypatch.delenv(
+                f"SHOPAI_{engine.upper()}_AGI_GUARDRAIL",
+                raising=False,
+            )
+        state = guardrail_state()
+        assert all(v is False for v in state.values())
+
+    def test_state_reflects_env_var_per_engine(self, monkeypatch):
+        for engine in GUARDRAIL_ENGINES:
+            monkeypatch.delenv(
+                f"SHOPAI_{engine.upper()}_AGI_GUARDRAIL",
+                raising=False,
+            )
+        # Enable just loyalty.
+        monkeypatch.setenv("SHOPAI_LOYALTY_AGI_GUARDRAIL", "1")
+        state = guardrail_state()
+        assert state["loyalty"] is True
+        # The other five remain off.
+        for engine in GUARDRAIL_ENGINES:
+            if engine != "loyalty":
+                assert state[engine] is False
+
+    def test_state_uses_guardrail_enabled_semantics(
+        self, monkeypatch,
+    ):
+        """``guardrail_state`` and ``guardrail_enabled`` must
+        agree on every truthy / falsy value."""
+        for engine in GUARDRAIL_ENGINES:
+            monkeypatch.delenv(
+                f"SHOPAI_{engine.upper()}_AGI_GUARDRAIL",
+                raising=False,
+            )
+        for truthy in ("1", "true", "yes", "on"):
+            monkeypatch.setenv(
+                "SHOPAI_LOYALTY_AGI_GUARDRAIL", truthy,
+            )
+            assert guardrail_enabled("loyalty") is True
+            assert guardrail_state()["loyalty"] is True
+        for falsy in ("0", "false", "no", "off", ""):
+            monkeypatch.setenv(
+                "SHOPAI_LOYALTY_AGI_GUARDRAIL", falsy,
+            )
+            assert guardrail_enabled("loyalty") is False
+            assert guardrail_state()["loyalty"] is False
