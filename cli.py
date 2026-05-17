@@ -710,6 +710,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw guardrail report as JSON",
     )
 
+    engine_fleet_p = engine_sub.add_parser(
+        "fleet",
+        help=(
+            "Show one engine's activity + outcomes across "
+            "EVERY store in the fleet. Diagnoses 'where is "
+            "this engine winning / losing?' -- inverse of "
+            "transfer suggest."
+        ),
+    )
+    engine_fleet_p.add_argument(
+        "engine_name",
+        help="Engine to inspect across stores",
+    )
+    engine_fleet_p.add_argument(
+        "--window-hours", type=int, default=168,
+        dest="window_hours",
+        help=(
+            "Activity window in hours (default: 168 = 7 days). "
+            "Outcomes are pulled regardless of the window since "
+            "the matching event can lag the action."
+        ),
+    )
+    engine_fleet_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the fleet report as JSON.",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -5746,6 +5773,224 @@ def _cmd_engine_guardrail(args) -> None:
             "  Enable any engine via env var, e.g.:\n"
             "    export SHOPAI_LOYALTY_AGI_GUARDRAIL=1"
         )
+
+
+def _cmd_engine_fleet(args) -> None:
+    """Show one engine's activity + outcomes across every store
+    in the fleet -- the empire-AGI 'where is this engine winning
+    or losing?' diagnostic.
+
+    Inverse of ``transfer suggest``: that asks 'what should I
+    copy?', this asks 'on which stores does this engine already
+    perform?'. Surfaces per-store rows (executed / failed /
+    polarity / revenue) plus a fleet rollup so operators can
+    spot patterns: engine X is great everywhere except store B
+    (investigate config), engine Y only works on store C
+    (consider quarantining elsewhere).
+    """
+    as_json = bool(getattr(args, "json", False))
+    engine_name = (
+        getattr(args, "engine_name", "") or ""
+    ).strip()
+    window_hours = max(
+        1, int(getattr(args, "window_hours", 168) or 168),
+    )
+    cutoff = time.time() - window_hours * 3600.0
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    if not engine_name:
+        _emit_error("engine_name is required")
+        return
+
+    try:
+        from core.approval.queue import get_approval_queue
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    sm = _get_store_manager()
+    fleet_stores = sm.list_stores() or []
+    known_store_ids = {
+        s.get("store_id") for s in fleet_stores if s.get("store_id")
+    }
+
+    by_store: dict[str, dict] = {}
+
+    def _bucket(sid: str) -> dict:
+        if sid not in by_store:
+            by_store[sid] = {
+                "store_id": sid,
+                "executed": 0,
+                "failed": 0,
+                "pending": 0,
+                "positive_outcomes": 0,
+                "negative_outcomes": 0,
+                "neutral_outcomes": 0,
+                "revenue": 0.0,
+            }
+        return by_store[sid]
+
+    try:
+        queue = get_approval_queue()
+        with queue._conn:
+            rows = queue._conn.execute(
+                """SELECT id, store_id, status, decided_at,
+                          proposed_at
+                   FROM pending_actions
+                   WHERE engine = ?
+                     AND (decided_at >= ? OR
+                          (decided_at IS NULL
+                           AND proposed_at >= ?))""",
+                (engine_name, cutoff, cutoff),
+            ).fetchall()
+        for r in rows:
+            sid = r["store_id"] or "(unscoped)"
+            bucket = _bucket(sid)
+            status = (r["status"] or "").lower()
+            if status == "executed":
+                bucket["executed"] += 1
+                try:
+                    outcomes = queue.get_outcomes(r["id"]) or []
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "engine fleet outcomes raised: %s", exc,
+                    )
+                    outcomes = []
+                for o in outcomes:
+                    pol = o.get("polarity")
+                    if pol == "positive":
+                        bucket["positive_outcomes"] += 1
+                    elif pol == "negative":
+                        bucket["negative_outcomes"] += 1
+                    elif pol == "neutral":
+                        bucket["neutral_outcomes"] += 1
+                    m = o.get("metrics") or {}
+                    try:
+                        bucket["revenue"] += float(
+                            m.get("revenue", 0) or 0,
+                        )
+                    except (TypeError, ValueError):
+                        pass
+            elif status == "failed":
+                bucket["failed"] += 1
+            elif status in {"pending", "approved"}:
+                bucket["pending"] += 1
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"queue scan failed: {exc}")
+        return
+
+    # Ensure every fleet store shows up, even with zero activity.
+    for sid in known_store_ids:
+        _bucket(sid)
+
+    # Outcome score: positive / (positive + negative); None when
+    # no polarised events. Computed AFTER the fleet-stores backfill
+    # so every bucket carries the field.
+    for b in by_store.values():
+        pos = b["positive_outcomes"]
+        neg = b["negative_outcomes"]
+        b["outcome_score"] = (
+            pos / (pos + neg) if (pos + neg) > 0 else None
+        )
+
+    # Rollup over the fleet.
+    rollup = {
+        "stores_with_activity": sum(
+            1 for b in by_store.values()
+            if (b["executed"] + b["failed"] + b["pending"]) > 0
+        ),
+        "total_executed": sum(
+            b["executed"] for b in by_store.values()
+        ),
+        "total_failed": sum(
+            b["failed"] for b in by_store.values()
+        ),
+        "total_pending": sum(
+            b["pending"] for b in by_store.values()
+        ),
+        "total_positive": sum(
+            b["positive_outcomes"] for b in by_store.values()
+        ),
+        "total_negative": sum(
+            b["negative_outcomes"] for b in by_store.values()
+        ),
+        "total_revenue": sum(
+            b["revenue"] for b in by_store.values()
+        ),
+    }
+
+    # Sort: most-active first, with executed > failed > pending,
+    # then revenue tiebreak.
+    ranked = sorted(
+        by_store.values(),
+        key=lambda b: (
+            -(b["executed"] + b["failed"] + b["pending"]),
+            -b["executed"], -b["revenue"], b["store_id"],
+        ),
+    )
+
+    envelope = {
+        "engine": engine_name,
+        "window_hours": window_hours,
+        "rollup": rollup,
+        "stores": ranked,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    print(
+        f"Engine '{engine_name}' across fleet "
+        f"(last {window_hours}h):"
+    )
+    print()
+    print(
+        f"  {'STORE':<22s} {'EXEC':>5s} {'FAIL':>5s} "
+        f"{'PEND':>5s} {'+':>4s} {'-':>4s} "
+        f"{'SCORE':>6s} {'REVENUE':>11s}"
+    )
+    print("  " + "-" * 72)
+    for b in ranked:
+        score_str = (
+            "n/a" if b["outcome_score"] is None
+            else f"{b['outcome_score']:.0%}"
+        )
+        print(
+            f"  {b['store_id']:<22s} "
+            f"{b['executed']:>5d} "
+            f"{b['failed']:>5d} "
+            f"{b['pending']:>5d} "
+            f"{b['positive_outcomes']:>4d} "
+            f"{b['negative_outcomes']:>4d} "
+            f"{score_str:>6s} "
+            f"${b['revenue']:>10,.2f}"
+        )
+    print()
+    score_str = (
+        "n/a" if (rollup["total_positive"]
+                  + rollup["total_negative"]) == 0
+        else (
+            f"{rollup['total_positive'] / (rollup['total_positive'] + rollup['total_negative']):.0%}"
+        )
+    )
+    print(
+        f"  Rollup:  "
+        f"{rollup['stores_with_activity']} store(s) with activity, "
+        f"{rollup['total_executed']} executed, "
+        f"{rollup['total_failed']} failed, "
+        f"score={score_str}, "
+        f"rev=${rollup['total_revenue']:,.2f}"
+    )
 
 
 def _cmd_engines_writebacks(args) -> None:
@@ -13501,7 +13746,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "guardrail":
             _cmd_engine_guardrail(args)
             return
-        print("Usage: shopai engine {summary|guardrail}")
+        if action == "fleet":
+            _cmd_engine_fleet(args)
+            return
+        print("Usage: shopai engine {summary|guardrail|fleet}")
         return
 
     if args.command == "engines-writebacks":
