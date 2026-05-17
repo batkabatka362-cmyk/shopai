@@ -630,6 +630,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Block-count window in hours (default: 24).",
     )
     engine_guardrail_p.add_argument(
+        "--recent", type=int, default=0, dest="recent_n",
+        metavar="N",
+        help=(
+            "Additionally list the last N block events with "
+            "their reason + age. Default 0 (counts only)."
+        ),
+    )
+    engine_guardrail_p.add_argument(
         "--json", action="store_true",
         help="Emit the raw guardrail report as JSON",
     )
@@ -5180,11 +5188,53 @@ def _cmd_engine_guardrail(args) -> None:
         for engine in guardrail_engines
     ]
 
+    # Optional: recent block events with reason + age. Useful
+    # operator triage when an engine spirals -- "why did the
+    # guardrail block this mint?" with the exact action_type
+    # and avg_relevance from the recorded reason string.
+    recent_n = max(0, int(getattr(args, "recent_n", 0) or 0))
+    recent_blocks: list[dict] = []
+    if recent_n > 0:
+        try:
+            from core.approval.queue import get_approval_queue
+            queue = get_approval_queue()
+            with queue._conn:
+                rows = queue._conn.execute(
+                    """SELECT id, engine, action_type, decided_at,
+                              decision_reason
+                       FROM pending_actions
+                       WHERE status = 'failed'
+                         AND decided_at >= ?
+                         AND decision_reason LIKE
+                             'agi_guardrail_blocked:%'
+                       ORDER BY decided_at DESC
+                       LIMIT ?""",
+                    (cutoff, recent_n),
+                ).fetchall()
+            recent_blocks = [
+                {
+                    "action_id": r["id"],
+                    "engine": r["engine"],
+                    "action_type": r["action_type"],
+                    "decided_at": r["decided_at"],
+                    "reason": r["decision_reason"],
+                }
+                for r in rows
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine guardrail recent: queue read raised: %s",
+                exc,
+            )
+
     if as_json:
-        print(json.dumps({
+        envelope: dict = {
             "window_hours": window_hours,
             "engines": report,
-        }, indent=2, default=str))
+        }
+        if recent_n > 0:
+            envelope["recent_blocks"] = recent_blocks
+        print(json.dumps(envelope, indent=2, default=str))
         return
 
     enabled_count = sum(1 for e in report if e["guardrail_enabled"])
@@ -5210,6 +5260,31 @@ def _cmd_engine_guardrail(args) -> None:
             f"{e['blocks_in_window']:>7d}  {e['env_var']}"
         )
     print()
+    if recent_n > 0 and recent_blocks:
+        print(f"Recent blocks (last {len(recent_blocks)}):")
+        now = time.time()
+        for b in recent_blocks:
+            ts = b.get("decided_at") or 0
+            age = now - float(ts) if ts else 0
+            ago = (
+                f"{int(age)}s ago" if age < 60
+                else f"{int(age/60)}m ago" if age < 3600
+                else f"{int(age/3600)}h ago" if age < 86400
+                else f"{int(age/86400)}d ago"
+            )
+            # The reason string is the full audit line written
+            # by explain_guardrail_block -- e.g.
+            # "agi_guardrail_blocked: similar=4 negative=true
+            #  positive=false avg_relevance=0.85"
+            print(
+                f"  {b['engine']:<22s} {b['action_type']:<28s} "
+                f"{ago}"
+            )
+            print(f"      {b['reason']}")
+        print()
+    elif recent_n > 0:
+        print(f"Recent blocks: (none in last {window_hours}h)")
+        print()
     if enabled_count == 0:
         print(
             "  Enable any engine via env var, e.g.:\n"
