@@ -419,6 +419,95 @@ class WorldModel:
             "outgoing": _bucketise(out_rows),
         }
 
+    def _section_recent_outcomes(
+        self, *, store_id: str, limit: int = 10,
+        since_hours: float = 168.0,
+    ) -> dict:
+        """Recent outcome events for actions tagged with this store.
+
+        Surfaces the polarity + revenue stream operators want to
+        see at a glance: "what's been working / failing on this
+        store in the last week?" Uses
+        ``queue.list_recent_outcomes(store_id=...)`` so the JOIN
+        + filter happens in SQL.
+
+        Returns ``{"checked": True, "count": N, "summary":
+        {positive, negative, neutral, revenue}, "recent": [...]}``
+        on success. ``recent`` is capped at ``limit`` rows
+        (newest first); ``count`` is the same length (this is
+        not a paginator -- callers wanting more should hit the
+        queue directly).
+
+        Per-store filter requires PR #280's queue extension.
+        Pre-#280 queues raise TypeError on the kwarg; the
+        section falls back to ``{"checked": False, "error":
+        ...}`` rather than crashing the snapshot.
+        """
+        try:
+            queue = self._approval_queue()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model recent_outcomes queue raised: %s",
+                exc,
+            )
+            return {"checked": False, "error": str(exc)}
+
+        since_seconds = max(0.0, float(since_hours)) * 3600.0
+        try:
+            rows = queue.list_recent_outcomes(
+                limit=limit,
+                store_id=store_id,
+                since_seconds=since_seconds,
+            )
+        except TypeError as exc:
+            # Pre-PR-#280 queue without store_id kwarg.
+            logger.debug(
+                "world_model recent_outcomes pre-#280 queue: %s",
+                exc,
+            )
+            return {
+                "checked": False,
+                "error": "list_recent_outcomes lacks store_id "
+                         "support (needs PR #280 or later)",
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model recent_outcomes raised: %s", exc,
+            )
+            return {"checked": False, "error": str(exc)}
+
+        # Aggregate via shared rollup. Outcomes come back as
+        # ``{polarity, metrics, ...}`` dicts -- exactly what
+        # ``aggregate_outcomes`` expects.
+        try:
+            from core.approval.outcome_aggregator import (
+                aggregate_outcomes,
+            )
+            stats = aggregate_outcomes(rows)
+            summary = {
+                "positive": stats.positive,
+                "negative": stats.negative,
+                "neutral": stats.neutral,
+                "revenue": stats.revenue,
+            }
+        except Exception as exc:  # noqa: BLE001
+            # Aggregator failure shouldn't drop the section.
+            logger.debug(
+                "world_model recent_outcomes aggregate raised: %s",
+                exc,
+            )
+            summary = {
+                "positive": 0, "negative": 0, "neutral": 0,
+                "revenue": 0.0,
+            }
+
+        return {
+            "checked": True,
+            "count": len(rows),
+            "summary": summary,
+            "recent": rows,
+        }
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -474,6 +563,9 @@ class WorldModel:
         approvals = self._section_approvals(store_id=store_id)
         decisions = self._section_decisions(store_id=store_id)
         transfers = self._section_transfers(store_id=store_id)
+        recent_outcomes = self._section_recent_outcomes(
+            store_id=store_id,
+        )
 
         return {
             "store_id": store_id,
@@ -487,6 +579,7 @@ class WorldModel:
             "approvals": approvals,
             "decisions": decisions,
             "transfers": transfers,
+            "recent_outcomes": recent_outcomes,
         }
 
 

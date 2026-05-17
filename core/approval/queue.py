@@ -1543,6 +1543,7 @@ class ApprovalQueue:
         engine: str | None = None,
         polarity: str | None = None,
         since_seconds: float | None = None,
+        store_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Chronological view of webhook outcomes across all
         executed actions. Used by ``shopai outcomes`` + the
@@ -1560,6 +1561,9 @@ class ApprovalQueue:
           - ``since_seconds``: only outcomes recorded within the
             last N seconds (useful for "last hour" / "last day"
             sweeps)
+          - ``store_id``: only outcomes whose underlying action
+            was tagged with this store. Cheap because the JOIN
+            already has ``p`` available; just adds a WHERE.
         """
         clauses: list[str] = []
         params: list[Any] = []
@@ -1572,6 +1576,9 @@ class ApprovalQueue:
         if since_seconds is not None and since_seconds >= 0:
             clauses.append("o.recorded_at >= ?")
             params.append(time.time() - float(since_seconds))
+        if store_id is not None:
+            clauses.append("p.store_id = ?")
+            params.append(store_id)
         where = (
             " WHERE " + " AND ".join(clauses) if clauses else ""
         )
