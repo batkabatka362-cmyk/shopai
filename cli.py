@@ -885,6 +885,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the ranking as JSON.",
     )
 
+    engine_alerts_p = engine_sub.add_parser(
+        "alerts",
+        help=(
+            "Flag engines whose recent outcome score has "
+            "degraded versus a longer baseline window. The "
+            "'is anything quietly breaking?' command."
+        ),
+    )
+    engine_alerts_p.add_argument(
+        "--recent-hours", type=int, default=24,
+        dest="recent_hours",
+        help=(
+            "Recent window in hours (default 24). The window "
+            "scored against the baseline."
+        ),
+    )
+    engine_alerts_p.add_argument(
+        "--baseline-hours", type=int, default=168,
+        dest="baseline_hours",
+        help=(
+            "Baseline window in hours (default 168 = 7 days). "
+            "Engines whose recent score drops below baseline "
+            "by --threshold get flagged."
+        ),
+    )
+    engine_alerts_p.add_argument(
+        "--threshold", type=float, default=0.2,
+        help=(
+            "Score-drop threshold (default 0.2 = 20 percentage "
+            "points). Recent score must be below baseline by at "
+            "least this to alert."
+        ),
+    )
+    engine_alerts_p.add_argument(
+        "--min-recent", type=int, default=3,
+        dest="min_recent",
+        help=(
+            "Minimum recent polarised outcomes for an alert "
+            "(default 3). Below this, the recent score is too "
+            "noisy to trust."
+        ),
+    )
+    engine_alerts_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the alerts as JSON.",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -7058,6 +7105,210 @@ def _cmd_engine_ranking(args) -> None:
         )
 
 
+def _cmd_engine_alerts(args) -> None:
+    """Flag engines whose recent outcome score has degraded
+    relative to a longer baseline window.
+
+    For each engine with executed activity in the recent
+    window, compute outcome_score over BOTH the recent window
+    (default 24h) and a baseline window (default 168h = 7 days).
+    Alert when:
+      - recent has at least ``--min-recent`` polarised outcomes
+        (signal isn't pure noise)
+      - baseline also has at least ``--min-recent`` polarised
+        outcomes (we have something to compare against)
+      - baseline_score - recent_score >= ``--threshold``
+
+    Pure read from ``pending_actions`` + ``action_outcomes``.
+    Cheap to run; suitable for cron alongside ``daily-brief``.
+    """
+    as_json = bool(getattr(args, "json", False))
+    recent_hours = max(
+        1, int(getattr(args, "recent_hours", 24) or 24),
+    )
+    baseline_hours = max(
+        1, int(getattr(args, "baseline_hours", 168) or 168),
+    )
+    threshold = max(
+        0.0, float(getattr(args, "threshold", 0.2) or 0.2),
+    )
+    min_recent = max(
+        1, int(getattr(args, "min_recent", 3) or 3),
+    )
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    if baseline_hours <= recent_hours:
+        _emit_error(
+            "--baseline-hours must exceed --recent-hours "
+            "(otherwise the baseline overlaps the recent window)"
+        )
+        return
+
+    try:
+        from core.approval.outcome_aggregator import (
+            aggregate_outcomes,
+        )
+        from core.approval.queue import get_approval_queue
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    queue = get_approval_queue()
+    now = time.time()
+    recent_cutoff = now - recent_hours * 3600.0
+    baseline_cutoff = now - baseline_hours * 3600.0
+
+    # One scan over the full baseline window; rows are bucketed
+    # into recent + baseline. The recent bucket is a SUBSET of
+    # the baseline bucket -- we deliberately compare recent vs
+    # the FULL baseline (incl. recent) rather than recent vs
+    # baseline-minus-recent. That choice gives a stable
+    # comparison even when recent activity is sparse.
+    per_engine: dict[str, dict] = {}
+
+    def _bucket(name: str) -> dict:
+        if name not in per_engine:
+            per_engine[name] = {
+                "recent_outcomes": [],
+                "baseline_outcomes": [],
+                "recent_executed": 0,
+                "baseline_executed": 0,
+            }
+        return per_engine[name]
+
+    try:
+        with queue._conn:
+            rows = queue._conn.execute(
+                """SELECT id, engine, decided_at
+                   FROM pending_actions
+                   WHERE status = 'executed'
+                     AND decided_at >= ?""",
+                (baseline_cutoff,),
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"queue scan failed: {exc}")
+        return
+
+    for r in rows:
+        engine = r["engine"] or "(unknown)"
+        bucket = _bucket(engine)
+        bucket["baseline_executed"] += 1
+        decided_at = float(r["decided_at"] or 0)
+        is_recent = decided_at >= recent_cutoff
+        if is_recent:
+            bucket["recent_executed"] += 1
+        try:
+            outcomes = queue.get_outcomes(r["id"]) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine alerts outcomes raised: %s", exc,
+            )
+            outcomes = []
+        bucket["baseline_outcomes"].extend(outcomes)
+        if is_recent:
+            bucket["recent_outcomes"].extend(outcomes)
+
+    alerts: list[dict] = []
+    surveyed: list[dict] = []
+    for engine, b in per_engine.items():
+        recent_stats = aggregate_outcomes(b["recent_outcomes"])
+        baseline_stats = aggregate_outcomes(b["baseline_outcomes"])
+        recent_polarised = recent_stats.positive + recent_stats.negative
+        baseline_polarised = (
+            baseline_stats.positive + baseline_stats.negative
+        )
+
+        row = {
+            "engine": engine,
+            "recent_executed": b["recent_executed"],
+            "baseline_executed": b["baseline_executed"],
+            "recent_score": recent_stats.outcome_score,
+            "baseline_score": baseline_stats.outcome_score,
+            "recent_polarised": recent_polarised,
+            "baseline_polarised": baseline_polarised,
+        }
+        surveyed.append(row)
+
+        if recent_polarised < min_recent:
+            continue
+        if baseline_polarised < min_recent:
+            continue
+        if (
+            recent_stats.outcome_score is None
+            or baseline_stats.outcome_score is None
+        ):
+            continue
+
+        drop = (
+            baseline_stats.outcome_score
+            - recent_stats.outcome_score
+        )
+        if drop < threshold:
+            continue
+
+        alerts.append({
+            **row,
+            "drop": drop,
+            "kind": "outcome_score_degraded",
+            "detail": (
+                f"{recent_stats.outcome_score:.0%} recent vs "
+                f"{baseline_stats.outcome_score:.0%} baseline "
+                f"(drop {drop:.0%})"
+            ),
+        })
+
+    alerts.sort(key=lambda a: -a["drop"])
+
+    envelope = {
+        "recent_hours": recent_hours,
+        "baseline_hours": baseline_hours,
+        "threshold": threshold,
+        "min_recent": min_recent,
+        "engine_count": len(per_engine),
+        "alert_count": len(alerts),
+        "alerts": alerts,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    print(
+        f"Engine alerts (recent={recent_hours}h, "
+        f"baseline={baseline_hours}h, threshold={threshold:.0%}):"
+    )
+    print()
+    if not alerts:
+        if not per_engine:
+            print(f"No engine activity in last {baseline_hours}h.")
+        else:
+            print(
+                f"No alerts. {len(per_engine)} engine(s) surveyed; "
+                "no recent score drops past threshold."
+            )
+        return
+
+    print(f"  {len(alerts)} engine(s) flagged:")
+    for a in alerts:
+        print(
+            f"  [{a['drop']:.0%} drop] {a['engine']:<22s}  "
+            f"{a['detail']}"
+        )
+        print(
+            f"      recent executed={a['recent_executed']} "
+            f"({a['recent_polarised']} polarised)  "
+            f"baseline executed={a['baseline_executed']} "
+            f"({a['baseline_polarised']} polarised)"
+        )
 
 
 def _cmd_engines_writebacks(args) -> None:
@@ -14822,7 +15073,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "ranking":
             _cmd_engine_ranking(args)
             return
-        print("Usage: shopai engine {summary|guardrail|fleet|compare|ranking}")
+        if action == "alerts":
+            _cmd_engine_alerts(args)
+            return
+        print("Usage: shopai engine {summary|guardrail|fleet|compare|ranking|alerts}")
         return
 
     if args.command == "engines-writebacks":
