@@ -1066,9 +1066,18 @@ mint = lost revenue).
 | `shopai engine fleet <engine>` | One engine × all stores (where's it winning?) | #259 |
 | `shopai engine compare <a> <b>` | Head-to-head fleet comparison | #263 |
 | `shopai engine ranking` | Fleet-wide engine leaderboard by outcome score | #264 |
+| `shopai engine alerts` | Flag engines whose recent score has dropped | #276 |
 | `shopai approvals show <id> --with-context` | Action + similar past | #237 |
-| `shopai memory-recall --engine X [--store S]` | RAG retrieval inspector | #231, #261 |
+| `shopai approvals outcome <id> --polarity ...` | Manually record an outcome | #277 |
+| `shopai memory-recall --engine X [--store S] [--since-hours N]` | RAG retrieval inspector | #231, #261, #278 |
 | `shopai model-router classify` | Local-vs-cloud tier inspector | #232 |
+
+Plus standalone scripts (under `scripts/`, opted into explicitly because they write directly to the queue):
+
+| Script | Scope | PR |
+|---|---|---|
+| `python scripts/transfer_demo_seed.py --from A --to B [--realism]` | Synthetic per-store actions for demo | #246, #273 |
+| `python scripts/batch_record_outcomes.py path/to/outcomes.csv` | Bulk outcome backfill from CSV | #279 |
 
 The full cross-store empire-AGI workflow chains these commands:
 
@@ -1078,10 +1087,33 @@ shopai transfer suggest --from A --to B  # 2. see candidates
 shopai transfer apply ... --dry-run      # 3. preview
 shopai transfer apply ...                # 4. enqueue PENDING
 shopai approvals show <id>               # 5. operator review
-# (approval → execution → outcome capture)
+# (approval → execution → outcome capture via webhooks)
+# Optional: if webhooks missed an event, record it manually:
+shopai approvals outcome <id> --polarity positive [--revenue N]
+# Or in bulk: python scripts/batch_record_outcomes.py file.csv
 shopai transfer history                  # 6. audit
 shopai transfer outcomes                 # 7. measure payoff
+# Watch for engine degradation across the loop:
+shopai engine alerts                     # 8. degradation detector
 ```
+
+### Shared utilities
+
+Three consolidation modules back the operator surface. New code
+that touches these patterns should import from them, not
+re-implement inline:
+
+- ``core.transfer_narrative`` (PR #268) — transfer-apply narrative
+  format + parsers + ``SQL_LIKE_CLAUSE``.
+- ``core.approval.outcome_aggregator`` (PR #271) — polarity +
+  revenue rollup over ``get_outcomes()`` results, returns
+  ``OutcomeStats`` dataclass.
+- ``engines._agi_context.GUARDRAIL_ENGINES`` + ``guardrail_state()``
+  (PR #272) — canonical roster of v2-wired engines.
+- ``core.approval.outcome_trends`` (PR #282 in flight) —
+  ``compute_engine_alerts(queue, ...)`` for engine-degradation
+  detection. CLI ``engine alerts`` is the first consumer; daily-
+  brief + world-model can adopt without re-implementing.
 
 ### Schema migration patterns
 
