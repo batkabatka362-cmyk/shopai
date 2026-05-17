@@ -41,6 +41,10 @@ Public surface:
 - ``parse_source_run_count(narrative)`` — extract the prior-
   run count (the ``N`` in ``Source had N prior successful
   run(s)``); returns ``None`` on malformed input.
+- ``parse_operator_note(narrative)`` — extract the operator-
+  supplied prefix (the ``<note>`` before ``  ||  Transfer
+  suggestion:``); returns ``""`` for canonical-form narratives
+  without a prefix.
 - ``is_transfer_narrative(narrative)`` — boolean check.
 - ``SQL_LIKE_CLAUSE`` — the parameter-free WHERE clause fragment.
 - ``TransferRecord`` — frozen dataclass that bundles all parsed
@@ -187,6 +191,39 @@ def parse_engine_action(narrative: str) -> tuple[str, str]:
     if slash_idx < 0:
         return ("", "")
     return (pair[:slash_idx].strip(), pair[slash_idx + 1:].strip())
+
+
+def parse_operator_note(narrative: str) -> str:
+    """Extract the operator-supplied prefix from a narrative.
+
+    When ``transfer apply --narrative "<note>"`` ran, the
+    narrative is formatted as::
+
+        <note>  ||  Transfer suggestion: ...
+
+    This helper returns ``<note>`` (without trailing whitespace).
+    For narratives WITHOUT the operator-note prefix (the
+    canonical form), returns ``""``.
+
+    Permissive: returns ``""`` on missing marker / non-transfer
+    text / empty input. Never raises.
+
+    Useful for analytics that want to surface operator
+    annotations (e.g. "show transfers where the operator
+    flagged a specific campaign").
+    """
+    if not narrative:
+        return ""
+    sep_idx = narrative.find(_OPERATOR_SEP)
+    if sep_idx < 0:
+        return ""
+    # Verify what follows is actually a transfer-suggestion
+    # marker -- otherwise random text containing "  ||  " would
+    # match falsely.
+    after_sep = narrative[sep_idx + len(_OPERATOR_SEP):]
+    if _MARKER not in after_sep[:len(_MARKER) + 8]:
+        return ""
+    return narrative[:sep_idx].strip()
 
 
 def parse_source_run_count(narrative: str) -> int | None:

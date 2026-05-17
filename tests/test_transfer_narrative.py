@@ -15,6 +15,7 @@ from core.transfer_narrative import (
     format_narrative,
     is_transfer_narrative,
     parse_engine_action,
+    parse_operator_note,
     parse_source_run_count,
     parse_source_store,
     parse_target_store,
@@ -414,3 +415,53 @@ class TestRecordFromNarrative:
         ))
         with pytest.raises(Exception):
             rec.engine = "modified"  # type: ignore[misc]
+
+
+# ─── parse_operator_note ─────────────────────────────────────
+
+
+class TestParseOperatorNote:
+
+    def test_canonical_form_returns_empty(self):
+        """No operator note → empty string, not None."""
+        n = format_narrative(
+            engine="loyalty", action_type="x",
+            from_store="a", to_store="b",
+            source_run_count=1,
+        )
+        assert parse_operator_note(n) == ""
+
+    def test_operator_note_extracted(self):
+        n = format_narrative(
+            engine="loyalty", action_type="x",
+            from_store="a", to_store="b",
+            source_run_count=1,
+            operator_note="black friday parity",
+        )
+        assert parse_operator_note(n) == "black friday parity"
+
+    def test_operator_note_with_special_chars(self):
+        """Operator notes can have any printable text including
+        punctuation, parentheses, etc."""
+        note = "Q4 push (target: 20% lift, manual review needed!)"
+        n = format_narrative(
+            engine="loyalty", action_type="x",
+            from_store="a", to_store="b",
+            source_run_count=1,
+            operator_note=note,
+        )
+        assert parse_operator_note(n) == note
+
+    def test_unrelated_text_with_separator_rejected(self):
+        """Random text containing ``  ||  `` but no Transfer
+        suggestion marker afterward should NOT be parsed as
+        an operator note."""
+        bogus = "Some note  ||  But not a transfer at all."
+        assert parse_operator_note(bogus) == ""
+
+    def test_empty_and_non_transfer_inputs(self):
+        assert parse_operator_note("") == ""
+        assert parse_operator_note("random text") == ""
+        assert parse_operator_note(
+            "Transfer suggestion: loyalty/x from a to b. ..."
+        ) == ""
