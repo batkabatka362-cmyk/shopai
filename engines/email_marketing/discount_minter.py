@@ -40,7 +40,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from engines._agi_context import capture_decision_context
+from engines._agi_context import (
+    capture_decision_context,
+    explain_guardrail_block,
+    guardrail_enabled,
+    should_block_unambiguous_negative,
+)
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -101,6 +106,24 @@ def mint_campaign_code(
         capability="SHOPIFY_CREATE_DISCOUNT",
         params=mint_params,
     )
+    agi_metrics = agi_context.get("metrics") or {}
+
+    # v2 guardrail: opt-in via
+    # ``SHOPAI_EMAIL_MARKETING_AGI_GUARDRAIL=1``. Campaign codes
+    # have broad blast radius (storewide multi-use), so the
+    # signal-driven block is especially valuable here.
+    if guardrail_enabled("email_marketing") and \
+            should_block_unambiguous_negative(agi_metrics):
+        record_writeback(
+            engine="email_marketing",
+            action_type="mint_campaign_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=mint_params,
+            success=False,
+            error=explain_guardrail_block(agi_metrics),
+            metrics=agi_metrics,
+        )
+        return None
 
     minted = _mint(
         token=token,
@@ -123,7 +146,7 @@ def mint_campaign_code(
         params=mint_params,
         success=minted is not None,
         error=None if minted is not None else "mint_returned_none",
-        metrics=agi_context.get("metrics") or None,
+        metrics=agi_metrics or None,
     )
     return minted
 

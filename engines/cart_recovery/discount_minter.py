@@ -21,7 +21,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from engines._agi_context import capture_decision_context
+from engines._agi_context import (
+    capture_decision_context,
+    explain_guardrail_block,
+    guardrail_enabled,
+    should_block_unambiguous_negative,
+)
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -84,17 +89,35 @@ def mint_recovery_code(
         "ttl_days": ttl_days,
     }
 
-    # AGI Phase 2: observational context capture. Same pattern as
-    # loyalty's discount_minter -- snapshot + retrieval flow into
-    # the writeback recorder so the autonomous loop sees what
-    # context the engine had at mint time. v1 is observational
-    # (no adjustment of the mint decision based on the signal).
+    # AGI Phase 2: capture the snapshot + retrieval context.
+    # Signal flows into record_writeback regardless of v2
+    # guardrail outcome -- operators always see what context
+    # the engine had at mint time.
     agi_context = capture_decision_context(
         engine="cart_recovery",
         action_type="mint_cart_recovery_code",
         capability="SHOPIFY_CREATE_DISCOUNT",
         params=mint_params,
     )
+    agi_metrics = agi_context.get("metrics") or {}
+
+    # AGI Phase 2 v2: guardrail. Opt-in via
+    # ``SHOPAI_CART_RECOVERY_AGI_GUARDRAIL=1``. When the captured
+    # signal is unambiguously negative (3+ similar past mints,
+    # at least one negative, no positives), refuse to mint.
+    # See loyalty's discount_minter (PR #245) for the reference.
+    if guardrail_enabled("cart_recovery") and \
+            should_block_unambiguous_negative(agi_metrics):
+        record_writeback(
+            engine="cart_recovery",
+            action_type="mint_cart_recovery_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=mint_params,
+            success=False,
+            error=explain_guardrail_block(agi_metrics),
+            metrics=agi_metrics,
+        )
+        return None
 
     minted = _mint(
         token=token,
@@ -117,7 +140,7 @@ def mint_recovery_code(
         params=mint_params,
         success=minted is not None,
         error=None if minted is not None else "mint_returned_none",
-        metrics=agi_context.get("metrics") or None,
+        metrics=agi_metrics or None,
     )
     return minted
 

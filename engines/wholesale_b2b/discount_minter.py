@@ -37,7 +37,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from engines._agi_context import capture_decision_context
+from engines._agi_context import (
+    capture_decision_context,
+    explain_guardrail_block,
+    guardrail_enabled,
+    should_block_unambiguous_negative,
+)
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -97,6 +102,22 @@ def mint_wholesale_code(
         capability="SHOPIFY_CREATE_DISCOUNT",
         params=mint_params,
     )
+    agi_metrics = agi_context.get("metrics") or {}
+
+    # v2 guardrail: opt-in via
+    # ``SHOPAI_WHOLESALE_B2B_AGI_GUARDRAIL=1``.
+    if guardrail_enabled("wholesale_b2b") and \
+            should_block_unambiguous_negative(agi_metrics):
+        record_writeback(
+            engine="wholesale_b2b",
+            action_type="mint_wholesale_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=mint_params,
+            success=False,
+            error=explain_guardrail_block(agi_metrics),
+            metrics=agi_metrics,
+        )
+        return None
 
     minted = _mint(
         token=token,
@@ -116,7 +137,7 @@ def mint_wholesale_code(
         params=mint_params,
         success=minted is not None,
         error=None if minted is not None else "mint_returned_none",
-        metrics=agi_context.get("metrics") or None,
+        metrics=agi_metrics or None,
     )
     return minted
 

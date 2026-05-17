@@ -30,7 +30,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from engines._agi_context import capture_decision_context
+from engines._agi_context import (
+    capture_decision_context,
+    explain_guardrail_block,
+    guardrail_enabled,
+    should_block_unambiguous_negative,
+)
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -114,16 +119,36 @@ def mint_offer_codes(
             "likelihood": likelihood,
         }
 
-        # AGI Phase 2: observational context capture (loyalty +
-        # cart_recovery reference pattern). Browse_recovery mints
-        # one code per offer, so we capture per offer -- gives the
-        # learning loop per-likelihood-tier signal.
+        # AGI Phase 2: capture context per-offer (browse_recovery
+        # mints one code per offer in the loop -- per-offer
+        # capture gives the learning loop per-likelihood-tier
+        # signal).
         agi_context = capture_decision_context(
             engine="browse_recovery",
             action_type="mint_browse_recovery_code",
             capability="SHOPIFY_CREATE_DISCOUNT",
             params=mint_params,
         )
+        agi_metrics = agi_context.get("metrics") or {}
+
+        # v2 guardrail: per-offer block. Opt-in via
+        # ``SHOPAI_BROWSE_RECOVERY_AGI_GUARDRAIL=1``. When
+        # blocked, the offer falls through to the
+        # ``_stamp_skipped`` path below so downstream consumers
+        # see ``minted=False`` (same shape as other skip modes).
+        if guardrail_enabled("browse_recovery") and \
+                should_block_unambiguous_negative(agi_metrics):
+            record_writeback(
+                engine="browse_recovery",
+                action_type="mint_browse_recovery_code",
+                capability="SHOPIFY_CREATE_DISCOUNT",
+                params=mint_params,
+                success=False,
+                error=explain_guardrail_block(agi_metrics),
+                metrics=agi_metrics,
+            )
+            _stamp_skipped(offer)
+            continue
 
         result = _mint(
             token=token,
@@ -146,7 +171,7 @@ def mint_offer_codes(
             error=(
                 None if result is not None else "mint_returned_none"
             ),
-            metrics=agi_context.get("metrics") or None,
+            metrics=agi_metrics or None,
         )
 
         if result is None:
