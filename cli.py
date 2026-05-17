@@ -475,6 +475,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of results to return (default: 5)",
     )
     recall_p.add_argument(
+        "--store", default="", dest="store_id",
+        help=(
+            "Optional: scope retrieval to one store. Default: "
+            "fleet-wide (matches the cross-store transfer use "
+            "case)."
+        ),
+    )
+    recall_p.add_argument(
         "--json", action="store_true",
         help="Emit the raw retrieval list as JSON",
     )
@@ -3870,14 +3878,33 @@ def _cmd_memory_recall(args) -> None:
 
     from core.decision_retrieval import DecisionRetrieval
 
+    store_id = (getattr(args, "store_id", "") or "").strip() or None
+
     retriever = DecisionRetrieval()
-    results = retriever.retrieve(
-        engine=args.engine,
-        action_type=getattr(args, "action_type", "") or None,
-        capability=getattr(args, "capability", "") or None,
-        params=params,
-        k=int(getattr(args, "k", 5) or 5),
-    )
+    try:
+        results = retriever.retrieve(
+            engine=args.engine,
+            action_type=getattr(args, "action_type", "") or None,
+            capability=getattr(args, "capability", "") or None,
+            params=params,
+            k=int(getattr(args, "k", 5) or 5),
+            store_id=store_id,
+        )
+    except TypeError:
+        # Pre-#241 retriever doesn't accept store_id. Fall back
+        # to fleet-wide retrieval but surface a hint.
+        if store_id is not None and not as_json:
+            print(
+                "Warning: --store ignored (DecisionRetrieval "
+                "lacks store_id support; needs PR #241 or later)."
+            )
+        results = retriever.retrieve(
+            engine=args.engine,
+            action_type=getattr(args, "action_type", "") or None,
+            capability=getattr(args, "capability", "") or None,
+            params=params,
+            k=int(getattr(args, "k", 5) or 5),
+        )
 
     if as_json:
         print(json.dumps({
@@ -3886,6 +3913,7 @@ def _cmd_memory_recall(args) -> None:
                 "action_type": getattr(args, "action_type", "") or None,
                 "capability": getattr(args, "capability", "") or None,
                 "params": params,
+                "store_id": store_id,
             },
             "k": int(getattr(args, "k", 5) or 5),
             "results": results,
@@ -3898,6 +3926,8 @@ def _cmd_memory_recall(args) -> None:
         filters.append(f"action_type={args.action_type}")
     if getattr(args, "capability", ""):
         filters.append(f"capability={args.capability}")
+    if store_id:
+        filters.append(f"store={store_id}")
     if params:
         filters.append(f"params={sorted(params.keys())}")
     if filters:
