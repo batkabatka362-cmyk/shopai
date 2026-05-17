@@ -2841,9 +2841,9 @@ def _cmd_transfer_history(args) -> None:
 
     rows: list[dict] = []
     try:
+        from core.transfer_narrative import SQL_LIKE_CLAUSE
         queue = get_approval_queue()
-        clauses = ["narrative LIKE 'Transfer suggestion:%' "
-                   "OR narrative LIKE '%||  Transfer suggestion:%'"]
+        clauses = [SQL_LIKE_CLAUSE]
         params: list = []
         if engine:
             clauses.append("engine = ?")
@@ -2945,31 +2945,14 @@ def _cmd_transfer_history(args) -> None:
 def _parse_from_store_from_narrative(narrative: str) -> str:
     """Extract the source store from a transfer apply narrative.
 
-    Narrative shape produced by ``_cmd_transfer_apply``:
-        ``Transfer suggestion: <engine>/<action> from <A> to <B>. ...``
-    or with operator prefix:
-        ``<note>  ||  Transfer suggestion: ... from <A> to <B>. ...``
-
-    Returns the source store name or ``""`` if parse fails. The
-    parser is permissive on purpose -- a future narrative format
-    bump shouldn't crash history.
+    Thin wrapper around
+    :func:`core.transfer_narrative.parse_source_store` so the
+    callers (transfer history, transfer outcomes) don't have to
+    do their own imports. The shared module owns the format
+    contract; this file consumes it.
     """
-    if not narrative:
-        return ""
-    marker = "Transfer suggestion:"
-    idx = narrative.find(marker)
-    if idx < 0:
-        return ""
-    tail = narrative[idx + len(marker):]
-    # ".. from <A> to <B>. .."
-    from_idx = tail.find(" from ")
-    if from_idx < 0:
-        return ""
-    after_from = tail[from_idx + len(" from "):]
-    to_idx = after_from.find(" to ")
-    if to_idx < 0:
-        return ""
-    return after_from[:to_idx].strip()
+    from core.transfer_narrative import parse_source_store
+    return parse_source_store(narrative)
 
 
 
@@ -3012,11 +2995,11 @@ def _cmd_transfer_outcomes(args) -> None:
         return
 
     try:
+        from core.transfer_narrative import SQL_LIKE_CLAUSE
         queue = get_approval_queue()
         clauses = [
             "status = 'executed'",
-            "(narrative LIKE 'Transfer suggestion:%' "
-            "OR narrative LIKE '%||  Transfer suggestion:%')",
+            SQL_LIKE_CLAUSE,
         ]
         params: list = []
         if engine:
@@ -3065,25 +3048,19 @@ def _cmd_transfer_outcomes(args) -> None:
             )
             outcomes = []
 
-        pos = sum(1 for o in outcomes if o.get("polarity") == "positive")
-        neg = sum(1 for o in outcomes if o.get("polarity") == "negative")
-        neu = sum(1 for o in outcomes if o.get("polarity") == "neutral")
-        revenue = 0.0
-        for o in outcomes:
-            m = o.get("metrics") or {}
-            try:
-                revenue += float(m.get("revenue", 0) or 0)
-            except (TypeError, ValueError):
-                pass
+        from core.approval.outcome_aggregator import (
+            aggregate_outcomes,
+        )
+        per_row = aggregate_outcomes(outcomes)
 
         if outcomes:
             rollup["actions_with_outcomes"] += 1
         else:
             rollup["actions_without_outcomes"] += 1
-        rollup["positive_total"] += pos
-        rollup["negative_total"] += neg
-        rollup["neutral_total"] += neu
-        rollup["revenue_total"] += revenue
+        rollup["positive_total"] += per_row.positive
+        rollup["negative_total"] += per_row.negative
+        rollup["neutral_total"] += per_row.neutral
+        rollup["revenue_total"] += per_row.revenue
 
         rows.append({
             "action_id": r["id"],
@@ -3094,10 +3071,10 @@ def _cmd_transfer_outcomes(args) -> None:
             "to_store": r["store_id"],
             "decided_at": r["decided_at"],
             "outcome_count": len(outcomes),
-            "positive_outcomes": pos,
-            "negative_outcomes": neg,
-            "neutral_outcomes": neu,
-            "revenue": revenue,
+            "positive_outcomes": per_row.positive,
+            "negative_outcomes": per_row.negative,
+            "neutral_outcomes": per_row.neutral,
+            "revenue": per_row.revenue,
         })
 
     envelope = {
@@ -3274,15 +3251,14 @@ def _cmd_daily_brief(args) -> None:
     }
     try:
         from core.approval.queue import get_approval_queue
+        from core.transfer_narrative import SQL_LIKE_CLAUSE
         queue = get_approval_queue()
         with queue._conn:
             t_rows = queue._conn.execute(
-                """SELECT id, status, proposed_at
+                f"""SELECT id, status, proposed_at
                    FROM pending_actions
                    WHERE proposed_at >= ?
-                     AND (narrative LIKE 'Transfer suggestion:%'
-                          OR narrative LIKE
-                             '%||  Transfer suggestion:%')""",
+                     AND {SQL_LIKE_CLAUSE}""",
                 (cutoff,),
             ).fetchall()
         for tr in t_rows:
@@ -3291,7 +3267,9 @@ def _cmd_daily_brief(args) -> None:
             if status == "executed":
                 transfer_activity["executed"] += 1
                 # Roll polarity for executed transfers only --
-                # pending / failed have no outcomes.
+                # pending / failed have no outcomes. Uses the
+                # shared aggregator so future polarity-schema
+                # changes land in one place.
                 try:
                     outcomes = queue.get_outcomes(tr["id"]) or []
                 except Exception as exc:  # noqa: BLE001
@@ -3300,12 +3278,16 @@ def _cmd_daily_brief(args) -> None:
                         exc,
                     )
                     outcomes = []
-                for o in outcomes:
-                    pol = o.get("polarity")
-                    if pol == "positive":
-                        transfer_activity["positive_outcomes"] += 1
-                    elif pol == "negative":
-                        transfer_activity["negative_outcomes"] += 1
+                from core.approval.outcome_aggregator import (
+                    aggregate_outcomes,
+                )
+                rollup = aggregate_outcomes(outcomes)
+                transfer_activity["positive_outcomes"] += (
+                    rollup.positive
+                )
+                transfer_activity["negative_outcomes"] += (
+                    rollup.negative
+                )
             elif status == "failed":
                 transfer_activity["failed"] += 1
             elif status in {"pending", "approved"}:
@@ -6341,16 +6323,28 @@ def _cmd_engine_guardrail(args) -> None:
     window_hours = max(1, int(getattr(args, "window_hours", 24) or 24))
     cutoff = time.time() - window_hours * 3600.0
 
-    # Engines that have v2 guardrail wiring (in main commit history).
-    # Add new engines here as their PRs merge.
-    guardrail_engines = [
-        "loyalty",
-        "cart_recovery",
-        "browse_recovery",
-        "email_marketing",
-        "wholesale_b2b",
-        "discount_strategy",
-    ]
+    # Engines that have v2 guardrail wiring. Source of truth:
+    # ``engines._agi_context.GUARDRAIL_ENGINES`` -- the roster
+    # is owned by the AGI-context module so new engines wiring
+    # in v2 don't need a parallel update here.
+    try:
+        from engines._agi_context import GUARDRAIL_ENGINES
+        guardrail_engines = list(GUARDRAIL_ENGINES)
+    except Exception as exc:  # noqa: BLE001
+        # Pre-PR-#272 codebase doesn't have the roster. Fall
+        # back to the hardcoded list so older deployments
+        # still render their state.
+        logger.debug(
+            "engine guardrail roster import failed: %s", exc,
+        )
+        guardrail_engines = [
+            "loyalty",
+            "cart_recovery",
+            "browse_recovery",
+            "email_marketing",
+            "wholesale_b2b",
+            "discount_strategy",
+        ]
 
     # Per-engine env-var state.
     try:
@@ -6582,6 +6576,9 @@ def _cmd_engine_fleet(args) -> None:
                            AND proposed_at >= ?))""",
                 (engine_name, cutoff, cutoff),
             ).fetchall()
+        from core.approval.outcome_aggregator import (
+            aggregate_outcomes,
+        )
         for r in rows:
             sid = r["store_id"] or "(unscoped)"
             bucket = _bucket(sid)
@@ -6595,21 +6592,11 @@ def _cmd_engine_fleet(args) -> None:
                         "engine fleet outcomes raised: %s", exc,
                     )
                     outcomes = []
-                for o in outcomes:
-                    pol = o.get("polarity")
-                    if pol == "positive":
-                        bucket["positive_outcomes"] += 1
-                    elif pol == "negative":
-                        bucket["negative_outcomes"] += 1
-                    elif pol == "neutral":
-                        bucket["neutral_outcomes"] += 1
-                    m = o.get("metrics") or {}
-                    try:
-                        bucket["revenue"] += float(
-                            m.get("revenue", 0) or 0,
-                        )
-                    except (TypeError, ValueError):
-                        pass
+                rollup = aggregate_outcomes(outcomes)
+                bucket["positive_outcomes"] += rollup.positive
+                bucket["negative_outcomes"] += rollup.negative
+                bucket["neutral_outcomes"] += rollup.neutral
+                bucket["revenue"] += rollup.revenue
             elif status == "failed":
                 bucket["failed"] += 1
             elif status in {"pending", "approved"}:
@@ -6790,6 +6777,9 @@ def _cmd_engine_compare(args) -> None:
                 "engine compare scan raised: %s", exc,
             )
             rows = []
+        from core.approval.outcome_aggregator import (
+            aggregate_outcomes,
+        )
         for r in rows:
             status = (r["status"] or "").lower()
             if status == "executed":
@@ -6801,21 +6791,11 @@ def _cmd_engine_compare(args) -> None:
                         "engine compare outcomes raised: %s", exc,
                     )
                     outcomes = []
-                for o in outcomes:
-                    pol = o.get("polarity")
-                    if pol == "positive":
-                        bucket["positive_outcomes"] += 1
-                    elif pol == "negative":
-                        bucket["negative_outcomes"] += 1
-                    elif pol == "neutral":
-                        bucket["neutral_outcomes"] += 1
-                    m = o.get("metrics") or {}
-                    try:
-                        bucket["revenue"] += float(
-                            m.get("revenue", 0) or 0,
-                        )
-                    except (TypeError, ValueError):
-                        pass
+                rollup = aggregate_outcomes(outcomes)
+                bucket["positive_outcomes"] += rollup.positive
+                bucket["negative_outcomes"] += rollup.negative
+                bucket["neutral_outcomes"] += rollup.neutral
+                bucket["revenue"] += rollup.revenue
             elif status == "failed":
                 bucket["failed"] += 1
             elif status in {"pending", "approved"}:
@@ -6989,6 +6969,9 @@ def _cmd_engine_ranking(args) -> None:
         _emit_error(f"queue scan failed: {exc}")
         return
 
+    from core.approval.outcome_aggregator import (
+        aggregate_outcomes,
+    )
     for r in rows:
         engine = r["engine"] or "(unknown)"
         bucket = _bucket(engine)
@@ -7002,21 +6985,11 @@ def _cmd_engine_ranking(args) -> None:
                     "engine ranking outcomes raised: %s", exc,
                 )
                 outcomes = []
-            for o in outcomes:
-                pol = o.get("polarity")
-                if pol == "positive":
-                    bucket["positive_outcomes"] += 1
-                elif pol == "negative":
-                    bucket["negative_outcomes"] += 1
-                elif pol == "neutral":
-                    bucket["neutral_outcomes"] += 1
-                m = o.get("metrics") or {}
-                try:
-                    bucket["revenue"] += float(
-                        m.get("revenue", 0) or 0,
-                    )
-                except (TypeError, ValueError):
-                    pass
+            rollup = aggregate_outcomes(outcomes)
+            bucket["positive_outcomes"] += rollup.positive
+            bucket["negative_outcomes"] += rollup.negative
+            bucket["neutral_outcomes"] += rollup.neutral
+            bucket["revenue"] += rollup.revenue
         elif status == "failed":
             bucket["failed"] += 1
         elif status in {"pending", "approved"}:
