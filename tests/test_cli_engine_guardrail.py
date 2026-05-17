@@ -40,7 +40,7 @@ def _capture(fn, *args, **kwargs):
 
 
 def _ns(**kw):
-    defaults = dict(window_hours=24, json=False)
+    defaults = dict(window_hours=24, json=False, recent_n=0)
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
@@ -181,3 +181,92 @@ class TestResilience:
         )
         assert loyalty["guardrail_enabled"] is True
         assert loyalty["blocks_in_window"] == 0
+
+
+# ─── --recent flag ───────────────────────────────────────────
+
+
+class TestRecentFlag:
+
+    def test_recent_zero_default_no_blocks_section(self, cli):
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=MagicMock(_conn=MagicMock()),
+        ):
+            out = _capture(
+                cli._cmd_engine_guardrail, _ns(json=True),
+            )
+        data = json.loads(out)
+        # --recent omitted -> envelope doesn't carry the
+        # recent_blocks key at all.
+        assert "recent_blocks" not in data
+
+    def test_recent_populated_lists_blocks(self, cli):
+        # Build a fake queue that returns 2 block rows.
+        rows = [
+            {
+                "id": "a1", "engine": "loyalty",
+                "action_type": "mint_loyalty_code",
+                "decided_at": 1234567890.0,
+                "decision_reason": (
+                    "agi_guardrail_blocked: similar=4 "
+                    "negative=true positive=false "
+                    "avg_relevance=0.85"
+                ),
+            },
+            {
+                "id": "a2", "engine": "cart_recovery",
+                "action_type": "mint_cart_recovery_code",
+                "decided_at": 1234567000.0,
+                "decision_reason": (
+                    "agi_guardrail_blocked: similar=3 "
+                    "negative=true positive=false "
+                    "avg_relevance=0.71"
+                ),
+            },
+        ]
+        fake_conn = MagicMock()
+        fake_conn.__enter__ = lambda self: self
+        fake_conn.__exit__ = lambda *a: None
+        fake_cursor = MagicMock()
+        fake_cursor.fetchall.return_value = rows
+        fake_conn.execute.return_value = fake_cursor
+        queue = MagicMock()
+        queue._conn = fake_conn
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=queue,
+        ):
+            out = _capture(
+                cli._cmd_engine_guardrail,
+                _ns(recent_n=5, json=True),
+            )
+        data = json.loads(out)
+        assert "recent_blocks" in data
+        assert len(data["recent_blocks"]) == 2
+        assert data["recent_blocks"][0]["engine"] == "loyalty"
+        assert (
+            "avg_relevance=0.85"
+            in data["recent_blocks"][0]["reason"]
+        )
+
+    def test_recent_empty_renders_no_blocks_line(self, cli):
+        """Text mode: --recent set but zero blocks → renders
+        the explanatory 'none in last Xh' line, not silence."""
+        fake_conn = MagicMock()
+        fake_conn.__enter__ = lambda self: self
+        fake_conn.__exit__ = lambda *a: None
+        fake_cursor = MagicMock()
+        fake_cursor.fetchall.return_value = []
+        fake_conn.execute.return_value = fake_cursor
+        queue = MagicMock()
+        queue._conn = fake_conn
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=queue,
+        ):
+            out = _capture(
+                cli._cmd_engine_guardrail,
+                _ns(recent_n=5),
+            )
+        assert "Recent blocks: (none in last" in out
