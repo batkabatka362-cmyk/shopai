@@ -38,14 +38,24 @@ Public surface:
   store; returns ``""`` on malformed input.
 - ``parse_engine_action(narrative)`` — extract ``(engine,
   action_type)`` tuple; returns ``("", "")`` on malformed input.
+- ``parse_source_run_count(narrative)`` — extract the prior-
+  run count (the ``N`` in ``Source had N prior successful
+  run(s)``); returns ``None`` on malformed input.
 - ``is_transfer_narrative(narrative)`` — boolean check.
 - ``SQL_LIKE_CLAUSE`` — the parameter-free WHERE clause fragment.
+- ``TransferRecord`` — frozen dataclass that bundles all parsed
+  fields together.
+- ``record_from_narrative(narrative)`` — return a populated
+  ``TransferRecord`` or ``None`` if the narrative isn't a
+  transfer.
 
 All parsers are PERMISSIVE on purpose: a future format bump
 should leave existing rows surfacing (with degraded info) rather
 than vanishing from operator views.
 """
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 
 _MARKER = "Transfer suggestion:"
@@ -177,3 +187,83 @@ def parse_engine_action(narrative: str) -> tuple[str, str]:
     if slash_idx < 0:
         return ("", "")
     return (pair[:slash_idx].strip(), pair[slash_idx + 1:].strip())
+
+
+def parse_source_run_count(narrative: str) -> int | None:
+    """Extract the prior-run count from a narrative.
+
+    Canonical narrative tail:
+        ``...from <A> to <B>. Source had N prior successful run(s).``
+
+    Returns the integer ``N`` or ``None`` when the count phrase
+    is missing / malformed. Useful for analytics that want to
+    rank transfers by source confidence ("how proven was this
+    on the source store?") without round-tripping through the
+    queue to recompute.
+
+    Permissive: never raises on malformed input.
+    """
+    if not narrative or _MARKER not in narrative:
+        return None
+    marker = "Source had "
+    idx = narrative.find(marker)
+    if idx < 0:
+        return None
+    tail = narrative[idx + len(marker):]
+    # Read digits up to the first non-digit char.
+    digits: list[str] = []
+    for ch in tail:
+        if ch.isdigit():
+            digits.append(ch)
+        else:
+            break
+    if not digits:
+        return None
+    try:
+        return int("".join(digits))
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class TransferRecord:
+    """Structured view of a transfer-apply narrative.
+
+    Bundles the four parsed fields plus the original narrative
+    so callers can pass one object around instead of calling
+    each parser independently. Fields use the same permissive
+    semantics as the individual parsers: ``""`` / ``None`` for
+    fields the narrative didn't carry.
+    """
+
+    narrative: str
+    engine: str
+    action_type: str
+    from_store: str
+    to_store: str
+    source_run_count: int | None
+
+
+def record_from_narrative(narrative: str) -> TransferRecord | None:
+    """Parse a narrative into a :class:`TransferRecord`.
+
+    Returns ``None`` when the narrative isn't a transfer
+    narrative at all (no marker). For transfer narratives with
+    partially-malformed tails, returns a record with the
+    parseable fields populated and the rest blank.
+
+    The boolean check ``record is None`` mirrors
+    :func:`is_transfer_narrative`'s semantics; consumers that
+    want the parsed bundle should prefer this entry point.
+    """
+    if not is_transfer_narrative(narrative):
+        return None
+    engine, action_type = parse_engine_action(narrative)
+    return TransferRecord(
+        narrative=narrative,
+        engine=engine,
+        action_type=action_type,
+        from_store=parse_source_store(narrative),
+        to_store=parse_target_store(narrative),
+        source_run_count=parse_source_run_count(narrative),
+    )
