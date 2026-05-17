@@ -78,6 +78,7 @@ class DecisionRetrieval:
         candidate_pool: int = 100,
         statuses: tuple[str, ...] = ("executed", "failed"),
         store_id: str | None = None,
+        since_hours: float | None = None,
     ) -> list[dict[str, Any]]:
         """Return top-k similar past decisions for an engine.
 
@@ -129,6 +130,19 @@ class DecisionRetrieval:
         )
         if not candidates:
             return []
+
+        # ── Optional time bound ─────────────────────────────
+        # Hard filter on top of the recency-decay scoring factor.
+        # Useful for precision queries ("only the last 48h").
+        # Soft scoring still applies AFTER the hard cut.
+        if since_hours is not None and since_hours > 0:
+            cutoff = time.time() - float(since_hours) * 3600.0
+            candidates = [
+                c for c in candidates
+                if (c.get("decided_at") or 0) >= cutoff
+            ]
+            if not candidates:
+                return []
 
         # ── Score each ──────────────────────────────────────
         scored: list[dict] = []
@@ -368,6 +382,7 @@ def retrieve_similar(
     params: dict | None = None,
     k: int = 5,
     store_id: str | None = None,
+    since_hours: float | None = None,
 ) -> list[dict[str, Any]]:
     """Module-level convenience: equivalent to
     ``DecisionRetrieval().retrieve(...)`` using the process-wide
@@ -380,4 +395,5 @@ def retrieve_similar(
         params=params,
         k=k,
         store_id=store_id,
+        since_hours=since_hours,
     )

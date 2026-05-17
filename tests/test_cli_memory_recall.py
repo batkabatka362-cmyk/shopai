@@ -57,6 +57,7 @@ def _ns(**kw):
         params_json="",
         k=5,
         store_id="",
+        since_hours=0,
         json=False,
     )
     defaults.update(kw)
@@ -300,3 +301,101 @@ class TestEmptyResults:
             )
         assert code == 0
         assert "no similar past decisions" in out
+
+
+# ─── --since-hours flag ──────────────────────────────────────
+
+
+class TestSinceHoursFlag:
+
+    def test_since_hours_propagates_to_retriever(self, cli):
+        inst = _fake_retriever(results=[])
+        with patch(
+            "core.decision_retrieval.DecisionRetrieval",
+            return_value=inst,
+        ):
+            _capture(
+                cli._cmd_memory_recall,
+                _ns(engine="loyalty", since_hours=24, json=True),
+            )
+        kw = inst.retrieve.call_args.kwargs
+        assert kw["since_hours"] == 24
+
+    def test_since_hours_zero_means_no_filter(self, cli):
+        """``--since-hours 0`` (the default) should NOT
+        propagate ``since_hours`` to the retriever at all —
+        otherwise the retriever applies the hard filter at 0h
+        and returns nothing."""
+        inst = _fake_retriever(results=[])
+        with patch(
+            "core.decision_retrieval.DecisionRetrieval",
+            return_value=inst,
+        ):
+            _capture(
+                cli._cmd_memory_recall,
+                _ns(engine="loyalty", since_hours=0, json=True),
+            )
+        kw = inst.retrieve.call_args.kwargs
+        assert "since_hours" not in kw
+
+    def test_since_hours_in_json_envelope_when_set(self, cli):
+        inst = _fake_retriever(results=[])
+        with patch(
+            "core.decision_retrieval.DecisionRetrieval",
+            return_value=inst,
+        ):
+            out, _ = _capture(
+                cli._cmd_memory_recall,
+                _ns(engine="loyalty", since_hours=48, json=True),
+            )
+        data = json.loads(out)
+        assert data["query"]["since_hours"] == 48
+
+    def test_since_hours_in_query_text_line(self, cli):
+        inst = _fake_retriever(results=[])
+        with patch(
+            "core.decision_retrieval.DecisionRetrieval",
+            return_value=inst,
+        ):
+            out, _ = _capture(
+                cli._cmd_memory_recall,
+                _ns(engine="loyalty", since_hours=72),
+            )
+        assert "since_hours=72" in out
+
+    def test_pre_pr_retriever_drops_since_hours(self, cli):
+        """A retriever that doesn't accept ``since_hours`` should
+        get the kwarg stripped on retry, with a warning in text
+        mode."""
+        inst = _fake_retriever(
+            results=[],
+            raises_on_store_id_only=False,
+        )
+        # Override to raise specifically on since_hours.
+        first_call_made = {"flag": False}
+
+        def _retrieve(**kwargs):
+            if (
+                "since_hours" in kwargs
+                and not first_call_made["flag"]
+            ):
+                first_call_made["flag"] = True
+                raise TypeError(
+                    "unexpected keyword argument 'since_hours'"
+                )
+            return []
+
+        inst.retrieve.side_effect = _retrieve
+        with patch(
+            "core.decision_retrieval.DecisionRetrieval",
+            return_value=inst,
+        ):
+            out, code = _capture(
+                cli._cmd_memory_recall,
+                _ns(engine="loyalty", since_hours=24),
+            )
+        assert code == 0
+        # Two calls: one failed, one succeeded.
+        assert inst.retrieve.call_count == 2
+        # Warning surfaced in text mode.
+        assert "since-hours" in out.lower()

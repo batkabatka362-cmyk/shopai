@@ -374,3 +374,119 @@ class TestRetrieval:
         results = r.retrieve(engine="loyalty")
         # No crash, just empty
         assert results == []
+
+
+class TestSinceHours:
+    """``since_hours`` adds a hard time filter on top of the
+    soft recency-decay scoring. Useful for precision queries
+    ('only the last 48h')."""
+
+    def test_filters_out_old_candidates(self):
+        now = time.time()
+        q = _fake_queue(
+            actions_by_status={
+                "executed": [
+                    _FakeAction(
+                        id="recent_1", engine="loyalty",
+                        action_type="mint_loyalty_code",
+                        capability="SHOPIFY_CREATE_DISCOUNT",
+                        params={}, status="executed",
+                        decided_at=now - 3600,  # 1h ago
+                        store_id=None,
+                    ),
+                    _FakeAction(
+                        id="old_1", engine="loyalty",
+                        action_type="mint_loyalty_code",
+                        capability="SHOPIFY_CREATE_DISCOUNT",
+                        params={}, status="executed",
+                        decided_at=now - 86400 * 7,  # 7 days
+                        store_id=None,
+                    ),
+                ],
+            },
+        )
+        r = DecisionRetrieval(queue=q)
+        # 24h window — old_1 should be filtered out
+        results = r.retrieve(engine="loyalty", since_hours=24)
+        ids = [e["action_id"] for e in results]
+        assert ids == ["recent_1"]
+
+    def test_none_means_no_filter(self):
+        """``since_hours=None`` (or omitted) should leave
+        retrieval untouched — soft recency decay still applies
+        but no hard cut."""
+        now = time.time()
+        q = _fake_queue(
+            actions_by_status={
+                "executed": [
+                    _FakeAction(
+                        id="recent_1", engine="loyalty",
+                        action_type="mint_loyalty_code",
+                        capability="SHOPIFY_CREATE_DISCOUNT",
+                        params={}, status="executed",
+                        decided_at=now - 3600,
+                        store_id=None,
+                    ),
+                    _FakeAction(
+                        id="old_1", engine="loyalty",
+                        action_type="mint_loyalty_code",
+                        capability="SHOPIFY_CREATE_DISCOUNT",
+                        params={}, status="executed",
+                        decided_at=now - 86400 * 7,
+                        store_id=None,
+                    ),
+                ],
+            },
+        )
+        r = DecisionRetrieval(queue=q)
+        results = r.retrieve(engine="loyalty")  # no since_hours
+        ids = {e["action_id"] for e in results}
+        # Both surface (recent_1 may rank higher due to decay).
+        assert ids == {"recent_1", "old_1"}
+
+    def test_zero_means_no_filter(self):
+        """Treat ``since_hours=0`` the same as ``None`` —
+        operators passing 0 from a default value get the
+        expected no-filter behaviour."""
+        now = time.time()
+        q = _fake_queue(
+            actions_by_status={
+                "executed": [
+                    _FakeAction(
+                        id="old_1", engine="loyalty",
+                        action_type="mint_loyalty_code",
+                        capability="SHOPIFY_CREATE_DISCOUNT",
+                        params={}, status="executed",
+                        decided_at=now - 86400 * 30,  # 30d ago
+                        store_id=None,
+                    ),
+                ],
+            },
+        )
+        r = DecisionRetrieval(queue=q)
+        results = r.retrieve(engine="loyalty", since_hours=0)
+        assert len(results) == 1
+        assert results[0]["action_id"] == "old_1"
+
+    def test_all_filtered_returns_empty(self):
+        """When the hard filter cuts every candidate, return
+        an empty list cleanly (no crash, no negative-k slicing)."""
+        now = time.time()
+        q = _fake_queue(
+            actions_by_status={
+                "executed": [
+                    _FakeAction(
+                        id="ancient", engine="loyalty",
+                        action_type="mint_loyalty_code",
+                        capability="SHOPIFY_CREATE_DISCOUNT",
+                        params={}, status="executed",
+                        decided_at=now - 86400 * 30,
+                        store_id=None,
+                    ),
+                ],
+            },
+        )
+        r = DecisionRetrieval(queue=q)
+        # 1h window cuts the 30-day-old candidate.
+        results = r.retrieve(engine="loyalty", since_hours=1)
+        assert results == []
