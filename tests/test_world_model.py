@@ -439,6 +439,122 @@ class TestDecisionsSection:
 # ─── Top-level snapshot envelope ─────────────────────────────
 
 
+class TestTransfersSection:
+    """Cross-store transfer activity touching this store --
+    rows enqueued via ``shopai transfer apply``, split into
+    incoming (this store = target) and outgoing (this store =
+    source per narrative parse)."""
+
+    def _make_queue_with_transfers(
+        self, *, incoming=None, outgoing=None,
+    ):
+        """Build a queue whose ``_conn.execute(...)`` returns
+        the right rows based on the SQL params bound.
+
+        The handler issues two queries: incoming uses
+        ``store_id = ?`` as the first bound param; outgoing uses
+        a narrative LIKE ``%from <store_id> to %`` as the first
+        bound param. We dispatch on which form the first param
+        takes.
+        """
+        incoming = incoming or []
+        outgoing = outgoing or []
+        q = MagicMock()
+        # The unrelated queue calls in other sections still need
+        # to work; default the rest to empty.
+        q.stats.return_value = {"pending": 0}
+        q.stats_by_engine.return_value = {}
+        q.list_decisions.return_value = []
+
+        fake_conn = MagicMock()
+        fake_conn.__enter__ = lambda self: self
+        fake_conn.__exit__ = lambda *a: None
+
+        def _execute(sql, params):
+            cursor = MagicMock()
+            first = params[0] if params else ""
+            if isinstance(first, str) and first.startswith("%"):
+                cursor.fetchall.return_value = list(outgoing)
+            else:
+                cursor.fetchall.return_value = list(incoming)
+            return cursor
+
+        fake_conn.execute.side_effect = _execute
+        q._conn = fake_conn
+        return q
+
+    def test_empty_buckets_when_no_transfers(self):
+        sm = _fake_sm()
+        q = self._make_queue_with_transfers()
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("store-a", skip_live=True)
+        t = snap["transfers"]
+        assert t["checked"] is True
+        for direction in ("incoming", "outgoing"):
+            assert t[direction]["total"] == 0
+            assert t[direction]["executed"] == 0
+            assert t[direction]["pending"] == 0
+
+    def test_incoming_rows_counted_by_status(self):
+        sm = _fake_sm()
+        incoming = [
+            {"status": "executed"}, {"status": "executed"},
+            {"status": "pending"},  {"status": "failed"},
+            {"status": "rejected"},
+        ]
+        q = self._make_queue_with_transfers(incoming=incoming)
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("store-a", skip_live=True)
+        inc = snap["transfers"]["incoming"]
+        assert inc["total"] == 5
+        assert inc["executed"] == 2
+        assert inc["pending"] == 1
+        assert inc["failed"] == 1
+        assert inc["other"] == 1
+
+    def test_outgoing_rows_counted_independently(self):
+        """Outgoing scan keys off the narrative LIKE pattern, NOT
+        store_id, so it's a different result set than incoming."""
+        sm = _fake_sm()
+        outgoing = [
+            {"status": "executed"}, {"status": "executed"},
+            {"status": "executed"},
+        ]
+        q = self._make_queue_with_transfers(outgoing=outgoing)
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("store-a", skip_live=True)
+        out = snap["transfers"]["outgoing"]
+        assert out["total"] == 3
+        assert out["executed"] == 3
+        # Incoming bucket stays zeroed (different result set).
+        assert snap["transfers"]["incoming"]["total"] == 0
+
+    def test_queue_unavailable_marks_section_failed(self):
+        """If the approval queue is unavailable, transfers
+        section reports checked=False with the error -- doesn't
+        raise out of the snapshot."""
+        sm = _fake_sm()
+        q = MagicMock()
+        # Make ``q._conn`` raise via attribute access.
+        type(q)._conn = property(
+            lambda self: (_ for _ in ()).throw(
+                RuntimeError("queue offline"),
+            ),
+        )
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("store-a", skip_live=True)
+        t = snap["transfers"]
+        # Each query catches its own error -- buckets just
+        # come back empty, but the section completes.
+        assert t["checked"] is True
+        assert t["incoming"]["total"] == 0
+        assert t["outgoing"]["total"] == 0
+
+
 class TestSnapshotEnvelope:
 
     def test_has_canonical_keys(self):
@@ -449,6 +565,7 @@ class TestSnapshotEnvelope:
         for key in (
             "store_id", "fetched_at", "store", "stats", "sync",
             "connection", "config", "design", "approvals", "decisions",
+            "transfers",
         ):
             assert key in snap
 

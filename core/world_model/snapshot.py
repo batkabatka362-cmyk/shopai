@@ -323,6 +323,104 @@ class WorldModel:
             ),
         }
 
+    def _section_transfers(
+        self, *, store_id: str, limit: int = 50,
+    ) -> dict:
+        """Cross-store transfer activity touching this store.
+
+        Scans ``pending_actions`` for rows whose narrative was
+        written by ``shopai transfer apply`` (starts with
+        ``Transfer suggestion:`` or has the operator-note
+        prefix variant). Splits results into two buckets:
+
+          - ``incoming``: this store is the TARGET of a transfer.
+            The row's ``store_id`` column matches.
+          - ``outgoing``: this store is the SOURCE of a transfer.
+            Detected from narrative text ``from <store_id> to``.
+
+        Counts by status (executed / pending / failed / other) so
+        callers can see "we applied 3 transfers to this store
+        last week, 2 executed, 1 still pending".
+
+        Returns ``{"checked": True, "incoming": {...},
+        "outgoing": {...}}`` on success; ``{"checked": False,
+        "error": ...}`` on queue failure.
+        """
+        try:
+            queue = self._approval_queue()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model transfers queue raised: %s", exc,
+            )
+            return {"checked": False, "error": str(exc)}
+
+        like_clause = (
+            "(narrative LIKE 'Transfer suggestion:%' "
+            "OR narrative LIKE '%||  Transfer suggestion:%')"
+        )
+
+        def _bucketise(rows: list) -> dict:
+            bucket = {
+                "total": 0, "executed": 0, "pending": 0,
+                "failed": 0, "other": 0,
+            }
+            for r in rows:
+                bucket["total"] += 1
+                st = (r["status"] or "").lower()
+                if st == "executed":
+                    bucket["executed"] += 1
+                elif st in {"pending", "approved"}:
+                    bucket["pending"] += 1
+                elif st == "failed":
+                    bucket["failed"] += 1
+                else:
+                    bucket["other"] += 1
+            return bucket
+
+        # ── Incoming: store_id column matches ───────────────
+        try:
+            with queue._conn:
+                in_rows = queue._conn.execute(
+                    f"""SELECT status FROM pending_actions
+                       WHERE store_id = ?
+                         AND {like_clause}
+                       ORDER BY proposed_at DESC LIMIT ?""",
+                    (store_id, limit),
+                ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model transfers incoming raised: %s", exc,
+            )
+            in_rows = []
+
+        # ── Outgoing: narrative contains "from <store_id> to" ─
+        # This is the same SQL LIKE approach the CLI's
+        # ``transfer history`` uses (no source-store column to
+        # filter on yet). Match for either ``from <id> to`` (the
+        # canonical narrative tail) or ``from <id>.`` (rare edge
+        # case).
+        try:
+            needle = f"%from {store_id} to %"
+            with queue._conn:
+                out_rows = queue._conn.execute(
+                    f"""SELECT status FROM pending_actions
+                       WHERE {like_clause}
+                         AND narrative LIKE ?
+                       ORDER BY proposed_at DESC LIMIT ?""",
+                    (needle, limit),
+                ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model transfers outgoing raised: %s", exc,
+            )
+            out_rows = []
+
+        return {
+            "checked": True,
+            "incoming": _bucketise(in_rows),
+            "outgoing": _bucketise(out_rows),
+        }
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -377,6 +475,7 @@ class WorldModel:
         # store_id (pre-migration data).
         approvals = self._section_approvals(store_id=store_id)
         decisions = self._section_decisions(store_id=store_id)
+        transfers = self._section_transfers(store_id=store_id)
 
         return {
             "store_id": store_id,
@@ -389,6 +488,7 @@ class WorldModel:
             "design": design,
             "approvals": approvals,
             "decisions": decisions,
+            "transfers": transfers,
         }
 
 
