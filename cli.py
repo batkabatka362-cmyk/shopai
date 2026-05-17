@@ -502,6 +502,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the history rows as JSON.",
     )
 
+    transfer_outcomes_p = transfer_sub.add_parser(
+        "outcomes",
+        help=(
+            "For transferred actions that EXECUTED on the "
+            "target store, show their measured outcomes "
+            "(positive / negative / revenue) to see whether "
+            "cross-store transfers are paying off."
+        ),
+    )
+    transfer_outcomes_p.add_argument(
+        "--from", default="", dest="from_store",
+        help="Filter to transfers originating from this store",
+    )
+    transfer_outcomes_p.add_argument(
+        "--to", default="", dest="to_store",
+        help="Filter to transfers targeting this store",
+    )
+    transfer_outcomes_p.add_argument(
+        "--engine", default="",
+        help="Filter to transfers of this engine",
+    )
+    transfer_outcomes_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Cap on executed-transfer rows scanned (default 20).",
+    )
+    transfer_outcomes_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the outcomes rollup as JSON.",
+    )
+
     # ── Model-router commands ────────────────────────────────
     mr_p = sub.add_parser(
         "model-router",
@@ -2206,7 +2236,10 @@ def _cmd_transfer(args) -> None:
     if verb == "history":
         _cmd_transfer_history(args)
         return
-    print("Usage: shopai transfer {suggest|apply|sources|history}")
+    if verb == "outcomes":
+        _cmd_transfer_outcomes(args)
+        return
+    print("Usage: shopai transfer {suggest|apply|sources|history|outcomes}")
 
 
 def _cmd_transfer_suggest(args) -> None:
@@ -2937,6 +2970,199 @@ def _parse_from_store_from_narrative(narrative: str) -> str:
     if to_idx < 0:
         return ""
     return after_from[:to_idx].strip()
+
+
+
+def _cmd_transfer_outcomes(args) -> None:
+    """Close the empire-AGI loop: for transferred actions that
+    EXECUTED on the target store, surface their measured outcomes
+    so operators can see whether cross-store learning is paying off.
+
+    Workflow:
+      1. Scan ``pending_actions`` for EXECUTED rows whose narrative
+         marks them as transfer-applied (same parser as ``transfer
+         history``).
+      2. For each, fetch outcomes via ``queue.get_outcomes()``.
+      3. Aggregate counts (positive / negative / neutral) and
+         revenue. Per-row + overall rollup.
+
+    Filters mirror ``transfer history``: ``--from``, ``--to``,
+    ``--engine``, ``--limit``.
+    """
+    as_json = bool(getattr(args, "json", False))
+    from_store = (getattr(args, "from_store", "") or "").strip()
+    to_store = (getattr(args, "to_store", "") or "").strip()
+    engine = (getattr(args, "engine", "") or "").strip()
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    try:
+        from core.approval.queue import get_approval_queue
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    try:
+        queue = get_approval_queue()
+        clauses = [
+            "status = 'executed'",
+            "(narrative LIKE 'Transfer suggestion:%' "
+            "OR narrative LIKE '%||  Transfer suggestion:%')",
+        ]
+        params: list = []
+        if engine:
+            clauses.append("engine = ?")
+            params.append(engine)
+        if to_store:
+            clauses.append("store_id = ?")
+            params.append(to_store)
+        params.append(limit)
+        sql = (
+            "SELECT id, engine, action_type, capability, "
+            "store_id, narrative, decided_at "
+            "FROM pending_actions WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY decided_at DESC LIMIT ?"
+        )
+        with queue._conn:
+            raw_rows = queue._conn.execute(sql, params).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"queue scan failed: {exc}")
+        return
+
+    rows: list[dict] = []
+    rollup = {
+        "actions_with_outcomes": 0,
+        "actions_without_outcomes": 0,
+        "positive_total": 0,
+        "negative_total": 0,
+        "neutral_total": 0,
+        "revenue_total": 0.0,
+    }
+
+    for r in raw_rows:
+        parsed_from = _parse_from_store_from_narrative(
+            r["narrative"] or "",
+        )
+        if from_store and parsed_from != from_store:
+            continue
+
+        try:
+            outcomes = queue.get_outcomes(r["id"]) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "transfer outcomes: get_outcomes(%s) raised: %s",
+                r["id"], exc,
+            )
+            outcomes = []
+
+        pos = sum(1 for o in outcomes if o.get("polarity") == "positive")
+        neg = sum(1 for o in outcomes if o.get("polarity") == "negative")
+        neu = sum(1 for o in outcomes if o.get("polarity") == "neutral")
+        revenue = 0.0
+        for o in outcomes:
+            m = o.get("metrics") or {}
+            try:
+                revenue += float(m.get("revenue", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+
+        if outcomes:
+            rollup["actions_with_outcomes"] += 1
+        else:
+            rollup["actions_without_outcomes"] += 1
+        rollup["positive_total"] += pos
+        rollup["negative_total"] += neg
+        rollup["neutral_total"] += neu
+        rollup["revenue_total"] += revenue
+
+        rows.append({
+            "action_id": r["id"],
+            "engine": r["engine"],
+            "action_type": r["action_type"],
+            "capability": r["capability"],
+            "from_store": parsed_from,
+            "to_store": r["store_id"],
+            "decided_at": r["decided_at"],
+            "outcome_count": len(outcomes),
+            "positive_outcomes": pos,
+            "negative_outcomes": neg,
+            "neutral_outcomes": neu,
+            "revenue": revenue,
+        })
+
+    envelope = {
+        "filters": {
+            "from_store": from_store,
+            "to_store": to_store,
+            "engine": engine,
+            "limit": limit,
+        },
+        "count": len(rows),
+        "rollup": rollup,
+        "rows": rows,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    if not rows:
+        bits = []
+        if from_store:
+            bits.append(f"from={from_store}")
+        if to_store:
+            bits.append(f"to={to_store}")
+        if engine:
+            bits.append(f"engine={engine}")
+        scope = f" ({', '.join(bits)})" if bits else ""
+        print(f"No executed transfers{scope}.")
+        return
+
+    print(
+        f"Transfer outcomes ({len(rows)} executed transfer(s)):"
+    )
+    print()
+    for r in rows:
+        if r["outcome_count"] == 0:
+            polarity = "no outcomes yet"
+        else:
+            parts = []
+            if r["positive_outcomes"]:
+                parts.append(f"+{r['positive_outcomes']}")
+            if r["negative_outcomes"]:
+                parts.append(f"-{r['negative_outcomes']}")
+            if r["neutral_outcomes"]:
+                parts.append(f"~{r['neutral_outcomes']}")
+            polarity = " ".join(parts) or "0"
+        rev_str = (
+            f"  rev=${r['revenue']:.2f}"
+            if r["revenue"] else ""
+        )
+        print(
+            f"  {r['engine']}/{r['action_type']}  "
+            f"{r['from_store'] or '?'} -> {r['to_store'] or '?'}  "
+            f"[{polarity}]{rev_str}"
+        )
+        print(f"      action_id: {r['action_id']}")
+    print()
+    print(
+        f"Rollup: {rollup['actions_with_outcomes']} with outcomes, "
+        f"{rollup['actions_without_outcomes']} without.  "
+        f"+{rollup['positive_total']} / "
+        f"-{rollup['negative_total']} / "
+        f"~{rollup['neutral_total']}  "
+        f"rev=${rollup['revenue_total']:.2f}"
+    )
 
 
 
