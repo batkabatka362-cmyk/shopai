@@ -29,8 +29,11 @@ behaviour change.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -117,8 +120,11 @@ def aggregate_outcomes(
             raw = metrics.get("revenue", 0)
             try:
                 revenue += float(raw or 0)
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as exc:
+                logger.debug(
+                    "outcome_aggregator: skipping non-numeric "
+                    "revenue %r: %s", raw, exc,
+                )
 
     if (positive + negative) > 0:
         score: float | None = positive / (positive + negative)
