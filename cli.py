@@ -620,6 +620,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     recall_p.add_argument(
+        "--since-hours", type=float, default=0,
+        dest="since_hours",
+        help=(
+            "Optional: only retrieve decisions decided within "
+            "the last N hours. Default 0 means no time filter "
+            "(retrieval-layer recency decay still applies as a "
+            "soft preference)."
+        ),
+    )
+    recall_p.add_argument(
         "--json", action="store_true",
         help="Emit the raw retrieval list as JSON",
     )
@@ -4985,32 +4995,50 @@ def _cmd_memory_recall(args) -> None:
     from core.decision_retrieval import DecisionRetrieval
 
     store_id = (getattr(args, "store_id", "") or "").strip() or None
+    since_hours_raw = float(getattr(args, "since_hours", 0) or 0)
+    since_hours = since_hours_raw if since_hours_raw > 0 else None
 
     retriever = DecisionRetrieval()
+    # Build kwargs incrementally so we can drop ``since_hours``
+    # if the retriever doesn't accept it (pre-PR-#278). The
+    # store_id fallback below also handles its own pre-#241 case.
+    retrieve_kwargs: dict = {
+        "engine": args.engine,
+        "action_type": getattr(args, "action_type", "") or None,
+        "capability": getattr(args, "capability", "") or None,
+        "params": params,
+        "k": int(getattr(args, "k", 5) or 5),
+        "store_id": store_id,
+    }
+    if since_hours is not None:
+        retrieve_kwargs["since_hours"] = since_hours
+
     try:
-        results = retriever.retrieve(
-            engine=args.engine,
-            action_type=getattr(args, "action_type", "") or None,
-            capability=getattr(args, "capability", "") or None,
-            params=params,
-            k=int(getattr(args, "k", 5) or 5),
-            store_id=store_id,
-        )
-    except TypeError:
-        # Pre-#241 retriever doesn't accept store_id. Fall back
-        # to fleet-wide retrieval but surface a hint.
-        if store_id is not None and not as_json:
+        results = retriever.retrieve(**retrieve_kwargs)
+    except TypeError as exc:
+        # Pre-#241 retriever doesn't accept store_id; pre-#278
+        # doesn't accept since_hours. Strip the unsupported
+        # kwargs and retry. Operator-facing warning so it's
+        # clear which filter got dropped.
+        msg = str(exc)
+        dropped: list[str] = []
+        if "since_hours" in msg:
+            retrieve_kwargs.pop("since_hours", None)
+            dropped.append("--since-hours")
+        if "store_id" in msg:
+            retrieve_kwargs.pop("store_id", None)
+            dropped.append("--store")
+        if not dropped:
+            # Some other TypeError -- re-raise so it's not
+            # silently swallowed.
+            raise
+        if not as_json:
             print(
-                "Warning: --store ignored (DecisionRetrieval "
-                "lacks store_id support; needs PR #241 or later)."
+                f"Warning: {', '.join(dropped)} ignored "
+                "(DecisionRetrieval is on an older revision; "
+                "upgrade to the latest core/decision_retrieval)."
             )
-        results = retriever.retrieve(
-            engine=args.engine,
-            action_type=getattr(args, "action_type", "") or None,
-            capability=getattr(args, "capability", "") or None,
-            params=params,
-            k=int(getattr(args, "k", 5) or 5),
-        )
+        results = retriever.retrieve(**retrieve_kwargs)
 
     if as_json:
         print(json.dumps({
@@ -5020,6 +5048,7 @@ def _cmd_memory_recall(args) -> None:
                 "capability": getattr(args, "capability", "") or None,
                 "params": params,
                 "store_id": store_id,
+                "since_hours": since_hours,
             },
             "k": int(getattr(args, "k", 5) or 5),
             "results": results,
@@ -5034,6 +5063,8 @@ def _cmd_memory_recall(args) -> None:
         filters.append(f"capability={args.capability}")
     if store_id:
         filters.append(f"store={store_id}")
+    if since_hours is not None:
+        filters.append(f"since_hours={since_hours:g}")
     if params:
         filters.append(f"params={sorted(params.keys())}")
     if filters:
