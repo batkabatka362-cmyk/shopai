@@ -802,6 +802,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the compare report as JSON.",
     )
 
+    engine_ranking_p = engine_sub.add_parser(
+        "ranking",
+        help=(
+            "Rank ALL active engines fleet-wide by outcome "
+            "score + executed count. The 'which engines are "
+            "actually working?' command -- inverse of engine "
+            "summary's per-engine drill."
+        ),
+    )
+    engine_ranking_p.add_argument(
+        "--window-hours", type=int, default=168,
+        dest="window_hours",
+        help="Activity window in hours (default: 168 = 7 days).",
+    )
+    engine_ranking_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Cap on ranked engines (default 20).",
+    )
+    engine_ranking_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the ranking as JSON.",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -6467,6 +6490,176 @@ def _cmd_engine_compare(args) -> None:
             f"  {metric:<20s} {str(va):>15s} {str(vb):>15s} "
             f"{w[:20]:>20s}"
         )
+
+
+
+def _cmd_engine_ranking(args) -> None:
+    """Rank every active engine fleet-wide by outcome score +
+    executed count.
+
+    Operators want a single-glance answer to 'which engines are
+    actually working across my fleet?'. ``engine summary`` is
+    per-engine drill; ``engine compare`` is two-engine head-
+    to-head; this is the fleet-wide leaderboard.
+
+    Per-engine bucket (over the window):
+      - executed / failed / pending
+      - positive_outcomes / negative_outcomes / neutral_outcomes
+      - outcome_score = positive / (positive + negative); None
+        on no polarised events
+      - revenue summed across outcome metrics
+
+    Ranking: engines with a non-None outcome_score first (sorted
+    by score desc), then engines with no polarised events
+    (sorted by executed desc). Ties broken by executed desc,
+    then by engine name asc for determinism.
+    """
+    as_json = bool(getattr(args, "json", False))
+    window_hours = max(
+        1, int(getattr(args, "window_hours", 168) or 168),
+    )
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+    cutoff = time.time() - window_hours * 3600.0
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    try:
+        from core.approval.queue import get_approval_queue
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"approval queue unavailable: {exc}")
+        return
+
+    queue = get_approval_queue()
+    by_engine: dict[str, dict] = {}
+
+    def _bucket(name: str) -> dict:
+        if name not in by_engine:
+            by_engine[name] = {
+                "engine": name,
+                "executed": 0, "failed": 0, "pending": 0,
+                "positive_outcomes": 0,
+                "negative_outcomes": 0,
+                "neutral_outcomes": 0,
+                "revenue": 0.0,
+            }
+        return by_engine[name]
+
+    try:
+        with queue._conn:
+            rows = queue._conn.execute(
+                """SELECT id, engine, status FROM pending_actions
+                   WHERE (decided_at >= ? OR
+                          (decided_at IS NULL
+                           AND proposed_at >= ?))""",
+                (cutoff, cutoff),
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"queue scan failed: {exc}")
+        return
+
+    for r in rows:
+        engine = r["engine"] or "(unknown)"
+        bucket = _bucket(engine)
+        status = (r["status"] or "").lower()
+        if status == "executed":
+            bucket["executed"] += 1
+            try:
+                outcomes = queue.get_outcomes(r["id"]) or []
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "engine ranking outcomes raised: %s", exc,
+                )
+                outcomes = []
+            for o in outcomes:
+                pol = o.get("polarity")
+                if pol == "positive":
+                    bucket["positive_outcomes"] += 1
+                elif pol == "negative":
+                    bucket["negative_outcomes"] += 1
+                elif pol == "neutral":
+                    bucket["neutral_outcomes"] += 1
+                m = o.get("metrics") or {}
+                try:
+                    bucket["revenue"] += float(
+                        m.get("revenue", 0) or 0,
+                    )
+                except (TypeError, ValueError):
+                    pass
+        elif status == "failed":
+            bucket["failed"] += 1
+        elif status in {"pending", "approved"}:
+            bucket["pending"] += 1
+
+    for b in by_engine.values():
+        pos = b["positive_outcomes"]
+        neg = b["negative_outcomes"]
+        b["outcome_score"] = (
+            pos / (pos + neg) if (pos + neg) > 0 else None
+        )
+
+    # Ranking: scored engines first (by score desc), then
+    # unscored (by executed desc). Stable tiebreaks for
+    # determinism.
+    def _key(b):
+        score = b["outcome_score"]
+        return (
+            0 if score is not None else 1,  # scored first
+            -(score if score is not None else 0),  # higher score
+            -b["executed"],
+            b["engine"],
+        )
+
+    ranked = sorted(by_engine.values(), key=_key)
+    top = ranked[:limit]
+
+    envelope = {
+        "window_hours": window_hours,
+        "limit": limit,
+        "engine_count": len(by_engine),
+        "engines": top,
+    }
+
+    if as_json:
+        print(json.dumps(envelope, indent=2, default=str))
+        return
+
+    if not top:
+        print(f"No engine activity in last {window_hours}h.")
+        return
+
+    print(
+        f"Engine ranking (last {window_hours}h, "
+        f"{len(by_engine)} engine(s) active):"
+    )
+    print()
+    print(
+        f"  {'RANK':>4s}  {'ENGINE':<22s} {'EXEC':>5s} "
+        f"{'FAIL':>5s} {'+':>4s} {'-':>4s} {'SCORE':>6s} "
+        f"{'REVENUE':>11s}"
+    )
+    print("  " + "-" * 70)
+    for i, b in enumerate(top, start=1):
+        score_str = (
+            "n/a" if b["outcome_score"] is None
+            else f"{b['outcome_score']:.0%}"
+        )
+        print(
+            f"  [{i:>2d}]  {b['engine']:<22s} "
+            f"{b['executed']:>5d} {b['failed']:>5d} "
+            f"{b['positive_outcomes']:>4d} "
+            f"{b['negative_outcomes']:>4d} "
+            f"{score_str:>6s} "
+            f"${b['revenue']:>10,.2f}"
+        )
+
 
 
 
@@ -14229,7 +14422,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "compare":
             _cmd_engine_compare(args)
             return
-        print("Usage: shopai engine {summary|guardrail|fleet|compare}")
+        if action == "ranking":
+            _cmd_engine_ranking(args)
+            return
+        print("Usage: shopai engine {summary|guardrail|fleet|compare|ranking}")
         return
 
     if args.command == "engines-writebacks":
