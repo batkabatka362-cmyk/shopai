@@ -3435,6 +3435,38 @@ def _cmd_daily_brief(args) -> None:
                 "detail": f"{failed} failures in {window_hours}h",
             })
 
+    # ── Engine-degradation alerts ──────────────────────────
+    # Surface the outcome-score drops the dedicated
+    # ``shopai engine alerts`` command finds, so cron-driven
+    # morning briefs catch quietly-degrading engines without
+    # an operator remembering to run it separately.
+    # Uses default thresholds (recent=24h, baseline=168h,
+    # threshold=0.2, min_recent=3) -- conservative + matches
+    # the standalone command.
+    try:
+        from core.approval.outcome_trends import (
+            compute_engine_alerts,
+        )
+        from core.approval.queue import get_approval_queue
+        engine_alerts = compute_engine_alerts(
+            get_approval_queue(),
+            recent_hours=24.0,
+            baseline_hours=168.0,
+            threshold=0.2,
+            min_recent=3,
+        )
+        for a in engine_alerts:
+            alerts.append({
+                "kind": "engine_score_degraded",
+                "store_id": None,
+                "engine": a.engine,
+                "detail": a.detail,
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief engine alerts probe raised: %s", exc,
+        )
+
     # ── Totals ─────────────────────────────────────────────
     totals = {
         "stores": len(store_rows),

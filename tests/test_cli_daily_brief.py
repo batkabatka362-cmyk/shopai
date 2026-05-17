@@ -514,3 +514,80 @@ class TestTransferActivitySection:
         assert ta["executed"] == 1
         assert ta["positive_outcomes"] == 0
         assert ta["negative_outcomes"] == 0
+
+
+# ─── Engine-degradation alerts integration ───────────────────
+
+
+class TestEngineDegradationAlerts:
+    """``daily-brief`` calls
+    ``core.approval.outcome_trends.compute_engine_alerts`` and
+    folds returned EngineAlerts into the ``alerts`` list as
+    ``kind='engine_score_degraded'`` entries."""
+
+    def test_no_alerts_returned_no_kind_in_alerts(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        kinds = {a.get("kind") for a in data["alerts"]}
+        assert "engine_score_degraded" not in kinds
+
+    def test_returned_alerts_added_to_envelope(self, cli):
+        from core.approval.outcome_trends import EngineAlert
+
+        fake_alert = EngineAlert(
+            engine="loyalty",
+            recent_executed=5,
+            baseline_executed=20,
+            recent_score=0.2,
+            baseline_score=0.85,
+            recent_polarised=5,
+            baseline_polarised=18,
+            drop=0.65,
+            detail="20% recent vs 85% baseline (drop 65%)",
+            kind="outcome_score_degraded",
+        )
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[fake_alert],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        degraded = [
+            a for a in data["alerts"]
+            if a.get("kind") == "engine_score_degraded"
+        ]
+        assert len(degraded) == 1
+        assert degraded[0]["engine"] == "loyalty"
+        assert "20% recent vs 85% baseline" in degraded[0]["detail"]
+
+    def test_compute_raise_doesnt_break_daily_brief(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            side_effect=RuntimeError("queue down"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        kinds = {a.get("kind") for a in data["alerts"]}
+        assert "engine_score_degraded" not in kinds
