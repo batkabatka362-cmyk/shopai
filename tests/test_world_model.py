@@ -555,6 +555,84 @@ class TestTransfersSection:
         assert t["outgoing"]["total"] == 0
 
 
+class TestRecentOutcomesSection:
+    """Per-store recent-outcomes stream — uses
+    ``queue.list_recent_outcomes(store_id=...)`` extension from
+    PR #280."""
+
+    def _make_queue(self, *, rows=None, raises_on_store_id=False):
+        rows = rows or []
+        q = MagicMock()
+        q.stats.return_value = {"pending": 0}
+        q.stats_by_engine.return_value = {}
+        q.list_decisions.return_value = []
+        fake_conn = MagicMock()
+        fake_conn.__enter__ = lambda self: self
+        fake_conn.__exit__ = lambda *a: None
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        fake_conn.execute.return_value = cursor
+        q._conn = fake_conn
+
+        def _list_recent(**kwargs):
+            if raises_on_store_id and "store_id" in kwargs:
+                raise TypeError(
+                    "unexpected keyword argument 'store_id'"
+                )
+            return rows
+
+        q.list_recent_outcomes.side_effect = _list_recent
+        return q
+
+    def test_recent_outcomes_aggregated_and_listed(self):
+        sm = _fake_sm()
+        rows = [
+            {"action_id": "a1", "polarity": "positive",
+             "metrics": {"revenue": 50.0}, "recorded_at": 1.0},
+            {"action_id": "a2", "polarity": "negative",
+             "metrics": {"revenue": -5.0}, "recorded_at": 2.0},
+            {"action_id": "a3", "polarity": "positive",
+             "metrics": {"revenue": 25.0}, "recorded_at": 3.0},
+        ]
+        q = self._make_queue(rows=rows)
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("store-a", skip_live=True)
+        sec = snap["recent_outcomes"]
+        assert sec["checked"] is True
+        assert sec["count"] == 3
+        assert sec["summary"]["positive"] == 2
+        assert sec["summary"]["negative"] == 1
+        assert sec["summary"]["revenue"] == 70.0
+        assert len(sec["recent"]) == 3
+        kw = q.list_recent_outcomes.call_args.kwargs
+        assert kw["store_id"] == "store-a"
+
+    def test_pre_pr_280_queue_marks_section_failed(self):
+        """Queue without store_id kwarg: section returns
+        checked=False with the operator-friendly error
+        explaining the missing migration."""
+        sm = _fake_sm()
+        q = self._make_queue(raises_on_store_id=True)
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("store-a", skip_live=True)
+        sec = snap["recent_outcomes"]
+        assert sec["checked"] is False
+        assert "PR #280" in sec["error"]
+
+    def test_empty_results_render_zeroed_summary(self):
+        sm = _fake_sm()
+        q = self._make_queue(rows=[])
+        wm = WorldModel(sm=sm, queue=q)
+        with _patch_external():
+            snap = wm.snapshot("store-a", skip_live=True)
+        sec = snap["recent_outcomes"]
+        assert sec["checked"] is True
+        assert sec["count"] == 0
+        assert sec["summary"]["positive"] == 0
+
+
 class TestSnapshotEnvelope:
 
     def test_has_canonical_keys(self):
@@ -565,7 +643,7 @@ class TestSnapshotEnvelope:
         for key in (
             "store_id", "fetched_at", "store", "stats", "sync",
             "connection", "config", "design", "approvals", "decisions",
-            "transfers",
+            "transfers", "recent_outcomes",
         ):
             assert key in snap
 
