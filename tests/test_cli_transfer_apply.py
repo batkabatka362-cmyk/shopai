@@ -62,6 +62,7 @@ def _ns(**kw):
         params_json="",
         narrative="",
         json=False,
+        dry_run=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -468,3 +469,178 @@ class TestEnqueueFailure:
         assert data["status"] == "error"
         assert "enqueue failed" in data["error"]
         assert "queue full" in data["error"]
+
+
+# ─── --dry-run preview ───────────────────────────────────────
+
+
+class TestDryRun:
+
+    def test_dry_run_does_not_enqueue(self, cli):
+        q = _fake_queue(
+            source_actions=[
+                _action(
+                    id_="src1", engine="loyalty",
+                    action_type="mint_loyalty_code",
+                    params={"customer_id": "gid://X/1"},
+                ),
+            ],
+        )
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, code = _capture(
+                cli._cmd_transfer_apply,
+                _ns(json=True, dry_run=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["status"] == "dry_run"
+        assert data["would_enqueue"] is True
+        # No actual enqueue happens.
+        q.enqueue.assert_not_called()
+
+    def test_dry_run_envelope_carries_preview_fields(self, cli):
+        q = _fake_queue(
+            source_actions=[
+                _action(
+                    id_="src_template", engine="loyalty",
+                    action_type="mint_loyalty_code",
+                    capability="SHOPIFY_CREATE_DISCOUNT",
+                    params={"customer_id": "gid://X/1",
+                            "discount_pct": 10},
+                ),
+                _action(
+                    id_="src_old", engine="loyalty",
+                    action_type="mint_loyalty_code",
+                ),
+            ],
+        )
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, code = _capture(
+                cli._cmd_transfer_apply,
+                _ns(json=True, dry_run=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        # All fields a real apply envelope has, plus dry-run signals.
+        assert data["engine"] == "loyalty"
+        assert data["action_type"] == "mint_loyalty_code"
+        assert data["capability"] == "SHOPIFY_CREATE_DISCOUNT"
+        assert data["from_store"] == "a"
+        assert data["to_store"] == "b"
+        assert data["params"]["discount_pct"] == 10
+        # Dry-run exposes the source template id (the real apply
+        # envelope doesn't -- this is for operator audit).
+        assert data["source_action_id"] == "src_template"
+        assert data["source_run_count"] == 2
+        # Narrative built the same way as a real apply.
+        assert "Transfer suggestion" in data["narrative"]
+
+    def test_dry_run_still_validates_source(self, cli):
+        """Dry-run respects the same source-lookup gate as real
+        apply -- no template means the operator's preview is
+        meaningless, surface the same error."""
+        q = _fake_queue(source_actions=[])
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, code = _capture(
+                cli._cmd_transfer_apply,
+                _ns(dry_run=True),
+            )
+        assert code == 1
+        assert "no successful" in out
+
+    def test_dry_run_still_validates_target_dup(self, cli):
+        """Dry-run respects the target duplicate-protection gate.
+        If the target already has this in any status, the
+        preview is misleading -- surface the same error as real
+        apply."""
+        q = _fake_queue(
+            source_actions=[
+                _action(
+                    id_="src1", engine="loyalty",
+                    action_type="mint_loyalty_code",
+                ),
+            ],
+            target_actions_by_status={
+                "executed": [
+                    _action(
+                        id_="tgt1", engine="loyalty",
+                        action_type="mint_loyalty_code",
+                    ),
+                ],
+            },
+        )
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, code = _capture(
+                cli._cmd_transfer_apply,
+                _ns(dry_run=True),
+            )
+        assert code == 1
+        assert "already exists on target" in out
+        # Still no enqueue attempt (correctness check).
+        q.enqueue.assert_not_called()
+
+    def test_dry_run_text_mode_marks_preview(self, cli):
+        """Text mode marks the output as DRY RUN clearly so
+        operators don't misread it as a successful enqueue."""
+        q = _fake_queue(
+            source_actions=[
+                _action(
+                    id_="src1", engine="loyalty",
+                    action_type="mint_loyalty_code",
+                ),
+            ],
+        )
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, code = _capture(
+                cli._cmd_transfer_apply,
+                _ns(dry_run=True),
+            )
+        assert code == 0
+        assert "DRY RUN" in out
+        assert "Re-run without --dry-run" in out
+
+    def test_dry_run_respects_params_override(self, cli):
+        q = _fake_queue(
+            source_actions=[
+                _action(
+                    id_="src1", engine="loyalty",
+                    action_type="mint_loyalty_code",
+                    params={"customer_id": "gid://X/1",
+                            "discount_pct": 10},
+                ),
+            ],
+        )
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, code = _capture(
+                cli._cmd_transfer_apply,
+                _ns(
+                    json=True, dry_run=True,
+                    params_json=json.dumps(
+                        {"discount_pct": 20},
+                    ),
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        # Operator sees the OVERRIDDEN value, not the template's.
+        assert data["params"]["discount_pct"] == 20
+        # Untouched key still surfaces.
+        assert data["params"]["customer_id"] == "gid://X/1"
