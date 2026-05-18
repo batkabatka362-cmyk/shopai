@@ -329,3 +329,107 @@ class TestJsonEnvelope:
             assert k in data
         assert data["window_hours"] == 72
         assert data["limit"] == 10
+
+
+# ─── Quarantine flags ────────────────────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    yield tmp_path
+
+
+class TestQuarantineFlags:
+    """Engines on the quarantine state's exemptions / released /
+    alert_paused lists get a ``flags`` list per row so operators
+    can spot paused engines in the leaderboard."""
+
+    def test_empty_flags_for_clean_engine(self, cli, data_dir):
+        rows = [
+            _row(id_="x1", engine="loyalty", status="executed"),
+        ]
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows=rows),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_ranking, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert data["engines"][0]["flags"] == []
+
+    def test_alert_paused_flag_surfaces(self, cli, data_dir):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        rows = [
+            _row(id_="x1", engine="loyalty", status="executed"),
+        ]
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows=rows),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_ranking, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "alert_paused" in data["engines"][0]["flags"]
+
+    def test_multiple_flags(self, cli, data_dir):
+        from core.approval import quarantine
+        quarantine.exempt_engine("loyalty")
+        quarantine.add_alert_pause("loyalty")
+        rows = [
+            _row(id_="x1", engine="loyalty", status="executed"),
+        ]
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows=rows),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_ranking, _ns(json=True),
+            )
+        data = json.loads(out)
+        flags = set(data["engines"][0]["flags"])
+        assert "exempt" in flags
+        assert "alert_paused" in flags
+
+    def test_text_render_shows_flags_column(
+        self, cli, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        rows = [
+            _row(id_="x1", engine="loyalty", status="executed"),
+        ]
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows=rows),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_ranking, _ns(),
+            )
+        assert "FLAGS" in out
+        assert "alert_paused" in out
+
+    def test_quarantine_probe_failure_falls_back_empty(
+        self, cli, data_dir,
+    ):
+        """If load_state raises, flags stays empty -- ranking
+        still works."""
+        rows = [
+            _row(id_="x1", engine="loyalty", status="executed"),
+        ]
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows=rows),
+        ), patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_engine_ranking, _ns(json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["engines"][0]["flags"] == []
