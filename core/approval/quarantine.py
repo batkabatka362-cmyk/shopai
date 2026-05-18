@@ -75,17 +75,19 @@ class QuarantineState:
       the operator removes them from the list. Engines on this
       list still get all normal flow — release is a manual
       override, not a permanent immunity.
-    - ``alert_paused``: engines auto-quarantined by the alert-
-      history bridge (``core.approval.alert_quarantine``) after
-      firing degradation alerts on N consecutive days. Treated
-      as quarantined by ``evaluate()``. Cleared by
-      ``clear_alert_pause`` once the operator confirms the
-      issue is resolved.
+    - ``alert_paused``: ``(engine, store_id)`` pairs auto-
+      quarantined by the alert-history bridge after firing
+      degradation alerts on N consecutive days. ``store_id``
+      can be ``None``, which means a FLEET-WIDE pause for the
+      engine (every store). Per-store pauses scope to one
+      store. ``is_alert_paused(engine, store_id=...)`` is True
+      if EITHER the (engine, None) fleet-wide entry OR the
+      exact (engine, store_id) entry is present.
     """
 
     exemptions: frozenset[str]
     released: frozenset[str]
-    alert_paused: frozenset[str] = frozenset()
+    alert_paused: frozenset[tuple[str, str | None]] = frozenset()
 
     def is_exempt(self, engine: str) -> bool:
         return engine in self.exemptions
@@ -93,8 +95,29 @@ class QuarantineState:
     def is_released(self, engine: str) -> bool:
         return engine in self.released
 
-    def is_alert_paused(self, engine: str) -> bool:
-        return engine in self.alert_paused
+    def is_alert_paused(
+        self,
+        engine: str,
+        store_id: str | None = None,
+    ) -> bool:
+        """True if the engine is paused either fleet-wide
+        (``(engine, None)``) or specifically for ``store_id``
+        (``(engine, store_id)``)."""
+        if (engine, None) in self.alert_paused:
+            return True
+        if store_id is not None and (
+            (engine, store_id) in self.alert_paused
+        ):
+            return True
+        return False
+
+    def alert_paused_engines(self) -> frozenset[str]:
+        """Distinct engines that have ANY alert pause (fleet
+        or per-store). Convenience for surfaces that don't
+        care about granularity."""
+        return frozenset(
+            engine for (engine, _store) in self.alert_paused
+        )
 
 
 def _state_path() -> Path:
@@ -131,6 +154,37 @@ def load_state() -> QuarantineState:
         return _empty_state()
     if not isinstance(data, dict):
         return _empty_state()
+    # alert_paused format migration:
+    # - Legacy: list of engine-name strings -> map to
+    #   (engine, None) tuples (fleet-wide pauses).
+    # - Current: list of [engine, store_id] 2-tuples; store_id
+    #   may be JSON null -> Python None.
+    raw_alert_paused = data.get("alert_paused", []) or []
+    parsed_alert: set[tuple[str, str | None]] = set()
+    for entry in raw_alert_paused:
+        if isinstance(entry, str):
+            engine = entry.strip()
+            if engine:
+                parsed_alert.add((engine, None))
+            continue
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            engine_raw, store_raw = entry
+            engine = str(engine_raw).strip()
+            if not engine:
+                continue
+            store_id: str | None
+            if store_raw is None:
+                store_id = None
+            else:
+                store_id = str(store_raw).strip() or None
+            parsed_alert.add((engine, store_id))
+            continue
+        # Unknown entry shape -- skip rather than crash
+        logger.debug(
+            "quarantine state alert_paused: skipping unknown "
+            "entry shape: %r", entry,
+        )
+
     return QuarantineState(
         exemptions=frozenset(
             str(e).strip()
@@ -142,12 +196,15 @@ def load_state() -> QuarantineState:
             for e in data.get("released", []) or []
             if str(e).strip()
         ),
-        alert_paused=frozenset(
-            str(e).strip()
-            for e in data.get("alert_paused", []) or []
-            if str(e).strip()
-        ),
+        alert_paused=frozenset(parsed_alert),
     )
+
+
+def _alert_paused_sort_key(
+    pair: tuple[str, str | None],
+) -> tuple[str, str]:
+    engine, store = pair
+    return (engine, store or "")
 
 
 def save_state(state: QuarantineState) -> None:
@@ -157,7 +214,16 @@ def save_state(state: QuarantineState) -> None:
     payload = {
         "exemptions": sorted(state.exemptions),
         "released": sorted(state.released),
-        "alert_paused": sorted(state.alert_paused),
+        # Each entry is [engine, store_id] (or [engine, null]
+        # for fleet-wide). Sort by (engine, store_id) for
+        # stable ordering across writes.
+        "alert_paused": [
+            [engine, store]
+            for (engine, store) in sorted(
+                state.alert_paused,
+                key=_alert_paused_sort_key,
+            )
+        ],
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
     with _LOCK:
@@ -228,35 +294,91 @@ def clear_release(engine: str) -> QuarantineState:
     return new
 
 
-def add_alert_pause(engine: str) -> QuarantineState:
-    """Add ``engine`` to the alert-paused set. Used by the
-    alert-history bridge after an engine fires degradation
-    alerts on N consecutive days. ``evaluate()`` treats
-    alert-paused engines as quarantined."""
+def add_alert_pause(
+    engine: str,
+    store_id: str | None = None,
+) -> QuarantineState:
+    """Pause ``engine`` (fleet-wide by default, or just for
+    ``store_id`` if supplied). Used by the alert-history
+    bridge after an engine fires degradation alerts on N
+    consecutive days. ``evaluate()`` treats alert-paused
+    pairs as quarantined.
+
+    Args:
+        engine: Engine to pause. Required.
+        store_id: When supplied, the pause is per-store. When
+            ``None``, the pause is fleet-wide (every store).
+    """
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
+    store_clean: str | None
+    if store_id is None:
+        store_clean = None
+    else:
+        store_clean = str(store_id).strip() or None
     s = load_state()
     new = QuarantineState(
         exemptions=s.exemptions,
         released=s.released,
-        alert_paused=s.alert_paused | {engine},
+        alert_paused=s.alert_paused | {(engine, store_clean)},
     )
     save_state(new)
     return new
 
 
-def clear_alert_pause(engine: str) -> QuarantineState:
-    """Operator escape hatch: remove ``engine`` from the alert-
-    paused set. Same shape as ``clear_release``."""
+def clear_alert_pause(
+    engine: str,
+    store_id: str | None = None,
+) -> QuarantineState:
+    """Operator escape hatch: remove a (engine, store_id) entry
+    from the alert-paused set.
+
+    Args:
+        engine: Engine to release. Required.
+        store_id: Specific store to release. When ``None``,
+            releases the fleet-wide pause (the
+            ``(engine, None)`` tuple). Use ``--all`` semantics
+            (``clear_all_alert_pauses_for_engine``) when you
+            want to drop EVERY pause for an engine across all
+            stores.
+    """
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
+    store_clean: str | None
+    if store_id is None:
+        store_clean = None
+    else:
+        store_clean = str(store_id).strip() or None
     s = load_state()
     new = QuarantineState(
         exemptions=s.exemptions,
         released=s.released,
-        alert_paused=s.alert_paused - {engine},
+        alert_paused=s.alert_paused - {(engine, store_clean)},
+    )
+    save_state(new)
+    return new
+
+
+def clear_all_alert_pauses_for_engine(
+    engine: str,
+) -> QuarantineState:
+    """Drop EVERY alert-pause entry (fleet-wide + every store-
+    scoped pair) for ``engine``. Used by the
+    ``--release-alert ENGINE --all`` CLI shortcut."""
+    engine = engine.strip()
+    if not engine:
+        raise ValueError("engine name must be non-empty")
+    s = load_state()
+    remaining = frozenset(
+        pair for pair in s.alert_paused
+        if pair[0] != engine
+    )
+    new = QuarantineState(
+        exemptions=s.exemptions,
+        released=s.released,
+        alert_paused=remaining,
     )
     save_state(new)
     return new
@@ -278,6 +400,7 @@ def evaluate(
     engine: str,
     queue: "ApprovalQueue",
     state: QuarantineState | None = None,
+    store_id: str | None = None,
 ) -> QuarantineDecision:
     """Decide whether ``engine`` should currently be quarantined.
 
@@ -285,6 +408,17 @@ def evaluate(
     lands in the ``decision_log`` so a future audit can answer
     "why was this auto-rejected?" without re-running the
     decision.
+
+    Args:
+        engine: Engine being evaluated.
+        queue: ApprovalQueue for outcome stats.
+        state: Override for testing; defaults to fresh
+            ``load_state()`` read.
+        store_id: When supplied, the alert-pause check sees a
+            match if EITHER the fleet-wide ``(engine, None)``
+            pause OR the per-store ``(engine, store_id)``
+            pause is set. When omitted, only fleet-wide
+            entries match (per-store entries are ignored).
     """
     s = state if state is not None else load_state()
 
@@ -304,14 +438,19 @@ def evaluate(
             total_polarised=0,
         )
 
-    if s.is_alert_paused(engine):
+    if s.is_alert_paused(engine, store_id=store_id):
         # The alert-history bridge has flagged this engine for
         # firing degradation alerts on N consecutive days. Treat
         # as quarantined until an operator clears it via
         # ``clear_alert_pause``.
+        scope = (
+            f"store={store_id}" if (engine, store_id)
+            in s.alert_paused and store_id is not None
+            else "fleet"
+        )
         return QuarantineDecision(
             should_quarantine=True,
-            reason="auto_quarantine_from_alerts",
+            reason=f"auto_quarantine_from_alerts ({scope})",
             negative_ratio=None,
             total_polarised=0,
         )
@@ -381,6 +520,7 @@ def maybe_quarantine(
     queue: "ApprovalQueue",
     action_id: str,
     engine: str,
+    store_id: str | None = None,
 ) -> QuarantineDecision:
     """Evaluate + (if positive) immediately auto-reject the just-
     enqueued action with ``decided_by="auto_quarantine"``.
@@ -393,6 +533,9 @@ def maybe_quarantine(
     intervention — but if it somehow is, quarantine evaluates
     the not-yet-transitioned PENDING action because auto-approve's
     success short-circuits its caller's later logic.
+
+    ``store_id`` is forwarded to ``evaluate`` so per-store
+    alert-pauses scope correctly.
     """
     if _is_test_environment():
         return QuarantineDecision(
@@ -402,7 +545,9 @@ def maybe_quarantine(
             total_polarised=0,
         )
 
-    decision = evaluate(engine=engine, queue=queue)
+    decision = evaluate(
+        engine=engine, queue=queue, store_id=store_id,
+    )
     if decision.should_quarantine:
         try:
             queue.reject(

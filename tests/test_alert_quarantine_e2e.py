@@ -275,4 +275,55 @@ class TestAutoQuarantineE2E:
             params={}, narrative="",
         )
         from core.approval.queue import ApprovalStatus
-        assert action.status == ApprovalStatus.PENDING
+
+    def test_per_store_pause_rejects_only_that_store(
+        self, data_dir, queue,
+    ):
+        """Per-store integration: add_alert_pause(engine, store)
+        rejects enqueues for that store but lets others through."""
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty", store_id="store_a")
+
+        # Enqueue on store_a -> REJECTED
+        action_a = queue.enqueue(
+            engine="loyalty", action_type="mint_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params={}, narrative="",
+            store_id="store_a",
+        )
+        from core.approval.queue import ApprovalStatus
+        assert action_a.status == ApprovalStatus.REJECTED
+        assert action_a.decided_by == "auto_quarantine"
+        assert (
+            "auto_quarantine_from_alerts"
+            in action_a.decision_reason
+        )
+
+        # Enqueue on store_b -> PENDING (not paused for that store)
+        action_b = queue.enqueue(
+            engine="loyalty", action_type="mint_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params={}, narrative="",
+            store_id="store_b",
+        )
+        assert action_b.status == ApprovalStatus.PENDING
+
+    def test_fleet_pause_still_blocks_every_store(
+        self, data_dir, queue,
+    ):
+        """Backward-compat: an engine-only pause behaves
+        fleet-wide -- every store's enqueues get rejected."""
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")  # fleet-wide
+
+        from core.approval.queue import ApprovalStatus
+        # Per-store enqueue still gets rejected
+        for sid in ("store_a", "store_b", None):
+            action = queue.enqueue(
+                engine="loyalty", action_type="mint_code",
+                capability="SHOPIFY_CREATE_DISCOUNT",
+                params={}, narrative="",
+                store_id=sid,
+            )
+            assert action.status == ApprovalStatus.REJECTED
+            assert action.decided_by == "auto_quarantine"
