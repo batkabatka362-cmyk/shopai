@@ -439,3 +439,80 @@ class TestJsonEnvelope:
             "outcome_score", "revenue",
         ):
             assert k in data["stores"][0]
+
+
+# ─── Quarantine banner ───────────────────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    yield tmp_path
+
+
+class TestQuarantineBanner:
+    """``engine fleet`` shows a top-line quarantine banner so
+    operators reading the per-store table know upfront if the
+    engine is paused at all."""
+
+    def test_clean_engine_empty_flags_no_banner(
+        self, cli, data_dir,
+    ):
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_fleet,
+                _ns(engine_name="loyalty", json=True),
+            )
+        data = json.loads(out)
+        assert data["quarantine_flags"] == []
+
+    def test_alert_paused_renders_banner(
+        self, cli, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_fleet,
+                _ns(engine_name="loyalty"),
+            )
+        assert "! Quarantine:" in out
+        assert "alert_paused" in out
+
+    def test_alert_paused_json(self, cli, data_dir):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_fleet,
+                _ns(engine_name="loyalty", json=True),
+            )
+        data = json.loads(out)
+        assert data["quarantine_flags"] == ["alert_paused"]
+
+    def test_load_state_failure_empty_flags(
+        self, cli, data_dir,
+    ):
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_engine_fleet,
+                _ns(engine_name="loyalty", json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["quarantine_flags"] == []

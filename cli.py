@@ -7325,9 +7325,29 @@ def _cmd_engine_fleet(args) -> None:
         ),
     )
 
+    # Quarantine banner: this engine's fleet-wide quarantine
+    # state surfaces at the top so operators reading the
+    # per-store table know upfront whether the engine is
+    # acting at all (or just being rejected at enqueue).
+    quarantine_flags: list[str] = []
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+        if qstate.is_exempt(engine_name):
+            quarantine_flags.append("exempt")
+        if qstate.is_released(engine_name):
+            quarantine_flags.append("released")
+        if qstate.is_alert_paused(engine_name):
+            quarantine_flags.append("alert_paused")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine fleet quarantine probe raised: %s", exc,
+        )
+
     envelope = {
         "engine": engine_name,
         "window_hours": window_hours,
+        "quarantine_flags": quarantine_flags,
         "rollup": rollup,
         "stores": ranked,
     }
@@ -7340,6 +7360,10 @@ def _cmd_engine_fleet(args) -> None:
         f"Engine '{engine_name}' across fleet "
         f"(last {window_hours}h):"
     )
+    if quarantine_flags:
+        print(
+            f"  ! Quarantine: {', '.join(quarantine_flags)}"
+        )
     print()
     print(
         f"  {'STORE':<22s} {'EXEC':>5s} {'FAIL':>5s} "
