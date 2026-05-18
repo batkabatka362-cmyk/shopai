@@ -43,6 +43,7 @@ def _ns(**kw):
     defaults = dict(
         release=None, clear_release=None, exempt=None,
         unexempt=None, release_alert=None,
+        release_alert_store=None, release_alert_all=False,
         apply_bridge=False, list=False, json=False,
     )
     defaults.update(kw)
@@ -187,7 +188,8 @@ class TestAlertPausedSurface:
             cli._cmd_approvals_quarantine, _ns(json=True),
         )
         data = json.loads(out)
-        assert data["alert_paused"] == ["loyalty"]
+        # New format: list of [engine, store_id] pairs
+        assert data["alert_paused"] == [["loyalty", None]]
         assert "alert_quarantine" in data
         assert "enabled" in data["alert_quarantine"]
         assert "threshold_days" in data["alert_quarantine"]
@@ -235,6 +237,57 @@ class TestAlertPausedSurface:
         data = json.loads(out)
         assert data["released_from_alert_pause"] == "loyalty"
         assert data["alert_paused"] == []
+
+    def test_release_alert_with_store_clears_only_that_store(
+        self, cli, quarantine_data_dir,
+    ):
+        """``--release-alert ENGINE --release-alert-store
+        STORE_ID`` drops only the per-store pause."""
+        from core.approval.quarantine import (
+            add_alert_pause, load_state,
+        )
+        add_alert_pause("loyalty")  # fleet-wide
+        add_alert_pause("loyalty", store_id="store_a")
+        add_alert_pause("loyalty", store_id="store_b")
+        out = _capture(
+            cli._cmd_approvals_quarantine,
+            _ns(
+                release_alert="loyalty",
+                release_alert_store="store_a",
+            ),
+        )
+        assert "Cleared alert-pause" in out
+        s = load_state()
+        # fleet-wide + store_b still paused; store_a released
+        assert ("loyalty", None) in s.alert_paused
+        assert ("loyalty", "store_a") not in s.alert_paused
+        assert ("loyalty", "store_b") in s.alert_paused
+
+    def test_release_alert_all_drops_every_pause(
+        self, cli, quarantine_data_dir,
+    ):
+        """``--release-alert-all`` drops fleet + every store."""
+        from core.approval.quarantine import (
+            add_alert_pause, load_state,
+        )
+        add_alert_pause("loyalty")
+        add_alert_pause("loyalty", store_id="store_a")
+        add_alert_pause("loyalty", store_id="store_b")
+        add_alert_pause("affiliate")
+        _capture(
+            cli._cmd_approvals_quarantine,
+            _ns(
+                release_alert="loyalty",
+                release_alert_all=True,
+            ),
+        )
+        s = load_state()
+        # All loyalty pauses gone; affiliate untouched
+        assert not any(
+            engine == "loyalty"
+            for (engine, _store) in s.alert_paused
+        )
+        assert ("affiliate", None) in s.alert_paused
 
     def test_release_alert_on_unknown_engine_clean_state(
         self, cli, quarantine_data_dir,
