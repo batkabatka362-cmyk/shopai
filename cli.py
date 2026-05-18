@@ -2118,6 +2118,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    approvals_alert_history = approvals_sub.add_parser(
+        "alert-history",
+        help=(
+            "Inspect engine-degradation alert firings "
+            "(persistent log of daily-brief alerts)"
+        ),
+    )
+    approvals_alert_history.add_argument(
+        "--engine", default=None,
+        help="Restrict to one engine (default: all)",
+    )
+    approvals_alert_history.add_argument(
+        "--since-days", type=float, default=7.0,
+        help="How far back to look (default: 7 days)",
+    )
+    approvals_alert_history.add_argument(
+        "--clear", action="store_true",
+        help=(
+            "Wipe the alert history file. Operator escape "
+            "hatch after fixing the root cause."
+        ),
+    )
+    approvals_alert_history.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     approvals_auto_config = approvals_sub.add_parser(
         "auto-config",
         help=(
@@ -13408,6 +13435,9 @@ def _cmd_approvals(args) -> None:
     if verb == "quarantine":
         _cmd_approvals_quarantine(args)
         return
+    if verb == "alert-history":
+        _cmd_approvals_alert_history(args)
+        return
     if verb == "auto-approve-candidates":
         _cmd_approvals_auto_candidates(args)
         return
@@ -13673,6 +13703,130 @@ def _cmd_approvals_quarantine(args) -> None:
         print(
             f"    window days:           "
             f"{aq_block['window_days']}"
+        )
+
+
+def _cmd_approvals_alert_history(args) -> None:
+    """Inspect the persistent engine-alert firing log.
+
+    Each ``daily-brief`` run that produces an EngineAlert
+    appends an event to ``data/alert_history.json`` (or
+    ``$SHOPAI_DATA_DIR/alert_history.json``). This command
+    summarises it: per-engine bucket-day counts plus the
+    individual firings.
+
+    ``--clear`` is the operator escape hatch -- wipes the
+    file after root-cause fix so the consecutive-day count
+    resets to zero (otherwise the bridge keeps re-pausing
+    the engine on the next daily-brief run).
+    """
+    from core.approval import alert_history
+
+    as_json = bool(getattr(args, "json", False))
+
+    if getattr(args, "clear", False):
+        try:
+            alert_history.clear()
+        except Exception as exc:  # noqa: BLE001
+            msg = f"clear failed: {exc}"
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2, default=str,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        if as_json:
+            print(json.dumps({"status": "success", "cleared": True}))
+        else:
+            print("Alert history wiped.")
+        return
+
+    since_days = max(0.0, float(getattr(args, "since_days", 7.0)))
+    engine_filter = getattr(args, "engine", None)
+
+    try:
+        events = alert_history.recent_history(
+            since_seconds=since_days * 86400.0,
+        )
+        consecutive = alert_history.consecutive_runs_per_engine(
+            window_seconds=since_days * 86400.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"read failed: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    if engine_filter:
+        events = [e for e in events if e.engine == engine_filter]
+        consecutive = {
+            k: v for k, v in consecutive.items()
+            if k == engine_filter
+        }
+
+    if as_json:
+        payload = {
+            "since_days": since_days,
+            "engine": engine_filter,
+            "event_count": len(events),
+            "consecutive_days_by_engine": consecutive,
+            "events": [
+                {
+                    "engine": e.engine,
+                    "recorded_at": e.recorded_at,
+                    "drop": e.drop,
+                    "recent_score": e.recent_score,
+                    "baseline_score": e.baseline_score,
+                }
+                for e in events
+            ],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    if not events:
+        print(
+            f"No alert firings in the last "
+            f"{since_days:.1f} day(s)"
+            + (f" for engine '{engine_filter}'." if engine_filter
+               else ".")
+        )
+        return
+
+    print(
+        f"Alert history (last {since_days:.1f} day(s), "
+        f"{len(events)} event(s))"
+    )
+    print()
+    if consecutive:
+        print("Per-engine bucket-day count:")
+        for engine, days in sorted(
+            consecutive.items(), key=lambda kv: -kv[1],
+        ):
+            print(f"  {engine:25s} {days:3d} day(s)")
+        print()
+    print("Recent events (newest first):")
+    for e in events[:50]:
+        age = time.time() - e.recorded_at
+        ago = (
+            f"{int(age)}s ago" if age < 60
+            else f"{int(age/60)}m ago" if age < 3600
+            else f"{int(age/3600)}h ago" if age < 86400
+            else f"{int(age/86400)}d ago"
+        )
+        print(
+            f"  [{ago:>8s}] {e.engine:25s} "
+            f"drop={e.drop:.2f} recent={e.recent_score:.2f} "
+            f"baseline={e.baseline_score:.2f}"
         )
 
 
