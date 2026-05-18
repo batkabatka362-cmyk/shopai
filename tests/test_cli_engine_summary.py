@@ -287,3 +287,118 @@ class TestJsonEnvelope:
         assert data["outcomes"]["outcome_score"] == 0.75
         # Recent merges EXECUTED + FAILED, ordered newest first
         assert len(data["recent"]) == 2
+
+
+# ─── Quarantine section ──────────────────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    yield tmp_path
+
+
+@pytest.fixture
+def _alert_history_no_guard():
+    """Lift Pattern J guard so the engine summary can read
+    seeded alert_history data inside tests."""
+    with patch(
+        "core.approval.alert_history._is_test_environment",
+        return_value=False,
+    ):
+        yield
+
+
+class TestQuarantineSection:
+    """``engine summary`` surfaces quarantine state + alert
+    streak so operators can diagnose 'why is X paused?' from
+    one command."""
+
+    def test_clean_engine_no_section_in_text(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        """Healthy engine + no alerts -> section omitted in text."""
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ):
+            out, _ = _capture(cli._cmd_engine_summary, _ns())
+        assert "Quarantine:" not in out
+
+    def test_alert_paused_renders_text(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ):
+            out, _ = _capture(cli._cmd_engine_summary, _ns())
+        assert "Quarantine:" in out
+        assert "alert_paused" in out
+
+    def test_alert_streak_renders_text(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import alert_history
+        day = 86400.0
+        now = time.time()
+        # 3 distinct days of firings
+        for i in range(3):
+            alert_history.record_alerts(
+                [
+                    type("FA", (), {
+                        "engine": "loyalty",
+                        "drop": 0.3,
+                        "recent_score": 0.4,
+                        "baseline_score": 0.7,
+                    })()
+                ],
+                now=now - day * (2 - i) - 100,
+            )
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ):
+            out, _ = _capture(cli._cmd_engine_summary, _ns())
+        assert "Quarantine:" in out
+        assert "Alert streak (last 7d): 3 day(s)" in out
+        assert "Last alert firing:" in out
+
+    def test_json_envelope_includes_quarantine(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import quarantine
+        quarantine.exempt_engine("loyalty")
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_summary, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "quarantine" in data
+        assert data["quarantine"]["exempt"] is True
+        assert data["quarantine"]["released"] is False
+        assert data["quarantine"]["alert_paused"] is False
+        assert data["quarantine"]["alert_streak_7d"] == 0
+        assert data["quarantine"]["last_alert_at"] is None
+
+    def test_quarantine_probe_failure_doesnt_break(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        """If load_state raises, the section is just empty -- the
+        summary still renders."""
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ), patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(cli._cmd_engine_summary, _ns())
+        # Summary still renders despite quarantine probe failure
+        assert code == 0
+        assert "loyalty" in out
