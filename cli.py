@@ -15601,6 +15601,27 @@ def _cmd_approvals_show(args) -> None:
             logger.debug("outcome lookup failed: %s", exc)
             payload["outcomes"] = []
 
+    # Engine quarantine state -- attaches flags so an operator
+    # triaging this action sees if the engine is currently
+    # paused/exempt/released. Cheap state-file read.
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+        engine = action.engine
+        flags: list[str] = []
+        if qstate.is_exempt(engine):
+            flags.append("exempt")
+        if qstate.is_released(engine):
+            flags.append("released")
+        if qstate.is_alert_paused(engine):
+            flags.append("alert_paused")
+        payload["engine_quarantine_flags"] = flags
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "approvals show quarantine probe raised: %s", exc,
+        )
+        payload["engine_quarantine_flags"] = []
+
     # AGI decision-retrieval context (opt-in via --with-context).
     # When operator is triaging a PENDING action, the top-k
     # similar past decisions + their outcome rollup answers
