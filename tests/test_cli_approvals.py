@@ -276,6 +276,78 @@ class TestApprove:
         )
 
 
+class TestApproveQuarantineWarning:
+    """``approve`` should warn the operator when the engine
+    they're approving for is currently alert_paused/exempt/
+    released. Same actionable insight as the marker on
+    ``approvals recent``."""
+
+    @pytest.fixture(autouse=True)
+    def _data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        yield
+
+    def test_clean_engine_no_warning(self, isolated_queue, cli):
+        action = isolated_queue.enqueue(
+            engine="loyalty", action_type="x", capability="X",
+            params={}, narrative="",
+        )
+        out, code = _capture(
+            cli._cmd_approvals_approve,
+            _ns(
+                action_id=action.id, reason="", by="op",
+                execute=False,
+            ),
+        )
+        assert code == 0
+        assert "Approved" in out
+        assert "Warning: engine" not in out
+
+    def test_alert_paused_warning_surfaces(
+        self, isolated_queue, cli,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        action = isolated_queue.enqueue(
+            engine="loyalty", action_type="x", capability="X",
+            params={}, narrative="",
+        )
+        out, code = _capture(
+            cli._cmd_approvals_approve,
+            _ns(
+                action_id=action.id, reason="", by="op",
+                execute=False,
+            ),
+        )
+        assert code == 0
+        assert "Approved" in out
+        assert "Warning: engine 'loyalty'" in out
+        assert "alert_paused" in out
+
+    def test_load_state_failure_no_warning(
+        self, isolated_queue, cli,
+    ):
+        action = isolated_queue.enqueue(
+            engine="loyalty", action_type="x", capability="X",
+            params={}, narrative="",
+        )
+        with patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_approve,
+                _ns(
+                    action_id=action.id, reason="", by="op",
+                    execute=False,
+                ),
+            )
+        assert code == 0
+        assert "Approved" in out
+        # Probe failed silently; no warning emitted
+        assert "Warning:" not in out
+
+
 # ─── reject ─────────────────────────────────────────────────────
 
 

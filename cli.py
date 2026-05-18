@@ -15775,6 +15775,37 @@ def _cmd_approvals_approve(args) -> None:
         )
         sys.exit(1)
     print(f"Approved: {action.id} ({action.engine}/{action.action_type})")
+
+    # Warn the operator if the engine is currently quarantined.
+    # Approving doesn't bypass the rejection -- it transitions
+    # the action to APPROVED, but subsequent enqueues would
+    # still be rejected. More importantly, an operator manually
+    # approving an action whose engine they themselves
+    # quarantined recently may not realise the state is
+    # inconsistent.
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+        flags: list[str] = []
+        if qstate.is_alert_paused(action.engine):
+            flags.append("alert_paused")
+        if qstate.is_exempt(action.engine):
+            flags.append("exempt")
+        if qstate.is_released(action.engine):
+            flags.append("released")
+        if flags:
+            print(
+                f"  Warning: engine '{action.engine}' is "
+                f"currently in quarantine state "
+                f"[{','.join(flags)}]. New enqueues for this "
+                f"engine will be auto-rejected; manage via "
+                f"'shopai approvals quarantine'."
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "approvals approve quarantine probe raised: %s", exc,
+        )
+
     if args.execute:
         _run_execute(args.action_id)
 
