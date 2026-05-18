@@ -240,3 +240,75 @@ class TestSummarizeContext:
         assert s["similar_count"] == 1
         assert s["recent_positive"] is False
         assert s["avg_relevance"] == 0.5
+
+
+# ─── Engine quarantine flags ─────────────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    yield tmp_path
+
+
+class TestEngineQuarantineFlags:
+    """``approvals show`` payload includes the engine's current
+    quarantine flags so operators triaging the action see
+    'this engine is alert_paused' at a glance."""
+
+    def test_clean_engine_empty_flags(self, cli, data_dir):
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ):
+            out, _ = _capture(cli._cmd_approvals_show, _ns())
+        data = json.loads(out)
+        assert data["engine_quarantine_flags"] == []
+
+    def test_alert_paused_engine_flagged(
+        self, cli, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ):
+            out, _ = _capture(cli._cmd_approvals_show, _ns())
+        data = json.loads(out)
+        assert data["engine_quarantine_flags"] == ["alert_paused"]
+
+    def test_exempt_plus_alert_paused(self, cli, data_dir):
+        from core.approval import quarantine
+        quarantine.exempt_engine("loyalty")
+        quarantine.add_alert_pause("loyalty")
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ):
+            out, _ = _capture(cli._cmd_approvals_show, _ns())
+        data = json.loads(out)
+        flags = set(data["engine_quarantine_flags"])
+        assert "exempt" in flags
+        assert "alert_paused" in flags
+
+    def test_load_state_failure_empty_flags(
+        self, cli, data_dir,
+    ):
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ), patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_show, _ns(),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["engine_quarantine_flags"] == []
