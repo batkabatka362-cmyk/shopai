@@ -1164,14 +1164,27 @@ Operator surface:
 - ``daily-brief`` records each firing + surfaces both
   ``consecutive_days`` per alert AND a separate
   ``kind="auto_alert_quarantined"`` entry when the bridge
-  triggers (PR #293).
+  triggers (PR #300).
 - ``shopai approvals quarantine`` (text + JSON) shows the
   ``alert_paused`` list + bridge config block (PR #295);
-  ``--release-alert ENGINE`` clears one entry.
+  ``--release-alert ENGINE`` clears one entry;
+  ``--apply-bridge`` manually triggers the bridge between
+  daily-brief runs (PR #305).
 - ``shopai approvals alert-history`` (PR #297) inspects the
-  persistent firing log; ``--clear`` is the escape hatch
-  after root-cause fix (otherwise the bridge re-pauses on
-  the next daily-brief run).
+  persistent firing log; ``--clear`` is the nuclear escape
+  hatch; ``--prune-older-than-days N`` is the precision
+  scalpel for routine ops hygiene (PR #304).
+- ``shopai approvals alert-release-candidates`` (PR #302) and
+  ``shopai approvals alert-pause-candidates`` (PR #303) are
+  the alert-based analogues of ``quarantine-release-candidates``.
+  The first finds alert-paused engines whose alerts have gone
+  quiet (safe to release); the second is a dry-run preview
+  of what the bridge would pause if it ran now (works even
+  when the env-var gate is off).
+- ``shopai approvals doctor`` (PR #301) includes an
+  ``alert_history`` section that warns when any engine has
+  fired on 3+ distinct days -- the threshold the bridge
+  would auto-pause at.
 - ``shopai world-model show`` includes a fleet-wide
   ``quarantine`` section showing all three lists + bridge
   config (PR #296).
