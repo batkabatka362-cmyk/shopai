@@ -15851,6 +15851,28 @@ def _cmd_approvals_recent(args) -> None:
         print(f"No {status.value.upper()} actions{suffix}.")
         return
 
+    # Quarantine state probe once -- shared across the row loop.
+    qstate = None
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "approvals recent quarantine probe raised: %s", exc,
+        )
+
+    def _engine_quarantine_marker(engine: str) -> str:
+        if qstate is None:
+            return ""
+        flags: list[str] = []
+        if qstate.is_alert_paused(engine):
+            flags.append("alert_paused")
+        if qstate.is_exempt(engine):
+            flags.append("exempt")
+        if qstate.is_released(engine):
+            flags.append("released")
+        return f"  [{','.join(flags)}]" if flags else ""
+
     print(f"Recent {status.value.upper()} actions ({len(actions)}):")
     now = _time.time()
     for a in actions:
@@ -15870,6 +15892,7 @@ def _cmd_approvals_recent(args) -> None:
             line += f"  reason={a.decision_reason}"
         elif status == ApprovalStatus.EXPIRED and a.decision_reason:
             line += f"  ({a.decision_reason})"
+        line += _engine_quarantine_marker(a.engine)
         print(line)
 
 
