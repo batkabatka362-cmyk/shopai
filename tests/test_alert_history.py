@@ -317,3 +317,193 @@ def test_prune_no_file_no_op(alert_data_dir: Path):
     from core.approval.alert_history import prune
     removed = prune(older_than_seconds=86400.0, now=1000.0)
     assert removed == 0
+
+
+# ─── Per-store scope (PR adding store_id field) ──────────────
+
+
+def test_record_alerts_explicit_store_id(alert_data_dir: Path):
+    from core.approval.alert_history import (
+        record_alerts, recent_history,
+    )
+    n = record_alerts(
+        [_FakeAlert("loyalty")], now=1000.0, store_id="store_a",
+    )
+    assert n == 1
+    events = recent_history(now=2000.0)
+    assert events[0].store_id == "store_a"
+
+
+def test_record_alerts_picks_up_active_store(
+    alert_data_dir: Path,
+):
+    from core.context.active_store import active_store
+    from core.approval.alert_history import (
+        record_alerts, recent_history,
+    )
+    with active_store("store_b"):
+        record_alerts([_FakeAlert("loyalty")], now=1000.0)
+    events = recent_history(now=2000.0)
+    assert events[0].store_id == "store_b"
+
+
+def test_record_alerts_explicit_overrides_active_store(
+    alert_data_dir: Path,
+):
+    """Explicit store_id wins over the thread-local."""
+    from core.context.active_store import active_store
+    from core.approval.alert_history import (
+        record_alerts, recent_history,
+    )
+    with active_store("active"):
+        record_alerts(
+            [_FakeAlert("loyalty")],
+            now=1000.0, store_id="explicit",
+        )
+    events = recent_history(now=2000.0)
+    assert events[0].store_id == "explicit"
+
+
+def test_record_alerts_no_scope_writes_none(
+    alert_data_dir: Path,
+):
+    from core.approval.alert_history import (
+        record_alerts, recent_history,
+    )
+    # No active_store, no explicit param
+    record_alerts([_FakeAlert("loyalty")], now=1000.0)
+    events = recent_history(now=2000.0)
+    assert events[0].store_id is None
+
+
+def test_recent_history_store_filter(alert_data_dir: Path):
+    from core.approval.alert_history import (
+        record_alerts, recent_history,
+    )
+    record_alerts(
+        [_FakeAlert("loyalty")], now=1000.0, store_id="a",
+    )
+    record_alerts(
+        [_FakeAlert("loyalty")], now=1100.0, store_id="b",
+    )
+    record_alerts(
+        [_FakeAlert("loyalty")], now=1200.0,  # None
+    )
+    # Filter to store a
+    events_a = recent_history(now=2000.0, store_id="a")
+    assert len(events_a) == 1
+    assert events_a[0].store_id == "a"
+    # No filter = all
+    all_ev = recent_history(now=2000.0)
+    assert len(all_ev) == 3
+
+
+def test_consecutive_runs_per_engine_filtered_by_store(
+    alert_data_dir: Path,
+):
+    """When store_id is supplied, only events tagged with that
+    store contribute to the bucket count."""
+    from core.approval.alert_history import (
+        record_alerts, consecutive_runs_per_engine,
+    )
+    day = 86400.0
+    # store_a: 3 days
+    for i in range(3):
+        record_alerts(
+            [_FakeAlert("loyalty")],
+            now=day * i + 1, store_id="store_a",
+        )
+    # store_b: only 1 day
+    record_alerts(
+        [_FakeAlert("loyalty")],
+        now=day * 0 + 1, store_id="store_b",
+    )
+
+    a = consecutive_runs_per_engine(
+        window_seconds=day * 7,
+        bucket_seconds=day,
+        now=day * 3,
+        store_id="store_a",
+    )
+    assert a == {"loyalty": 3}
+
+    b = consecutive_runs_per_engine(
+        window_seconds=day * 7,
+        bucket_seconds=day,
+        now=day * 3,
+        store_id="store_b",
+    )
+    assert b == {"loyalty": 1}
+
+    # No filter: 3 distinct days (one bucket per day,
+    # multiple events in the same bucket count once)
+    fleet = consecutive_runs_per_engine(
+        window_seconds=day * 7,
+        bucket_seconds=day,
+        now=day * 3,
+    )
+    assert fleet == {"loyalty": 3}
+
+
+def test_consecutive_runs_per_engine_store_pair_table(
+    alert_data_dir: Path,
+):
+    """The (engine, store) variant breaks streaks down per
+    pair so the bridge can act per-store."""
+    from core.approval.alert_history import (
+        record_alerts, consecutive_runs_per_engine_store,
+    )
+    day = 86400.0
+    # loyalty on store_a: 3 days, on store_b: 1 day
+    for i in range(3):
+        record_alerts(
+            [_FakeAlert("loyalty")],
+            now=day * i + 1, store_id="store_a",
+        )
+    record_alerts(
+        [_FakeAlert("loyalty")],
+        now=day * 0 + 1, store_id="store_b",
+    )
+    # affiliate fleet-wide: 2 days
+    record_alerts(
+        [_FakeAlert("affiliate")], now=day * 0 + 1,
+    )
+    record_alerts(
+        [_FakeAlert("affiliate")], now=day * 1 + 1,
+    )
+
+    out = consecutive_runs_per_engine_store(
+        window_seconds=day * 7,
+        bucket_seconds=day,
+        now=day * 3,
+    )
+    assert out == {
+        ("loyalty", "store_a"): 3,
+        ("loyalty", "store_b"): 1,
+        ("affiliate", None): 2,
+    }
+
+
+def test_backward_compat_legacy_json_loads_with_none_store(
+    alert_data_dir: Path,
+):
+    """Old alert_history.json without store_id field should
+    load cleanly with store_id=None."""
+    from core.approval.alert_history import recent_history
+    legacy_payload = [
+        {
+            "engine": "loyalty",
+            "recorded_at": 1000.0,
+            "drop": 0.3,
+            "recent_score": 0.4,
+            "baseline_score": 0.7,
+            # no store_id key
+        },
+    ]
+    (alert_data_dir / "alert_history.json").write_text(
+        json.dumps(legacy_payload), encoding="utf-8",
+    )
+    events = recent_history(since_seconds=86400.0, now=2000.0)
+    assert len(events) == 1
+    assert events[0].engine == "loyalty"
+    assert events[0].store_id is None

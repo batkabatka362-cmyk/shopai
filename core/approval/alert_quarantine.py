@@ -145,6 +145,71 @@ def apply_pauses(engines: Iterable[str]) -> list[str]:
     return paused
 
 
+def find_pause_candidates_per_store(
+    *,
+    threshold: int | None = None,
+    window_seconds: float | None = None,
+    now: float | None = None,
+) -> list[dict]:
+    """Per-(engine, store) breakdown of pause candidates.
+
+    The fleet-wide ``find_pause_candidates`` answers "would
+    the bridge pause engine X?". This one answers the empire-
+    AGI question: "engine X has been firing degradation alerts
+    on which specific stores?".
+
+    Until the bridge gains per-store pause semantics, this is
+    a diagnostic surface: operators see "loyalty has fired 5d
+    on store_a but is healthy on store_b" and decide whether
+    to investigate the store, the engine, or both.
+
+    Returns:
+        Sorted highest-streak-first. Each entry:
+          {engine, store_id, consecutive_days, blocked_by}
+        where ``store_id`` can be ``None`` (fleet-wide events
+        with no store scope). ``blocked_by`` mirrors the
+        fleet-wide function: engines exempt fleet-wide or
+        already alert-paused are labelled.
+    """
+    th = threshold if threshold is not None else threshold_days()
+    win = (
+        window_seconds if window_seconds is not None
+        else window_days() * 86400.0
+    )
+    per_pair = (
+        alert_history.consecutive_runs_per_engine_store(
+            window_seconds=win,
+            bucket_seconds=86400.0,
+            now=now,
+        )
+    )
+    state = quarantine.load_state()
+
+    out: list[dict] = []
+    for (engine, store_id), days in per_pair.items():
+        if days < th:
+            continue
+        blocked_by: str | None = None
+        if state.is_exempt(engine):
+            blocked_by = "exempt"
+        elif state.is_alert_paused(engine):
+            blocked_by = "already_alert_paused"
+        out.append({
+            "engine": engine,
+            "store_id": store_id,
+            "consecutive_days": days,
+            "blocked_by": blocked_by,
+        })
+    out.sort(
+        key=lambda r: (
+            -r["consecutive_days"],
+            r["engine"],
+            r["store_id"] or "",
+        ),
+    )
+    return out
+
+
 def find_pause_candidates(
     *,
     threshold: int | None = None,

@@ -58,7 +58,8 @@ def _capture(fn, *args, **kwargs):
 
 def _ns(**kw):
     defaults = dict(
-        threshold=None, window_days=None, json=False,
+        threshold=None, window_days=None,
+        per_store=False, json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -321,3 +322,219 @@ class TestCLI:
         )
         data = json.loads(out)
         assert data["candidates"][0]["blocked_by"] == "exempt"
+
+
+# ─── Per-store breakdown helper ──────────────────────────────
+
+
+class TestPerStorePauseCandidates:
+    """``find_pause_candidates_per_store`` breaks streaks down
+    per (engine, store) so empire-AGI operators can see WHICH
+    stores are degrading."""
+
+    def test_empty_when_no_alerts(self, data_dir):
+        from core.approval import alert_quarantine
+        out = alert_quarantine.find_pause_candidates_per_store()
+        assert out == []
+
+    def test_per_store_streaks_surface_independently(
+        self, data_dir,
+    ):
+        from core.approval import alert_history, alert_quarantine
+        from core.context.active_store import active_store
+        day = 86400.0
+        now = 10 * day
+        # loyalty: 3d on store_a, 1d on store_b
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (2 - i) - 100,
+                )
+        with active_store("store_b"):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")], now=now - 100,
+            )
+
+        out = alert_quarantine.find_pause_candidates_per_store(
+            threshold=3,
+            window_seconds=7 * day,
+            now=now,
+        )
+        # store_a meets threshold; store_b doesn't
+        assert len(out) == 1
+        assert out[0]["engine"] == "loyalty"
+        assert out[0]["store_id"] == "store_a"
+        assert out[0]["consecutive_days"] == 3
+
+    def test_fleet_wide_events_keep_store_none(self, data_dir):
+        from core.approval import alert_history, alert_quarantine
+        day = 86400.0
+        now = 10 * day
+        for i in range(3):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")],
+                now=now - day * (2 - i) - 100,
+            )  # no store_id -- fleet-wide
+        out = alert_quarantine.find_pause_candidates_per_store(
+            threshold=3,
+            window_seconds=7 * day,
+            now=now,
+        )
+        assert len(out) == 1
+        assert out[0]["store_id"] is None
+
+    def test_exempt_engine_labelled_per_pair(self, data_dir):
+        """Exempt status is engine-wide; every store of that
+        engine shows ``blocked_by=exempt``."""
+        from core.approval import (
+            alert_history, alert_quarantine, quarantine,
+        )
+        from core.context.active_store import active_store
+        quarantine.exempt_engine("loyalty")
+        day = 86400.0
+        now = 10 * day
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (2 - i) - 100,
+                )
+        out = alert_quarantine.find_pause_candidates_per_store(
+            threshold=3,
+            window_seconds=7 * day,
+            now=now,
+        )
+        assert out[0]["blocked_by"] == "exempt"
+
+    def test_sorted_highest_streak_then_engine_then_store(
+        self, data_dir,
+    ):
+        """Determinism: streak desc, then engine name asc,
+        then store_id asc."""
+        from core.approval import alert_history, alert_quarantine
+        from core.context.active_store import active_store
+        day = 86400.0
+        now = 10 * day
+        # (loyalty, store_z): 5d
+        with active_store("store_z"):
+            for i in range(5):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (4 - i) - 100,
+                )
+        # (loyalty, store_a): 3d
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (2 - i) - 100,
+                )
+        # (affiliate, store_a): 3d
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("affiliate")],
+                    now=now - day * (2 - i) - 100,
+                )
+        out = alert_quarantine.find_pause_candidates_per_store(
+            threshold=3,
+            window_seconds=7 * day,
+            now=now,
+        )
+        keys = [(r["engine"], r["store_id"]) for r in out]
+        # 5d entry first; then ties broken engine-asc, store-asc
+        assert keys[0] == ("loyalty", "store_z")
+        # 3d ties -- affiliate before loyalty (engine asc)
+        assert keys[1] == ("affiliate", "store_a")
+        assert keys[2] == ("loyalty", "store_a")
+
+
+class TestCLIPerStoreFlag:
+    """``shopai approvals alert-pause-candidates --per-store``
+    switches the CLI to the per-(engine, store) view."""
+
+    def test_per_store_json_envelope(
+        self, cli, data_dir,
+    ):
+        from core.approval import alert_history
+        from core.context.active_store import active_store
+        day = 86400.0
+        now = time.time()
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (2 - i) - 100,
+                )
+        out = _capture(
+            cli._cmd_approvals_alert_pause_candidates,
+            _ns(threshold=3, per_store=True, json=True),
+        )
+        data = json.loads(out)
+        assert data["per_store"] is True
+        assert len(data["candidates"]) == 1
+        c = data["candidates"][0]
+        assert c["engine"] == "loyalty"
+        assert c["store_id"] == "store_a"
+
+    def test_per_store_text_render(
+        self, cli, data_dir,
+    ):
+        from core.approval import alert_history
+        from core.context.active_store import active_store
+        day = 86400.0
+        now = time.time()
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (2 - i) - 100,
+                )
+        out = _capture(
+            cli._cmd_approvals_alert_pause_candidates,
+            _ns(threshold=3, per_store=True),
+        )
+        assert "(per-store)" in out
+        assert "store_id" in out
+        assert "store_a" in out
+        assert "loyalty" in out
+
+    def test_per_store_falls_back_to_fleet_for_none_store(
+        self, cli, data_dir,
+    ):
+        """Fleet-wide events (no store_id) render as
+        ``(fleet)`` placeholder."""
+        from core.approval import alert_history
+        day = 86400.0
+        now = time.time()
+        for i in range(3):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")],
+                now=now - day * (2 - i) - 100,
+            )
+        out = _capture(
+            cli._cmd_approvals_alert_pause_candidates,
+            _ns(threshold=3, per_store=True),
+        )
+        assert "(fleet)" in out
+
+    def test_default_view_unchanged(self, cli, data_dir):
+        """Without --per-store, the fleet-wide view still
+        works the same -- no regression."""
+        from core.approval import alert_history
+        day = 86400.0
+        now = time.time()
+        for i in range(3):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")],
+                now=now - day * (2 - i) - 100,
+            )
+        out = _capture(
+            cli._cmd_approvals_alert_pause_candidates,
+            _ns(threshold=3, json=True),
+        )
+        data = json.loads(out)
+        assert data.get("per_store") is False
+        # Fleet-view candidate row doesn't have store_id key
+        assert "store_id" not in data["candidates"][0]

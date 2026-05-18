@@ -2097,6 +2097,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     approvals_alert_pause_candidates.add_argument(
+        "--per-store", action="store_true",
+        help=(
+            "Break candidates down per (engine, store) pair. "
+            "Useful for empire-AGI: an engine can degrade on "
+            "one store but be healthy on others."
+        ),
+    )
+    approvals_alert_pause_candidates.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the table view",
     )
@@ -14395,15 +14403,24 @@ def _cmd_approvals_alert_pause_candidates(args) -> None:
 
     threshold = getattr(args, "threshold", None)
     window_days = getattr(args, "window_days", None)
+    per_store = bool(getattr(args, "per_store", False))
     window_seconds = (
         window_days * 86400.0 if window_days is not None else None
     )
 
     try:
-        candidates = alert_quarantine.find_pause_candidates(
-            threshold=threshold,
-            window_seconds=window_seconds,
-        )
+        if per_store:
+            candidates = (
+                alert_quarantine.find_pause_candidates_per_store(
+                    threshold=threshold,
+                    window_seconds=window_seconds,
+                )
+            )
+        else:
+            candidates = alert_quarantine.find_pause_candidates(
+                threshold=threshold,
+                window_seconds=window_seconds,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "alert pause candidate scan failed: %s", exc,
@@ -14425,13 +14442,15 @@ def _cmd_approvals_alert_pause_candidates(args) -> None:
             "bridge_enabled": enabled,
             "threshold_days": effective_threshold,
             "window_days": effective_window,
+            "per_store": per_store,
             "candidates": candidates,
         }
         print(json.dumps(payload, indent=2, default=str))
         return
 
+    suffix = " (per-store)" if per_store else ""
     print(
-        f"Alert-pause candidates "
+        f"Alert-pause candidates{suffix} "
         f"(threshold={effective_threshold}d, "
         f"window={effective_window}d, "
         f"bridge={'on' if enabled else 'off'}):"
@@ -14441,14 +14460,29 @@ def _cmd_approvals_alert_pause_candidates(args) -> None:
             "  (no engines at or above the streak threshold)"
         )
         return
-    print(
-        "  engine                          days  blocked_by"
-    )
-    for c in candidates:
-        engine = c["engine"][:30]
-        days = c["consecutive_days"]
-        blocked = c.get("blocked_by") or "-"
-        print(f"  {engine:<30}  {days:>3}d  {blocked}")
+    if per_store:
+        print(
+            "  engine                  store_id              "
+            "days  blocked_by"
+        )
+        for c in candidates:
+            engine = c["engine"][:22]
+            store = (c.get("store_id") or "(fleet)")[:20]
+            days = c["consecutive_days"]
+            blocked = c.get("blocked_by") or "-"
+            print(
+                f"  {engine:<22}  {store:<20}  "
+                f"{days:>3}d  {blocked}"
+            )
+    else:
+        print(
+            "  engine                          days  blocked_by"
+        )
+        for c in candidates:
+            engine = c["engine"][:30]
+            days = c["consecutive_days"]
+            blocked = c.get("blocked_by") or "-"
+            print(f"  {engine:<30}  {days:>3}d  {blocked}")
     print()
     if not enabled:
         print(

@@ -60,13 +60,22 @@ _LOCK = threading.Lock()
 
 @dataclass(frozen=True)
 class AlertEvent:
-    """One ``EngineAlert`` firing, persisted with timestamp."""
+    """One ``EngineAlert`` firing, persisted with timestamp.
+
+    ``store_id`` is the per-store scope tag. ``None`` means the
+    event was recorded fleet-wide (legacy data from before the
+    per-store extension, or an alert that didn't have a
+    specific store in scope). Per-store queries can filter on
+    ``store_id``; queries without that filter aggregate across
+    all stores.
+    """
 
     engine: str
     recorded_at: float
     drop: float
     recent_score: float
     baseline_score: float
+    store_id: str | None = None
 
 
 def _state_path() -> Path:
@@ -103,6 +112,12 @@ def _load_raw_events() -> list[AlertEvent]:
         if not isinstance(entry, dict):
             continue
         try:
+            raw_store = entry.get("store_id")
+            store_id = (
+                str(raw_store).strip() if raw_store else None
+            )
+            if store_id == "":
+                store_id = None
             events.append(AlertEvent(
                 engine=str(entry["engine"]).strip(),
                 recorded_at=float(entry["recorded_at"]),
@@ -113,6 +128,7 @@ def _load_raw_events() -> list[AlertEvent]:
                 baseline_score=float(
                     entry.get("baseline_score", 0.0) or 0.0,
                 ),
+                store_id=store_id,
             ))
         except (KeyError, TypeError, ValueError) as exc:
             logger.debug(
@@ -138,10 +154,37 @@ def _save_events(events: list[AlertEvent]) -> None:
         tmp.replace(path)
 
 
+def _resolve_store_id(explicit: str | None) -> str | None:
+    """Order: explicit param > active_store thread-local > None.
+
+    Returns ``None`` if no scope is available -- the event still
+    gets recorded as fleet-wide (per the AlertEvent.store_id
+    default).
+    """
+    if explicit is not None:
+        return str(explicit).strip() or None
+    try:
+        from core.context.active_store import get_active_store_id
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "alert_history active_store import failed: %s", exc,
+        )
+        return None
+    try:
+        sid = get_active_store_id()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "alert_history active_store read raised: %s", exc,
+        )
+        return None
+    return sid
+
+
 def record_alerts(
     alerts: Iterable[Any],
     *,
     now: float | None = None,
+    store_id: str | None = None,
 ) -> int:
     """Append the given alerts to persistent history.
 
@@ -152,6 +195,9 @@ def record_alerts(
             we duck-type the fields.
         now: Override timestamp for testing. Defaults to
             ``time.time()``.
+        store_id: Per-store scope tag. When omitted, this falls
+            back to the ``active_store`` thread-local (set by
+            the autonomous loop). ``None`` means fleet-wide.
 
     Returns:
         Number of new events appended.
@@ -167,6 +213,8 @@ def record_alerts(
     if now is None:
         now = time.time()
 
+    resolved_store = _resolve_store_id(store_id)
+
     new_events: list[AlertEvent] = []
     for a in alerts:
         try:
@@ -180,6 +228,7 @@ def record_alerts(
                 baseline_score=float(
                     getattr(a, "baseline_score", 0.0) or 0.0,
                 ),
+                store_id=resolved_store,
             ))
         except (TypeError, ValueError) as exc:
             logger.debug(
@@ -205,17 +254,30 @@ def recent_history(
     since_seconds: float = 86400.0 * 7.0,
     *,
     now: float | None = None,
+    store_id: str | None = None,
 ) -> list[AlertEvent]:
     """Events recorded within the last ``since_seconds``.
 
     Newest-first. Defaults to the last 7 days -- matches the
     baseline window used by ``compute_engine_alerts``.
+
+    Args:
+        since_seconds: Look-back window.
+        now: Override for testing.
+        store_id: If supplied, only return events whose
+            ``store_id`` matches (None = fleet-wide events,
+            otherwise the exact store). Omit for ALL events
+            regardless of scope.
     """
     if now is None:
         now = time.time()
     cutoff = now - max(0.0, float(since_seconds))
     events = _load_raw_events()
     fresh = [e for e in events if e.recorded_at >= cutoff]
+    if store_id is not None:
+        # Strict match: explicit store filter doesn't pick up
+        # fleet-wide (None) events.
+        fresh = [e for e in fresh if e.store_id == store_id]
     fresh.sort(key=lambda e: -e.recorded_at)
     return fresh
 
@@ -225,6 +287,7 @@ def consecutive_runs_per_engine(
     window_seconds: float = 86400.0 * 7.0,
     bucket_seconds: float = 86400.0,
     now: float | None = None,
+    store_id: str | None = None,
 ) -> dict[str, int]:
     """For each engine that fired in the window, count how
     many discrete time buckets had alerts.
@@ -242,6 +305,10 @@ def consecutive_runs_per_engine(
         window_seconds: How far back to look (default 7 days).
         bucket_seconds: Size of each time slot (default 1 day).
         now: Override timestamp for testing.
+        store_id: Per-store filter. When supplied, ONLY events
+            tagged with this store contribute. When omitted,
+            aggregates ACROSS all stores (matches pre-per-store
+            behaviour for backward compat).
 
     Returns:
         ``{engine: bucket_count}`` for engines with at least
@@ -260,10 +327,47 @@ def consecutive_runs_per_engine(
             continue
         if not e.engine:
             continue
+        if store_id is not None and e.store_id != store_id:
+            continue
         bucket = int(e.recorded_at // float(bucket_seconds))
         per_engine.setdefault(e.engine, set()).add(bucket)
 
     return {engine: len(buckets) for engine, buckets in per_engine.items()}
+
+
+def consecutive_runs_per_engine_store(
+    *,
+    window_seconds: float = 86400.0 * 7.0,
+    bucket_seconds: float = 86400.0,
+    now: float | None = None,
+) -> dict[tuple[str, str | None], int]:
+    """Per-(engine, store_id) bucketed-run count.
+
+    Use case: empire-AGI 'engine X has been alert-firing every
+    day on store A but is healthy on store B'. The bridge can
+    then quarantine just store A's enqueues for engine X.
+
+    Returns:
+        ``{(engine, store_id): bucket_count}``. ``store_id``
+        can be None (fleet-wide events from before the per-
+        store extension). Engines with no alerts in the window
+        are absent.
+    """
+    if now is None:
+        now = time.time()
+    cutoff = now - max(0.0, float(window_seconds))
+    events = _load_raw_events()
+
+    per_pair: dict[tuple[str, str | None], set[int]] = {}
+    for e in events:
+        if e.recorded_at < cutoff:
+            continue
+        if not e.engine:
+            continue
+        bucket = int(e.recorded_at // float(bucket_seconds))
+        per_pair.setdefault((e.engine, e.store_id), set()).add(bucket)
+
+    return {key: len(buckets) for key, buckets in per_pair.items()}
 
 
 def clear() -> None:
