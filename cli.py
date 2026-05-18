@@ -3646,6 +3646,37 @@ def _cmd_daily_brief(args) -> None:
                     f"{a.detail} (flagged {days} day(s) running)"
                 )
             alerts.append(entry)
+
+        # Auto-quarantine bridge: when the consecutive-day
+        # count crosses the configured threshold AND the
+        # SHOPAI_AUTO_QUARANTINE_FROM_ALERTS env var is set,
+        # add the engine to the quarantine state's
+        # alert_paused set so future enqueues get rejected.
+        # Pattern J guard short-circuits under pytest.
+        try:
+            from core.approval import alert_quarantine
+            newly_paused = (
+                alert_quarantine.maybe_auto_quarantine_from_alerts()
+            )
+            for engine in newly_paused:
+                alerts.append({
+                    "kind": "auto_alert_quarantined",
+                    "store_id": None,
+                    "engine": engine,
+                    "detail": (
+                        f"engine {engine} auto-paused after "
+                        f"{alert_quarantine.threshold_days()} "
+                        f"consecutive day(s) of degradation "
+                        f"alerts; release via "
+                        f"'shopai approvals quarantine "
+                        f"--release-alert {engine}'"
+                    ),
+                })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "daily-brief alert_quarantine bridge raised: %s",
+                exc,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief engine alerts probe raised: %s", exc,

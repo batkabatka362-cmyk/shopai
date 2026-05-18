@@ -752,3 +752,113 @@ class TestAlertHistoryWiring:
         # but the alert still surfaces.
         assert len(degraded) == 1
         assert "consecutive_days" not in degraded[0]
+
+
+class TestAutoQuarantineFromAlertsWiring:
+    """``daily-brief`` calls
+    ``alert_quarantine.maybe_auto_quarantine_from_alerts`` and
+    surfaces each newly-paused engine as a
+    ``kind='auto_alert_quarantined'`` entry."""
+
+    def _fake_alert(self, engine="loyalty"):
+        from core.approval.outcome_trends import EngineAlert
+        return EngineAlert(
+            engine=engine,
+            recent_executed=5,
+            baseline_executed=20,
+            recent_score=0.2,
+            baseline_score=0.85,
+            recent_polarised=5,
+            baseline_polarised=18,
+            drop=0.65,
+            detail="20% recent vs 85% baseline (drop 65%)",
+            kind="outcome_score_degraded",
+        )
+
+    def test_newly_paused_surfaces_alert(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[self._fake_alert("loyalty")],
+        ), patch(
+            "core.approval.alert_history.record_alerts",
+            return_value=1,
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={"loyalty": 3},
+        ), patch(
+            "core.approval.alert_quarantine."
+            "maybe_auto_quarantine_from_alerts",
+            return_value=["loyalty"],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        paused = [
+            a for a in data["alerts"]
+            if a.get("kind") == "auto_alert_quarantined"
+        ]
+        assert len(paused) == 1
+        assert paused[0]["engine"] == "loyalty"
+        assert "auto-paused" in paused[0]["detail"]
+
+    def test_no_paused_no_alert(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[self._fake_alert("loyalty")],
+        ), patch(
+            "core.approval.alert_history.record_alerts",
+            return_value=1,
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={"loyalty": 1},
+        ), patch(
+            "core.approval.alert_quarantine."
+            "maybe_auto_quarantine_from_alerts",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        kinds = {a.get("kind") for a in data["alerts"]}
+        assert "auto_alert_quarantined" not in kinds
+
+    def test_bridge_raise_doesnt_break_daily_brief(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[self._fake_alert()],
+        ), patch(
+            "core.approval.alert_history.record_alerts",
+            return_value=1,
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={},
+        ), patch(
+            "core.approval.alert_quarantine."
+            "maybe_auto_quarantine_from_alerts",
+            side_effect=RuntimeError("state corruption"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        # Degraded alert still surfaces; bridge failure swallowed.
+        kinds = {a.get("kind") for a in data["alerts"]}
+        assert "engine_score_degraded" in kinds
+        assert "auto_alert_quarantined" not in kinds
