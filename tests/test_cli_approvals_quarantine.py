@@ -39,7 +39,7 @@ def _capture(fn, *args, **kwargs):
 def _ns(**kw):
     defaults = dict(
         release=None, clear_release=None, exempt=None,
-        unexempt=None, list=False, json=False,
+        unexempt=None, release_alert=None, list=False, json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -145,3 +145,102 @@ class TestJsonMode:
             cli._cmd_approvals_quarantine, _ns(json=True),
         )
         assert out.strip()[0] == "{"
+
+
+# ─── alert_paused surface ────────────────────────────────────
+
+
+class TestAlertPausedSurface:
+    """``shopai approvals quarantine`` exposes the alert-paused
+    list + the bridge config in both text and JSON modes, plus
+    a ``--release-alert`` action to clear the auto-pause."""
+
+    def test_default_list_includes_alert_paused_section(
+        self, cli, quarantine_data_dir,
+    ):
+        out = _capture(cli._cmd_approvals_quarantine, _ns())
+        assert "Alert-paused (0)" in out
+        assert "Alert-quarantine bridge" in out
+
+    def test_default_list_shows_alert_paused_engines(
+        self, cli, quarantine_data_dir,
+    ):
+        from core.approval.quarantine import add_alert_pause
+        add_alert_pause("loyalty")
+        add_alert_pause("affiliate")
+        out = _capture(cli._cmd_approvals_quarantine, _ns())
+        assert "Alert-paused (2)" in out
+        # Engines listed alphabetically in the comma-joined line
+        assert "affiliate" in out
+        assert "loyalty" in out
+
+    def test_json_mode_includes_alert_paused_key(
+        self, cli, quarantine_data_dir,
+    ):
+        from core.approval.quarantine import add_alert_pause
+        add_alert_pause("loyalty")
+        out = _capture(
+            cli._cmd_approvals_quarantine, _ns(json=True),
+        )
+        data = json.loads(out)
+        assert data["alert_paused"] == ["loyalty"]
+        assert "alert_quarantine" in data
+        assert "enabled" in data["alert_quarantine"]
+        assert "threshold_days" in data["alert_quarantine"]
+
+    def test_json_mode_reflects_env_var_enabled(
+        self, cli, quarantine_data_dir, monkeypatch,
+    ):
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        out = _capture(
+            cli._cmd_approvals_quarantine, _ns(json=True),
+        )
+        data = json.loads(out)
+        assert data["alert_quarantine"]["enabled"] is True
+
+    def test_release_alert_clears_state(
+        self, cli, quarantine_data_dir,
+    ):
+        from core.approval.quarantine import (
+            add_alert_pause, load_state,
+        )
+        add_alert_pause("loyalty")
+        add_alert_pause("affiliate")
+        assert load_state().is_alert_paused("loyalty")
+
+        out = _capture(
+            cli._cmd_approvals_quarantine,
+            _ns(release_alert="loyalty"),
+        )
+        assert "Cleared alert-pause on 'loyalty'" in out
+        s = load_state()
+        assert not s.is_alert_paused("loyalty")
+        assert s.is_alert_paused("affiliate")
+
+    def test_release_alert_json(
+        self, cli, quarantine_data_dir,
+    ):
+        from core.approval.quarantine import add_alert_pause
+        add_alert_pause("loyalty")
+        out = _capture(
+            cli._cmd_approvals_quarantine,
+            _ns(release_alert="loyalty", json=True),
+        )
+        data = json.loads(out)
+        assert data["released_from_alert_pause"] == "loyalty"
+        assert data["alert_paused"] == []
+
+    def test_release_alert_on_unknown_engine_clean_state(
+        self, cli, quarantine_data_dir,
+    ):
+        """Releasing an engine not in alert_paused is a no-op
+        — the set just doesn't gain or lose anything."""
+        from core.approval.quarantine import load_state
+        # No engines paused
+        _capture(
+            cli._cmd_approvals_quarantine,
+            _ns(release_alert="not_there"),
+        )
+        assert load_state().alert_paused == frozenset()

@@ -2100,8 +2100,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Remove ENGINE from the exemption list",
     )
     quarantine_action.add_argument(
+        "--release-alert", metavar="ENGINE", default=None,
+        help=(
+            "Clear ENGINE from the alert-paused set "
+            "(auto-quarantined via consecutive degradation alerts)"
+        ),
+    )
+    quarantine_action.add_argument(
         "--list", action="store_true",
-        help="Show current exemptions + released engines + thresholds",
+        help=(
+            "Show current exemptions + released + alert-paused "
+            "engines + thresholds"
+        ),
     )
     approvals_quarantine.add_argument(
         "--json", action="store_true",
@@ -13556,15 +13566,47 @@ def _cmd_approvals_quarantine(args) -> None:
         )
         return
 
+    if getattr(args, "release_alert", None):
+        engine = args.release_alert
+        s = qm.clear_alert_pause(engine)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "released_from_alert_pause": engine,
+                "alert_paused": sorted(s.alert_paused),
+            }, indent=2))
+            return
+        print(
+            f"Cleared alert-pause on '{engine}'. "
+            f"Alert-paused: {sorted(s.alert_paused) or '(none)'}"
+        )
+        return
+
     s = qm.load_state()
     payload = {
         "exemptions": sorted(s.exemptions),
         "released": sorted(s.released),
+        "alert_paused": sorted(s.alert_paused),
         "thresholds": {
             "min_outcomes_observed": qm.MIN_OUTCOMES_OBSERVED,
             "max_negative_ratio": qm.MAX_NEGATIVE_RATIO,
         },
     }
+
+    # Surface the alert-bridge config too -- operators inspecting
+    # quarantine state need to know whether auto-pause is even
+    # enabled before they reason about the alert_paused list.
+    try:
+        from core.approval import alert_quarantine as aq
+        payload["alert_quarantine"] = {
+            "enabled": aq.is_enabled(),
+            "threshold_days": aq.threshold_days(),
+            "window_days": aq.window_days(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "alert_quarantine config readout failed: %s", exc,
+        )
+
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2))
         return
@@ -13578,9 +13620,28 @@ def _cmd_approvals_quarantine(args) -> None:
         f"  Released ({len(s.released)}): "
         f"{', '.join(sorted(s.released)) or '(none)'}"
     )
+    print(
+        f"  Alert-paused ({len(s.alert_paused)}): "
+        f"{', '.join(sorted(s.alert_paused)) or '(none)'}"
+    )
     print("  Thresholds:")
     print(f"    min outcomes observed: {qm.MIN_OUTCOMES_OBSERVED}")
     print(f"    max negative ratio:    {qm.MAX_NEGATIVE_RATIO:.2f}")
+    aq_block = payload.get("alert_quarantine")
+    if aq_block:
+        print("  Alert-quarantine bridge:")
+        print(
+            f"    enabled:               "
+            f"{'yes' if aq_block['enabled'] else 'no'}"
+        )
+        print(
+            f"    threshold days:        "
+            f"{aq_block['threshold_days']}"
+        )
+        print(
+            f"    window days:           "
+            f"{aq_block['window_days']}"
+        )
 
 
 def _cmd_approvals_auto_candidates(args) -> None:
