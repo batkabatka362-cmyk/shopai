@@ -1110,10 +1110,89 @@ re-implement inline:
   ``OutcomeStats`` dataclass.
 - ``engines._agi_context.GUARDRAIL_ENGINES`` + ``guardrail_state()``
   (PR #272) — canonical roster of v2-wired engines.
-- ``core.approval.outcome_trends`` (PR #282 in flight) —
+- ``core.approval.outcome_trends`` (PR #282) —
   ``compute_engine_alerts(queue, ...)`` for engine-degradation
-  detection. CLI ``engine alerts`` is the first consumer; daily-
-  brief + world-model can adopt without re-implementing.
+  detection. CLI ``engine alerts`` + ``daily-brief`` are the
+  consumers; world-model can adopt without re-implementing.
+- ``core.approval.alert_history`` (PR #292) — persistent log of
+  ``EngineAlert`` firings + ``consecutive_runs_per_engine`` for
+  multi-day streak detection. JSON-backed at
+  ``data/alert_history.json``.
+- ``core.approval.alert_quarantine`` (PR #294) — env-gated bridge
+  that auto-pauses engines on N consecutive days of alerts.
+  Writes to ``QuarantineState.alert_paused``; the standard
+  enqueue path's ``evaluate()`` short-circuits on it.
+
+### Auto-quarantine chain (PRs #292 – #298)
+
+The full degradation-response loop. Each layer reuses the
+existing infrastructure rather than building its own:
+
+```text
+EngineAlert (compute_engine_alerts)             ← detect
+       │
+       ▼
+alert_history.record_alerts()                   ← record
+       │  data/alert_history.json
+       ▼
+alert_history.consecutive_runs_per_engine()     ← streak count
+       │
+       ▼
+alert_quarantine.maybe_auto_quarantine_from_alerts()  ← bridge
+       │  (env-gated; default OFF)
+       ▼
+quarantine.add_alert_pause(engine)              ← persist
+       │  quarantine_state.alert_paused
+       ▼
+ApprovalQueue.enqueue → maybe_quarantine →
+  quarantine.evaluate() → REJECTED              ← enforce
+       │
+       ▼
+shopai approvals quarantine --release-alert     ← operator unlocks
+```
+
+Env-var contract (all opt-in):
+
+- ``SHOPAI_AUTO_QUARANTINE_FROM_ALERTS=1`` — enable the bridge.
+  Default OFF; daily-brief still SHOWS the consecutive-day
+  count but doesn't act.
+- ``SHOPAI_AUTO_QUARANTINE_DAYS=3`` — streak threshold.
+- ``SHOPAI_AUTO_QUARANTINE_WINDOW_DAYS=7`` — detection window.
+
+Operator surface:
+
+- ``daily-brief`` records each firing + surfaces both
+  ``consecutive_days`` per alert AND a separate
+  ``kind="auto_alert_quarantined"`` entry when the bridge
+  triggers (PR #293).
+- ``shopai approvals quarantine`` (text + JSON) shows the
+  ``alert_paused`` list + bridge config block (PR #295);
+  ``--release-alert ENGINE`` clears one entry.
+- ``shopai approvals alert-history`` (PR #297) inspects the
+  persistent firing log; ``--clear`` is the escape hatch
+  after root-cause fix (otherwise the bridge re-pauses on
+  the next daily-brief run).
+- ``shopai world-model show`` includes a fleet-wide
+  ``quarantine`` section showing all three lists + bridge
+  config (PR #296).
+
+Test architecture:
+
+- Each layer's unit tests mock the next.
+- ``tests/test_alert_quarantine_e2e.py`` (PR #298) is the
+  trust anchor: REAL SQLite + REAL state files + REAL
+  evaluator. If any layer regresses, this test breaks first.
+
+Decision-log forensics: actions rejected via the bridge carry
+``decided_by="auto_quarantine"`` and reason
+``"auto_quarantine_from_alerts"`` (distinct from the outcome-
+based path's ``"auto_quarantine: negative_ratio=..."`` so
+post-hoc audits can tell them apart).
+
+Pattern J extends to alert_history + alert_quarantine: both
+have their own ``_is_test_environment()`` guard that returns 0
+under pytest. Three concurrent guards must be lifted to
+exercise the full chain in tests (the E2E test does this).
 
 ### Schema migration patterns
 
