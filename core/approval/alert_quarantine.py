@@ -321,8 +321,11 @@ def find_release_candidates(
     quiet_seconds = quiet * 86400.0
 
     state = quarantine.load_state()
-    paused = sorted(state.alert_paused)
-    if not paused:
+    paused_pairs = sorted(
+        state.alert_paused,
+        key=lambda pair: (pair[0], pair[1] or ""),
+    )
+    if not paused_pairs:
         return []
 
     # Fetch a wide history window so we can find the last
@@ -331,31 +334,54 @@ def find_release_candidates(
         since_seconds=86400.0 * 365.0,
         now=now,
     )
-    # Per-engine: newest event timestamp + count in the quiet
-    # window.
-    last_seen: dict[str, float] = {}
-    recent_count: dict[str, int] = {}
+    # Per-(engine, store_id) pair: newest timestamp + recent
+    # count. A fleet-wide pause (store_id=None) matches ANY
+    # event for that engine; a per-store pause matches only
+    # events with that exact store_id.
+    paused_engines = {e for (e, _s) in paused_pairs}
+    paused_pair_set = set(paused_pairs)
+    last_seen: dict[
+        tuple[str, str | None], float,
+    ] = {}
+    recent_count: dict[
+        tuple[str, str | None], int,
+    ] = {}
     quiet_cutoff = now - quiet_seconds
-    for e in events:
-        if e.engine not in state.alert_paused:
+    for ev in events:
+        if ev.engine not in paused_engines:
             continue
-        prior = last_seen.get(e.engine, 0.0)
-        if e.recorded_at > prior:
-            last_seen[e.engine] = e.recorded_at
-        if e.recorded_at >= quiet_cutoff:
-            recent_count[e.engine] = recent_count.get(
-                e.engine, 0,
-            ) + 1
+        # An event applies to:
+        #  - the (engine, None) fleet-wide pair if it exists, AND
+        #  - the (engine, event.store_id) per-store pair if it
+        #    exists.
+        applicable: list[tuple[str, str | None]] = []
+        fleet_pair = (ev.engine, None)
+        if fleet_pair in paused_pair_set:
+            applicable.append(fleet_pair)
+        store_pair = (ev.engine, ev.store_id)
+        if (
+            ev.store_id is not None
+            and store_pair in paused_pair_set
+        ):
+            applicable.append(store_pair)
+        for pair in applicable:
+            prior = last_seen.get(pair, 0.0)
+            if ev.recorded_at > prior:
+                last_seen[pair] = ev.recorded_at
+            if ev.recorded_at >= quiet_cutoff:
+                recent_count[pair] = recent_count.get(pair, 0) + 1
 
     out: list[dict] = []
-    for engine in paused:
-        last = last_seen.get(engine)
-        recent = recent_count.get(engine, 0)
+    for pair in paused_pairs:
+        engine, store_id = pair
+        last = last_seen.get(pair)
+        recent = recent_count.get(pair, 0)
         if recent > 0:
             # Still firing -- not safe to release.
             continue
         out.append({
             "engine": engine,
+            "store_id": store_id,
             "days_since_last_alert": (
                 (now - last) / 86400.0 if last else None
             ),

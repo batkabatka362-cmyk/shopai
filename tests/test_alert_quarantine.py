@@ -412,13 +412,21 @@ class TestQuarantineStateAlertPaused:
         s = QuarantineState(
             exemptions=frozenset({"e1"}),
             released=frozenset({"r1"}),
-            alert_paused=frozenset({"p1", "p2"}),
+            alert_paused=frozenset({
+                ("p1", None),
+                ("p2", None),
+                ("p3", "store_a"),
+            }),
         )
         save_state(s)
         loaded = load_state()
         assert loaded.exemptions == frozenset({"e1"})
         assert loaded.released == frozenset({"r1"})
-        assert loaded.alert_paused == frozenset({"p1", "p2"})
+        assert loaded.alert_paused == frozenset({
+            ("p1", None),
+            ("p2", None),
+            ("p3", "store_a"),
+        })
 
     def test_legacy_state_file_loads_with_empty_alert_paused(
         self, data_dir,
@@ -453,6 +461,95 @@ class TestQuarantineStateAlertPaused:
         with pytest.raises(ValueError):
             quarantine.add_alert_pause("")
 
+    def test_per_store_pause_only_matches_that_store(
+        self, data_dir,
+    ):
+        """``add_alert_pause(engine, store_id='a')`` pauses ONLY
+        for store_a. Other stores stay unblocked."""
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty", store_id="store_a")
+        s = quarantine.load_state()
+        assert s.is_alert_paused("loyalty", store_id="store_a")
+        assert not s.is_alert_paused(
+            "loyalty", store_id="store_b",
+        )
+        # Implicit fleet check (no store_id) should NOT match
+        # a per-store pause.
+        assert not s.is_alert_paused("loyalty")
+
+    def test_fleet_pause_matches_every_store(self, data_dir):
+        """Fleet-wide ``(engine, None)`` matches ANY store."""
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")  # fleet-wide
+        s = quarantine.load_state()
+        assert s.is_alert_paused("loyalty")
+        assert s.is_alert_paused("loyalty", store_id="any")
+        assert s.is_alert_paused("loyalty", store_id="other")
+
+    def test_clear_per_store_keeps_fleet(self, data_dir):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        quarantine.add_alert_pause("loyalty", store_id="store_a")
+        quarantine.clear_alert_pause(
+            "loyalty", store_id="store_a",
+        )
+        s = quarantine.load_state()
+        assert s.is_alert_paused("loyalty")  # fleet still on
+        assert ("loyalty", "store_a") not in s.alert_paused
+
+    def test_clear_all_drops_every_pause_for_engine(
+        self, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        quarantine.add_alert_pause("loyalty", store_id="a")
+        quarantine.add_alert_pause("loyalty", store_id="b")
+        quarantine.add_alert_pause("affiliate")
+        quarantine.clear_all_alert_pauses_for_engine("loyalty")
+        s = quarantine.load_state()
+        assert not any(
+            engine == "loyalty"
+            for (engine, _store) in s.alert_paused
+        )
+        # Untouched
+        assert s.is_alert_paused("affiliate")
+
+    def test_legacy_string_load_migrates_to_fleet_pair(
+        self, data_dir,
+    ):
+        """Old quarantine_state.json with string entries should
+        load as (engine, None) fleet-wide pauses."""
+        import json as _json
+        legacy = {
+            "exemptions": [],
+            "released": [],
+            "alert_paused": ["loyalty", "affiliate"],
+        }
+        (data_dir / "quarantine_state.json").write_text(
+            _json.dumps(legacy), encoding="utf-8",
+        )
+        from core.approval import quarantine
+        s = quarantine.load_state()
+        assert ("loyalty", None) in s.alert_paused
+        assert ("affiliate", None) in s.alert_paused
+        # Should match implicit and explicit-store checks
+        assert s.is_alert_paused("loyalty")
+        assert s.is_alert_paused(
+            "affiliate", store_id="any_store",
+        )
+
+    def test_alert_paused_engines_helper(self, data_dir):
+        """``alert_paused_engines()`` returns distinct engine
+        names across both fleet + per-store entries."""
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        quarantine.add_alert_pause("loyalty", store_id="a")
+        quarantine.add_alert_pause("affiliate", store_id="b")
+        s = quarantine.load_state()
+        assert s.alert_paused_engines() == frozenset({
+            "loyalty", "affiliate",
+        })
+
     def test_exempt_preserves_alert_paused(self, data_dir):
         """Operator running exempt_engine on a different engine
         shouldn't accidentally wipe the alert_paused set."""
@@ -483,7 +580,10 @@ class TestEvaluateAlertPaused:
             engine="loyalty", queue=fake_queue,
         )
         assert decision.should_quarantine is True
-        assert decision.reason == "auto_quarantine_from_alerts"
+        # Reason carries scope qualifier (fleet vs per-store)
+        assert decision.reason.startswith(
+            "auto_quarantine_from_alerts",
+        )
 
     def test_exempt_beats_alert_paused(self, data_dir):
         """If an engine is BOTH exempted and alert_paused, the
