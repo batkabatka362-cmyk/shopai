@@ -270,3 +270,50 @@ def test_load_raw_events_skips_malformed_entries(
     out = recent_history(since_seconds=86400.0, now=2000.0)
     assert len(out) == 1
     assert out[0].engine == "good"
+
+
+def test_prune_removes_old_events(alert_data_dir: Path):
+    from core.approval.alert_history import (
+        record_alerts, prune, recent_history,
+    )
+    day = 86400.0
+    record_alerts([_FakeAlert("a")], now=100.0)
+    record_alerts([_FakeAlert("b")], now=day * 5)
+    record_alerts([_FakeAlert("c")], now=day * 30)
+    # Now = day*40, prune anything older than 20 days
+    # -> drop a (40d), b (35d); keep c (10d)
+    removed = prune(
+        older_than_seconds=day * 20, now=day * 40,
+    )
+    assert removed == 2
+    out = recent_history(since_seconds=day * 50, now=day * 40)
+    assert [e.engine for e in out] == ["c"]
+
+
+def test_prune_zero_removed_keeps_all(alert_data_dir: Path):
+    from core.approval.alert_history import (
+        record_alerts, prune, recent_history,
+    )
+    record_alerts([_FakeAlert("fresh")], now=1000.0)
+    removed = prune(older_than_seconds=86400.0, now=1100.0)
+    assert removed == 0
+    assert len(recent_history(now=1100.0)) == 1
+
+
+def test_prune_negative_raises(alert_data_dir: Path):
+    from core.approval.alert_history import prune
+    with pytest.raises(ValueError):
+        prune(older_than_seconds=-1.0)
+
+
+def test_prune_zero_raises(alert_data_dir: Path):
+    from core.approval.alert_history import prune
+    with pytest.raises(ValueError):
+        prune(older_than_seconds=0)
+
+
+def test_prune_no_file_no_op(alert_data_dir: Path):
+    """No history file -- prune is a no-op, no error."""
+    from core.approval.alert_history import prune
+    removed = prune(older_than_seconds=86400.0, now=1000.0)
+    assert removed == 0

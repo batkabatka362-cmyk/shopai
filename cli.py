@@ -2161,6 +2161,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     approvals_alert_history.add_argument(
+        "--prune-older-than-days", type=float, default=None,
+        metavar="N",
+        help=(
+            "Drop events older than N days. Finer scalpel than "
+            "--clear: useful for ops hygiene (e.g. cron-prune "
+            "the log to last 30 days)."
+        ),
+    )
+    approvals_alert_history.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -13768,6 +13777,47 @@ def _cmd_approvals_alert_history(args) -> None:
             print(json.dumps({"status": "success", "cleared": True}))
         else:
             print("Alert history wiped.")
+        return
+
+    prune_days = getattr(args, "prune_older_than_days", None)
+    if prune_days is not None:
+        if prune_days <= 0:
+            msg = "--prune-older-than-days must be positive"
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2, default=str,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        try:
+            removed = alert_history.prune(
+                older_than_seconds=prune_days * 86400.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            msg = f"prune failed: {exc}"
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2, default=str,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        if as_json:
+            print(json.dumps({
+                "status": "success",
+                "removed_count": removed,
+                "older_than_days": prune_days,
+            }))
+        else:
+            print(
+                f"Pruned {removed} event(s) older than "
+                f"{prune_days:.1f} day(s)."
+            )
         return
 
     since_days = max(0.0, float(getattr(args, "since_days", 7.0)))
