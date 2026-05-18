@@ -13,6 +13,8 @@ from __future__ import annotations
 import time
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from core.world_model import WorldModel, snapshot
 
 
@@ -643,7 +645,7 @@ class TestSnapshotEnvelope:
         for key in (
             "store_id", "fetched_at", "store", "stats", "sync",
             "connection", "config", "design", "approvals", "decisions",
-            "transfers", "recent_outcomes",
+            "transfers", "recent_outcomes", "quarantine",
         ):
             assert key in snap
 
@@ -716,3 +718,69 @@ def _patch_external(*, plan_result=None):
             yield
 
     return _ctx()
+
+
+# ─── Quarantine section ──────────────────────────────────────
+
+
+class TestSectionQuarantine:
+    """``_section_quarantine`` surfaces the FLEET quarantine
+    state inside each per-store snapshot."""
+
+    @pytest.fixture(autouse=True)
+    def _data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        yield tmp_path
+
+    def test_empty_state(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine()
+        assert sec["checked"] is True
+        assert sec["scope"] == "fleet"
+        assert sec["exemptions"] == []
+        assert sec["released"] == []
+        assert sec["alert_paused"] == []
+        # Bridge is present (PR #294 module is on PYTHONPATH).
+        assert sec["bridge"] is not None
+        assert sec["bridge"]["enabled"] is False
+
+    def test_populated_state(self):
+        from core.approval import quarantine
+        quarantine.exempt_engine("returns")
+        quarantine.release_engine("loyalty")
+        quarantine.add_alert_pause("affiliate")
+
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine()
+        assert sec["exemptions"] == ["returns"]
+        assert sec["released"] == ["loyalty"]
+        assert sec["alert_paused"] == ["affiliate"]
+
+    def test_bridge_reflects_env_var(self, monkeypatch):
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        monkeypatch.setenv("SHOPAI_AUTO_QUARANTINE_DAYS", "5")
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine()
+        assert sec["bridge"]["enabled"] is True
+        assert sec["bridge"]["threshold_days"] == 5
+
+    def test_load_failure_fails_open(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk corrupt"),
+        ):
+            sec = wm._section_quarantine()
+        assert sec["checked"] is False
+        assert "disk corrupt" in sec["error"]
+
+    def test_section_appears_in_full_snapshot(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert "quarantine" in snap
+        assert snap["quarantine"]["checked"] is True
+        assert snap["quarantine"]["scope"] == "fleet"
