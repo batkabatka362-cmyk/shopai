@@ -472,6 +472,66 @@ def evaluate(
     negative = int(stats.get("negative_count", 0) or 0)
     polarised = positive + negative
 
+    # If fleet-wide history is sufficient AND ratio is bad,
+    # quarantine fleet-wide. Otherwise, when a store_id is in
+    # scope, also try the per-store stats -- empire-AGI: an
+    # engine can be fleet-healthy but bad on one store.
+    fleet_bad = (
+        polarised >= MIN_OUTCOMES_OBSERVED
+        and (negative / polarised) >= MAX_NEGATIVE_RATIO
+    )
+    if fleet_bad:
+        negative_ratio = negative / polarised
+        return QuarantineDecision(
+            should_quarantine=True,
+            reason=(
+                f"auto_quarantine: negative_ratio="
+                f"{negative_ratio:.2f} >= {MAX_NEGATIVE_RATIO:.2f} "
+                f"history={polarised} (fleet)"
+            ),
+            negative_ratio=negative_ratio,
+            total_polarised=polarised,
+        )
+
+    # Per-store check (only when store_id is supplied AND
+    # fleet-wide path didn't trigger).
+    if store_id is not None:
+        try:
+            store_stats = queue.engine_outcome_stats(
+                engine, store_id=store_id,
+            )
+        except TypeError:
+            # Pre-extension queue without store_id kwarg.
+            store_stats = None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "per-store engine_outcome_stats raised for "
+                "%s/%s: %s", engine, store_id, exc,
+            )
+            store_stats = None
+        if store_stats is not None:
+            s_pos = int(store_stats.get("positive_count", 0) or 0)
+            s_neg = int(store_stats.get("negative_count", 0) or 0)
+            s_polarised = s_pos + s_neg
+            if (
+                s_polarised >= MIN_OUTCOMES_OBSERVED
+                and (s_neg / s_polarised) >= MAX_NEGATIVE_RATIO
+            ):
+                s_ratio = s_neg / s_polarised
+                return QuarantineDecision(
+                    should_quarantine=True,
+                    reason=(
+                        f"auto_quarantine: negative_ratio="
+                        f"{s_ratio:.2f} >= "
+                        f"{MAX_NEGATIVE_RATIO:.2f} "
+                        f"history={s_polarised} "
+                        f"(store={store_id})"
+                    ),
+                    negative_ratio=s_ratio,
+                    total_polarised=s_polarised,
+                )
+
+    # Below history floor (fleet or per-store).
     if polarised < MIN_OUTCOMES_OBSERVED:
         return QuarantineDecision(
             should_quarantine=False,
@@ -484,24 +544,12 @@ def evaluate(
         )
 
     negative_ratio = negative / polarised
-    if negative_ratio < MAX_NEGATIVE_RATIO:
-        return QuarantineDecision(
-            should_quarantine=False,
-            reason=(
-                f"healthy "
-                f"(negative_ratio={negative_ratio:.2f} < "
-                f"{MAX_NEGATIVE_RATIO:.2f})"
-            ),
-            negative_ratio=negative_ratio,
-            total_polarised=polarised,
-        )
-
     return QuarantineDecision(
-        should_quarantine=True,
+        should_quarantine=False,
         reason=(
-            f"auto_quarantine: negative_ratio="
-            f"{negative_ratio:.2f} >= {MAX_NEGATIVE_RATIO:.2f} "
-            f"history={polarised}"
+            f"healthy "
+            f"(negative_ratio={negative_ratio:.2f} < "
+            f"{MAX_NEGATIVE_RATIO:.2f})"
         ),
         negative_ratio=negative_ratio,
         total_polarised=polarised,
