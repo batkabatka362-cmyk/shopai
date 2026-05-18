@@ -31,15 +31,19 @@ def quarantine_data_dir(tmp_path: Path, monkeypatch):
 
 def _capture(fn, *args, **kwargs):
     buf = StringIO()
-    with patch("sys.stdout", buf):
-        fn(*args, **kwargs)
+    try:
+        with patch("sys.stdout", buf):
+            fn(*args, **kwargs)
+    except SystemExit:
+        pass
     return buf.getvalue()
 
 
 def _ns(**kw):
     defaults = dict(
         release=None, clear_release=None, exempt=None,
-        unexempt=None, release_alert=None, list=False, json=False,
+        unexempt=None, release_alert=None,
+        apply_bridge=False, list=False, json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -244,3 +248,111 @@ class TestAlertPausedSurface:
             _ns(release_alert="not_there"),
         )
         assert load_state().alert_paused == frozenset()
+
+
+class TestApplyBridge:
+    """``--apply-bridge`` manually fires the alert-quarantine
+    bridge. Normally only daily-brief calls it; this gives
+    operators a way to force a run without waiting."""
+
+    def test_disabled_renders_skipped(
+        self, cli, quarantine_data_dir, monkeypatch,
+    ):
+        monkeypatch.delenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", raising=False,
+        )
+        out = _capture(
+            cli._cmd_approvals_quarantine,
+            _ns(apply_bridge=True),
+        )
+        assert "Skipped" in out
+        assert "bridge disabled" in out
+
+    def test_disabled_json_envelope(
+        self, cli, quarantine_data_dir, monkeypatch,
+    ):
+        monkeypatch.delenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", raising=False,
+        )
+        out = _capture(
+            cli._cmd_approvals_quarantine,
+            _ns(apply_bridge=True, json=True),
+        )
+        data = json.loads(out)
+        assert data["status"] == "skipped"
+        assert data["reason"] == "bridge_disabled"
+        assert data["paused"] == []
+
+    def test_enabled_no_candidates_renders_nothing_paused(
+        self, cli, quarantine_data_dir, monkeypatch,
+    ):
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        with patch(
+            "core.approval.alert_quarantine."
+            "maybe_auto_quarantine_from_alerts",
+            return_value=[],
+        ):
+            out = _capture(
+                cli._cmd_approvals_quarantine,
+                _ns(apply_bridge=True),
+            )
+        assert "no engines crossed" in out
+
+    def test_enabled_with_candidates_renders_paused(
+        self, cli, quarantine_data_dir, monkeypatch,
+    ):
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        with patch(
+            "core.approval.alert_quarantine."
+            "maybe_auto_quarantine_from_alerts",
+            return_value=["loyalty", "affiliate"],
+        ):
+            out = _capture(
+                cli._cmd_approvals_quarantine,
+                _ns(apply_bridge=True),
+            )
+        assert "paused 2 engine(s)" in out
+        assert "loyalty" in out
+        assert "affiliate" in out
+
+    def test_enabled_json_envelope_with_candidates(
+        self, cli, quarantine_data_dir, monkeypatch,
+    ):
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        with patch(
+            "core.approval.alert_quarantine."
+            "maybe_auto_quarantine_from_alerts",
+            return_value=["loyalty"],
+        ):
+            out = _capture(
+                cli._cmd_approvals_quarantine,
+                _ns(apply_bridge=True, json=True),
+            )
+        data = json.loads(out)
+        assert data["status"] == "success"
+        assert data["count"] == 1
+        assert data["newly_paused"] == ["loyalty"]
+
+    def test_bridge_raise_exits_1(
+        self, cli, quarantine_data_dir, monkeypatch,
+    ):
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        with patch(
+            "core.approval.alert_quarantine."
+            "maybe_auto_quarantine_from_alerts",
+            side_effect=RuntimeError("disk corrupt"),
+        ):
+            out = _capture(
+                cli._cmd_approvals_quarantine,
+                _ns(apply_bridge=True),
+            )
+        assert "Error" in out
+        assert "disk corrupt" in out

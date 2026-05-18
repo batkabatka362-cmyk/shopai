@@ -2153,6 +2153,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     quarantine_action.add_argument(
+        "--apply-bridge", action="store_true",
+        help=(
+            "Manually trigger the alert-quarantine bridge "
+            "(normally only runs inside daily-brief). Requires "
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS=1."
+        ),
+    )
+    quarantine_action.add_argument(
         "--list", action="store_true",
         help=(
             "Show current exemptions + released + alert-paused "
@@ -13705,6 +13713,63 @@ def _cmd_approvals_quarantine(args) -> None:
             f"Cleared alert-pause on '{engine}'. "
             f"Alert-paused: {sorted(s.alert_paused) or '(none)'}"
         )
+        return
+
+    if getattr(args, "apply_bridge", False):
+        # Manually trigger the alert-quarantine bridge. Normally
+        # daily-brief is the only caller; this gives operators
+        # a way to force the bridge without waiting for the
+        # next daily-brief run. Honors the env-var gate just
+        # like the daily-brief path.
+        from core.approval import alert_quarantine
+        as_json = bool(getattr(args, "json", False))
+        if not alert_quarantine.is_enabled():
+            msg = (
+                "bridge disabled "
+                "(SHOPAI_AUTO_QUARANTINE_FROM_ALERTS != 1); "
+                "no engines paused"
+            )
+            if as_json:
+                print(json.dumps({
+                    "status": "skipped",
+                    "reason": "bridge_disabled",
+                    "paused": [],
+                }, indent=2))
+            else:
+                print(f"Skipped: {msg}")
+            return
+        try:
+            paused = (
+                alert_quarantine.maybe_auto_quarantine_from_alerts()
+            )
+        except Exception as exc:  # noqa: BLE001
+            msg = f"bridge run failed: {exc}"
+            logger.debug(msg)
+            if as_json:
+                print(json.dumps({
+                    "status": "error", "error": msg,
+                }, indent=2, default=str))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        if as_json:
+            print(json.dumps({
+                "status": "success",
+                "newly_paused": paused,
+                "count": len(paused),
+            }, indent=2))
+            return
+        if paused:
+            print(
+                f"Bridge run: paused {len(paused)} engine(s): "
+                f"{', '.join(paused)}"
+            )
+        else:
+            print(
+                "Bridge run: no engines crossed the streak "
+                "threshold."
+            )
         return
 
     s = qm.load_state()
