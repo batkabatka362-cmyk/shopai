@@ -270,3 +270,124 @@ class TestRecentFlag:
                 _ns(recent_n=5),
             )
         assert "Recent blocks: (none in last" in out
+
+
+# ─── Quarantine flags column ─────────────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    yield tmp_path
+
+
+class TestQuarantineColumn:
+    """``engine guardrail`` shows v2-guardrail state per engine.
+    Quarantine state is the parallel pause mechanism -- both
+    surface in one view so 'why isn't this acting?' has one
+    answer."""
+
+    def test_clean_engines_no_flags(
+        self, cli, monkeypatch, data_dir,
+    ):
+        for var in (
+            "SHOPAI_LOYALTY_AGI_GUARDRAIL",
+            "SHOPAI_CART_RECOVERY_AGI_GUARDRAIL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        queue = MagicMock()
+        fake_conn = MagicMock()
+        fake_conn.__enter__ = lambda self: self
+        fake_conn.__exit__ = lambda *a: None
+        fake_cursor = MagicMock()
+        fake_cursor.fetchall.return_value = []
+        fake_conn.execute.return_value = fake_cursor
+        queue._conn = fake_conn
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=queue,
+        ):
+            out = _capture(
+                cli._cmd_engine_guardrail, _ns(),
+            )
+        # Header includes the new column
+        assert "QUARANTINE" in out
+        # All engines render '-' for empty flags
+        # (one '-' per row at minimum)
+        assert " -" in out
+
+    def test_alert_paused_engine_marked(
+        self, cli, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        queue = MagicMock()
+        fake_conn = MagicMock()
+        fake_conn.__enter__ = lambda self: self
+        fake_conn.__exit__ = lambda *a: None
+        fake_cursor = MagicMock()
+        fake_cursor.fetchall.return_value = []
+        fake_conn.execute.return_value = fake_cursor
+        queue._conn = fake_conn
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=queue,
+        ):
+            out = _capture(
+                cli._cmd_engine_guardrail, _ns(),
+            )
+        assert "alert_paused" in out
+
+    def test_json_includes_quarantine_flags(
+        self, cli, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        queue = MagicMock()
+        fake_conn = MagicMock()
+        fake_conn.__enter__ = lambda self: self
+        fake_conn.__exit__ = lambda *a: None
+        fake_cursor = MagicMock()
+        fake_cursor.fetchall.return_value = []
+        fake_conn.execute.return_value = fake_cursor
+        queue._conn = fake_conn
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=queue,
+        ):
+            out = _capture(
+                cli._cmd_engine_guardrail, _ns(json=True),
+            )
+        data = json.loads(out)
+        by_engine = {
+            e["engine"]: e for e in data["engines"]
+        }
+        assert by_engine["loyalty"]["quarantine_flags"] == [
+            "alert_paused",
+        ]
+
+    def test_load_state_failure_empty_flags(
+        self, cli, data_dir,
+    ):
+        queue = MagicMock()
+        fake_conn = MagicMock()
+        fake_conn.__enter__ = lambda self: self
+        fake_conn.__exit__ = lambda *a: None
+        fake_cursor = MagicMock()
+        fake_cursor.fetchall.return_value = []
+        fake_conn.execute.return_value = fake_cursor
+        queue._conn = fake_conn
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=queue,
+        ), patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out = _capture(
+                cli._cmd_engine_guardrail, _ns(json=True),
+            )
+        data = json.loads(out)
+        # All engines should still render -- flags just empty
+        for e in data["engines"]:
+            assert e["quarantine_flags"] == []

@@ -7055,12 +7055,38 @@ def _cmd_engine_guardrail(args) -> None:
             "engine guardrail status: queue read raised: %s", exc,
         )
 
+    # Quarantine flags per engine -- v2 guardrail and quarantine
+    # are parallel pause mechanisms (one refuses at decision time,
+    # the other rejects at enqueue). Operators should see both
+    # in one view to understand "why isn't this engine acting?".
+    qstate = None
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine guardrail quarantine probe raised: %s", exc,
+        )
+
+    def _engine_flags(name: str) -> list[str]:
+        if qstate is None:
+            return []
+        out: list[str] = []
+        if qstate.is_alert_paused(name):
+            out.append("alert_paused")
+        if qstate.is_exempt(name):
+            out.append("exempt")
+        if qstate.is_released(name):
+            out.append("released")
+        return out
+
     report = [
         {
             "engine": engine,
             "guardrail_enabled": guardrail_enabled(engine),
             "blocks_in_window": blocks_by_engine.get(engine, 0),
             "env_var": f"SHOPAI_{engine.upper()}_AGI_GUARDRAIL",
+            "quarantine_flags": _engine_flags(engine),
         }
         for engine in guardrail_engines
     ]
@@ -7126,15 +7152,17 @@ def _cmd_engine_guardrail(args) -> None:
     print()
     print(
         f"  {'ENGINE':<22s} {'STATE':<6s} {'BLOCKS':>7s}  "
-        f"ENV VAR"
+        f"{'QUARANTINE':<14s} ENV VAR"
     )
-    print("  " + "-" * 70)
+    print("  " + "-" * 85)
     for e in report:
         state = "ON" if e["guardrail_enabled"] else "off"
         marker = "*" if e["guardrail_enabled"] else " "
+        qflags = ",".join(e.get("quarantine_flags") or [])[:14] or "-"
         print(
             f"  {marker}{e['engine']:<21s} {state:<6s} "
-            f"{e['blocks_in_window']:>7d}  {e['env_var']}"
+            f"{e['blocks_in_window']:>7d}  "
+            f"{qflags:<14s} {e['env_var']}"
         )
     print()
     if recent_n > 0 and recent_blocks:
