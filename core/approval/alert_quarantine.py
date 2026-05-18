@@ -160,3 +160,92 @@ def maybe_auto_quarantine_from_alerts(
     if not engines:
         return []
     return apply_pauses(engines)
+
+
+def find_release_candidates(
+    *,
+    quiet_days: float | None = None,
+    now: float | None = None,
+) -> list[dict]:
+    """Find alert-paused engines that have gone quiet.
+
+    Sister to ``core.approval.quarantine.find_release_candidates``
+    (which is OUTCOME-based). This one is ALERT-based: an
+    operator looking at the alert_paused list wants to know
+    which engines haven't fired any new degradation alerts
+    recently and are safe to release.
+
+    Args:
+        quiet_days: How many days of silence before an engine
+            is a candidate. Default: same as the bridge's
+            window_days (so an engine that hasn't fired in the
+            whole detection window is safe).
+        now: Override timestamp for testing.
+
+    Returns:
+        Newest-last (= longest-quiet first). Each entry:
+          {engine, days_since_last_alert, last_alert_at,
+           recent_event_count}
+        ``last_alert_at`` may be None if there's no recorded
+        firing at all -- still a candidate (paused before the
+        alert_history layer existed, or after a clear).
+    """
+    if now is None:
+        import time
+        now = time.time()
+    quiet = quiet_days if quiet_days is not None else window_days()
+    quiet_seconds = quiet * 86400.0
+
+    state = quarantine.load_state()
+    paused = sorted(state.alert_paused)
+    if not paused:
+        return []
+
+    # Fetch a wide history window so we can find the last
+    # firing for engines even if it was a long time ago.
+    events = alert_history.recent_history(
+        since_seconds=86400.0 * 365.0,
+        now=now,
+    )
+    # Per-engine: newest event timestamp + count in the quiet
+    # window.
+    last_seen: dict[str, float] = {}
+    recent_count: dict[str, int] = {}
+    quiet_cutoff = now - quiet_seconds
+    for e in events:
+        if e.engine not in state.alert_paused:
+            continue
+        prior = last_seen.get(e.engine, 0.0)
+        if e.recorded_at > prior:
+            last_seen[e.engine] = e.recorded_at
+        if e.recorded_at >= quiet_cutoff:
+            recent_count[e.engine] = recent_count.get(
+                e.engine, 0,
+            ) + 1
+
+    out: list[dict] = []
+    for engine in paused:
+        last = last_seen.get(engine)
+        recent = recent_count.get(engine, 0)
+        if recent > 0:
+            # Still firing -- not safe to release.
+            continue
+        out.append({
+            "engine": engine,
+            "days_since_last_alert": (
+                (now - last) / 86400.0 if last else None
+            ),
+            "last_alert_at": last,
+            "recent_event_count": recent,
+        })
+
+    # Longest-quiet first (None days = oldest = no history)
+    out.sort(
+        key=lambda r: (
+            r["days_since_last_alert"]
+            if r["days_since_last_alert"] is not None
+            else float("inf")
+        ),
+        reverse=True,
+    )
+    return out
