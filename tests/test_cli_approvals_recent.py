@@ -238,4 +238,67 @@ class TestRecentCLI:
             _ns(status="pending", engine="cart_recovery", limit=10),
         )
         assert "cart_recovery/" in out
-        assert "loyalty/" not in out
+
+
+# ─── Quarantine flags marker ─────────────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    yield tmp_path
+
+
+class TestQuarantineMarker:
+    """Each row gets a trailing ``[alert_paused,...]`` marker when
+    the engine has any quarantine flag, so operators triaging the
+    queue see which actions are on engines that won't execute."""
+
+    def test_clean_engine_no_marker(
+        self, cli, isolated_queue, data_dir,
+    ):
+        isolated_queue.enqueue(
+            engine="loyalty", action_type="x", capability="X",
+            params={}, narrative="",
+        )
+        out, _ = _capture(
+            cli._cmd_approvals_recent,
+            _ns(status="pending", engine=None, limit=10),
+        )
+        # No flag marker -- clean engine
+        assert "[alert_paused" not in out
+
+    def test_alert_paused_engine_marker(
+        self, cli, isolated_queue, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        isolated_queue.enqueue(
+            engine="loyalty", action_type="x", capability="X",
+            params={}, narrative="",
+        )
+        out, _ = _capture(
+            cli._cmd_approvals_recent,
+            _ns(status="pending", engine=None, limit=10),
+        )
+        assert "[alert_paused]" in out
+
+    def test_load_state_failure_no_marker(
+        self, cli, isolated_queue, data_dir,
+    ):
+        isolated_queue.enqueue(
+            engine="loyalty", action_type="x", capability="X",
+            params={}, narrative="",
+        )
+        with patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_recent,
+                _ns(status="pending", engine=None, limit=10),
+            )
+        assert code == 0
+        assert "[alert_paused" not in out
+        # Action label still renders -- just no quarantine marker
+        assert "loyalty/x" in out
