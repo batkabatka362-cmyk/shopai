@@ -2210,6 +2210,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict to one engine (default: all)",
     )
     approvals_alert_history.add_argument(
+        "--store", default=None, metavar="STORE_ID",
+        help=(
+            "Restrict to one store. Per-store events match "
+            "exactly; fleet-wide events (store_id=None) are "
+            "EXCLUDED. Pair with --include-fleet to see both."
+        ),
+    )
+    approvals_alert_history.add_argument(
+        "--include-fleet", action="store_true",
+        help=(
+            "When used with --store, also include fleet-wide "
+            "(store_id=None) events alongside the store-scoped "
+            "ones."
+        ),
+    )
+    approvals_alert_history.add_argument(
         "--since-days", type=float, default=7.0,
         help="How far back to look (default: 7 days)",
     )
@@ -14310,14 +14326,69 @@ def _cmd_approvals_alert_history(args) -> None:
 
     since_days = max(0.0, float(getattr(args, "since_days", 7.0)))
     engine_filter = getattr(args, "engine", None)
+    store_filter = getattr(args, "store", None)
+    include_fleet = bool(getattr(args, "include_fleet", False))
 
     try:
-        events = alert_history.recent_history(
-            since_seconds=since_days * 86400.0,
-        )
-        consecutive = alert_history.consecutive_runs_per_engine(
-            window_seconds=since_days * 86400.0,
-        )
+        if store_filter is not None and include_fleet:
+            # Two queries: store-scoped + fleet (None). Merge.
+            scoped = alert_history.recent_history(
+                since_seconds=since_days * 86400.0,
+                store_id=store_filter,
+            )
+            fleet = [
+                e for e in alert_history.recent_history(
+                    since_seconds=since_days * 86400.0,
+                )
+                if e.store_id is None
+            ]
+            events = sorted(
+                scoped + fleet,
+                key=lambda e: -e.recorded_at,
+            )
+            consecutive_scoped = (
+                alert_history.consecutive_runs_per_engine(
+                    window_seconds=since_days * 86400.0,
+                    store_id=store_filter,
+                )
+            )
+            # Fleet None bucket: pass store_id=None won't work
+            # (the filter is strict). Approximate via the
+            # per-pair table.
+            per_pair = (
+                alert_history
+                .consecutive_runs_per_engine_store(
+                    window_seconds=since_days * 86400.0,
+                )
+            )
+            consecutive = dict(consecutive_scoped)
+            for (engine, sid), days in per_pair.items():
+                if sid is None:
+                    # Combine fleet days into the per-store
+                    # number for this engine.
+                    consecutive[engine] = max(
+                        consecutive.get(engine, 0), days,
+                    )
+        elif store_filter is not None:
+            events = alert_history.recent_history(
+                since_seconds=since_days * 86400.0,
+                store_id=store_filter,
+            )
+            consecutive = (
+                alert_history.consecutive_runs_per_engine(
+                    window_seconds=since_days * 86400.0,
+                    store_id=store_filter,
+                )
+            )
+        else:
+            events = alert_history.recent_history(
+                since_seconds=since_days * 86400.0,
+            )
+            consecutive = (
+                alert_history.consecutive_runs_per_engine(
+                    window_seconds=since_days * 86400.0,
+                )
+            )
     except Exception as exc:  # noqa: BLE001
         msg = f"read failed: {exc}"
         if as_json:
@@ -14341,11 +14412,14 @@ def _cmd_approvals_alert_history(args) -> None:
         payload = {
             "since_days": since_days,
             "engine": engine_filter,
+            "store": store_filter,
+            "include_fleet": include_fleet,
             "event_count": len(events),
             "consecutive_days_by_engine": consecutive,
             "events": [
                 {
                     "engine": e.engine,
+                    "store_id": e.store_id,
                     "recorded_at": e.recorded_at,
                     "drop": e.drop,
                     "recent_score": e.recent_score,
@@ -14358,17 +14432,25 @@ def _cmd_approvals_alert_history(args) -> None:
         return
 
     if not events:
+        scope = (
+            f" (store={store_filter})" if store_filter else ""
+        )
         print(
             f"No alert firings in the last "
-            f"{since_days:.1f} day(s)"
+            f"{since_days:.1f} day(s){scope}"
             + (f" for engine '{engine_filter}'." if engine_filter
                else ".")
         )
         return
 
+    scope_str = (
+        f", store={store_filter}"
+        + (" + fleet" if include_fleet else "")
+        if store_filter else ""
+    )
     print(
-        f"Alert history (last {since_days:.1f} day(s), "
-        f"{len(events)} event(s))"
+        f"Alert history (last {since_days:.1f} day(s)"
+        f"{scope_str}, {len(events)} event(s))"
     )
     print()
     if consecutive:
@@ -14387,8 +14469,11 @@ def _cmd_approvals_alert_history(args) -> None:
             else f"{int(age/3600)}h ago" if age < 86400
             else f"{int(age/86400)}d ago"
         )
+        store_label = (
+            f" @{e.store_id}" if e.store_id else " (fleet)"
+        )
         print(
-            f"  [{ago:>8s}] {e.engine:25s} "
+            f"  [{ago:>8s}] {e.engine:22s}{store_label:12s} "
             f"drop={e.drop:.2f} recent={e.recent_score:.2f} "
             f"baseline={e.baseline_score:.2f}"
         )
