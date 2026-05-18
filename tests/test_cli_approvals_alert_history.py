@@ -53,7 +53,8 @@ def _capture(fn, *args, **kwargs):
 
 def _ns(**kw):
     defaults = dict(
-        engine=None, since_days=7.0, clear=False, json=False,
+        engine=None, since_days=7.0, clear=False,
+        prune_older_than_days=None, json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -249,3 +250,99 @@ class TestResilience:
         data = json.loads(out)
         assert data["status"] == "error"
         assert "io error" in data["error"]
+
+
+# ─── Prune ───────────────────────────────────────────────────
+
+
+class TestPrune:
+    """``--prune-older-than-days N`` drops events older than
+    N days while preserving newer events. Finer scalpel than
+    ``--clear``."""
+
+    def test_prune_removes_old_events(self, cli, data_dir):
+        from core.approval import alert_history
+        day = 86400.0
+        now = time.time()
+        # 3 old events, 2 recent
+        alert_history.record_alerts(
+            [_FakeAlert("a"), _FakeAlert("b"), _FakeAlert("c")],
+            now=now - day * 30,
+        )
+        alert_history.record_alerts(
+            [_FakeAlert("d"), _FakeAlert("e")],
+            now=now - day * 1,
+        )
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(prune_older_than_days=14.0),
+        )
+        assert "Pruned 3 event(s)" in out
+        # Recent events survive
+        remaining = alert_history.recent_history(
+            since_seconds=day * 100, now=now,
+        )
+        assert len(remaining) == 2
+
+    def test_prune_json_envelope(self, cli, data_dir):
+        from core.approval import alert_history
+        day = 86400.0
+        now = time.time()
+        alert_history.record_alerts(
+            [_FakeAlert("old")], now=now - day * 50,
+        )
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(prune_older_than_days=14.0, json=True),
+        )
+        data = json.loads(out)
+        assert data["status"] == "success"
+        assert data["removed_count"] == 1
+        assert data["older_than_days"] == 14.0
+
+    def test_prune_zero_does_nothing_to_recent(
+        self, cli, data_dir,
+    ):
+        from core.approval import alert_history
+        now = time.time()
+        # Only fresh events
+        alert_history.record_alerts(
+            [_FakeAlert("fresh")], now=now - 100,
+        )
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(prune_older_than_days=7.0),
+        )
+        assert "Pruned 0 event(s)" in out
+        remaining = alert_history.recent_history(now=now)
+        assert len(remaining) == 1
+
+    def test_prune_invalid_value_errors(self, cli, data_dir):
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(prune_older_than_days=0.0),
+        )
+        assert "must be positive" in out
+
+    def test_prune_invalid_value_json_envelope(
+        self, cli, data_dir,
+    ):
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(prune_older_than_days=-1.0, json=True),
+        )
+        data = json.loads(out)
+        assert data["status"] == "error"
+        assert "must be positive" in data["error"]
+
+    def test_prune_module_failure(self, cli, data_dir):
+        with patch(
+            "core.approval.alert_history.prune",
+            side_effect=OSError("disk full"),
+        ):
+            out = _capture(
+                cli._cmd_approvals_alert_history,
+                _ns(prune_older_than_days=14.0),
+            )
+        assert "Error" in out
+        assert "disk full" in out

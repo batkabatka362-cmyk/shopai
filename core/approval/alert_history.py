@@ -273,3 +273,45 @@ def clear() -> None:
     when migrating to a different threshold scheme.
     """
     _save_events([])
+
+
+def prune(
+    *,
+    older_than_seconds: float,
+    now: float | None = None,
+) -> int:
+    """Drop events older than the cutoff. Returns count removed.
+
+    Finer scalpel than ``clear()`` for ops hygiene:
+
+      - ``clear()`` wipes everything, including the recent
+        firings the bridge needs to decide whether to pause.
+      - ``prune(older_than_seconds=86400*30)`` keeps the last
+        30 days and drops the rest -- the file stays useful but
+        doesn't grow unboundedly.
+
+    Safe to run periodically (e.g. cron after daily-brief): the
+    bridge only ever looks back ``window_days`` (default 7), so
+    any data older than that is dead weight.
+
+    Args:
+        older_than_seconds: Events older than this cutoff are
+            removed. Must be positive.
+        now: Override timestamp for testing.
+
+    Returns:
+        Number of events removed.
+    """
+    if older_than_seconds <= 0:
+        raise ValueError(
+            "older_than_seconds must be positive",
+        )
+    if now is None:
+        now = time.time()
+    cutoff = now - float(older_than_seconds)
+    events = _load_raw_events()
+    kept = [e for e in events if e.recorded_at >= cutoff]
+    removed = len(events) - len(kept)
+    if removed > 0:
+        _save_events(kept)
+    return removed
