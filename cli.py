@@ -2055,6 +2055,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_alert_release_candidates = approvals_sub.add_parser(
+        "alert-release-candidates",
+        help=(
+            "Recommend alert-paused engines whose degradation "
+            "alerts have stopped firing (safe to release)"
+        ),
+    )
+    approvals_alert_release_candidates.add_argument(
+        "--quiet-days", type=float, default=None, metavar="N",
+        help=(
+            "Engines must be silent for at least N days. "
+            "Default: matches the bridge's window-days "
+            "(SHOPAI_AUTO_QUARANTINE_WINDOW_DAYS, default 7)."
+        ),
+    )
+    approvals_alert_release_candidates.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_auto_candidates = approvals_sub.add_parser(
         "auto-approve-candidates",
         help=(
@@ -13414,6 +13434,9 @@ def _cmd_approvals(args) -> None:
     if verb == "quarantine-release-candidates":
         _cmd_approvals_release_candidates(args)
         return
+    if verb == "alert-release-candidates":
+        _cmd_approvals_alert_release_candidates(args)
+        return
     if verb == "pending-latency":
         _cmd_approvals_pending_latency(args)
         return
@@ -13819,6 +13842,70 @@ def _cmd_approvals_release_candidates(args) -> None:
     print()
     print(
         "Release with: shopai approvals quarantine --release <engine>"
+    )
+
+
+def _cmd_approvals_alert_release_candidates(args) -> None:
+    """List alert-paused engines whose alerts have gone quiet.
+
+    Sister to ``quarantine-release-candidates`` (which is
+    outcome-based). This one is alert-based: an operator
+    looking at the alert_paused set wants to know which
+    engines haven't fired any new degradation alerts recently
+    and are safe to release.
+
+    ``--quiet-days`` controls the silence window; defaults to
+    the bridge's window-days (so an engine that hasn't fired
+    in the entire detection window is a candidate).
+    """
+    from core.approval import alert_quarantine
+
+    quiet_days = getattr(args, "quiet_days", None)
+    try:
+        candidates = alert_quarantine.find_release_candidates(
+            quiet_days=quiet_days,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "alert release candidate scan failed: %s", exc,
+        )
+        candidates = []
+
+    if getattr(args, "json", False):
+        print(json.dumps(candidates, indent=2, default=str))
+        return
+
+    if not candidates:
+        print(
+            "No alert-release candidates "
+            "(every alert-paused engine has fired recently, "
+            "or none are paused)."
+        )
+        return
+
+    effective_quiet = (
+        quiet_days if quiet_days is not None
+        else alert_quarantine.window_days()
+    )
+    print(
+        f"Alert-release candidates ({len(candidates)}) "
+        f"-- quiet for >= {effective_quiet} day(s):"
+    )
+    print(
+        "  engine                          days_quiet"
+    )
+    for c in candidates:
+        engine = c["engine"][:30]
+        days = c["days_since_last_alert"]
+        days_str = (
+            f"{days:>10.1f}" if days is not None
+            else "       n/a"
+        )
+        print(f"  {engine:<30}  {days_str}")
+    print()
+    print(
+        "Release with: shopai approvals quarantine "
+        "--release-alert <engine>"
     )
 
 
