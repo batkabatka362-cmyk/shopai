@@ -3603,6 +3603,7 @@ def _cmd_daily_brief(args) -> None:
             compute_engine_alerts,
         )
         from core.approval.queue import get_approval_queue
+        from core.approval import alert_history
         engine_alerts = compute_engine_alerts(
             get_approval_queue(),
             recent_hours=24.0,
@@ -3610,13 +3611,41 @@ def _cmd_daily_brief(args) -> None:
             threshold=0.2,
             min_recent=3,
         )
+        # Persist this run's firings BEFORE reading the
+        # consecutive-day count so today's bucket is included.
+        # Pattern J guard inside record_alerts short-circuits
+        # under pytest.
+        try:
+            alert_history.record_alerts(engine_alerts)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "daily-brief alert_history.record_alerts "
+                "raised: %s", exc,
+            )
+        try:
+            consecutive = (
+                alert_history.consecutive_runs_per_engine()
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "daily-brief consecutive_runs_per_engine "
+                "raised: %s", exc,
+            )
+            consecutive = {}
         for a in engine_alerts:
-            alerts.append({
+            entry = {
                 "kind": "engine_score_degraded",
                 "store_id": None,
                 "engine": a.engine,
                 "detail": a.detail,
-            })
+            }
+            days = consecutive.get(a.engine)
+            if days and days >= 2:
+                entry["consecutive_days"] = days
+                entry["detail"] = (
+                    f"{a.detail} (flagged {days} day(s) running)"
+                )
+            alerts.append(entry)
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief engine alerts probe raised: %s", exc,
