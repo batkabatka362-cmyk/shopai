@@ -293,7 +293,9 @@ class TestStatePersistence:
         path = quarantine_data_dir / "quarantine_state.json"
         data = json.loads(path.read_text())
         assert data == {
-            "exemptions": ["a"], "released": ["b"],
+            "exemptions": ["a"],
+            "released": ["b"],
+            "alert_paused": [],
         }
 
 
