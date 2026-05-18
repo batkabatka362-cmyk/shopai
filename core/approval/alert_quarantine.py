@@ -145,6 +145,65 @@ def apply_pauses(engines: Iterable[str]) -> list[str]:
     return paused
 
 
+def find_pause_candidates(
+    *,
+    threshold: int | None = None,
+    window_seconds: float | None = None,
+    now: float | None = None,
+) -> list[dict]:
+    """Richer dry-run preview of ``engines_to_pause``.
+
+    Where ``engines_to_pause`` returns ``[]`` when the bridge
+    env var is off, this function ALWAYS computes -- so an
+    operator can preview "if I enabled the bridge today, what
+    would happen?".
+
+    Args:
+        threshold: Min consecutive-day count. Default: env-
+            configured ``threshold_days()``.
+        window_seconds: Detection window. Default: env-
+            configured ``window_days()`` × 86400.
+        now: Override for testing.
+
+    Returns:
+        Newest-fired-first list. Each entry:
+          {engine, consecutive_days, blocked_by}
+        where ``blocked_by`` is one of:
+          - ``None`` (no block; would auto-pause)
+          - ``"exempt"``
+          - ``"already_alert_paused"``
+        Engines below threshold are omitted.
+    """
+    th = threshold if threshold is not None else threshold_days()
+    win = (
+        window_seconds if window_seconds is not None
+        else window_days() * 86400.0
+    )
+    consecutive = alert_history.consecutive_runs_per_engine(
+        window_seconds=win, bucket_seconds=86400.0, now=now,
+    )
+    state = quarantine.load_state()
+
+    out: list[dict] = []
+    for engine, days in consecutive.items():
+        if days < th:
+            continue
+        blocked_by: str | None = None
+        if state.is_exempt(engine):
+            blocked_by = "exempt"
+        elif state.is_alert_paused(engine):
+            blocked_by = "already_alert_paused"
+        out.append({
+            "engine": engine,
+            "consecutive_days": days,
+            "blocked_by": blocked_by,
+        })
+
+    # Highest streak first (most urgent)
+    out.sort(key=lambda r: -r["consecutive_days"])
+    return out
+
+
 def maybe_auto_quarantine_from_alerts(
     *, now: float | None = None,
 ) -> list[str]:

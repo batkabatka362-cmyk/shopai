@@ -2075,6 +2075,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the table view",
     )
 
+    approvals_alert_pause_candidates = approvals_sub.add_parser(
+        "alert-pause-candidates",
+        help=(
+            "Dry-run: show engines the alert-quarantine bridge "
+            "would auto-pause if it ran right now"
+        ),
+    )
+    approvals_alert_pause_candidates.add_argument(
+        "--threshold", type=int, default=None, metavar="N",
+        help=(
+            "Override the streak threshold. Default: matches "
+            "SHOPAI_AUTO_QUARANTINE_DAYS env var (default 3)."
+        ),
+    )
+    approvals_alert_pause_candidates.add_argument(
+        "--window-days", type=float, default=None, metavar="N",
+        help=(
+            "Override the detection window. Default: matches "
+            "SHOPAI_AUTO_QUARANTINE_WINDOW_DAYS (default 7)."
+        ),
+    )
+    approvals_alert_pause_candidates.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the table view",
+    )
+
     approvals_auto_candidates = approvals_sub.add_parser(
         "auto-approve-candidates",
         help=(
@@ -13470,6 +13496,9 @@ def _cmd_approvals(args) -> None:
     if verb == "alert-release-candidates":
         _cmd_approvals_alert_release_candidates(args)
         return
+    if verb == "alert-pause-candidates":
+        _cmd_approvals_alert_pause_candidates(args)
+        return
     if verb == "pending-latency":
         _cmd_approvals_pending_latency(args)
         return
@@ -14064,6 +14093,87 @@ def _cmd_approvals_alert_release_candidates(args) -> None:
         "Release with: shopai approvals quarantine "
         "--release-alert <engine>"
     )
+
+
+def _cmd_approvals_alert_pause_candidates(args) -> None:
+    """Dry-run preview of the alert-quarantine bridge.
+
+    The bridge (``core.approval.alert_quarantine``) auto-adds
+    engines to ``alert_paused`` when they've fired degradation
+    alerts on N consecutive days. This command shows what WOULD
+    happen if the bridge ran right now -- regardless of whether
+    the ``SHOPAI_AUTO_QUARANTINE_FROM_ALERTS`` env var is set.
+
+    Operators use this to:
+      - Preview the bridge's effect before enabling it
+      - Audit "why hasn't engine X been paused?" -- the
+        ``blocked_by`` field shows exempt / already_paused
+    """
+    from core.approval import alert_quarantine
+
+    threshold = getattr(args, "threshold", None)
+    window_days = getattr(args, "window_days", None)
+    window_seconds = (
+        window_days * 86400.0 if window_days is not None else None
+    )
+
+    try:
+        candidates = alert_quarantine.find_pause_candidates(
+            threshold=threshold,
+            window_seconds=window_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "alert pause candidate scan failed: %s", exc,
+        )
+        candidates = []
+
+    effective_threshold = (
+        threshold if threshold is not None
+        else alert_quarantine.threshold_days()
+    )
+    effective_window = (
+        window_days if window_days is not None
+        else alert_quarantine.window_days()
+    )
+    enabled = alert_quarantine.is_enabled()
+
+    if getattr(args, "json", False):
+        payload = {
+            "bridge_enabled": enabled,
+            "threshold_days": effective_threshold,
+            "window_days": effective_window,
+            "candidates": candidates,
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    print(
+        f"Alert-pause candidates "
+        f"(threshold={effective_threshold}d, "
+        f"window={effective_window}d, "
+        f"bridge={'on' if enabled else 'off'}):"
+    )
+    if not candidates:
+        print(
+            "  (no engines at or above the streak threshold)"
+        )
+        return
+    print(
+        "  engine                          days  blocked_by"
+    )
+    for c in candidates:
+        engine = c["engine"][:30]
+        days = c["consecutive_days"]
+        blocked = c.get("blocked_by") or "-"
+        print(f"  {engine:<30}  {days:>3}d  {blocked}")
+    print()
+    if not enabled:
+        print(
+            "Bridge is OFF. Set "
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS=1 to enable "
+            "auto-pause on the next daily-brief run."
+        )
 
 
 def _cmd_approvals_pending_latency(args) -> None:
