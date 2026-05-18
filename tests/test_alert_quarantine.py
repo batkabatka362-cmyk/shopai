@@ -550,6 +550,159 @@ class TestQuarantineStateAlertPaused:
             "loyalty", "affiliate",
         })
 
+
+# ─── Per-store auto-pause via the bridge ─────────────────────
+
+
+class TestAutoPausePerStore:
+    """``maybe_auto_quarantine_from_alerts_full`` applies BOTH
+    fleet-wide engine pauses AND per-store pauses (when the
+    SHOPAI_AUTO_QUARANTINE_PER_STORE env var is set)."""
+
+    def test_disabled_returns_empty(
+        self, data_dir, monkeypatch,
+        _disable_alert_quarantine_test_guard,
+    ):
+        monkeypatch.delenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", raising=False,
+        )
+        from core.approval import alert_quarantine
+        out = (
+            alert_quarantine.maybe_auto_quarantine_from_alerts_full()
+        )
+        assert out == {"fleet_paused": [], "store_paused": []}
+
+    def test_per_store_off_aggregates_to_fleet(
+        self, data_dir, monkeypatch,
+        _disable_alert_quarantine_test_guard,
+    ):
+        """Without the per-store env var, fleet path aggregates
+        across stores -- per-store events fold into the fleet
+        streak (the old, pre-per-store-mode behaviour). The
+        engine gets a fleet pause; ``store_paused`` stays empty."""
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        monkeypatch.delenv(
+            "SHOPAI_AUTO_QUARANTINE_PER_STORE", raising=False,
+        )
+        monkeypatch.setenv("SHOPAI_AUTO_QUARANTINE_DAYS", "3")
+        from core.approval import alert_quarantine, alert_history
+        from core.context.active_store import active_store
+        day = 86400.0
+        now = 10 * day
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (2 - i) - 100,
+                )
+        with patch(
+            "time.time", return_value=now,
+        ):
+            out = (
+                alert_quarantine
+                .maybe_auto_quarantine_from_alerts_full()
+            )
+        assert "loyalty" in out["fleet_paused"]
+        # Per-store env is off, so no per-store pauses
+        assert out["store_paused"] == []
+
+    def test_per_store_on_pauses_pair(
+        self, data_dir, monkeypatch,
+        _disable_alert_quarantine_test_guard,
+    ):
+        """With both env vars, per-store streaks become
+        per-store pauses."""
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_PER_STORE", "1",
+        )
+        monkeypatch.setenv("SHOPAI_AUTO_QUARANTINE_DAYS", "3")
+        from core.approval import (
+            alert_quarantine, alert_history, quarantine,
+        )
+        from core.context.active_store import active_store
+        day = 86400.0
+        now = 10 * day
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (2 - i) - 100,
+                )
+        with patch(
+            "time.time", return_value=now,
+        ):
+            out = (
+                alert_quarantine
+                .maybe_auto_quarantine_from_alerts_full()
+            )
+        assert out["fleet_paused"] == []
+        assert out["store_paused"] == [("loyalty", "store_a")]
+        s = quarantine.load_state()
+        assert s.is_alert_paused(
+            "loyalty", store_id="store_a",
+        )
+        # Other store should be unaffected
+        assert not s.is_alert_paused(
+            "loyalty", store_id="store_b",
+        )
+
+    def test_fleet_subsumes_per_store(
+        self, data_dir, monkeypatch,
+        _disable_alert_quarantine_test_guard,
+    ):
+        """If an engine crosses fleet-wide threshold too, the
+        per-store pause for that engine is skipped (fleet pause
+        already covers it)."""
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS", "1",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_QUARANTINE_PER_STORE", "1",
+        )
+        monkeypatch.setenv("SHOPAI_AUTO_QUARANTINE_DAYS", "3")
+        from core.approval import (
+            alert_quarantine, alert_history, quarantine,
+        )
+        from core.context.active_store import active_store
+        day = 86400.0
+        now = 10 * day
+        # Per-store: 3 days on store_a
+        with active_store("store_a"):
+            for i in range(3):
+                alert_history.record_alerts(
+                    [_FakeAlert("loyalty")],
+                    now=now - day * (2 - i) - 100,
+                )
+        # ALSO fleet-wide: 3 days no store_id -- this triggers
+        # the fleet path
+        for i in range(3):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")],
+                now=now - day * (2 - i) - 50,
+            )
+        with patch(
+            "time.time", return_value=now,
+        ):
+            out = (
+                alert_quarantine
+                .maybe_auto_quarantine_from_alerts_full()
+            )
+        # Fleet pause hit (consecutive_runs_per_engine
+        # aggregates across all stores), per-store skipped
+        # because engine just got a fleet-wide pause.
+        assert "loyalty" in out["fleet_paused"]
+        assert out["store_paused"] == []
+        s = quarantine.load_state()
+        # Fleet pause is set
+        assert ("loyalty", None) in s.alert_paused
+        # Per-store pause is NOT redundantly set
+        assert ("loyalty", "store_a") not in s.alert_paused
+
     def test_exempt_preserves_alert_paused(self, data_dir):
         """Operator running exempt_engine on a different engine
         shouldn't accidentally wipe the alert_paused set."""
