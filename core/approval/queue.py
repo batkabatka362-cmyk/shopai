@@ -803,7 +803,10 @@ class ApprovalQueue:
         } for r in rows]
 
     def engine_outcome_stats(
-        self, engine_name: str,
+        self,
+        engine_name: str,
+        *,
+        store_id: str | None = None,
     ) -> dict[str, Any]:
         """Aggregate outcomes for a single engine — the per-engine
         effectiveness signal that goal-level EMA misses.
@@ -813,6 +816,15 @@ class ApprovalQueue:
         neutral polarities, sums revenue across rows, and computes
         ``outcome_score`` = positive / (positive + negative) when
         there's at least one polarised event, else ``None``.
+
+        Args:
+            engine_name: Engine to aggregate.
+            store_id: When supplied, restrict the aggregation to
+                actions tagged with that store. Per-store
+                effectiveness signal -- empire-AGI uses this to
+                detect engines that are good on most stores but
+                bad on one. ``None`` means fleet-wide (the
+                pre-extension behaviour).
 
         Returns:
             {
@@ -839,14 +851,25 @@ class ApprovalQueue:
                 "outcome_score": None,
             }
 
-        with _LOCK:
-            rows = self._conn.execute(
+        if store_id is None:
+            query = (
                 """SELECT o.polarity, o.metrics_json
                    FROM action_outcomes o
                    INNER JOIN pending_actions p ON p.id = o.action_id
-                   WHERE p.engine = ?""",
-                (engine_name,),
-            ).fetchall()
+                   WHERE p.engine = ?"""
+            )
+            params: tuple = (engine_name,)
+        else:
+            query = (
+                """SELECT o.polarity, o.metrics_json
+                   FROM action_outcomes o
+                   INNER JOIN pending_actions p ON p.id = o.action_id
+                   WHERE p.engine = ? AND p.store_id = ?"""
+            )
+            params = (engine_name, store_id)
+
+        with _LOCK:
+            rows = self._conn.execute(query, params).fetchall()
 
         positive = negative = neutral = 0
         revenue = 0.0
