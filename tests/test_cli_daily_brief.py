@@ -591,3 +591,164 @@ class TestEngineDegradationAlerts:
         data = json.loads(out)
         kinds = {a.get("kind") for a in data["alerts"]}
         assert "engine_score_degraded" not in kinds
+
+
+# ─── alert_history wiring ────────────────────────────────────
+
+
+class TestAlertHistoryWiring:
+    """``daily-brief`` records each alert via
+    ``core.approval.alert_history.record_alerts`` and reads the
+    consecutive-day count via ``consecutive_runs_per_engine``.
+    Engines flagged 2+ days running get a ``consecutive_days``
+    field plus an inflated ``detail`` string."""
+
+    def _fake_alert(self, engine="loyalty"):
+        from core.approval.outcome_trends import EngineAlert
+        return EngineAlert(
+            engine=engine,
+            recent_executed=5,
+            baseline_executed=20,
+            recent_score=0.2,
+            baseline_score=0.85,
+            recent_polarised=5,
+            baseline_polarised=18,
+            drop=0.65,
+            detail="20% recent vs 85% baseline (drop 65%)",
+            kind="outcome_score_degraded",
+        )
+
+    def test_record_alerts_called_with_engine_alerts(self, cli):
+        sm = _fake_sm([])
+        fake_alert = self._fake_alert()
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[fake_alert],
+        ), patch(
+            "core.approval.alert_history.record_alerts",
+        ) as record_mock, patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={},
+        ):
+            _capture(cli._cmd_daily_brief, _ns(json=True))
+        record_mock.assert_called_once()
+        passed_alerts = record_mock.call_args[0][0]
+        assert list(passed_alerts) == [fake_alert]
+
+    def test_consecutive_days_attached_at_2_or_more(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[self._fake_alert("loyalty")],
+        ), patch(
+            "core.approval.alert_history.record_alerts",
+            return_value=1,
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={"loyalty": 3},
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        degraded = [
+            a for a in data["alerts"]
+            if a.get("kind") == "engine_score_degraded"
+        ]
+        assert len(degraded) == 1
+        assert degraded[0]["consecutive_days"] == 3
+        assert "3 day(s) running" in degraded[0]["detail"]
+
+    def test_consecutive_days_omitted_at_1(self, cli):
+        """Single-day firings shouldn't claim a streak."""
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[self._fake_alert("loyalty")],
+        ), patch(
+            "core.approval.alert_history.record_alerts",
+            return_value=1,
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={"loyalty": 1},
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        degraded = [
+            a for a in data["alerts"]
+            if a.get("kind") == "engine_score_degraded"
+        ]
+        assert len(degraded) == 1
+        assert "consecutive_days" not in degraded[0]
+        assert "running" not in degraded[0]["detail"]
+
+    def test_record_alerts_raise_doesnt_break_daily_brief(
+        self, cli,
+    ):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[self._fake_alert()],
+        ), patch(
+            "core.approval.alert_history.record_alerts",
+            side_effect=RuntimeError("disk full"),
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={},
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        # Alert still surfaces even when recording fails.
+        kinds = {a.get("kind") for a in data["alerts"]}
+        assert "engine_score_degraded" in kinds
+
+    def test_consecutive_runs_raise_doesnt_break(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[self._fake_alert()],
+        ), patch(
+            "core.approval.alert_history.record_alerts",
+            return_value=1,
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            side_effect=RuntimeError("disk full"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        degraded = [
+            a for a in data["alerts"]
+            if a.get("kind") == "engine_score_degraded"
+        ]
+        # Without consecutive data, no consecutive_days field --
+        # but the alert still surfaces.
+        assert len(degraded) == 1
+        assert "consecutive_days" not in degraded[0]
