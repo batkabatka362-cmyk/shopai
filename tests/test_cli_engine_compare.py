@@ -375,3 +375,94 @@ class TestTextMode:
         # Header row markers.
         assert "METRIC" in out
         assert "WINNER" in out
+
+
+# ─── Quarantine flags ────────────────────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    yield tmp_path
+
+
+class TestQuarantineFlags:
+    """Each profile gets a ``flags`` list of quarantine state
+    so operators picking between A and B see which is paused."""
+
+    def test_both_clean_empty_flags(self, cli, data_dir):
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows_by_engine={}),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_compare,
+                _ns(
+                    engine_a="loyalty",
+                    engine_b="cart_recovery",
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        assert data["engine_a"]["flags"] == []
+        assert data["engine_b"]["flags"] == []
+
+    def test_one_alert_paused(self, cli, data_dir):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows_by_engine={}),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_compare,
+                _ns(
+                    engine_a="loyalty",
+                    engine_b="cart_recovery",
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        assert data["engine_a"]["flags"] == ["alert_paused"]
+        assert data["engine_b"]["flags"] == []
+
+    def test_text_render_includes_flags_row(
+        self, cli, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows_by_engine={}),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_compare,
+                _ns(
+                    engine_a="loyalty",
+                    engine_b="cart_recovery",
+                ),
+            )
+        assert "flags" in out
+        assert "alert_paused" in out
+
+    def test_load_state_failure_falls_back_empty(
+        self, cli, data_dir,
+    ):
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows_by_engine={}),
+        ), patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_engine_compare,
+                _ns(
+                    engine_a="loyalty",
+                    engine_b="cart_recovery",
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["engine_a"]["flags"] == []

@@ -7480,6 +7480,29 @@ def _cmd_engine_compare(args) -> None:
     prof_a = _profile(engine_a)
     prof_b = _profile(engine_b)
 
+    # Quarantine flags side-by-side: an engine winning on score
+    # but currently alert_paused is worth flagging visibly so
+    # operators don't pick the paused one.
+    qstate = None
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine compare quarantine probe raised: %s", exc,
+        )
+    for prof in (prof_a, prof_b):
+        engine = prof["engine"]
+        flags: list[str] = []
+        if qstate is not None:
+            if qstate.is_exempt(engine):
+                flags.append("exempt")
+            if qstate.is_released(engine):
+                flags.append("released")
+            if qstate.is_alert_paused(engine):
+                flags.append("alert_paused")
+        prof["flags"] = flags
+
     def _winner(key: str, higher_is_better: bool = True) -> str:
         va = prof_a.get(key)
         vb = prof_b.get(key)
@@ -7527,6 +7550,8 @@ def _cmd_engine_compare(args) -> None:
     def _score_str(s):
         return "n/a" if s is None else f"{s:.0%}"
 
+    flags_a = ",".join(prof_a.get("flags") or []) or "-"
+    flags_b = ",".join(prof_b.get("flags") or []) or "-"
     rows = [
         ("executed", prof_a["executed"], prof_b["executed"],
          winners["executed"], False),
@@ -7550,6 +7575,7 @@ def _cmd_engine_compare(args) -> None:
          f"${prof_a['revenue']:,.2f}",
          f"${prof_b['revenue']:,.2f}",
          winners["revenue"], False),
+        ("flags", flags_a, flags_b, "-", False),
     ]
 
     a_label = engine_a[:15]
