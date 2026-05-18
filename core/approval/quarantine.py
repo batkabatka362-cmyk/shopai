@@ -75,16 +75,26 @@ class QuarantineState:
       the operator removes them from the list. Engines on this
       list still get all normal flow — release is a manual
       override, not a permanent immunity.
+    - ``alert_paused``: engines auto-quarantined by the alert-
+      history bridge (``core.approval.alert_quarantine``) after
+      firing degradation alerts on N consecutive days. Treated
+      as quarantined by ``evaluate()``. Cleared by
+      ``clear_alert_pause`` once the operator confirms the
+      issue is resolved.
     """
 
     exemptions: frozenset[str]
     released: frozenset[str]
+    alert_paused: frozenset[str] = frozenset()
 
     def is_exempt(self, engine: str) -> bool:
         return engine in self.exemptions
 
     def is_released(self, engine: str) -> bool:
         return engine in self.released
+
+    def is_alert_paused(self, engine: str) -> bool:
+        return engine in self.alert_paused
 
 
 def _state_path() -> Path:
@@ -94,16 +104,23 @@ def _state_path() -> Path:
     return _DEFAULT_STATE_PATH
 
 
+def _empty_state() -> QuarantineState:
+    return QuarantineState(
+        exemptions=frozenset(),
+        released=frozenset(),
+        alert_paused=frozenset(),
+    )
+
+
 def load_state() -> QuarantineState:
     """Fails open: missing / corrupt file returns empty state
-    (no exemptions, no releases). Quarantine still works because
-    its guardrails are derived from queue stats, not the file."""
+    (no exemptions, no releases, no alert-paused). Quarantine
+    still works because its guardrails are derived from queue
+    stats, not the file."""
     path = _state_path()
     try:
         if not path.exists():
-            return QuarantineState(
-                exemptions=frozenset(), released=frozenset(),
-            )
+            return _empty_state()
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -111,13 +128,9 @@ def load_state() -> QuarantineState:
             "quarantine state read failed (%s); failing open: %s",
             path, exc,
         )
-        return QuarantineState(
-            exemptions=frozenset(), released=frozenset(),
-        )
+        return _empty_state()
     if not isinstance(data, dict):
-        return QuarantineState(
-            exemptions=frozenset(), released=frozenset(),
-        )
+        return _empty_state()
     return QuarantineState(
         exemptions=frozenset(
             str(e).strip()
@@ -127,6 +140,11 @@ def load_state() -> QuarantineState:
         released=frozenset(
             str(e).strip()
             for e in data.get("released", []) or []
+            if str(e).strip()
+        ),
+        alert_paused=frozenset(
+            str(e).strip()
+            for e in data.get("alert_paused", []) or []
             if str(e).strip()
         ),
     )
@@ -139,6 +157,7 @@ def save_state(state: QuarantineState) -> None:
     payload = {
         "exemptions": sorted(state.exemptions),
         "released": sorted(state.released),
+        "alert_paused": sorted(state.alert_paused),
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
     with _LOCK:
@@ -157,6 +176,7 @@ def exempt_engine(engine: str) -> QuarantineState:
     new = QuarantineState(
         exemptions=s.exemptions | {engine},
         released=s.released,
+        alert_paused=s.alert_paused,
     )
     save_state(new)
     return new
@@ -170,6 +190,7 @@ def unexempt_engine(engine: str) -> QuarantineState:
     new = QuarantineState(
         exemptions=s.exemptions - {engine},
         released=s.released,
+        alert_paused=s.alert_paused,
     )
     save_state(new)
     return new
@@ -187,6 +208,7 @@ def release_engine(engine: str) -> QuarantineState:
     new = QuarantineState(
         exemptions=s.exemptions,
         released=s.released | {engine},
+        alert_paused=s.alert_paused,
     )
     save_state(new)
     return new
@@ -200,6 +222,41 @@ def clear_release(engine: str) -> QuarantineState:
     new = QuarantineState(
         exemptions=s.exemptions,
         released=s.released - {engine},
+        alert_paused=s.alert_paused,
+    )
+    save_state(new)
+    return new
+
+
+def add_alert_pause(engine: str) -> QuarantineState:
+    """Add ``engine`` to the alert-paused set. Used by the
+    alert-history bridge after an engine fires degradation
+    alerts on N consecutive days. ``evaluate()`` treats
+    alert-paused engines as quarantined."""
+    engine = engine.strip()
+    if not engine:
+        raise ValueError("engine name must be non-empty")
+    s = load_state()
+    new = QuarantineState(
+        exemptions=s.exemptions,
+        released=s.released,
+        alert_paused=s.alert_paused | {engine},
+    )
+    save_state(new)
+    return new
+
+
+def clear_alert_pause(engine: str) -> QuarantineState:
+    """Operator escape hatch: remove ``engine`` from the alert-
+    paused set. Same shape as ``clear_release``."""
+    engine = engine.strip()
+    if not engine:
+        raise ValueError("engine name must be non-empty")
+    s = load_state()
+    new = QuarantineState(
+        exemptions=s.exemptions,
+        released=s.released,
+        alert_paused=s.alert_paused - {engine},
     )
     save_state(new)
     return new
@@ -243,6 +300,18 @@ def evaluate(
         return QuarantineDecision(
             should_quarantine=False,
             reason="engine_released_by_operator",
+            negative_ratio=None,
+            total_polarised=0,
+        )
+
+    if s.is_alert_paused(engine):
+        # The alert-history bridge has flagged this engine for
+        # firing degradation alerts on N consecutive days. Treat
+        # as quarantined until an operator clears it via
+        # ``clear_alert_pause``.
+        return QuarantineDecision(
+            should_quarantine=True,
+            reason="auto_quarantine_from_alerts",
             negative_ratio=None,
             total_polarised=0,
         )
