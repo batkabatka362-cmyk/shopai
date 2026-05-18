@@ -52,7 +52,8 @@ def _capture(fn, *args, **kwargs):
 def _ns(**kw):
     defaults = dict(
         recent_hours=24, baseline_hours=168,
-        threshold=0.2, min_recent=3, json=False,
+        threshold=0.2, min_recent=3,
+        per_store=False, json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -514,3 +515,133 @@ class TestQuarantineFlags:
         assert code == 0
         data = json.loads(out)
         assert data["alerts"][0]["flags"] == []
+
+
+# ─── --per-store flag ────────────────────────────────────────
+
+
+class TestPerStoreFlag:
+    """``--per-store`` switches to
+    ``compute_engine_alerts_per_store`` which produces
+    (engine, store_id) alerts."""
+
+    def _per_store_alerts(self, *, with_store=True):
+        from core.approval.outcome_trends import EngineAlert
+        return [
+            EngineAlert(
+                engine="loyalty",
+                store_id=("store_a" if with_store else None),
+                recent_executed=5,
+                baseline_executed=20,
+                recent_score=0.2,
+                baseline_score=0.85,
+                recent_polarised=5,
+                baseline_polarised=18,
+                drop=0.65,
+                detail=(
+                    "20% recent vs 85% baseline (drop 65%)"
+                    + ("@store_a" if with_store else " (fleet)")
+                ),
+            ),
+        ]
+
+    def test_per_store_dispatch(self, cli):
+        """--per-store calls compute_engine_alerts_per_store."""
+        with patch(
+            "core.approval.outcome_trends."
+            "compute_engine_alerts_per_store",
+            return_value=self._per_store_alerts(),
+        ) as per_store_mock, patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+        ) as fleet_mock, patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_alerts,
+                _ns(per_store=True, json=True),
+            )
+        per_store_mock.assert_called_once()
+        fleet_mock.assert_not_called()
+        data = json.loads(out)
+        assert data["per_store"] is True
+        assert data["alerts"][0]["store_id"] == "store_a"
+
+    def test_default_dispatch_unchanged(self, cli):
+        """Without --per-store, fleet-wide compute is called."""
+        with patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=[],
+        ) as fleet_mock, patch(
+            "core.approval.outcome_trends."
+            "compute_engine_alerts_per_store",
+        ) as per_store_mock, patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_alerts, _ns(json=True),
+            )
+        fleet_mock.assert_called_once()
+        per_store_mock.assert_not_called()
+        data = json.loads(out)
+        assert data["per_store"] is False
+
+    def test_text_render_includes_store_label(self, cli):
+        with patch(
+            "core.approval.outcome_trends."
+            "compute_engine_alerts_per_store",
+            return_value=self._per_store_alerts(),
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_alerts,
+                _ns(per_store=True),
+            )
+        assert "(per-store)" in out
+        assert "loyalty@store_a" in out
+
+    def test_text_render_omits_label_for_fleet_alert(
+        self, cli,
+    ):
+        """Per-store mode can also produce fleet-bucketed
+        alerts (None store_id). They render without
+        ``@store_id`` suffix."""
+        with patch(
+            "core.approval.outcome_trends."
+            "compute_engine_alerts_per_store",
+            return_value=self._per_store_alerts(with_store=False),
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_alerts,
+                _ns(per_store=True),
+            )
+        # No @ suffix
+        assert "loyalty@" not in out
+        assert "loyalty" in out
+
+    def test_per_store_envelope_has_store_id_field(
+        self, cli,
+    ):
+        """JSON envelope's alerts entries always carry
+        store_id field (None for fleet-bucketed)."""
+        with patch(
+            "core.approval.outcome_trends.compute_engine_alerts",
+            return_value=self._per_store_alerts(
+                with_store=False,
+            ),
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_alerts, _ns(json=True),
+            )
+        data = json.loads(out)
+        # Even fleet-mode alerts have store_id field (None)
+        assert "store_id" in data["alerts"][0]
