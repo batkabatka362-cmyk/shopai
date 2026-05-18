@@ -7942,6 +7942,31 @@ def _cmd_engine_alerts(args) -> None:
             "engine alerts engine_count probe raised: %s", exc,
         )
 
+    # Quarantine flags per alerted engine: an alert against an
+    # already-paused engine is informational only (the bridge
+    # has already acted). Surface the flag so operators can
+    # de-prioritise those.
+    qstate = None
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine alerts quarantine probe raised: %s", exc,
+        )
+
+    def _engine_flags(name: str) -> list[str]:
+        if qstate is None:
+            return []
+        out: list[str] = []
+        if qstate.is_exempt(name):
+            out.append("exempt")
+        if qstate.is_released(name):
+            out.append("released")
+        if qstate.is_alert_paused(name):
+            out.append("alert_paused")
+        return out
+
     alerts = [
         {
             "engine": a.engine,
@@ -7954,6 +7979,7 @@ def _cmd_engine_alerts(args) -> None:
             "drop": a.drop,
             "kind": a.kind,
             "detail": a.detail,
+            "flags": _engine_flags(a.engine),
         }
         for a in engine_alerts
     ]
@@ -7989,9 +8015,13 @@ def _cmd_engine_alerts(args) -> None:
 
     print(f"  {len(alerts)} engine(s) flagged:")
     for a in alerts:
+        flags_str = (
+            f"  [{','.join(a['flags'])}]"
+            if a.get("flags") else ""
+        )
         print(
             f"  [{a['drop']:.0%} drop] {a['engine']:<22s}  "
-            f"{a['detail']}"
+            f"{a['detail']}{flags_str}"
         )
         print(
             f"      recent executed={a['recent_executed']} "

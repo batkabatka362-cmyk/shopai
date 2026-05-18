@@ -410,3 +410,107 @@ class TestJsonEnvelope:
         assert data["baseline_hours"] == 336
         assert data["threshold"] == 0.25
         assert data["min_recent"] == 5
+
+
+# ─── Quarantine flags ────────────────────────────────────────
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    yield tmp_path
+
+
+def _seed_degradation(engine, *, recent_neg=4, baseline_pos=8):
+    """Helper: build a fake queue with rows + outcomes that
+    produce a clear degradation alert for ``engine``."""
+    now = time.time()
+    recent_ts = now - 3600.0
+    old_ts = now - 100 * 3600.0
+    rows = [
+        _row(id_=f"r{i}", engine=engine, decided_at=recent_ts)
+        for i in range(recent_neg)
+    ] + [
+        _row(id_=f"o{i}", engine=engine, decided_at=old_ts)
+        for i in range(baseline_pos)
+    ]
+    outcomes = {}
+    for i in range(recent_neg):
+        outcomes[f"r{i}"] = [
+            {"polarity": "negative", "metrics": {}},
+        ]
+    for i in range(baseline_pos):
+        outcomes[f"o{i}"] = [
+            {"polarity": "positive", "metrics": {}},
+        ]
+    return rows, outcomes
+
+
+class TestQuarantineFlags:
+    """Each alert row gets a ``flags`` list so operators can
+    de-prioritise alerts on engines that are already paused."""
+
+    def test_clean_engine_empty_flags(self, cli, data_dir):
+        rows, outcomes = _seed_degradation("loyalty")
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(
+                rows=rows, outcomes=outcomes,
+            ),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_alerts, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert data["alerts"][0]["flags"] == []
+
+    def test_alert_paused_engine_flagged(
+        self, cli, data_dir,
+    ):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        rows, outcomes = _seed_degradation("loyalty")
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(
+                rows=rows, outcomes=outcomes,
+            ),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_alerts, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert data["alerts"][0]["flags"] == ["alert_paused"]
+
+    def test_text_render_includes_flags(self, cli, data_dir):
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        rows, outcomes = _seed_degradation("loyalty")
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(
+                rows=rows, outcomes=outcomes,
+            ),
+        ):
+            out, _ = _capture(cli._cmd_engine_alerts, _ns())
+        assert "alert_paused" in out
+
+    def test_load_state_failure_empty_flags(
+        self, cli, data_dir,
+    ):
+        rows, outcomes = _seed_degradation("loyalty")
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(
+                rows=rows, outcomes=outcomes,
+            ),
+        ), patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_engine_alerts, _ns(json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["alerts"][0]["flags"] == []
