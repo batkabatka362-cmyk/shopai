@@ -343,7 +343,8 @@ class ApprovalQueue:
             try:
                 from core.approval.quarantine import maybe_quarantine
                 q_decision = maybe_quarantine(
-                    queue=self, action_id=action_id, engine=engine,
+                    queue=self, action_id=action_id,
+                    engine=engine, store_id=store_id,
                 )
                 if q_decision.should_quarantine:
                     refreshed = self.get(action_id)

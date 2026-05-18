@@ -559,10 +559,29 @@ class WorldModel:
                 exc,
             )
 
-        # ``alert_paused`` attribute itself is gated behind
-        # PR #294's QuarantineState extension; fall back to
-        # empty list on older schema.
-        alert_paused = sorted(getattr(s, "alert_paused", frozenset()))
+        # ``alert_paused`` is now ``frozenset[(engine, store_id)]``.
+        # Surface engine names (deduplicated) for backward
+        # compatibility with callers that just want the list of
+        # paused engines. The per-store breakdown is exposed
+        # separately via ``alert_paused_pairs`` so empire-AGI
+        # consumers can drill into "which stores".
+        raw_paused = getattr(s, "alert_paused", frozenset())
+        alert_paused: list[str] = []
+        alert_paused_pairs: list[list] = []
+        for entry in raw_paused:
+            if isinstance(entry, tuple) and len(entry) == 2:
+                engine, store = entry
+                alert_paused_pairs.append([engine, store])
+                if engine not in alert_paused:
+                    alert_paused.append(engine)
+            else:
+                # Legacy string entry (pre-per-store schema)
+                alert_paused.append(str(entry))
+                alert_paused_pairs.append([str(entry), None])
+        alert_paused.sort()
+        alert_paused_pairs.sort(
+            key=lambda p: (p[0], p[1] or ""),
+        )
 
         # Candidate engines for release/pause -- the bridge's
         # forward + reverse views. Empty when the bridge module
@@ -597,6 +616,7 @@ class WorldModel:
             "exemptions": sorted(s.exemptions),
             "released": sorted(s.released),
             "alert_paused": alert_paused,
+            "alert_paused_pairs": alert_paused_pairs,
             "alert_release_candidates": release_candidates,
             "alert_pause_candidates": pause_candidates,
             "bridge": bridge,

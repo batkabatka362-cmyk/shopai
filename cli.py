@@ -2157,7 +2157,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--release-alert", metavar="ENGINE", default=None,
         help=(
             "Clear ENGINE from the alert-paused set "
-            "(auto-quarantined via consecutive degradation alerts)"
+            "(auto-quarantined via consecutive degradation "
+            "alerts). Pair with --release-alert-store STORE_ID "
+            "to release just one store; pair with "
+            "--release-alert-all to release ALL pauses for "
+            "the engine."
         ),
     )
     quarantine_action.add_argument(
@@ -2173,6 +2177,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Show current exemptions + released + alert-paused "
             "engines + thresholds"
+        ),
+    )
+    approvals_quarantine.add_argument(
+        "--release-alert-store", metavar="STORE_ID", default=None,
+        help=(
+            "Scope --release-alert to a single store (release "
+            "the per-store pause instead of the fleet-wide one)."
+        ),
+    )
+    approvals_quarantine.add_argument(
+        "--release-alert-all", action="store_true",
+        help=(
+            "With --release-alert, drop EVERY pause for the "
+            "engine (fleet-wide + every per-store entry)."
         ),
     )
     approvals_quarantine.add_argument(
@@ -14010,16 +14028,41 @@ def _cmd_approvals_quarantine(args) -> None:
 
     if getattr(args, "release_alert", None):
         engine = args.release_alert
-        s = qm.clear_alert_pause(engine)
+        store_arg = getattr(args, "release_alert_store", None)
+        release_all = bool(
+            getattr(args, "release_alert_all", False),
+        )
+        if release_all:
+            s = qm.clear_all_alert_pauses_for_engine(engine)
+        else:
+            s = qm.clear_alert_pause(
+                engine, store_id=store_arg,
+            )
+        # Serialize alert_paused tuples as [engine, store] pairs.
+        # Sort by (engine, store_or_empty) since None can't be
+        # compared with str in Python 3.
+        paused_serialised = [
+            [eng, store]
+            for (eng, store) in sorted(
+                s.alert_paused,
+                key=lambda p: (p[0], p[1] or ""),
+            )
+        ]
         if getattr(args, "json", False):
             print(json.dumps({
                 "released_from_alert_pause": engine,
-                "alert_paused": sorted(s.alert_paused),
+                "released_store": store_arg,
+                "released_all": release_all,
+                "alert_paused": paused_serialised,
             }, indent=2))
             return
+        scope_str = (
+            "(all stores)" if release_all
+            else f"@{store_arg}" if store_arg else "(fleet)"
+        )
         print(
-            f"Cleared alert-pause on '{engine}'. "
-            f"Alert-paused: {sorted(s.alert_paused) or '(none)'}"
+            f"Cleared alert-pause on '{engine}' {scope_str}. "
+            f"Alert-paused: {paused_serialised or '(none)'}"
         )
         return
 
@@ -14084,7 +14127,14 @@ def _cmd_approvals_quarantine(args) -> None:
     payload = {
         "exemptions": sorted(s.exemptions),
         "released": sorted(s.released),
-        "alert_paused": sorted(s.alert_paused),
+        # Serialise tuples as [engine, store_id] pairs
+        "alert_paused": [
+            [eng, store]
+            for (eng, store) in sorted(
+                s.alert_paused,
+                key=lambda p: (p[0], p[1] or ""),
+            )
+        ],
         "thresholds": {
             "min_outcomes_observed": qm.MIN_OUTCOMES_OBSERVED,
             "max_negative_ratio": qm.MAX_NEGATIVE_RATIO,
@@ -14119,9 +14169,18 @@ def _cmd_approvals_quarantine(args) -> None:
         f"  Released ({len(s.released)}): "
         f"{', '.join(sorted(s.released)) or '(none)'}"
     )
+    # alert_paused is now a set of (engine, store_id) tuples.
+    # Format each as ``engine`` (fleet-wide) or
+    # ``engine@store_id`` (per-store).
+    paused_labels = sorted(
+        (
+            f"{engine}@{store}" if store else engine
+            for (engine, store) in s.alert_paused
+        ),
+    )
     print(
         f"  Alert-paused ({len(s.alert_paused)}): "
-        f"{', '.join(sorted(s.alert_paused)) or '(none)'}"
+        f"{', '.join(paused_labels) or '(none)'}"
     )
     print("  Thresholds:")
     print(f"    min outcomes observed: {qm.MIN_OUTCOMES_OBSERVED}")
