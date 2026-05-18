@@ -82,12 +82,13 @@ class TestHappyPath:
         assert "Live webhook drift" in out
         assert "Engine writebacks" in out
 
-    def test_renders_five_approvals_sections(self, cli):
+    def test_renders_six_approvals_sections(self, cli):
         out, _ = _capture(cli._cmd_unified_doctor, _ns())
         assert "Pending queue" in out
         assert "Recent dispatch" in out
         assert "Quarantine" in out
         assert "Auto-approve" in out
+        assert "Alert history" in out
 
 
 # ─── JSON envelope ─────────────────────────────────────────────
