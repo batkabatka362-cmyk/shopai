@@ -862,3 +862,141 @@ class TestAutoQuarantineFromAlertsWiring:
         kinds = {a.get("kind") for a in data["alerts"]}
         assert "engine_score_degraded" in kinds
         assert "auto_alert_quarantined" not in kinds
+
+
+# ─── Quarantine summary ──────────────────────────────────────
+
+
+class TestQuarantineSummary:
+    """``daily-brief`` rolls up the fleet quarantine state +
+    alert-quarantine candidates into a top-level section,
+    independent of the per-run alert bridge fires."""
+
+    def test_json_envelope_includes_quarantine_block(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert "quarantine" in data
+        q = data["quarantine"]
+        assert "exempt" in q
+        assert "released" in q
+        assert "alert_paused" in q
+        assert "alert_release_candidates" in q
+        assert "alert_pause_candidates" in q
+        # totals also gain alert_paused count
+        assert "alert_paused" in data["totals"]
+
+    def test_quarantine_state_propagates(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.quarantine.load_state",
+            return_value=type("S", (), {
+                "exemptions": frozenset({"returns"}),
+                "released": frozenset({"affiliate"}),
+                "alert_paused": frozenset({"loyalty"}),
+            })(),
+        ), patch(
+            "core.approval.alert_quarantine.find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.approval.alert_quarantine.find_pause_candidates",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert data["quarantine"]["exempt"] == ["returns"]
+        assert data["quarantine"]["released"] == ["affiliate"]
+        assert data["quarantine"]["alert_paused"] == ["loyalty"]
+        assert data["totals"]["alert_paused"] == 1
+
+    def test_text_section_omitted_when_clean(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        # Empty paused + no candidates -> no Quarantine block
+        assert "Quarantine:" not in out
+
+    def test_text_section_renders_when_paused(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.quarantine.load_state",
+            return_value=type("S", (), {
+                "exemptions": frozenset(),
+                "released": frozenset(),
+                "alert_paused": frozenset({"loyalty"}),
+            })(),
+        ), patch(
+            "core.approval.alert_quarantine.find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.approval.alert_quarantine.find_pause_candidates",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Quarantine:" in out
+        assert "Alert-paused (1)" in out
+        assert "loyalty" in out
+
+    def test_text_renders_candidates(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.alert_quarantine.find_release_candidates",
+            return_value=[{"engine": "affiliate"}],
+        ), patch(
+            "core.approval.alert_quarantine.find_pause_candidates",
+            return_value=[
+                {"engine": "wholesale", "consecutive_days": 5,
+                 "blocked_by": None},
+            ],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Quarantine:" in out
+        assert "Safe to release (1)" in out
+        assert "affiliate" in out
+        assert "Bridge would pause (1)" in out
+        assert "wholesale" in out
+
+    def test_load_state_failure_renders_empty_block(self, cli):
+        """If quarantine.load_state raises, the brief still
+        renders -- the section just stays empty."""
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk corrupt"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        # Block still present but empty lists
+        assert data["quarantine"]["exempt"] == []
+        assert data["quarantine"]["alert_paused"] == []

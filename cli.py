@@ -3782,6 +3782,45 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief engine alerts probe raised: %s", exc,
         )
 
+    # ── Quarantine summary ─────────────────────────────────
+    # Fleet-wide rollup of the quarantine state so the morning
+    # brief surfaces ALL paused engines, not just today's
+    # fresh bridge-fires. Independent of compute_engine_alerts
+    # block above so a failure there doesn't suppress this.
+    quarantine_summary: dict = {
+        "exempt": [],
+        "released": [],
+        "alert_paused": [],
+        "alert_release_candidates": [],
+        "alert_pause_candidates": [],
+    }
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+        quarantine_summary["exempt"] = sorted(qstate.exemptions)
+        quarantine_summary["released"] = sorted(qstate.released)
+        quarantine_summary["alert_paused"] = sorted(
+            qstate.alert_paused,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief quarantine summary load failed: %s", exc,
+        )
+    try:
+        from core.approval import alert_quarantine as aq
+        quarantine_summary["alert_release_candidates"] = [
+            c["engine"] for c in aq.find_release_candidates()
+        ]
+        quarantine_summary["alert_pause_candidates"] = [
+            c["engine"] for c in aq.find_pause_candidates()
+            if c.get("blocked_by") is None
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief alert_quarantine candidates raised: %s",
+            exc,
+        )
+
     # ── Totals ─────────────────────────────────────────────
     totals = {
         "stores": len(store_rows),
@@ -3795,6 +3834,7 @@ def _cmd_daily_brief(args) -> None:
             c.get("failed", 0) for c in activity_by_engine.values()
         ),
         "pending": total_pending,
+        "alert_paused": len(quarantine_summary["alert_paused"]),
     }
 
     # ── JSON envelope ──────────────────────────────────────
@@ -3805,6 +3845,7 @@ def _cmd_daily_brief(args) -> None:
             "engine_activity": activity_by_engine,
             "pending_by_engine": pending_by_engine,
             "transfer_activity": transfer_activity,
+            "quarantine": quarantine_summary,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -3883,6 +3924,39 @@ def _cmd_daily_brief(args) -> None:
                 f"  Outcomes:  "
                 f"+{transfer_activity['positive_outcomes']}  "
                 f"-{transfer_activity['negative_outcomes']}"
+            )
+        print()
+
+    # Quarantine summary — only render when there's something
+    # actionable (paused engines or candidates). Keeps the
+    # happy-path brief clean.
+    q_paused = quarantine_summary.get("alert_paused") or []
+    q_release_cands = quarantine_summary.get(
+        "alert_release_candidates",
+    ) or []
+    q_pause_cands = quarantine_summary.get(
+        "alert_pause_candidates",
+    ) or []
+    if q_paused or q_release_cands or q_pause_cands:
+        print()
+        print("Quarantine:")
+        if q_paused:
+            print(
+                f"  Alert-paused ({len(q_paused)}): "
+                f"{', '.join(q_paused[:5])}"
+                f"{' ...' if len(q_paused) > 5 else ''}"
+            )
+        if q_release_cands:
+            print(
+                f"  Safe to release ({len(q_release_cands)}): "
+                f"{', '.join(q_release_cands[:5])}"
+                f"{' ...' if len(q_release_cands) > 5 else ''}"
+            )
+        if q_pause_cands:
+            print(
+                f"  Bridge would pause ({len(q_pause_cands)}): "
+                f"{', '.join(q_pause_cands[:5])}"
+                f"{' ...' if len(q_pause_cands) > 5 else ''}"
             )
         print()
 
