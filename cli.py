@@ -15081,6 +15081,27 @@ def _cmd_approvals_stats(args) -> None:
     for status, count in sorted(stats.items()):
         print(f"  {status:<10} {count}")
 
+    # Append a quarantine-state summary so this one-glance
+    # command also tells the operator how many engines are
+    # paused / exempt / released. Only print the line when
+    # there's something non-zero to report.
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+        ex = len(qstate.exemptions)
+        rel = len(qstate.released)
+        paused = len(qstate.alert_paused)
+        if ex or rel or paused:
+            print()
+            print(
+                f"Quarantine: exempt={ex} released={rel} "
+                f"alert_paused={paused}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "approvals stats quarantine probe raised: %s", exc,
+        )
+
 
 def _collect_approvals_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
     """Collect every approvals-doctor section without rendering.
