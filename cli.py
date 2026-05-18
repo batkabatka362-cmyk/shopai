@@ -10473,6 +10473,9 @@ def _cmd_unified_doctor(args) -> None:
     _approvals_doctor_render_auto_approve(
         approvals_sections.get("auto_approve", {}),
     )
+    _approvals_doctor_render_alert_history(
+        approvals_sections.get("alert_history", {}),
+    )
 
     print()
     if overall_ok:
@@ -14323,6 +14326,38 @@ def _collect_approvals_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
             "error": str(exc),
         }
 
+    # ── Alert history (informational + warn on long streaks) ─
+    # Counts engine-degradation alert firings persisted by
+    # ``alert_history`` over the last 7 days, plus per-engine
+    # consecutive-day counts. Warns when an engine has fired
+    # on 3+ distinct days -- that's the threshold the future
+    # alert_quarantine bridge would auto-pause at.
+    try:
+        from core.approval import alert_history
+        events = alert_history.recent_history(
+            since_seconds=86400.0 * 7.0,
+        )
+        consecutive = alert_history.consecutive_runs_per_engine(
+            window_seconds=86400.0 * 7.0,
+        )
+        long_streak = {
+            e: d for e, d in consecutive.items() if d >= 3
+        }
+        status = "warn" if long_streak else "info"
+        sections["alert_history"] = {
+            "status": status,
+            "event_count_7d": len(events),
+            "engines_with_alerts": sorted(consecutive),
+            "consecutive_days_by_engine": consecutive,
+            "long_streak_engines": long_streak,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("alert_history probe raised: %s", exc)
+        sections["alert_history"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
     return overall_ok, sections
 
 
@@ -14370,6 +14405,9 @@ def _cmd_approvals_doctor(args) -> None:
     )
     _approvals_doctor_render_auto_approve(
         sections.get("auto_approve", {}),
+    )
+    _approvals_doctor_render_alert_history(
+        sections.get("alert_history", {}),
     )
 
     print()
@@ -14522,6 +14560,43 @@ def _approvals_doctor_render_auto_approve(section: dict) -> None:
             f"[??] Auto-approve -- "
             f"{section.get('error', 'unavailable')}"
         )
+
+
+def _approvals_doctor_render_alert_history(section: dict) -> None:
+    status = section.get("status", "unavailable")
+    if status == "info":
+        count = section.get("event_count_7d", 0)
+        engines = section.get("engines_with_alerts", [])
+        if count == 0:
+            print(
+                "[info] Alert history -- no engine degradation "
+                "alerts in the last 7 days"
+            )
+        else:
+            print(
+                f"[info] Alert history -- {count} firing(s) "
+                f"across {len(engines)} engine(s) in last 7 days"
+            )
+        return
+    if status == "warn":
+        long_streak = section.get("long_streak_engines", {})
+        if long_streak:
+            top = sorted(
+                long_streak.items(), key=lambda kv: -kv[1],
+            )[:3]
+            descr = ", ".join(
+                f"{e}={d}d" for e, d in top
+            )
+            print(
+                f"[warn] Alert history -- "
+                f"{len(long_streak)} engine(s) on 3+ day streak: "
+                f"{descr}"
+            )
+        return
+    print(
+        f"[??] Alert history -- "
+        f"{section.get('error', 'unavailable')}"
+    )
 
 
 def _trace_action(action_id: str) -> dict[str, Any]:

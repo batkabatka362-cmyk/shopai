@@ -66,12 +66,13 @@ class TestHappyPath:
         )
         assert code == 0
         assert "Overall: OK" in out
-        # All five sections render
+        # All six sections render
         assert "Pattern K dispatchers" in out
         assert "Pending queue" in out
         assert "Recent dispatch" in out
         assert "Quarantine" in out
         assert "Auto-approve" in out
+        assert "Alert history" in out
 
 
 # ─── JSON envelope ─────────────────────────────────────────────
@@ -92,6 +93,7 @@ class TestJson:
             "recent_dispatch",
             "quarantine",
             "auto_approve",
+            "alert_history",
         }
 
     def test_json_pending_queue_section(self, cli):
@@ -337,3 +339,93 @@ class TestResilience:
             )
         assert "[??] Pending queue" in out
         assert "[??] Recent dispatch" in out
+
+
+class TestAlertHistorySection:
+    """``alert_history`` section reports engine-degradation
+    firings persisted by daily-brief + warns when any engine
+    has crossed the 3-day streak threshold."""
+
+    def test_empty_history_renders_info_zero(self, cli):
+        with patch(
+            "core.approval.alert_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={},
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_doctor, _ns(),
+            )
+        assert "[info] Alert history -- no engine degradation" in out
+        assert code == 0
+
+    def test_short_streak_renders_info(self, cli):
+        """1-2 day streaks aren't warn-worthy."""
+        fake_events = [object()] * 4
+        with patch(
+            "core.approval.alert_history.recent_history",
+            return_value=fake_events,
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={"loyalty": 2, "affiliate": 1},
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_doctor, _ns(),
+            )
+        assert "[info] Alert history -- 4 firing(s)" in out
+        assert "across 2 engine(s)" in out
+        # No streak warning
+        assert "[warn] Alert history" not in out
+        assert code == 0
+
+    def test_long_streak_renders_warn(self, cli):
+        """3+ day streak fires the warning."""
+        fake_events = [object()] * 7
+        with patch(
+            "core.approval.alert_history.recent_history",
+            return_value=fake_events,
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={"loyalty": 5, "affiliate": 1},
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_doctor, _ns(),
+            )
+        assert "[warn] Alert history" in out
+        assert "loyalty=5d" in out
+        # Warn doesn't fail the doctor
+        assert code == 0
+
+    def test_json_envelope_includes_section(self, cli):
+        with patch(
+            "core.approval.alert_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.alert_history."
+            "consecutive_runs_per_engine",
+            return_value={"loyalty": 5},
+        ):
+            out, _ = _capture(
+                cli._cmd_approvals_doctor, _ns(json=True),
+            )
+        data = json.loads(out)
+        section = data["sections"]["alert_history"]
+        assert section["status"] == "warn"
+        assert section["event_count_7d"] == 0
+        assert section["long_streak_engines"] == {"loyalty": 5}
+
+    def test_probe_failure_renders_unavailable(self, cli):
+        with patch(
+            "core.approval.alert_history.recent_history",
+            side_effect=RuntimeError("disk corrupt"),
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_doctor, _ns(),
+            )
+        assert "[??] Alert history" in out
+        # Probe failure stays informational; doctor still OK
+        assert code == 0
