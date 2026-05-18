@@ -1207,6 +1207,95 @@ have their own ``_is_test_environment()`` guard that returns 0
 under pytest. Three concurrent guards must be lifted to
 exercise the full chain in tests (the E2E test does this).
 
+### Per-store empire-AGI extension (PRs #319–#326)
+
+The fleet-wide auto-quarantine system above evolved into a
+per-store model so that an engine misbehaving on ONE store
+doesn't false-trigger fleet-wide rejections (and conversely,
+a store-specific issue can be quarantined without affecting
+other stores).
+
+**Data layer (#319):**
+
+- ``AlertEvent.store_id: str | None`` — alert firings now
+  carry the store scope. ``None`` means fleet-wide (legacy /
+  cross-store-aggregate events).
+- ``record_alerts(alerts, *, store_id=...)`` auto-resolves
+  from the ``active_store`` thread-local when not supplied.
+- ``recent_history(..., store_id=...)`` strict-filters.
+- ``consecutive_runs_per_engine(..., store_id=...)`` filters
+  to that store; without filter, aggregates across stores
+  (backward compat).
+- NEW ``consecutive_runs_per_engine_store()`` returns
+  ``{(engine, store_id): bucket_count}`` for empire-AGI
+  pivots.
+
+**State layer (#320):**
+
+- ``QuarantineState.alert_paused: frozenset[tuple[str, str |
+  None]]`` — entries are ``(engine, store_id)``. ``store_id =
+  None`` = fleet-wide pause.
+- ``is_alert_paused(engine, store_id=...)`` matches either
+  the fleet-wide tuple OR the exact store tuple.
+- ``add_alert_pause(engine, store_id=None)`` /
+  ``clear_alert_pause(engine, store_id=None)`` /
+  ``clear_all_alert_pauses_for_engine(engine)``.
+- JSON format: ``[[engine, store_id], ...]`` pairs. Legacy
+  string entries auto-migrate to ``(engine, None)``.
+
+**Evaluator (#320 + #325):**
+
+- ``evaluate(engine, queue, store_id=...)`` — when ``store_id``
+  is supplied: matches alert-pauses ``(engine, None) OR
+  (engine, store_id)``; ALSO consults per-store
+  ``engine_outcome_stats(engine, store_id=...)`` if fleet-
+  wide ratio is healthy. Per-store stats can trigger a
+  per-store quarantine while fleet is OK (empire-AGI's
+  whole point).
+- Decision reason carries scope qualifier:
+  ``auto_quarantine_from_alerts (fleet)`` /
+  ``... (store=store_a)`` / ``auto_quarantine:
+  negative_ratio=... (fleet)`` / ``... (store=store_a)``.
+- ``ApprovalQueue.enqueue`` forwards the action's
+  ``store_id`` to the evaluator.
+
+**Bridge (#321):**
+
+- ``SHOPAI_AUTO_QUARANTINE_PER_STORE=1`` — env-gated opt-in
+  for per-store auto-pause. Default OFF.
+- When enabled, ``engines_to_pause`` counts ONLY truly
+  fleet-scoped events (``store_id=None``) — per-store
+  streaks are handled separately by ``pairs_to_pause``. This
+  eliminates the false-positive of "single-store
+  degradation triggers a fleet pause".
+- ``maybe_auto_quarantine_from_alerts_full()`` returns
+  ``{fleet_paused, store_paused}``.
+
+**Operator surface (#322, #323, #326):**
+
+- ``shopai world-model show <store>`` — quarantine section
+  now scope=per_store, with ``for_this_store`` sub-block
+  showing engines blocked for THAT store (fleet pauses +
+  per-store pauses combined).
+- ``shopai approvals alert-history --store STORE_ID
+  [--include-fleet]`` — store-scoped firing log.
+- ``shopai approvals quarantine --release-alert ENGINE
+  --release-alert-store STORE_ID`` — selective release.
+- ``shopai approvals quarantine --release-alert ENGINE
+  --release-alert-all`` — drop every pause for an engine.
+- ``shopai approvals quarantine-simulate ENGINE [--store
+  STORE_ID]`` — dry-run "would this be paused?".
+
+**Backward-compat:**
+
+- Existing ``alert_history.json`` (no store_id field) loads
+  with ``store_id=None``.
+- Existing ``quarantine_state.json`` (string entries) loads
+  as ``(engine, None)`` fleet-wide pauses.
+- Callers passing no ``store_id`` keep working unchanged.
+- Per-store env-var is opt-in; the default fleet behaviour
+  is unchanged.
+
 ### Schema migration patterns
 
 - **Idempotent ALTER TABLE** (PR #239): when adding a column,
