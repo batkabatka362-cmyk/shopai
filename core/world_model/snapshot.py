@@ -564,12 +564,41 @@ class WorldModel:
         # empty list on older schema.
         alert_paused = sorted(getattr(s, "alert_paused", frozenset()))
 
+        # Candidate engines for release/pause -- the bridge's
+        # forward + reverse views. Empty when the bridge module
+        # isn't installed or the alert_history is empty.
+        release_candidates: list[str] = []
+        pause_candidates: list[str] = []
+        try:
+            from core.approval import alert_quarantine as aq
+            release_candidates = [
+                c["engine"]
+                for c in aq.find_release_candidates()
+            ]
+            pause_candidates = [
+                c["engine"]
+                for c in aq.find_pause_candidates()
+                if c.get("blocked_by") is None
+            ]
+        except ImportError as exc:
+            logger.debug(
+                "world_model quarantine candidates import "
+                "failed: %s", exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model quarantine candidates raised: %s",
+                exc,
+            )
+
         return {
             "checked": True,
             "scope": "fleet",
             "exemptions": sorted(s.exemptions),
             "released": sorted(s.released),
             "alert_paused": alert_paused,
+            "alert_release_candidates": release_candidates,
+            "alert_pause_candidates": pause_candidates,
             "bridge": bridge,
         }
 
