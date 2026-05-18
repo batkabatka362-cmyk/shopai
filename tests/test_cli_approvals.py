@@ -165,6 +165,49 @@ class TestStats:
         # Each status renders with a 0 count
         assert "0" in out
 
+    def test_no_quarantine_line_when_empty(
+        self, isolated_queue, cli, tmp_path, monkeypatch,
+    ):
+        """Clean quarantine state (no exempt/released/paused
+        engines) means no Quarantine summary line."""
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        out, code = _capture(
+            cli._cmd_approvals_stats, _ns(),
+        )
+        assert code == 0
+        assert "Quarantine:" not in out
+
+    def test_quarantine_line_renders_when_paused(
+        self, isolated_queue, cli, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")
+        quarantine.exempt_engine("returns")
+        out, code = _capture(
+            cli._cmd_approvals_stats, _ns(),
+        )
+        assert code == 0
+        assert "Quarantine:" in out
+        assert "exempt=1" in out
+        assert "alert_paused=1" in out
+
+    def test_quarantine_probe_failure_silent(
+        self, isolated_queue, cli, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        with patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_stats, _ns(),
+            )
+        assert code == 0
+        # No Quarantine line, but the rest of stats rendered
+        assert "Quarantine:" not in out
+        assert "pending" in out
+
 
 # ─── show ───────────────────────────────────────────────────────
 
