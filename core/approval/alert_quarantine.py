@@ -46,6 +46,13 @@ logger = logging.getLogger(__name__)
 _ENV_ENABLED = "SHOPAI_AUTO_QUARANTINE_FROM_ALERTS"
 _ENV_DAYS = "SHOPAI_AUTO_QUARANTINE_DAYS"
 _ENV_WINDOW = "SHOPAI_AUTO_QUARANTINE_WINDOW_DAYS"
+# Per-store auto-pause: when enabled, the bridge ALSO computes
+# (engine, store_id) pairs that crossed the streak threshold
+# and pauses them individually. Default OFF -- the fleet-wide
+# behaviour stays as-is until operators opt in. Even with
+# this on, the fleet-wide engine pauses still fire too (a
+# fleet-wide streak is rarer but more severe).
+_ENV_PER_STORE = "SHOPAI_AUTO_QUARANTINE_PER_STORE"
 
 _DEFAULT_DAYS = 3
 _DEFAULT_WINDOW_DAYS = 7
@@ -92,12 +99,23 @@ def _is_test_environment() -> bool:
 
 
 def engines_to_pause(*, now: float | None = None) -> list[str]:
-    """Pure read: engines that WOULD be auto-paused right now,
-    given the current alert history + quarantine state.
+    """Pure read: engines that WOULD be auto-paused fleet-wide
+    right now, given the current alert history + quarantine
+    state.
+
+    When ``SHOPAI_AUTO_QUARANTINE_PER_STORE=1``, this function
+    counts ONLY true fleet-wide events (``store_id=None``).
+    Per-store streaks are handled separately by
+    ``pairs_to_pause``. This avoids false-positive fleet
+    pauses when a single store is degrading.
+
+    When per-store mode is OFF, this function aggregates
+    across all stores (preserves the pre-per-store behaviour
+    for backward compatibility).
 
     Skips engines already on any of:
       - ``exemptions`` (operator says never quarantine)
-      - ``alert_paused`` (already paused via this bridge)
+      - ``alert_paused`` (already paused fleet-wide)
 
     Note: engines on the ``released`` list ARE returned -- a
     re-pause after operator release is the intended signal that
@@ -108,11 +126,33 @@ def engines_to_pause(*, now: float | None = None) -> list[str]:
         return []
     threshold = threshold_days()
     window = window_days()
-    consecutive = alert_history.consecutive_runs_per_engine(
-        window_seconds=window * 86400.0,
-        bucket_seconds=86400.0,
-        now=now,
-    )
+    if per_store_enabled():
+        # Per-store mode: only count events with store_id=None
+        # (truly fleet-scoped events) toward the fleet pause.
+        # That way per-store degradation doesn't false-trigger
+        # a fleet pause.
+        per_pair = (
+            alert_history.consecutive_runs_per_engine_store(
+                window_seconds=window * 86400.0,
+                bucket_seconds=86400.0,
+                now=now,
+            )
+        )
+        consecutive: dict[str, int] = {}
+        for (engine, store_id), days in per_pair.items():
+            if store_id is None:
+                consecutive[engine] = max(
+                    consecutive.get(engine, 0), days,
+                )
+    else:
+        # Default mode: aggregate across stores (backward
+        # compat -- a single bucket per day regardless of
+        # which store fired).
+        consecutive = alert_history.consecutive_runs_per_engine(
+            window_seconds=window * 86400.0,
+            bucket_seconds=86400.0,
+            now=now,
+        )
     state = quarantine.load_state()
     out: list[str] = []
     for engine, days in consecutive.items():
@@ -120,17 +160,28 @@ def engines_to_pause(*, now: float | None = None) -> list[str]:
             continue
         if state.is_exempt(engine):
             continue
-        if state.is_alert_paused(engine):
+        # Use the fleet-only check -- (engine, None) tuple.
+        # is_alert_paused with no store_id arg matches that.
+        if (engine, None) in state.alert_paused:
             continue
         out.append(engine)
     out.sort()
     return out
 
 
+def per_store_enabled() -> bool:
+    """Bridge runs per-store auto-pauses in addition to fleet-
+    wide pauses when ``SHOPAI_AUTO_QUARANTINE_PER_STORE=1``.
+    Default OFF -- operators opt in explicitly because per-
+    store pauses are higher-volume."""
+    return os.environ.get(_ENV_PER_STORE) == "1"
+
+
 def apply_pauses(engines: Iterable[str]) -> list[str]:
     """Persist each engine into the quarantine state's
-    ``alert_paused`` set. Returns the engines actually paused
-    (in case ``add_alert_pause`` raises on one)."""
+    ``alert_paused`` set as a FLEET-WIDE pause. Returns the
+    engines actually paused (in case ``add_alert_pause``
+    raises on one)."""
     paused: list[str] = []
     for engine in engines:
         try:
@@ -142,6 +193,72 @@ def apply_pauses(engines: Iterable[str]) -> list[str]:
             )
             continue
         paused.append(engine)
+    return paused
+
+
+def pairs_to_pause(
+    *, now: float | None = None,
+) -> list[tuple[str, str]]:
+    """Per-store pairs (engine, store_id) that would be auto-
+    paused right now. Only returns pairs where:
+
+      - The (engine, store_id) streak meets the threshold
+      - The engine is NOT exempt
+      - The pair is NOT already paused (fleet OR per-store)
+      - ``store_id`` is not None (None=fleet, handled by the
+        existing ``engines_to_pause`` path)
+    """
+    if not is_enabled():
+        return []
+    if not per_store_enabled():
+        return []
+    threshold = threshold_days()
+    window = window_days()
+    per_pair = (
+        alert_history.consecutive_runs_per_engine_store(
+            window_seconds=window * 86400.0,
+            bucket_seconds=86400.0,
+            now=now,
+        )
+    )
+    state = quarantine.load_state()
+    out: list[tuple[str, str]] = []
+    for (engine, store_id), days in per_pair.items():
+        if days < threshold:
+            continue
+        if store_id is None:
+            continue  # fleet-wide path handles None
+        if state.is_exempt(engine):
+            continue
+        # is_alert_paused matches fleet-wide pauses too -- skip
+        # if either fleet or this exact pair is already set.
+        if state.is_alert_paused(engine, store_id=store_id):
+            continue
+        out.append((engine, store_id))
+    out.sort()
+    return out
+
+
+def apply_pauses_per_store(
+    pairs: Iterable[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Persist each (engine, store_id) pair into the quarantine
+    state's ``alert_paused`` set as a per-store pause. Returns
+    the pairs actually paused."""
+    paused: list[tuple[str, str]] = []
+    for (engine, store_id) in pairs:
+        try:
+            quarantine.add_alert_pause(
+                engine, store_id=store_id,
+            )
+        except (ValueError, OSError) as exc:
+            logger.debug(
+                "alert_quarantine.apply_pauses_per_store "
+                "failed for %s/%s: %s",
+                engine, store_id, exc,
+            )
+            continue
+        paused.append((engine, store_id))
     return paused
 
 
@@ -272,10 +389,18 @@ def find_pause_candidates(
 def maybe_auto_quarantine_from_alerts(
     *, now: float | None = None,
 ) -> list[str]:
-    """Compute + apply in one call. Pattern J guard returns
-    ``[]`` under pytest. Returns the list of engines newly
-    paused -- empty if disabled, already paused, or below
-    threshold."""
+    """Compute + apply fleet-wide auto-pauses in one call.
+
+    Pattern J guard returns ``[]`` under pytest. Returns the
+    list of engines newly paused fleet-wide. Per-store pauses
+    are NOT included here -- callers wanting both should call
+    ``maybe_auto_quarantine_from_alerts_full`` for the richer
+    dict response.
+
+    Backward-compatible: this function still returns just the
+    fleet-wide engine names (list[str]) so existing consumers
+    keep working.
+    """
     if _is_test_environment():
         return []
     if not is_enabled():
@@ -284,6 +409,52 @@ def maybe_auto_quarantine_from_alerts(
     if not engines:
         return []
     return apply_pauses(engines)
+
+
+def maybe_auto_quarantine_from_alerts_full(
+    *, now: float | None = None,
+) -> dict:
+    """Apply BOTH fleet-wide and per-store auto-pauses.
+
+    Pattern J guard returns the empty envelope under pytest.
+    Returns a dict with two lists:
+
+        {
+          "fleet_paused": list[str],
+          "store_paused": list[tuple[str, str]],
+        }
+
+    Per-store pauses only fire when
+    ``SHOPAI_AUTO_QUARANTINE_PER_STORE=1``. Fleet-wide auto-
+    pauses always fire (when the master env var is set), even
+    with per-store opted in -- a fleet-wide streak is rarer
+    but more severe, and an engine being paused fleet-wide
+    naturally subsumes any per-store pauses for it.
+    """
+    empty = {"fleet_paused": [], "store_paused": []}
+    if _is_test_environment():
+        return empty
+    if not is_enabled():
+        return empty
+
+    fleet = apply_pauses(engines_to_pause(now=now))
+
+    store_pairs: list[tuple[str, str]] = []
+    if per_store_enabled():
+        # Skip any pair whose engine just got a fleet-wide
+        # pause this run -- the fleet pause makes the per-
+        # store pause redundant.
+        fresh_fleet = set(fleet)
+        candidates = [
+            (e, s) for (e, s) in pairs_to_pause(now=now)
+            if e not in fresh_fleet
+        ]
+        store_pairs = apply_pauses_per_store(candidates)
+
+    return {
+        "fleet_paused": fleet,
+        "store_paused": store_pairs,
+    }
 
 
 def find_release_candidates(
