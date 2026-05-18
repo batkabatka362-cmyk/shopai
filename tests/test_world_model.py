@@ -740,6 +740,8 @@ class TestSectionQuarantine:
         assert sec["exemptions"] == []
         assert sec["released"] == []
         assert sec["alert_paused"] == []
+        assert sec["alert_release_candidates"] == []
+        assert sec["alert_pause_candidates"] == []
         # Bridge is present (PR #294 module is on PYTHONPATH).
         assert sec["bridge"] is not None
         assert sec["bridge"]["enabled"] is False
@@ -784,3 +786,46 @@ class TestSectionQuarantine:
         assert "quarantine" in snap
         assert snap["quarantine"]["checked"] is True
         assert snap["quarantine"]["scope"] == "fleet"
+
+    def test_candidate_lists_populated(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.approval.alert_quarantine."
+            "find_release_candidates",
+            return_value=[
+                {"engine": "loyalty"},
+                {"engine": "affiliate"},
+            ],
+        ), patch(
+            "core.approval.alert_quarantine."
+            "find_pause_candidates",
+            return_value=[
+                {"engine": "wholesale",
+                 "consecutive_days": 5,
+                 "blocked_by": None},
+                {"engine": "blocked_one",
+                 "consecutive_days": 4,
+                 "blocked_by": "exempt"},
+            ],
+        ):
+            sec = wm._section_quarantine()
+        assert sec["alert_release_candidates"] == [
+            "loyalty", "affiliate",
+        ]
+        # ``blocked_one`` filtered out -- it has blocked_by set
+        assert sec["alert_pause_candidates"] == ["wholesale"]
+
+    def test_candidate_probe_failure_keeps_section(self):
+        """If find_release_candidates raises, the section still
+        returns; just with empty candidate lists."""
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.approval.alert_quarantine."
+            "find_release_candidates",
+            side_effect=RuntimeError("disk corrupt"),
+        ):
+            sec = wm._section_quarantine()
+        assert sec["checked"] is True
+        assert sec["alert_release_candidates"] == []
+        # find_pause_candidates may also raise via the same path,
+        # but its empty list is the default.

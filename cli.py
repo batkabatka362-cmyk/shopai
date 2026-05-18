@@ -5203,7 +5203,14 @@ def _cmd_world_model_show(args) -> None:
         bridge = quarantine.get("bridge") or {}
         # Only print the section if there's something to show
         # OR if the bridge is enabled (operators need to know).
-        if exempt or released or paused or bridge.get("enabled"):
+        release_cands = (
+            quarantine.get("alert_release_candidates") or []
+        )
+        pause_cands = (
+            quarantine.get("alert_pause_candidates") or []
+        )
+        if (exempt or released or paused or release_cands or
+                pause_cands or bridge.get("enabled")):
             print()
             print("Quarantine (fleet-wide):")
             print(
@@ -5218,6 +5225,20 @@ def _cmd_world_model_show(args) -> None:
                 f"  Alert-paused ({len(paused)}): "
                 f"{', '.join(paused) or '(none)'}"
             )
+            if release_cands:
+                print(
+                    f"  Release candidates "
+                    f"({len(release_cands)}): "
+                    f"{', '.join(release_cands[:5])}"
+                    f"{' ...' if len(release_cands) > 5 else ''}"
+                )
+            if pause_cands:
+                print(
+                    f"  Pause candidates "
+                    f"({len(pause_cands)}): "
+                    f"{', '.join(pause_cands[:5])}"
+                    f"{' ...' if len(pause_cands) > 5 else ''}"
+                )
             if bridge:
                 state = "on" if bridge.get("enabled") else "off"
                 print(
