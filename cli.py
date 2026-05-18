@@ -7672,6 +7672,30 @@ def _cmd_engine_ranking(args) -> None:
             pos / (pos + neg) if (pos + neg) > 0 else None
         )
 
+    # Quarantine flags: lazy probe so a corrupt state file
+    # doesn't break the ranking. Each engine gets a ``flags``
+    # list of any of {exempt, released, alert_paused} so the
+    # leaderboard shows what's paused at a glance.
+    qstate = None
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine ranking quarantine probe raised: %s", exc,
+        )
+    for b in by_engine.values():
+        engine = b["engine"]
+        flags: list[str] = []
+        if qstate is not None:
+            if qstate.is_exempt(engine):
+                flags.append("exempt")
+            if qstate.is_released(engine):
+                flags.append("released")
+            if qstate.is_alert_paused(engine):
+                flags.append("alert_paused")
+        b["flags"] = flags
+
     # Ranking: scored engines first (by score desc), then
     # unscored (by executed desc). Stable tiebreaks for
     # determinism.
@@ -7710,21 +7734,22 @@ def _cmd_engine_ranking(args) -> None:
     print(
         f"  {'RANK':>4s}  {'ENGINE':<22s} {'EXEC':>5s} "
         f"{'FAIL':>5s} {'+':>4s} {'-':>4s} {'SCORE':>6s} "
-        f"{'REVENUE':>11s}"
+        f"{'REVENUE':>11s}  FLAGS"
     )
-    print("  " + "-" * 70)
+    print("  " + "-" * 76)
     for i, b in enumerate(top, start=1):
         score_str = (
             "n/a" if b["outcome_score"] is None
             else f"{b['outcome_score']:.0%}"
         )
+        flags_str = ",".join(b.get("flags") or []) or ""
         print(
             f"  [{i:>2d}]  {b['engine']:<22s} "
             f"{b['executed']:>5d} {b['failed']:>5d} "
             f"{b['positive_outcomes']:>4d} "
             f"{b['negative_outcomes']:>4d} "
             f"{score_str:>6s} "
-            f"${b['revenue']:>10,.2f}"
+            f"${b['revenue']:>10,.2f}  {flags_str}"
         )
 
 
