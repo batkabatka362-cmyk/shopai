@@ -5104,6 +5104,38 @@ def _cmd_world_model_show(args) -> None:
     else:
         print(f"  (unavailable: {decisions.get('error', 'unknown')})")
 
+    # Quarantine section (fleet-wide; affects this store too).
+    quarantine = snap.get("quarantine") or {}
+    if quarantine.get("checked"):
+        exempt = quarantine.get("exemptions") or []
+        released = quarantine.get("released") or []
+        paused = quarantine.get("alert_paused") or []
+        bridge = quarantine.get("bridge") or {}
+        # Only print the section if there's something to show
+        # OR if the bridge is enabled (operators need to know).
+        if exempt or released or paused or bridge.get("enabled"):
+            print()
+            print("Quarantine (fleet-wide):")
+            print(
+                f"  Exempt ({len(exempt)}): "
+                f"{', '.join(exempt) or '(none)'}"
+            )
+            print(
+                f"  Released ({len(released)}): "
+                f"{', '.join(released) or '(none)'}"
+            )
+            print(
+                f"  Alert-paused ({len(paused)}): "
+                f"{', '.join(paused) or '(none)'}"
+            )
+            if bridge:
+                state = "on" if bridge.get("enabled") else "off"
+                print(
+                    f"  Auto-pause bridge: {state} "
+                    f"(threshold={bridge.get('threshold_days', '?')}d, "
+                    f"window={bridge.get('window_days', '?')}d)"
+                )
+
 
 def _cmd_model_router(args) -> None:
     """Dispatcher for ``shopai model-router <verb>``."""

@@ -508,6 +508,71 @@ class WorldModel:
             "recent": rows,
         }
 
+    def _section_quarantine(self) -> dict:
+        """Fleet-wide quarantine state.
+
+        Quarantine state is GLOBAL today (single
+        ``quarantine_state.json`` shared across stores), so this
+        section's data isn't per-store. It's included in the
+        per-store snapshot anyway because alert-paused engines
+        affect every store's enqueue path -- operators
+        inspecting one store's snapshot need to know which
+        engines won't even attempt actions.
+
+        Returns:
+            ``{"checked": True, "scope": "fleet",
+              "exemptions": [...], "released": [...],
+              "alert_paused": [...],
+              "bridge": {enabled, threshold_days, window_days}}``
+
+        Bridge config is gated behind PR #294's
+        ``core.approval.alert_quarantine`` module. Missing
+        module falls back to ``bridge: None`` rather than
+        crashing the section.
+        """
+        try:
+            from core.approval import quarantine
+            s = quarantine.load_state()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model quarantine load raised: %s", exc,
+            )
+            return {"checked": False, "error": str(exc)}
+
+        bridge: dict | None = None
+        try:
+            from core.approval import alert_quarantine as aq
+            bridge = {
+                "enabled": aq.is_enabled(),
+                "threshold_days": aq.threshold_days(),
+                "window_days": aq.window_days(),
+            }
+        except ImportError as exc:
+            # Pre-PR-#294 deployments don't have the bridge.
+            logger.debug(
+                "world_model quarantine bridge import failed: %s",
+                exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model quarantine bridge readout raised: %s",
+                exc,
+            )
+
+        # ``alert_paused`` attribute itself is gated behind
+        # PR #294's QuarantineState extension; fall back to
+        # empty list on older schema.
+        alert_paused = sorted(getattr(s, "alert_paused", frozenset()))
+
+        return {
+            "checked": True,
+            "scope": "fleet",
+            "exemptions": sorted(s.exemptions),
+            "released": sorted(s.released),
+            "alert_paused": alert_paused,
+            "bridge": bridge,
+        }
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -566,6 +631,7 @@ class WorldModel:
         recent_outcomes = self._section_recent_outcomes(
             store_id=store_id,
         )
+        quarantine = self._section_quarantine()
 
         return {
             "store_id": store_id,
@@ -580,6 +646,7 @@ class WorldModel:
             "decisions": decisions,
             "transfers": transfers,
             "recent_outcomes": recent_outcomes,
+            "quarantine": quarantine,
         }
 
 
