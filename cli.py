@@ -5347,6 +5347,33 @@ def _cmd_world_model_show(args) -> None:
                     f"window={bridge.get('window_days', '?')}d)"
                 )
 
+            # Per-store roll-up: which fleet entries actually
+            # affect THIS store?
+            for_this = quarantine.get("for_this_store") or {}
+            this_paused = for_this.get("alert_paused") or []
+            this_exempt = for_this.get("exempt") or []
+            this_released = for_this.get("released") or []
+            if this_paused or this_exempt or this_released:
+                print(
+                    f"  For this store ({quarantine.get('store_id')}):"
+                )
+                if this_paused:
+                    print(
+                        f"    Blocked engines ({len(this_paused)}): "
+                        f"{', '.join(this_paused)}"
+                    )
+                if this_exempt:
+                    print(
+                        f"    Exempt engines ({len(this_exempt)}): "
+                        f"{', '.join(this_exempt)}"
+                    )
+                if this_released:
+                    print(
+                        f"    Released engines "
+                        f"({len(this_released)}): "
+                        f"{', '.join(this_released)}"
+                    )
+
 
 def _cmd_model_router(args) -> None:
     """Dispatcher for ``shopai model-router <verb>``."""

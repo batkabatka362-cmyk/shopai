@@ -508,27 +508,32 @@ class WorldModel:
             "recent": rows,
         }
 
-    def _section_quarantine(self) -> dict:
-        """Fleet-wide quarantine state.
+    def _section_quarantine(
+        self, store_id: str | None = None,
+    ) -> dict:
+        """Quarantine state, optionally filtered to a specific
+        store.
 
-        Quarantine state is GLOBAL today (single
-        ``quarantine_state.json`` shared across stores), so this
-        section's data isn't per-store. It's included in the
-        per-store snapshot anyway because alert-paused engines
-        affect every store's enqueue path -- operators
-        inspecting one store's snapshot need to know which
-        engines won't even attempt actions.
+        The underlying quarantine state file is GLOBAL, but the
+        ``alert_paused`` set is now ``(engine, store_id)``
+        tuples (per-store granularity, from PR #320). When the
+        snapshot is being built for a specific store, this
+        section returns:
 
-        Returns:
-            ``{"checked": True, "scope": "fleet",
-              "exemptions": [...], "released": [...],
-              "alert_paused": [...],
-              "bridge": {enabled, threshold_days, window_days}}``
+          - The full fleet-wide listing (exemptions, released,
+            all alert_paused pairs across the fleet) -- so
+            operators see the global picture.
+          - A ``for_this_store`` sub-block surfacing ONLY the
+            entries affecting ``store_id``: fleet-wide pauses
+            (which affect every store) plus the per-store
+            pauses specifically for ``store_id``.
+
+        When called without ``store_id`` (e.g. from a fleet
+        view), ``for_this_store`` stays empty.
 
         Bridge config is gated behind PR #294's
         ``core.approval.alert_quarantine`` module. Missing
-        module falls back to ``bridge: None`` rather than
-        crashing the section.
+        module falls back to ``bridge: None``.
         """
         try:
             from core.approval import quarantine
@@ -610,15 +615,51 @@ class WorldModel:
                 exc,
             )
 
+        # Per-store filter: which fleet-level entries actually
+        # block THIS store? Fleet-wide pauses ((engine, None))
+        # affect every store. Per-store pauses match only on
+        # exact store_id. Exempt + released are engine-only and
+        # apply fleet-wide -- so they affect this store too if
+        # present.
+        for_this_store: dict[str, list[str]] = {
+            "exempt": [],
+            "released": [],
+            "alert_paused": [],
+        }
+        if store_id is not None:
+            for_this_store["exempt"] = sorted(s.exemptions)
+            for_this_store["released"] = sorted(s.released)
+            engines_blocked: set[str] = set()
+            for entry in raw_paused:
+                if isinstance(entry, tuple) and len(entry) == 2:
+                    engine, pause_store = entry
+                    if (
+                        pause_store is None
+                        or pause_store == store_id
+                    ):
+                        engines_blocked.add(engine)
+                else:
+                    # Legacy string entry = fleet-wide
+                    engines_blocked.add(str(entry))
+            for_this_store["alert_paused"] = sorted(
+                engines_blocked,
+            )
+
         return {
             "checked": True,
-            "scope": "fleet",
+            # Scope changed: when a store filter is active the
+            # data has both fleet-wide AND per-store views.
+            "scope": (
+                "per_store" if store_id is not None else "fleet"
+            ),
+            "store_id": store_id,
             "exemptions": sorted(s.exemptions),
             "released": sorted(s.released),
             "alert_paused": alert_paused,
             "alert_paused_pairs": alert_paused_pairs,
             "alert_release_candidates": release_candidates,
             "alert_pause_candidates": pause_candidates,
+            "for_this_store": for_this_store,
             "bridge": bridge,
         }
 
@@ -680,7 +721,7 @@ class WorldModel:
         recent_outcomes = self._section_recent_outcomes(
             store_id=store_id,
         )
-        quarantine = self._section_quarantine()
+        quarantine = self._section_quarantine(store_id=store_id)
 
         return {
             "store_id": store_id,
