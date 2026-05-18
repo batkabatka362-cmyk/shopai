@@ -6718,6 +6718,49 @@ def _cmd_engine_summary(args) -> None:
     # Outcome rollup (success / failure / revenue).
     outcomes = queue.engine_outcome_stats(engine_name) or {}
 
+    # Quarantine + alert-history block (PR-#306-era addition).
+    # Answers the operator question "is this engine paused, and
+    # why?" without requiring a separate ``approvals quarantine
+    # --list`` invocation.
+    quarantine_info: dict = {}
+    try:
+        from core.approval import quarantine as qm
+        qstate = qm.load_state()
+        quarantine_info = {
+            "exempt": qstate.is_exempt(engine_name),
+            "released": qstate.is_released(engine_name),
+            "alert_paused": qstate.is_alert_paused(engine_name),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine summary quarantine probe raised: %s", exc,
+        )
+
+    alert_streak = 0
+    last_alert_at: float | None = None
+    try:
+        from core.approval import alert_history
+        consecutive = (
+            alert_history.consecutive_runs_per_engine(
+                window_seconds=86400.0 * 7.0,
+            )
+        )
+        alert_streak = int(consecutive.get(engine_name, 0))
+        events = alert_history.recent_history(
+            since_seconds=86400.0 * 365.0,
+        )
+        for e in events:
+            if e.engine == engine_name:
+                last_alert_at = e.recorded_at
+                break  # newest-first; first match is the latest
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine summary alert_history probe raised: %s", exc,
+        )
+    if quarantine_info:
+        quarantine_info["alert_streak_7d"] = alert_streak
+        quarantine_info["last_alert_at"] = last_alert_at
+
     # Recent actions across the two most informative statuses --
     # EXECUTED first (the "what's been shipped" feed) then FAILED
     # (the "what's been breaking" feed). Capped at recent_n total.
@@ -6753,6 +6796,7 @@ def _cmd_engine_summary(args) -> None:
             "counts_by_status": counts,
             "total_activity": total_activity,
             "outcomes": outcomes,
+            "quarantine": quarantine_info,
             "recent": recent,
         }, indent=2, default=str))
         return
@@ -6788,6 +6832,34 @@ def _cmd_engine_summary(args) -> None:
     else:
         print("  effectiveness score: n/a (no polarised outcomes)")
     print()
+    if quarantine_info:
+        # Compose a one-line status -- skip the section entirely
+        # when there's nothing to say (healthy + no recent alerts).
+        flags = []
+        if quarantine_info.get("exempt"):
+            flags.append("exempt")
+        if quarantine_info.get("released"):
+            flags.append("released")
+        if quarantine_info.get("alert_paused"):
+            flags.append("alert_paused")
+        streak = quarantine_info.get("alert_streak_7d", 0)
+        last = quarantine_info.get("last_alert_at")
+        if flags or streak > 0:
+            print("Quarantine:")
+            if flags:
+                print(f"  Flags: {', '.join(flags)}")
+            if streak > 0:
+                print(f"  Alert streak (last 7d): {streak} day(s)")
+            if last:
+                age = time.time() - float(last)
+                ago = (
+                    f"{int(age)}s ago" if age < 60
+                    else f"{int(age/60)}m ago" if age < 3600
+                    else f"{int(age/3600)}h ago" if age < 86400
+                    else f"{int(age/86400)}d ago"
+                )
+                print(f"  Last alert firing: {ago}")
+            print()
     if recent:
         print(f"Recent activity ({len(recent)}):")
         now = time.time()
