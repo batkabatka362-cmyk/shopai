@@ -14,6 +14,10 @@ Modules:
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
+  * ``locale_markets`` -- niche-aware market + currency
+    expansion recommendations (e.g. beauty/fashion open
+    UK + EU + AU Day 1; food domestic-only). Output is
+    drop-in for ``SHOPIFY_CREATE_MARKET``.
   * ``page_generator`` / ``page_applier`` -- niche-aware
     About / Contact / FAQ / Shipping pages via
     ``SHOPIFY_CREATE_PAGE``.
