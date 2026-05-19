@@ -43,6 +43,17 @@ _NICHE_REFUND_WINDOWS: dict[str, int] = {
     "home": 30,
     "tech": 30,
     "food": 0,  # food typically non-refundable
+    # Pets: durables 14d (toys/leashes/beds); consumables
+    # (food/treats) typically non-refundable but handled in
+    # the body copy, not the window.
+    "pets": 14,
+    # Fitness apparel + supplements: 14d for hygiene reasons.
+    "fitness": 14,
+    # Jewelry: 30d standard; personalised is exempt -- body
+    # text spells this out.
+    "jewelry": 30,
+    "outdoor": 30,
+    "baby": 30,
     "general": 30,
 }
 

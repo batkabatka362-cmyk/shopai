@@ -71,6 +71,25 @@ class TestGeneratePages:
         # general fallback
         assert "Quality products" in out["About"]
 
+    def test_extended_niches_have_distinct_taglines(self):
+        """Niches added beyond initial 6 each have their own
+        About-page tagline; verify the tagline is present and
+        not just the general fallback."""
+        snippets = {
+            "pets": "animals we love",
+            "fitness": "every body that moves",
+            "jewelry": "Heirloom-quality",
+            "outdoor": "trail, water",
+            "baby": "smallest moments",
+        }
+        for niche, snippet in snippets.items():
+            out = generate_pages(
+                store_name="Acme", niche=niche,
+            )
+            assert snippet in out["About"], niche
+            # Must NOT fall through to the general default
+            assert "Quality products" not in out["About"], niche
+
     def test_founder_name_threaded_into_about(self):
         out = generate_pages(
             store_name="Acme",

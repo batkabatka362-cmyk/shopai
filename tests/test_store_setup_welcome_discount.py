@@ -51,6 +51,20 @@ class TestGenerator:
         assert out["percentage"] == 10
         assert out["code"] == "WELCOME10"
 
+    def test_extended_niches_have_expected_pct(self):
+        """Niches added beyond the initial 6: pets/fitness/
+        baby get 15%, jewelry/outdoor get 10%."""
+        expectations = {
+            "pets": 15, "fitness": 15, "baby": 15,
+            "jewelry": 10, "outdoor": 10,
+        }
+        for niche, pct in expectations.items():
+            out = generate_welcome_discount(
+                store_name="Acme", niche=niche,
+            )
+            assert out["percentage"] == pct, niche
+            assert out["code"] == f"WELCOME{pct}", niche
+
     def test_unknown_niche_falls_back_to_general(self):
         out = generate_welcome_discount(
             store_name="Acme", niche="ufo_parts",

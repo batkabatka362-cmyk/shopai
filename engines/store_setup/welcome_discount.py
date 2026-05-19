@@ -43,6 +43,18 @@ _NICHE_PERCENTAGES: dict[str, int] = {
     "tech": 10,
     "home": 10,
     "food": 10,
+    # Pets / fitness / baby: higher discount drives the first
+    # bag-of-food / first-supplement-tub / first-onesie
+    # repeat-purchase loop -- LTV recovers the up-front
+    # margin hit quickly.
+    "pets": 15,
+    "fitness": 15,
+    "baby": 15,
+    # Jewelry: tight margin on luxury / mid-range; 10% is the
+    # convention for first-purchase nudges without devaluing
+    # the brand.
+    "jewelry": 10,
+    "outdoor": 10,
     "general": 10,
 }
 
