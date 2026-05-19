@@ -17,6 +17,10 @@ Modules:
   * ``page_generator`` / ``page_applier`` -- niche-aware
     About / Contact / FAQ / Shipping pages via
     ``SHOPIFY_CREATE_PAGE``.
+  * ``shipping_zones`` -- niche-aware shipping zone +
+    rate recommendations (operator-facing; no delivery
+    profile write adapter yet). Persists as
+    ``shipping-zones`` page.
   * ``policy_generator`` / ``policy_applier`` -- niche +
     region aware legal policies via
     ``SHOPIFY_UPDATE_SHOP_POLICY``.
