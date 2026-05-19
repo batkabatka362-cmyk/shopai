@@ -2198,6 +2198,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    approvals_quarantine_simulate = approvals_sub.add_parser(
+        "quarantine-simulate",
+        help=(
+            "Dry-run: 'what would happen if I enqueued an "
+            "action for ENGINE on STORE_ID right now?'. "
+            "Returns the would-be decision (paused / rejected "
+            "/ approved) and explanation, without actually "
+            "enqueueing anything."
+        ),
+    )
+    approvals_quarantine_simulate.add_argument(
+        "engine",
+        help="Engine name to simulate (e.g. loyalty)",
+    )
+    approvals_quarantine_simulate.add_argument(
+        "--store", default=None, metavar="STORE_ID",
+        help=(
+            "Per-store scope. When omitted, simulates a "
+            "fleet-wide (no store_id) enqueue."
+        ),
+    )
+    approvals_quarantine_simulate.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     approvals_alert_history = approvals_sub.add_parser(
         "alert-history",
         help=(
@@ -13827,6 +13853,9 @@ def _cmd_approvals(args) -> None:
     if verb == "quarantine":
         _cmd_approvals_quarantine(args)
         return
+    if verb == "quarantine-simulate":
+        _cmd_approvals_quarantine_simulate(args)
+        return
     if verb == "alert-history":
         _cmd_approvals_alert_history(args)
         return
@@ -14200,6 +14229,111 @@ def _cmd_approvals_quarantine(args) -> None:
             f"    window days:           "
             f"{aq_block['window_days']}"
         )
+
+
+def _cmd_approvals_quarantine_simulate(args) -> None:
+    """Dry-run the quarantine evaluator for a given (engine,
+    store_id) pair.
+
+    Answers "if I enqueue an action for ENGINE on STORE_ID
+    right now, would it be quarantined, and why?" -- without
+    actually creating an action.
+
+    Calls ``quarantine.evaluate()`` directly. The Pattern J
+    pytest gate inside ``maybe_quarantine`` is bypassed since
+    we don't go through the enqueue path; this is read-only.
+    """
+    from core.approval import quarantine as qm
+    from core.approval.queue import get_approval_queue
+
+    as_json = bool(getattr(args, "json", False))
+    engine = (getattr(args, "engine", "") or "").strip()
+    store_id = getattr(args, "store", None) or None
+
+    if not engine:
+        msg = "engine name is required"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    try:
+        queue = get_approval_queue()
+        decision = qm.evaluate(
+            engine=engine, queue=queue, store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"simulate failed: {exc}"
+        logger.debug(msg)
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    # Read the persisted state too, so the operator sees the
+    # full picture without a follow-up command.
+    try:
+        state = qm.load_state()
+        exempt = state.is_exempt(engine)
+        released = state.is_released(engine)
+        alert_paused = state.is_alert_paused(
+            engine, store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("simulate state probe raised: %s", exc)
+        exempt = released = alert_paused = False
+
+    verdict = (
+        "would_be_quarantined"
+        if decision.should_quarantine
+        else "would_proceed"
+    )
+
+    if as_json:
+        print(json.dumps({
+            "engine": engine,
+            "store_id": store_id,
+            "verdict": verdict,
+            "should_quarantine": decision.should_quarantine,
+            "reason": decision.reason,
+            "negative_ratio": decision.negative_ratio,
+            "total_polarised": decision.total_polarised,
+            "state": {
+                "exempt": exempt,
+                "released": released,
+                "alert_paused": alert_paused,
+            },
+        }, indent=2, default=str))
+        return
+
+    scope = f" on store '{store_id}'" if store_id else " (fleet-wide)"
+    print(f"Simulate: engine '{engine}'{scope}")
+    print()
+    if decision.should_quarantine:
+        print(f"  Verdict: WOULD BE QUARANTINED (REJECTED)")
+    else:
+        print(f"  Verdict: would proceed (PENDING)")
+    print(f"  Reason: {decision.reason}")
+    if decision.negative_ratio is not None:
+        print(
+            f"  Negative ratio: {decision.negative_ratio:.2%} "
+            f"({decision.total_polarised} polarised outcomes)"
+        )
+    print()
+    print("State for this engine:")
+    print(f"  exempt:       {exempt}")
+    print(f"  released:     {released}")
+    print(f"  alert_paused: {alert_paused}")
 
 
 def _cmd_approvals_alert_history(args) -> None:
