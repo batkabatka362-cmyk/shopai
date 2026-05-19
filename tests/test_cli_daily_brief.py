@@ -1183,3 +1183,85 @@ class TestFleetHealthRollup:
         # still renders
         assert data["fleet_health"]["checked"] is False
         assert data["totals"]["unhealthy_engines"] == 0
+
+
+# --- Trajectory recording via record_scores ------------------
+
+
+class TestRecordScoresWiring:
+    """After scoring the fleet, daily-brief should also record
+    each engine's current score to the persistent trajectory
+    log via ``engine_health_history.record_scores``."""
+
+    def test_record_scores_called_with_scored_rows(self, cli):
+        sm = _fake_sm([])
+        verdicts = {
+            "loyalty": "healthy",
+            "cart_recovery": "warning",
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {k: "g" for k in verdicts},
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=lambda engine, **kw: _stub_health(
+                engine, verdicts[engine],
+                score={"healthy": 9, "warning": 6}[
+                    verdicts[engine]
+                ],
+            ),
+        ), patch(
+            "core.approval.engine_health_history.record_scores",
+        ) as record_mock:
+            _capture(cli._cmd_daily_brief, _ns(json=True))
+        record_mock.assert_called_once()
+        passed = record_mock.call_args.args[0]
+        engines = {r["engine"] for r in passed}
+        assert engines == {"loyalty", "cart_recovery"}
+
+    def test_record_skipped_when_no_engines_scored(self, cli):
+        """Empty roster -> nothing scored -> record_scores never
+        called."""
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {}, clear=True,
+        ), patch(
+            "core.approval.engine_health_history.record_scores",
+        ) as record_mock:
+            _capture(cli._cmd_daily_brief, _ns(json=True))
+        record_mock.assert_not_called()
+
+    def test_record_scores_raise_doesnt_break_brief(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {"loyalty": "g"}, clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_stub_health("loyalty", "healthy"),
+        ), patch(
+            "core.approval.engine_health_history.record_scores",
+            side_effect=RuntimeError("disk full"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        # The fleet_health block + the rest of the brief still
+        # render even when the trajectory writer raises.
+        data = json.loads(out)
+        assert data["fleet_health"]["checked"] is True
