@@ -5342,6 +5342,41 @@ def _cmd_world_model_fleet(args) -> None:
         f"  Total: ${total_revenue:,.2f} revenue, "
         f"{total_pending} pending approval(s) across fleet"
     )
+    # Fleet engine-health rollup -- ``fleet_health`` is GLOBAL
+    # (same content in every per-store snapshot) so we pull it
+    # from the first store that scored successfully. Omitted
+    # when no store snapshotted cleanly or the rollup is empty.
+    fh = None
+    for r in rows:
+        candidate = r.get("fleet_health")
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("checked")
+        ):
+            fh = candidate
+            break
+    if fh:
+        vc = fh.get("verdict_counts") or {}
+        avg = fh.get("average_score")
+        avg_str = (
+            f"{avg:.1f}/10"
+            if isinstance(avg, (int, float))
+            else "n/a"
+        )
+        print(
+            f"  Engine health: avg={avg_str}  "
+            f"healthy={vc.get('healthy', 0)}  "
+            f"warning={vc.get('warning', 0)}  "
+            f"unhealthy={vc.get('unhealthy', 0)}"
+        )
+        sickest = fh.get("sickest") or []
+        if vc.get("unhealthy", 0) > 0 and sickest:
+            top = ", ".join(
+                f"{s.get('engine', '?')}"
+                f"({s.get('score', 0)}/10)"
+                for s in sickest[:3]
+            )
+            print(f"    Sickest: {top}")
 
 
 def _cmd_world_model_show(args) -> None:

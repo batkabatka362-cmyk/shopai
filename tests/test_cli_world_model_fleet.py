@@ -237,3 +237,146 @@ class TestJsonEnvelope:
         assert "stores" in data
         assert len(data["stores"]) == 1
         assert data["stores"][0]["store_id"] == "a"
+
+
+# --- Fleet engine-health rollup -------------------------------
+
+
+def _snap_with_health(
+    store_id, *, verdict_counts=None, sickest=None,
+    avg_score=8.0, checked=True,
+):
+    """Build a snapshot dict that includes a fleet_health
+    section in the form ``_section_fleet_health`` produces."""
+    snap = _snap(store_id)
+    snap["fleet_health"] = {
+        "checked": checked,
+        "verdict_counts": verdict_counts or {
+            "healthy": 3, "warning": 1, "unhealthy": 0,
+        },
+        "sickest": sickest or [],
+        "average_score": avg_score,
+        "total_engines": 4,
+    }
+    return snap
+
+
+class TestFleetHealthLine:
+
+    def test_renders_summary_line(self, cli):
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.world_model.WorldModel",
+        ) as wm_cls:
+            wm_cls.return_value.snapshot.return_value = (
+                _snap_with_health("a")
+            )
+            out = _capture(
+                cli._cmd_world_model_fleet, _ns(),
+            )
+        assert "Engine health:" in out
+        assert "avg=8.0/10" in out
+        assert "healthy=3" in out
+        assert "warning=1" in out
+        assert "unhealthy=0" in out
+
+    def test_sickest_shown_when_unhealthy(self, cli):
+        sm = _fake_sm([{"store_id": "a"}])
+        snap = _snap_with_health(
+            "a",
+            verdict_counts={
+                "healthy": 1, "warning": 0, "unhealthy": 2,
+            },
+            sickest=[
+                {"engine": "loyalty", "score": 3,
+                 "verdict": "unhealthy"},
+                {"engine": "cart_recovery", "score": 4,
+                 "verdict": "unhealthy"},
+            ],
+            avg_score=5.5,
+        )
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.world_model.WorldModel",
+        ) as wm_cls:
+            wm_cls.return_value.snapshot.return_value = snap
+            out = _capture(
+                cli._cmd_world_model_fleet, _ns(),
+            )
+        assert "Sickest:" in out
+        assert "loyalty(3/10)" in out
+        assert "cart_recovery(4/10)" in out
+
+    def test_sickest_hidden_when_all_healthy(self, cli):
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.world_model.WorldModel",
+        ) as wm_cls:
+            wm_cls.return_value.snapshot.return_value = (
+                _snap_with_health(
+                    "a",
+                    verdict_counts={
+                        "healthy": 4,
+                        "warning": 0,
+                        "unhealthy": 0,
+                    },
+                )
+            )
+            out = _capture(
+                cli._cmd_world_model_fleet, _ns(),
+            )
+        assert "Engine health:" in out
+        # No Sickest line when zero unhealthy
+        assert "Sickest:" not in out
+
+    def test_no_fleet_health_when_unchecked(self, cli):
+        """If fleet_health is absent / checked=False, no line."""
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.world_model.WorldModel",
+        ) as wm_cls:
+            # Default snap doesn't have fleet_health at all
+            wm_cls.return_value.snapshot.return_value = _snap("a")
+            out = _capture(
+                cli._cmd_world_model_fleet, _ns(),
+            )
+        assert "Engine health:" not in out
+
+    def test_picks_first_checked_store(self, cli):
+        """fleet_health is GLOBAL so it's the same across all
+        per-store snapshots. The renderer should pick the first
+        store whose snapshot includes it (skipping snapshot
+        errors)."""
+        sm = _fake_sm([
+            {"store_id": "broken"},
+            {"store_id": "good"},
+        ])
+        # Snapshot raises for 'broken', returns valid for 'good'
+        snapshot_map = {
+            "good": _snap_with_health("good"),
+        }
+
+        def _snap_side(store_id, skip_live=True):
+            if store_id == "broken":
+                raise RuntimeError("snapshot dead")
+            return snapshot_map[store_id]
+
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.world_model.WorldModel",
+        ) as wm_cls:
+            wm_cls.return_value.snapshot.side_effect = _snap_side
+            out = _capture(
+                cli._cmd_world_model_fleet, _ns(),
+            )
+        # broken store row shows the error inline
+        assert "broken" in out
+        assert "Engine health:" in out
