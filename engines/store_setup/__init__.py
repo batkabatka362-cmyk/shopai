@@ -11,6 +11,10 @@ Modules:
     URLs to Shopify Files via ``SHOPIFY_UPLOAD_FILE``.
   * ``collection_seeder`` -- niche-aware starter collections
     via ``SHOPIFY_CREATE_COLLECTION``.
+  * ``cross_sell_rules`` -- niche-aware recommendation rule
+    templates (trigger -> suggestion -> location), consumed
+    by future ``cross_sell`` engines or pasted into Loox /
+    Stamped / Recommendz.
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
