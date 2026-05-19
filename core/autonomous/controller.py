@@ -166,6 +166,72 @@ def _compute_fleet_health() -> dict[str, Any]:
     }
 
 
+def _detect_regressions() -> dict[str, Any]:
+    """Run the engine_health_history regression detector and
+    surface flagged engines on the cycle result.
+
+    Reads the persisted score log; engines whose latest score
+    has dropped from their baseline median by ``min_drop=3``
+    points (over a 7-day baseline / 1-day latest window) are
+    surfaced. Logs a WARNING line per cycle with the top 5
+    sickest engines + drop sizes so operators tailing the
+    cycle logs catch directional degradation early.
+
+    Source-failure isolated: an ImportError (history module
+    not yet on PYTHONPATH) returns ``{regressions: [], scored:
+    0, error: ...}``. Per-engine probe failures inside
+    ``find_regressions`` are already swallowed by that helper.
+
+    Returns:
+        ``{regressions: list[dict], count: int}`` plus an
+        ``error`` field on import failure.
+    """
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "controller _detect_regressions import failed: %s",
+            exc,
+        )
+        return {"regressions": [], "count": 0, "error": str(exc)}
+
+    try:
+        flagged = find_regressions()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "controller _detect_regressions raised: %s", exc,
+        )
+        return {"regressions": [], "count": 0, "error": str(exc)}
+
+    rows = [
+        {
+            "engine": r.engine,
+            "latest_score": r.latest_score,
+            "latest_verdict": r.latest_verdict,
+            "baseline_score": r.baseline_score,
+            "drop": r.drop,
+            "samples_in_baseline": r.samples_in_baseline,
+        }
+        for r in flagged
+    ]
+
+    if rows:
+        top = ", ".join(
+            f"{r['engine']}({r['drop']:.1f}pt)"
+            for r in rows[:5]
+        )
+        logger.warning(
+            "health_regressions: %d engine(s) regressed [%s] "
+            "-- inspect via 'shopai approvals "
+            "health-regressions'",
+            len(rows), top,
+        )
+
+    return {"regressions": rows, "count": len(rows)}
+
+
 def _bootstrap_brain_stack() -> bool:
     """Attach goal-feedback handlers to the approval-queue hooks.
 
@@ -622,6 +688,19 @@ class AutonomousController:
             )
         except Exception as exc:
             _record("fleet_health", exc)
+
+        # Phase 0.6: HEALTH REGRESSIONS -- engines whose latest
+        # recorded score has dropped sharply from their recent
+        # baseline (read from engine_health_history). Cheap; one
+        # file read per cycle. WARNING logged when any engine
+        # is flagged so operators tailing the logs catch
+        # directional degradation early.
+        try:
+            cycle_result["phases"]["health_regressions"] = (
+                _detect_regressions()
+            )
+        except Exception as exc:
+            _record("health_regressions", exc)
 
         # Phase 1: DATA — Fetch current store state
         data = self._phase_data(sid)
