@@ -4006,6 +4006,22 @@ def _cmd_daily_brief(args) -> None:
                 sum(int(r["score"]) for r in scored) / len(scored),
                 2,
             )
+            # Record each engine's current score to the
+            # trajectory log so future ``shopai engine pulse
+            # <engine> --history`` calls see the trend. Pattern J
+            # guard in record_scores short-circuits under
+            # pytest. Failure here is silent -- we already
+            # surfaced the verdicts above.
+            try:
+                from core.approval.engine_health_history import (
+                    record_scores,
+                )
+                record_scores(scored)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "daily-brief engine_health_history "
+                    "record_scores raised: %s", exc,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief fleet_health rollup raised: %s", exc,
