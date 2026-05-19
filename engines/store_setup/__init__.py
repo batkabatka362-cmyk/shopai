@@ -11,6 +11,10 @@ Modules:
     URLs to Shopify Files via ``SHOPIFY_UPLOAD_FILE``.
   * ``collection_seeder`` -- niche-aware starter collections
     via ``SHOPIFY_CREATE_COLLECTION``.
+  * ``coupon_playbook`` -- niche-aware library of 6 evergreen
+    discount specs (free shipping / bundle / loyalty /
+    email / cart recovery / seasonal). Specs feed into
+    ``SHOPIFY_CREATE_DISCOUNT`` directly.
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
