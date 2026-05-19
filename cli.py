@@ -2270,6 +2270,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--list", action="store_true",
         help="Show current allowlist + threshold settings",
     )
+    auto_action.add_argument(
+        "--audit", action="store_true",
+        help=(
+            "Score every engine in the allowlist via "
+            "engine_health and recommend removal for any that "
+            "are currently 'unhealthy'. Cron-friendly: exit "
+            "code 1 if any allowlist engine is unhealthy."
+        ),
+    )
     approvals_auto_config.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
@@ -13964,8 +13973,17 @@ def _cmd_approvals_auto_config(args) -> None:
     history / ratio / confidence) are always included so an
     operator inspecting the config sees the full evaluator
     contract, not just the allowlist.
+
+    ``--audit`` scores every allowlist engine via engine_health
+    and recommends removal for any whose verdict is currently
+    ``unhealthy``. Cron-friendly: exit code 1 if any allowlist
+    engine is unhealthy.
     """
     from core.approval import auto_approve as aa
+
+    if getattr(args, "audit", False):
+        _audit_auto_approve_allowlist(args)
+        return
 
     if args.enable:
         cfg = aa.enable_engine(args.enable)
@@ -14017,6 +14035,90 @@ def _cmd_approvals_auto_config(args) -> None:
     print(f"    min outcomes observed: {aa.MIN_OUTCOMES_OBSERVED}")
     print(f"    min outcome ratio:     {aa.MIN_OUTCOME_RATIO:.2f}")
     print(f"    min confidence:        {aa.MIN_CONFIDENCE:.2f}")
+
+
+def _audit_auto_approve_allowlist(args) -> None:
+    """Score every engine in the auto-approve allowlist and flag
+    those whose current ``engine_health`` verdict is unhealthy.
+
+    Output: a per-engine row with score / verdict / first concern,
+    plus a summary block. Exit code 1 when ANY allowlist engine
+    is unhealthy so monitoring pipelines can fail-fast.
+    """
+    from core.approval import auto_approve as aa
+    from core.approval.engine_health import score_engine
+
+    as_json = bool(getattr(args, "json", False))
+    cfg = aa.load_config()
+    allowlist = sorted(cfg.allowlist)
+
+    audit_rows: list[dict] = []
+    for engine in allowlist:
+        try:
+            health = score_engine(engine)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "auto-config audit: score_engine raised for %s: "
+                "%s", engine, exc,
+            )
+            continue
+        audit_rows.append({
+            "engine": engine,
+            "score": health.score,
+            "verdict": health.verdict,
+            "concerns": list(health.concerns),
+        })
+
+    unhealthy = [
+        r for r in audit_rows if r["verdict"] == "unhealthy"
+    ]
+
+    if as_json:
+        print(json.dumps({
+            "allowlist_size": len(allowlist),
+            "audit_rows": audit_rows,
+            "unhealthy_engines": [r["engine"] for r in unhealthy],
+            "recommendation": (
+                "remove unhealthy engines from allowlist via "
+                "'shopai approvals auto-config --disable <engine>'"
+                if unhealthy else "all engines healthy"
+            ),
+        }, indent=2, default=str))
+    else:
+        if not allowlist:
+            print("Auto-approve allowlist is empty.")
+            print("Nothing to audit.")
+            return
+        print(
+            f"Auto-approve allowlist audit "
+            f"({len(allowlist)} engine(s)):"
+        )
+        print()
+        for r in audit_rows:
+            concerns = r["concerns"]
+            first_concern = concerns[0] if concerns else "-"
+            print(
+                f"  {r['score']:>2d}/10  "
+                f"{r['verdict']:<9s}  "
+                f"{r['engine']:<28s}  "
+                f"{first_concern}"
+            )
+        print()
+        if unhealthy:
+            print(
+                f"  {len(unhealthy)} unhealthy engine(s) -- "
+                "consider removal:"
+            )
+            for r in unhealthy:
+                print(
+                    f"    shopai approvals auto-config "
+                    f"--disable {r['engine']}"
+                )
+        else:
+            print("  All allowlist engines healthy.")
+
+    if unhealthy:
+        sys.exit(1)
 
 
 def _cmd_approvals_quarantine(args) -> None:
