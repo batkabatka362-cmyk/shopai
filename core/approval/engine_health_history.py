@@ -294,3 +294,112 @@ def prune(
     if dropped:
         _save_events(kept)
     return dropped
+
+
+@dataclass(frozen=True)
+class HealthRegression:
+    """One engine flagged as regressing from its baseline score.
+
+    ``drop = baseline_score - latest_score`` (positive means
+    the engine got WORSE since the baseline window).
+    """
+
+    engine: str
+    latest_score: int
+    latest_verdict: str
+    baseline_score: float
+    drop: float
+    samples_in_baseline: int
+
+
+def find_regressions(
+    *,
+    min_drop: float = 3.0,
+    baseline_window_seconds: float = 86400.0 * 7.0,
+    latest_window_seconds: float = 86400.0 * 1.0,
+    min_baseline_samples: int = 3,
+    now: float | None = None,
+) -> list[HealthRegression]:
+    """Detect engines whose latest score has dropped sharply
+    from their recent baseline.
+
+    Compares each engine's MOST RECENT event in the latest
+    window against the MEDIAN of events in the baseline window
+    (events older than the latest window's start). Engines with
+    ``drop >= min_drop`` are flagged.
+
+    Args:
+        min_drop: Minimum score-drop in points (e.g. 3.0 means
+            "score dropped by 3+ out of 10"). Default 3.
+        baseline_window_seconds: Look-back window for the
+            baseline median (default 7 days).
+        latest_window_seconds: Window for picking the "latest"
+            score (default 1 day -- daily-brief records once per
+            day on the operator's cron).
+        min_baseline_samples: Skip engines with fewer than this
+            many events in the baseline (statistically noisy).
+            Default 3.
+        now: Override for testing.
+
+    Returns:
+        List of :class:`HealthRegression`, sorted by drop size
+        descending (biggest regression first).
+    """
+    if now is None:
+        now = time.time()
+    baseline_cutoff = now - max(0.0, float(baseline_window_seconds))
+    latest_cutoff = now - max(0.0, float(latest_window_seconds))
+
+    events = _load_raw_events()
+    # Group by engine within the baseline window.
+    by_engine: dict[str, list[ScoreEvent]] = {}
+    for e in events:
+        if e.recorded_at < baseline_cutoff:
+            continue
+        by_engine.setdefault(e.engine, []).append(e)
+
+    out: list[HealthRegression] = []
+    for engine, bucket in by_engine.items():
+        latest_candidates = [
+            ev for ev in bucket
+            if ev.recorded_at >= latest_cutoff
+        ]
+        if not latest_candidates:
+            continue
+        latest = max(
+            latest_candidates, key=lambda ev: ev.recorded_at,
+        )
+
+        # Baseline = events older than the latest window so
+        # the latest event itself doesn't skew its own
+        # baseline.
+        baseline = [
+            ev for ev in bucket
+            if ev.recorded_at < latest_cutoff
+        ]
+        if len(baseline) < min_baseline_samples:
+            continue
+
+        sorted_scores = sorted(ev.score for ev in baseline)
+        mid = len(sorted_scores) // 2
+        if len(sorted_scores) % 2 == 1:
+            median = float(sorted_scores[mid])
+        else:
+            median = (
+                sorted_scores[mid - 1] + sorted_scores[mid]
+            ) / 2.0
+
+        drop = median - latest.score
+        if drop < min_drop:
+            continue
+        out.append(HealthRegression(
+            engine=engine,
+            latest_score=latest.score,
+            latest_verdict=latest.verdict,
+            baseline_score=median,
+            drop=drop,
+            samples_in_baseline=len(baseline),
+        ))
+
+    out.sort(key=lambda r: -r.drop)
+    return out
