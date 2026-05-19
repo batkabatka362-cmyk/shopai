@@ -284,3 +284,196 @@ class TestEngineAlertInterface:
         assert "%" in result[0].detail
         assert "recent" in result[0].detail
         assert "baseline" in result[0].detail
+
+
+# ─── Per-store variant ───────────────────────────────────────
+
+
+def _row_with_store(*, id_, engine, store_id, decided_at):
+    return {
+        "id": id_,
+        "engine": engine,
+        "store_id": store_id,
+        "decided_at": decided_at,
+    }
+
+
+class TestPerStoreVariant:
+    """``compute_engine_alerts_per_store`` produces (engine,
+    store_id) alerts -- empire-AGI pivot for engine X's score
+    dropping on store_a specifically."""
+
+    def test_alerts_scope_to_store(self):
+        from core.approval.outcome_trends import (
+            compute_engine_alerts_per_store,
+        )
+        now = time.time()
+        recent_ts = now - 3600.0  # 1h ago
+        old_ts = now - 100 * 3600.0  # 100h ago
+        # store_a: degrading (recent negative, old positive)
+        rows = [
+            _row_with_store(
+                id_=f"a_r{i}", engine="loyalty",
+                store_id="store_a", decided_at=recent_ts,
+            )
+            for i in range(4)
+        ] + [
+            _row_with_store(
+                id_=f"a_o{i}", engine="loyalty",
+                store_id="store_a", decided_at=old_ts,
+            )
+            for i in range(8)
+        ]
+        # store_b: stable (all positive)
+        rows += [
+            _row_with_store(
+                id_=f"b_r{i}", engine="loyalty",
+                store_id="store_b", decided_at=recent_ts,
+            )
+            for i in range(4)
+        ] + [
+            _row_with_store(
+                id_=f"b_o{i}", engine="loyalty",
+                store_id="store_b", decided_at=old_ts,
+            )
+            for i in range(8)
+        ]
+        outcomes = {}
+        # store_a recent: all negative
+        for i in range(4):
+            outcomes[f"a_r{i}"] = [
+                {"polarity": "negative", "metrics": {}},
+            ]
+        # store_a older: all positive
+        for i in range(8):
+            outcomes[f"a_o{i}"] = [
+                {"polarity": "positive", "metrics": {}},
+            ]
+        # store_b: always positive
+        for i in range(4):
+            outcomes[f"b_r{i}"] = [
+                {"polarity": "positive", "metrics": {}},
+            ]
+        for i in range(8):
+            outcomes[f"b_o{i}"] = [
+                {"polarity": "positive", "metrics": {}},
+            ]
+        q = _fake_queue(rows=rows, outcomes=outcomes)
+        alerts = compute_engine_alerts_per_store(q)
+        # Only store_a should be flagged
+        flagged = [
+            (a.engine, a.store_id) for a in alerts
+        ]
+        assert ("loyalty", "store_a") in flagged
+        assert ("loyalty", "store_b") not in flagged
+
+    def test_none_store_buckets_as_fleet(self):
+        """Rows with store_id=None group into the fleet bucket
+        and still produce an alert when bad."""
+        from core.approval.outcome_trends import (
+            compute_engine_alerts_per_store,
+        )
+        now = time.time()
+        recent_ts = now - 3600.0
+        old_ts = now - 100 * 3600.0
+        rows = [
+            _row_with_store(
+                id_=f"r{i}", engine="loyalty",
+                store_id=None, decided_at=recent_ts,
+            )
+            for i in range(4)
+        ] + [
+            _row_with_store(
+                id_=f"o{i}", engine="loyalty",
+                store_id=None, decided_at=old_ts,
+            )
+            for i in range(8)
+        ]
+        outcomes = {}
+        for i in range(4):
+            outcomes[f"r{i}"] = [
+                {"polarity": "negative", "metrics": {}},
+            ]
+        for i in range(8):
+            outcomes[f"o{i}"] = [
+                {"polarity": "positive", "metrics": {}},
+            ]
+        q = _fake_queue(rows=rows, outcomes=outcomes)
+        alerts = compute_engine_alerts_per_store(q)
+        assert len(alerts) == 1
+        assert alerts[0].store_id is None
+        # Detail mentions fleet scope
+        assert "fleet" in alerts[0].detail
+
+    def test_detail_per_store_marker(self):
+        """Per-store alerts include ``@store_id`` in detail."""
+        from core.approval.outcome_trends import (
+            compute_engine_alerts_per_store,
+        )
+        now = time.time()
+        recent_ts = now - 3600.0
+        old_ts = now - 100 * 3600.0
+        rows = [
+            _row_with_store(
+                id_=f"r{i}", engine="loyalty",
+                store_id="store_a", decided_at=recent_ts,
+            )
+            for i in range(4)
+        ] + [
+            _row_with_store(
+                id_=f"o{i}", engine="loyalty",
+                store_id="store_a", decided_at=old_ts,
+            )
+            for i in range(8)
+        ]
+        outcomes = {}
+        for i in range(4):
+            outcomes[f"r{i}"] = [
+                {"polarity": "negative", "metrics": {}},
+            ]
+        for i in range(8):
+            outcomes[f"o{i}"] = [
+                {"polarity": "positive", "metrics": {}},
+            ]
+        q = _fake_queue(rows=rows, outcomes=outcomes)
+        alerts = compute_engine_alerts_per_store(q)
+        assert "@store_a" in alerts[0].detail
+
+    def test_baseline_validation_propagates(self):
+        from core.approval.outcome_trends import (
+            compute_engine_alerts_per_store,
+        )
+        q = _fake_queue()
+        with pytest.raises(ValueError, match="must exceed"):
+            compute_engine_alerts_per_store(
+                q, recent_hours=48, baseline_hours=48,
+            )
+
+    def test_engine_alert_store_id_field(self):
+        """EngineAlert frozen dataclass gains store_id field."""
+        a = EngineAlert(
+            engine="loyalty",
+            recent_executed=5,
+            baseline_executed=20,
+            recent_score=0.2,
+            baseline_score=0.85,
+            recent_polarised=5,
+            baseline_polarised=18,
+            drop=0.65,
+            detail="...",
+            store_id="store_a",
+        )
+        assert a.store_id == "store_a"
+        # Default is None for backward compat
+        b = EngineAlert(
+            engine="loyalty",
+            recent_executed=5,
+            baseline_executed=20,
+            recent_score=0.2,
+            baseline_score=0.85,
+            recent_polarised=5,
+            baseline_polarised=18,
+            drop=0.65,
+            detail="...",
+        )
+        assert b.store_id is None
