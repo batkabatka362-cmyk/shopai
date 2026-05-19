@@ -162,7 +162,7 @@ class StoreDesignEngine:
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
-        return {
+        envelope = {
             "status": "success",
             "data": {
                 "layout_recommendations": layout_recommendations,
@@ -178,6 +178,26 @@ class StoreDesignEngine:
             },
             "error": None,
         }
+
+        # ---- Stage 9: Phase 8 writeback recording -----------
+        # Bridge the engine's recommendations into the
+        # autonomous learning loop. record_design_run never
+        # raises; failures are swallowed inside record_writeback.
+        try:
+            from engines.store_design.design_recorder import (
+                record_design_run,
+            )
+            record_design_run(envelope)
+        except Exception as exc:  # noqa: BLE001
+            # Belt-and-braces: even though record_design_run's
+            # writeback path is wrapped, ImportError or other
+            # module-level failures must not break the engine.
+            import logging
+            logging.getLogger(__name__).debug(
+                "store_design: design_recorder raised: %s", exc,
+            )
+
+        return envelope
 
     # -------------------------------------------------------------------
     # Error output
