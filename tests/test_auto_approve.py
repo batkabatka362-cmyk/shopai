@@ -165,6 +165,130 @@ class TestEvaluatorGuardrails:
         assert d.reason == "outcome_stats_unavailable"
 
 
+# --- Guardrail #5: engine_health verdict ---------------------
+
+
+def _stub_health(verdict: str):
+    """Minimal stand-in EngineHealth for guarding by verdict."""
+    from core.approval.engine_health import EngineHealth
+    return EngineHealth(
+        engine="x", score=5, verdict=verdict,
+        signals={}, concerns=[],
+    )
+
+
+class TestEngineHealthGuard:
+
+    def test_unhealthy_blocks_auto_approve(
+        self, auto_approve_data_dir, queue,
+    ):
+        from core.approval.auto_approve import (
+            AutoApproveConfig, evaluate,
+        )
+        # Pass all 4 prior guards: allowlist + confidence +
+        # 27 outcomes at high ratio.
+        _seed_outcomes(queue, engine="x", positive=25, negative=2)
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_stub_health("unhealthy"),
+        ):
+            d = evaluate(
+                engine="x", confidence=0.95, queue=queue,
+                config=AutoApproveConfig(
+                    allowlist=frozenset({"x"}),
+                ),
+            )
+        assert d.should_auto is False
+        assert d.reason == "engine_health_unhealthy"
+
+    def test_warning_still_auto_approves(
+        self, auto_approve_data_dir, queue,
+    ):
+        from core.approval.auto_approve import (
+            AutoApproveConfig, evaluate,
+        )
+        _seed_outcomes(queue, engine="x", positive=25, negative=2)
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_stub_health("warning"),
+        ):
+            d = evaluate(
+                engine="x", confidence=0.95, queue=queue,
+                config=AutoApproveConfig(
+                    allowlist=frozenset({"x"}),
+                ),
+            )
+        # warning verdict alone shouldn't block; the existing
+        # 4 guards already filter the worst cases.
+        assert d.should_auto is True
+        assert "auto_threshold" in d.reason
+
+    def test_healthy_auto_approves(
+        self, auto_approve_data_dir, queue,
+    ):
+        from core.approval.auto_approve import (
+            AutoApproveConfig, evaluate,
+        )
+        _seed_outcomes(queue, engine="x", positive=25, negative=2)
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_stub_health("healthy"),
+        ):
+            d = evaluate(
+                engine="x", confidence=0.95, queue=queue,
+                config=AutoApproveConfig(
+                    allowlist=frozenset({"x"}),
+                ),
+            )
+        assert d.should_auto is True
+
+    def test_health_probe_raise_fails_open(
+        self, auto_approve_data_dir, queue,
+    ):
+        """A raising health scorer doesn't block more than the
+        absence of the guard would. The 4 prior guards still
+        decide."""
+        from core.approval.auto_approve import (
+            AutoApproveConfig, evaluate,
+        )
+        _seed_outcomes(queue, engine="x", positive=25, negative=2)
+        with patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=RuntimeError("scorer down"),
+        ):
+            d = evaluate(
+                engine="x", confidence=0.95, queue=queue,
+                config=AutoApproveConfig(
+                    allowlist=frozenset({"x"}),
+                ),
+            )
+        assert d.should_auto is True
+        assert "auto_threshold" in d.reason
+
+    def test_guard_runs_after_outcome_ratio(
+        self, auto_approve_data_dir, queue,
+    ):
+        """When outcome_ratio FAILS, the failure reason should be
+        the ratio one (not health) -- prior guards short-circuit."""
+        from core.approval.auto_approve import (
+            AutoApproveConfig, evaluate,
+        )
+        _seed_outcomes(queue, engine="x", positive=15, negative=15)
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_stub_health("unhealthy"),
+        ):
+            d = evaluate(
+                engine="x", confidence=0.95, queue=queue,
+                config=AutoApproveConfig(
+                    allowlist=frozenset({"x"}),
+                ),
+            )
+        # Ratio guard fires first.
+        assert d.should_auto is False
+        assert "outcome_ratio_below_threshold" in d.reason
+
+
 # ─── Config persistence ────────────────────────────────────────
 
 
