@@ -807,6 +807,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     engine_sub = engine_p.add_subparsers(dest="engine_action")
 
+    engine_pulse_p = engine_sub.add_parser(
+        "pulse",
+        help=(
+            "Single-engine health pulse: composite 1-10 score + "
+            "verdict (healthy/warning/unhealthy) over all signals"
+        ),
+    )
+    engine_pulse_p.add_argument(
+        "engine_name",
+        help="Engine to score (e.g. loyalty, cart_recovery)",
+    )
+    engine_pulse_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw health envelope as JSON",
+    )
+
     engine_summary_p = engine_sub.add_parser(
         "summary",
         help=(
@@ -6869,6 +6885,55 @@ def _cmd_engines(*, by_goal: bool = False, unmapped: bool = False) -> None:
     print(f"Registered engines: {engine_count()}\n")
     for i, name in enumerate(engines, 1):
         print(f"  {i:3d}. {name}")
+
+
+def _cmd_engine_pulse(args) -> None:
+    """Composite engine-health verdict.
+
+    Calls ``core.approval.engine_health.score_engine`` and renders
+    a short, opinionated, cron-friendly summary. Exit code 0 for
+    healthy / warning, 1 for unhealthy -- so monitoring pipelines
+    can flag without having to parse JSON.
+    """
+    as_json = bool(getattr(args, "json", False))
+    engine_name = args.engine_name
+
+    from core.approval.engine_health import score_engine
+
+    health = score_engine(engine_name)
+    payload = health.to_dict()
+
+    if as_json:
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(
+            f"Engine pulse: {health.engine}  "
+            f"score={health.score}/10  "
+            f"verdict={health.verdict}"
+        )
+        if health.concerns:
+            print()
+            print("Concerns:")
+            for c in health.concerns:
+                print(f"  - {c}")
+        sig = health.signals
+        print()
+        print("Signals:")
+        print(
+            f"  executed={sig.get('executed', 0)}  "
+            f"failed={sig.get('failed', 0)}  "
+            f"pending={sig.get('pending', 0)}"
+        )
+        os_val = sig.get("outcome_score")
+        os_str = f"{float(os_val):.0%}" if os_val is not None else "n/a"
+        print(
+            f"  outcome_score={os_str}  "
+            f"alert_streak_7d={sig.get('alert_streak_7d', 0)}  "
+            f"alert_paused={sig.get('alert_paused', False)}"
+        )
+
+    if health.verdict == "unhealthy":
+        sys.exit(1)
 
 
 def _cmd_engine_summary(args) -> None:
@@ -16947,7 +17012,13 @@ def main(argv: list[str] | None = None) -> None:
         if action == "alerts":
             _cmd_engine_alerts(args)
             return
-        print("Usage: shopai engine {summary|guardrail|fleet|compare|ranking|alerts}")
+        if action == "pulse":
+            _cmd_engine_pulse(args)
+            return
+        print(
+            "Usage: shopai engine "
+            "{summary|guardrail|fleet|compare|ranking|alerts|pulse}"
+        )
         return
 
     if args.command == "engines-writebacks":
