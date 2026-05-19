@@ -148,12 +148,20 @@ class InsightDigest:
             recommendations, active_goal, stats,
         )
 
+        # Engine health — flag currently-paused engines (exempt /
+        # released / alert_paused) plus the 5 most recent alert
+        # firings. Omitted entirely when nothing's flagged so the
+        # digest doesn't carry empty headers.
+        health = self._engine_health(stats)
+
         # Compose
         lines: list[str] = []
         lines += self._render_header()
         lines += self._render_active_goal(active_goal, mgr)
         lines += self._render_recommendations(recommendations)
         lines += self._render_goal_table(goal_table)
+        if health["paused_engines"] or health["recent_alerts"]:
+            lines += self._render_engine_health(health)
         lines += self._render_decisions(decisions)
         lines += self._render_engine_activity(engine_counts)
         if engine_notes or goal_notes:
@@ -434,6 +442,70 @@ class InsightDigest:
         out.append("")
         return out
 
+    def _engine_health(
+        self, stats: DigestStats,
+    ) -> dict[str, Any]:
+        """Pull current quarantine state + recent alert events.
+
+        Returns ``{paused_engines: [...], recent_alerts: [...]}``
+        where ``paused_engines`` is a list of ``(engine, flags,
+        stores)`` tuples and ``recent_alerts`` is the newest-first
+        list of the last 5 :class:`AlertEvent` rows in a 7-day
+        window. Both sub-sources fail open -- a missing
+        quarantine_state.json or unreadable alert_history.json
+        contributes empty data instead of aborting the digest.
+        """
+        result: dict[str, Any] = {
+            "paused_engines": [],
+            "recent_alerts": [],
+        }
+        try:
+            from core.approval.quarantine import load_state
+            state = load_state()
+        except Exception as exc:  # noqa: BLE001
+            stats.skipped.append(f"engine_health_quarantine: {exc}")
+            state = None
+
+        if state is not None:
+            per_engine: dict[str, dict[str, Any]] = {}
+            for engine in state.exemptions:
+                per_engine.setdefault(engine, _empty_paused_row())
+                per_engine[engine]["exempt"] = True
+            for engine in state.released:
+                per_engine.setdefault(engine, _empty_paused_row())
+                per_engine[engine]["released"] = True
+            for engine, store_id in state.alert_paused:
+                per_engine.setdefault(engine, _empty_paused_row())
+                if store_id is None:
+                    per_engine[engine]["fleet_paused"] = True
+                else:
+                    per_engine[engine]["stores"].append(store_id)
+            for engine, entry in sorted(per_engine.items()):
+                entry["stores"] = sorted(set(entry["stores"]))
+                flags: list[str] = []
+                if entry["exempt"]:
+                    flags.append("exempt")
+                if entry["released"]:
+                    flags.append("released")
+                if entry["fleet_paused"]:
+                    flags.append("alert_paused_fleet")
+                if entry["stores"]:
+                    flags.append("alert_paused_per_store")
+                result["paused_engines"].append({
+                    "engine": engine,
+                    "flags": flags,
+                    "stores": entry["stores"],
+                })
+
+        try:
+            from core.approval.alert_history import recent_history
+            events = recent_history(since_seconds=86400.0 * 7.0)
+        except Exception as exc:  # noqa: BLE001
+            stats.skipped.append(f"engine_health_alerts: {exc}")
+            events = []
+        result["recent_alerts"] = list(events[:5])
+        return result
+
     def _render_engine_activity(
         self, engine_counts: Counter,
     ) -> list[str]:
@@ -516,6 +588,66 @@ class InsightDigest:
 
         return engine_notes, goal_notes
 
+    def _render_engine_health(
+        self, health: dict[str, Any],
+    ) -> list[str]:
+        """Render the engine-health section.
+
+        Caller is responsible for skipping this when both
+        ``paused_engines`` and ``recent_alerts`` are empty -- this
+        method does NOT defensively return [] for that case so the
+        header stays consistent with the rest of the digest.
+        """
+        out = ["## Engine health", ""]
+        paused = health.get("paused_engines") or []
+        if paused:
+            out.append("### Currently flagged engines")
+            out.append("")
+            out.append("| Engine | Flags | Stores |")
+            out.append("|--------|-------|--------|")
+            for row in paused:
+                engine = row["engine"]
+                flags = ", ".join(row["flags"]) or "-"
+                stores = (
+                    ", ".join(f"`{s}`" for s in row["stores"])
+                    if row["stores"] else "-"
+                )
+                out.append(f"| [[{engine}]] | {flags} | {stores} |")
+            out.append("")
+
+        recent = health.get("recent_alerts") or []
+        if recent:
+            out.append("### Recent degradation alerts (7d)")
+            out.append("")
+            for event in recent:
+                engine = getattr(event, "engine", "") or "?"
+                drop = getattr(event, "drop", None)
+                drop_str = (
+                    f"{float(drop):.0%}"
+                    if isinstance(drop, (int, float))
+                    else "?"
+                )
+                store_id = getattr(event, "store_id", None)
+                scope = f"@{store_id}" if store_id else "(fleet)"
+                recorded_at = (
+                    getattr(event, "recorded_at", 0.0) or 0.0
+                )
+                ts = (
+                    time.strftime(
+                        "%Y-%m-%d %H:%M",
+                        time.gmtime(recorded_at),
+                    )
+                    if isinstance(recorded_at, (int, float))
+                    and recorded_at > 0
+                    else "--"
+                )
+                out.append(
+                    f"- **{ts}** [[{engine}]] {scope} "
+                    f"drop=`{drop_str}`"
+                )
+            out.append("")
+        return out
+
     def _render_operator_notes(
         self,
         engine_notes: list[tuple[str, str]],
@@ -566,3 +698,15 @@ def _indent_quote(text: str) -> list[str]:
     """
     return [f"> {line}" if line else ">"
             for line in text.splitlines()]
+
+
+def _empty_paused_row() -> dict[str, Any]:
+    """Default shape used by :meth:`InsightDigest._engine_health`
+    so each engine bucket has a stable schema regardless of which
+    signals populate it."""
+    return {
+        "exempt": False,
+        "released": False,
+        "fleet_paused": False,
+        "stores": [],
+    }
