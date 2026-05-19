@@ -24,6 +24,9 @@ Modules:
     description generation via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``seo_meta_enricher`` -- niche-aware product SEO meta
     (title_tag + meta_description) via ``SHOPIFY_UPDATE_PRODUCT``.
+  * ``support_response_templates`` -- operator-facing
+    canned reply drafts for inbound customer email (vs
+    ``support_kb`` which is the storefront Q&A page).
   * ``welcome_discount`` -- launch-time WELCOME{N} code via
     ``SHOPIFY_CREATE_DISCOUNT``.
 """
