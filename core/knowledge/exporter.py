@@ -165,9 +165,9 @@ class ObsidianExporter:
     def _export_engines(self) -> int:
         """One Markdown file per entry in ``ENGINE_GOAL_MAP``.
 
-        Pre-computes three signal streams once per export so each
-        engine page can render its enrichment block without N
-        independent queue / store queries:
+        Pre-computes signal streams once per export so each engine
+        page renders its enrichment block without N independent
+        queue / store queries:
 
           * ``decisions_by_engine`` — recent approvals grouped by
             engine name, newest first, capped per-engine.
@@ -175,6 +175,11 @@ class ObsidianExporter:
             sample counts for every goal at once.
           * ``notes_by_engine`` — operator's persisted commentary
             from the NotesStore.
+          * ``quarantine_by_engine`` — exempt / released / alert-
+            paused state from the quarantine module so each engine
+            page can flag itself as paused (with scope).
+          * ``alerts_by_engine`` — recent EngineAlert events +
+            consecutive-day streak from the alert-history log.
 
         Source-failure isolated: a missing approval DB or store
         records nothing — the per-engine page degrades to the
@@ -185,6 +190,8 @@ class ObsidianExporter:
         decisions_by_engine = self._collect_decisions_by_engine()
         goal_stats = self._collect_goal_stats()
         notes_by_engine = self._collect_engine_notes()
+        quarantine_by_engine = self._collect_quarantine_state()
+        alerts_by_engine = self._collect_alert_summary()
 
         engines_dir = self.target_dir / "engines"
         self._ensure_dir(engines_dir)
@@ -196,6 +203,8 @@ class ObsidianExporter:
                 recent_decisions=decisions_by_engine.get(engine, []),
                 goal_effectiveness=goal_stats.get(goal),
                 persisted_notes=notes_by_engine.get(engine, ""),
+                quarantine=quarantine_by_engine.get(engine),
+                alerts=alerts_by_engine.get(engine),
             )
             self._write(engines_dir / f"{engine}.md", body)
             count += 1
@@ -267,6 +276,98 @@ class ObsidianExporter:
                 out[engine] = text
         return out
 
+    def _collect_quarantine_state(self) -> dict[str, dict[str, Any]]:
+        """Snapshot per-engine quarantine state.
+
+        Returns ``{engine: {flags, fleet_paused, stores_paused,
+        exempt, released}}`` for engines that have ANY non-default
+        state. Engines with no entry render no Quarantine block.
+
+        ``flags`` is a sorted list of human-readable tokens
+        (``"exempt"``, ``"released"``, ``"alert_paused_fleet"``,
+        ``"alert_paused_per_store"``) so the renderer can build
+        a one-line summary without re-deriving them.
+        """
+        try:
+            from core.approval.quarantine import load_state
+            state = load_state()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("quarantine state collection failed: %s", exc)
+            return {}
+
+        per_engine: dict[str, dict[str, Any]] = {}
+        for engine in state.exemptions:
+            per_engine.setdefault(engine, _empty_quarantine_entry())
+            per_engine[engine]["exempt"] = True
+        for engine in state.released:
+            per_engine.setdefault(engine, _empty_quarantine_entry())
+            per_engine[engine]["released"] = True
+        for engine, store_id in state.alert_paused:
+            per_engine.setdefault(engine, _empty_quarantine_entry())
+            if store_id is None:
+                per_engine[engine]["fleet_paused"] = True
+            else:
+                per_engine[engine]["stores_paused"].append(store_id)
+
+        for engine, entry in per_engine.items():
+            entry["stores_paused"] = sorted(set(entry["stores_paused"]))
+            flags: list[str] = []
+            if entry["exempt"]:
+                flags.append("exempt")
+            if entry["released"]:
+                flags.append("released")
+            if entry["fleet_paused"]:
+                flags.append("alert_paused_fleet")
+            if entry["stores_paused"]:
+                flags.append("alert_paused_per_store")
+            entry["flags"] = flags
+        return per_engine
+
+    def _collect_alert_summary(self) -> dict[str, dict[str, Any]]:
+        """Snapshot recent alert history keyed by engine.
+
+        Returns ``{engine: {recent: [...], streak_days: int}}``
+        where ``recent`` is the newest-first list of the last 5
+        :class:`AlertEvent` records (within a 7-day window) and
+        ``streak_days`` is the count of distinct daily buckets
+        that fired alerts for the engine in that window.
+
+        Source-failure isolated -- a missing alert-history file
+        returns an empty dict so the page still renders.
+        """
+        try:
+            from core.approval.alert_history import (
+                consecutive_runs_per_engine,
+                recent_history,
+            )
+            events = recent_history(since_seconds=86400.0 * 7.0)
+            streaks = consecutive_runs_per_engine(
+                window_seconds=86400.0 * 7.0,
+                bucket_seconds=86400.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("alert summary collection failed: %s", exc)
+            return {}
+
+        per_engine: dict[str, dict[str, Any]] = {}
+        for event in events:
+            engine = getattr(event, "engine", "") or ""
+            if not engine:
+                continue
+            bucket = per_engine.setdefault(
+                engine,
+                {"recent": [], "streak_days": 0},
+            )
+            if len(bucket["recent"]) < 5:
+                bucket["recent"].append(event)
+        for engine, count in streaks.items():
+            bucket = per_engine.setdefault(
+                engine,
+                {"recent": [], "streak_days": 0},
+            )
+            bucket["streak_days"] = int(count)
+        return per_engine
+
     def _export_goals(self) -> int:
         """One Markdown file per canonical goal.
 
@@ -330,6 +431,8 @@ class ObsidianExporter:
         recent_decisions: list[Any] | None = None,
         goal_effectiveness: dict[str, Any] | None = None,
         persisted_notes: str = "",
+        quarantine: dict[str, Any] | None = None,
+        alerts: dict[str, Any] | None = None,
     ) -> str:
         """Render one engine page.
 
@@ -378,6 +481,17 @@ class ObsidianExporter:
                     f"{len(recent_decisions)} in recent window",
                     "",
                 ]
+
+        # Quarantine + alerts block — operator immediately sees
+        # whether the engine is paused / exempt / released and
+        # how many days it has been firing degradation alerts.
+        # Each line is omitted independently so a healthy engine
+        # produces no section at all.
+        q_lines = _render_quarantine_block(quarantine, alerts)
+        if q_lines:
+            lines += ["## Quarantine & alerts", ""]
+            lines += q_lines
+            lines.append("")
 
         # Recent decisions block — bullet-list, most recent first
         if recent_decisions:
@@ -690,3 +804,105 @@ def _safe_filename(raw: str) -> str:
     for ch in raw:
         out.append(ch if ch.isalnum() or ch in ("-", "_") else "_")
     return "".join(out) or "_"
+
+
+def _empty_quarantine_entry() -> dict[str, Any]:
+    """Default shape used by :meth:`ObsidianExporter
+    ._collect_quarantine_state` so each engine bucket has a
+    stable schema regardless of which signals populate it."""
+    return {
+        "exempt": False,
+        "released": False,
+        "fleet_paused": False,
+        "stores_paused": [],
+        "flags": [],
+    }
+
+
+def _render_quarantine_block(
+    quarantine: dict[str, Any] | None,
+    alerts: dict[str, Any] | None,
+) -> list[str]:
+    """Render the "Quarantine & alerts" block for one engine.
+
+    Returns an empty list when both inputs are empty / absent --
+    the caller skips emitting the section header entirely so
+    healthy engines stay clean.
+
+    The block lists, in order:
+      * exempt / released flag, when set.
+      * fleet-wide alert pause, when set.
+      * per-store alert pauses as a bullet list, when any.
+      * 7-day alert-streak count, when > 0.
+      * up to 5 most recent ``AlertEvent`` rows as bullets.
+    """
+    quarantine = quarantine or {}
+    alerts = alerts or {}
+    lines: list[str] = []
+
+    if quarantine.get("exempt"):
+        lines.append(
+            "- **Exempt** -- engine is on the never-quarantine list."
+        )
+    if quarantine.get("released"):
+        lines.append(
+            "- **Released** -- operator cleared a prior quarantine; "
+            "auto-quarantine is bypassed until removed."
+        )
+    if quarantine.get("fleet_paused"):
+        lines.append(
+            "- **Alert-paused (fleet)** -- enqueues for every store "
+            "are rejected until released."
+        )
+    stores = quarantine.get("stores_paused") or []
+    if stores:
+        lines.append("- **Alert-paused (per-store):**")
+        for store_id in stores:
+            lines.append(f"    - `{store_id}`")
+
+    streak = int(alerts.get("streak_days", 0) or 0)
+    if streak > 0:
+        lines.append(
+            f"- Alert streak (last 7d): **{streak} day(s)** with "
+            "at least one degradation alert."
+        )
+
+    recent = alerts.get("recent") or []
+    if recent:
+        lines.append("- Recent alerts:")
+        for event in recent[:5]:
+            recorded_at = getattr(event, "recorded_at", 0.0) or 0.0
+            ts = (
+                time.strftime(
+                    "%Y-%m-%d %H:%M", time.gmtime(recorded_at),
+                )
+                if isinstance(recorded_at, (int, float))
+                and recorded_at > 0
+                else "--"
+            )
+            store_id = getattr(event, "store_id", None)
+            scope = (
+                f"@{store_id}" if store_id else "(fleet)"
+            )
+            drop = getattr(event, "drop", None)
+            drop_str = (
+                f"{float(drop):.0%} drop"
+                if isinstance(drop, (int, float))
+                else "drop ?"
+            )
+            recent_score = getattr(event, "recent_score", None)
+            baseline_score = getattr(event, "baseline_score", None)
+            score_str = ""
+            if (
+                isinstance(recent_score, (int, float))
+                and isinstance(baseline_score, (int, float))
+            ):
+                score_str = (
+                    f" -- recent={float(recent_score):.2f} "
+                    f"baseline={float(baseline_score):.2f}"
+                )
+            lines.append(
+                f"    - **{ts}** {scope} `{drop_str}`{score_str}"
+            )
+
+    return lines
