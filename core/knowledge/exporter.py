@@ -192,6 +192,7 @@ class ObsidianExporter:
         notes_by_engine = self._collect_engine_notes()
         quarantine_by_engine = self._collect_quarantine_state()
         alerts_by_engine = self._collect_alert_summary()
+        trajectory_by_engine = self._collect_score_trajectory()
 
         engines_dir = self.target_dir / "engines"
         self._ensure_dir(engines_dir)
@@ -205,6 +206,7 @@ class ObsidianExporter:
                 persisted_notes=notes_by_engine.get(engine, ""),
                 quarantine=quarantine_by_engine.get(engine),
                 alerts=alerts_by_engine.get(engine),
+                trajectory=trajectory_by_engine.get(engine, []),
             )
             self._write(engines_dir / f"{engine}.md", body)
             count += 1
@@ -368,6 +370,44 @@ class ObsidianExporter:
             bucket["streak_days"] = int(count)
         return per_engine
 
+    def _collect_score_trajectory(
+        self,
+    ) -> dict[str, list[Any]]:
+        """Snapshot recorded engine_health scores by engine.
+
+        Returns ``{engine: [ScoreEvent, ...]}`` newest-first,
+        capped at the last 10 events per engine in the 30-day
+        window. Engines with no recorded scores are absent
+        from the dict.
+
+        Source-failure isolated: a missing
+        engine_health_history module returns an empty dict so
+        the engine page still renders without the trajectory
+        block.
+        """
+        try:
+            from core.approval.engine_health_history import (
+                recent_history,
+            )
+            events = recent_history(
+                since_seconds=86400.0 * 30.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "score_trajectory collection failed: %s", exc,
+            )
+            return {}
+
+        per_engine: dict[str, list[Any]] = {}
+        for event in events:
+            engine = getattr(event, "engine", "") or ""
+            if not engine:
+                continue
+            bucket = per_engine.setdefault(engine, [])
+            if len(bucket) < 10:
+                bucket.append(event)
+        return per_engine
+
     def _export_goals(self) -> int:
         """One Markdown file per canonical goal.
 
@@ -433,6 +473,7 @@ class ObsidianExporter:
         persisted_notes: str = "",
         quarantine: dict[str, Any] | None = None,
         alerts: dict[str, Any] | None = None,
+        trajectory: list[Any] | None = None,
     ) -> str:
         """Render one engine page.
 
@@ -491,6 +532,17 @@ class ObsidianExporter:
         if q_lines:
             lines += ["## Quarantine & alerts", ""]
             lines += q_lines
+            lines.append("")
+
+        # Score trajectory block -- engine_health_history events
+        # rendered as a tight per-row "date score verdict" list.
+        # Operators reviewing the engine in Obsidian see the
+        # directional read alongside the static state above.
+        # Omitted entirely when there are no recorded events.
+        t_lines = _render_score_trajectory_block(trajectory)
+        if t_lines:
+            lines += ["## Score trajectory", ""]
+            lines += t_lines
             lines.append("")
 
         # Recent decisions block — bullet-list, most recent first
@@ -905,4 +957,42 @@ def _render_quarantine_block(
                 f"    - **{ts}** {scope} `{drop_str}`{score_str}"
             )
 
+    return lines
+
+
+def _render_score_trajectory_block(
+    trajectory: list[Any] | None,
+) -> list[str]:
+    """Render the "Score trajectory" block for one engine.
+
+    ``trajectory`` is a list of ``ScoreEvent`` (or any object
+    with ``recorded_at`` / ``score`` / ``verdict`` attrs),
+    newest-first, capped at 10 by the collector. Returns an
+    empty list when the input is empty so the caller can skip
+    emitting the section header for engines without recorded
+    history.
+    """
+    trajectory = trajectory or []
+    if not trajectory:
+        return []
+    lines: list[str] = []
+    for event in trajectory:
+        recorded_at = getattr(event, "recorded_at", 0.0) or 0.0
+        ts = (
+            time.strftime(
+                "%Y-%m-%d %H:%M", time.gmtime(recorded_at),
+            )
+            if isinstance(recorded_at, (int, float))
+            and recorded_at > 0
+            else "--"
+        )
+        score = getattr(event, "score", None)
+        verdict = getattr(event, "verdict", "") or "?"
+        if isinstance(score, int):
+            score_str = f"{score:>2d}/10"
+        else:
+            score_str = "?/10"
+        lines.append(
+            f"- **{ts}**  `{score_str}`  {verdict}"
+        )
     return lines
