@@ -334,3 +334,158 @@ class TestPersistence:
         assert (
             isolated_data / "engine_health_history.json"
         ).exists()
+
+
+# --- Regression detector --------------------------------------
+
+
+from core.approval.engine_health_history import (  # noqa: E402
+    HealthRegression,
+    find_regressions,
+)
+
+
+class TestFindRegressions:
+
+    def _seed(
+        self, *, engine: str = "loyalty",
+        baseline_score: int = 9, baseline_count: int = 5,
+        latest_score: int = 4, now: float = 1_000_000.0,
+    ):
+        """Seed N baseline events then one fresh latest event."""
+        day = 86400.0
+        for i in range(baseline_count):
+            record_score(
+                engine,
+                score=baseline_score,
+                verdict="healthy",
+                now=now - day * (i + 2),
+            )
+        record_score(
+            engine,
+            score=latest_score,
+            verdict=(
+                "unhealthy" if latest_score < 5
+                else "warning" if latest_score < 8
+                else "healthy"
+            ),
+            now=now - 1800.0,
+        )
+
+    def test_no_history_returns_empty(self, isolated_data):
+        assert find_regressions() == []
+
+    def test_drop_above_threshold_flagged(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        self._seed(
+            baseline_score=9, latest_score=4, now=now,
+        )
+        regressions = find_regressions(now=now)
+        assert len(regressions) == 1
+        r = regressions[0]
+        assert r.engine == "loyalty"
+        assert r.latest_score == 4
+        assert r.baseline_score == 9.0
+        assert r.drop == 5.0
+
+    def test_drop_below_threshold_not_flagged(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        self._seed(
+            baseline_score=9, latest_score=7, now=now,
+        )
+        # drop=2 < default min_drop=3
+        assert find_regressions(now=now) == []
+
+    def test_insufficient_baseline_skipped(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        self._seed(
+            baseline_score=9, latest_score=2,
+            baseline_count=2, now=now,
+        )
+        # baseline_count=2 < default min_baseline_samples=3
+        assert find_regressions(now=now) == []
+
+    def test_no_latest_event_skipped(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        day = 86400.0
+        for i in range(5):
+            record_score(
+                "loyalty", score=9, verdict="healthy",
+                now=now - day * (i + 2),
+            )
+        # No event in latest window -> skipped
+        assert find_regressions(now=now) == []
+
+    def test_ranks_by_drop_size_desc(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        # loyalty: drop 5
+        self._seed(
+            engine="loyalty", baseline_score=9, latest_score=4,
+            now=now,
+        )
+        # cart_recovery: drop 4
+        self._seed(
+            engine="cart_recovery",
+            baseline_score=10, latest_score=6, now=now,
+        )
+        regressions = find_regressions(now=now)
+        assert [r.engine for r in regressions] == [
+            "loyalty", "cart_recovery",
+        ]
+
+    def test_custom_min_drop(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        self._seed(
+            baseline_score=9, latest_score=7, now=now,
+        )
+        regressions = find_regressions(
+            min_drop=1.0, now=now,
+        )
+        assert len(regressions) == 1
+        assert regressions[0].drop == 2.0
+
+    def test_median_excludes_latest_event(
+        self, isolated_data, no_test_guard,
+    ):
+        """Baseline median is computed from events OLDER than
+        the latest window, so the latest event doesn't skew its
+        own baseline."""
+        now = 1_000_000.0
+        day = 86400.0
+        for i in range(3):
+            record_score(
+                "loyalty", score=10, verdict="healthy",
+                now=now - day * (i + 2),
+            )
+        record_score(
+            "loyalty", score=5, verdict="warning",
+            now=now - 1800.0,
+        )
+        regressions = find_regressions(now=now)
+        assert len(regressions) == 1
+        assert regressions[0].baseline_score == 10.0
+        assert regressions[0].drop == 5.0
+
+    def test_regression_dataclass_shape(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        self._seed(
+            baseline_score=9, latest_score=4, now=now,
+        )
+        r = find_regressions(now=now)[0]
+        assert isinstance(r, HealthRegression)
+        assert r.samples_in_baseline == 5
+        assert r.latest_verdict == "unhealthy"
