@@ -229,6 +229,41 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    audit_p = store_sub.add_parser(
+        "audit",
+        help=(
+            "Launch-readiness audit: which checklist items "
+            "(policies / pages / discounts / collections / "
+            "design tokens) are done vs missing. The 'is this "
+            "store ready to take orders?' command. Exit code 1 "
+            "when not ready -- cron-friendly."
+        ),
+    )
+    audit_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the raw audit envelope as JSON",
+    )
+    audit_p.add_argument(
+        "--expected-collections", type=int, default=1,
+        dest="expected_collections",
+        help=(
+            "Minimum collection count to count as set up "
+            "(default 1)."
+        ),
+    )
+    audit_p.add_argument(
+        "--expected-discounts", type=int, default=1,
+        dest="expected_discounts",
+        help=(
+            "Minimum active discount count (default 1 = "
+            "welcome code)."
+        ),
+    )
+
     fleet_p = store_sub.add_parser(
         "fleet",
         help=(
@@ -4236,6 +4271,100 @@ def _cmd_daily_brief(args) -> None:
             print(f"  [{a['kind']:<18s}] {target:<22s} {a['detail']}")
     else:
         print("Alerts: (none)")
+
+
+def _cmd_store_audit(args) -> None:
+    """Launch-readiness audit -- the 'is this store ready to
+    take orders?' command.
+
+    Runs ``engines.store_setup.launch_audit.audit_store()`` and
+    renders a per-check completion table. Exit code 1 when the
+    store isn't ready to launch (cron-friendly fail-fast for
+    pipelines).
+    """
+    as_json = bool(getattr(args, "json", False))
+    store_id = (
+        (getattr(args, "store_id", None) or "").strip()
+        or None
+    )
+    if not store_id:
+        # Fall back to the active store so operators can run
+        # ``shopai store audit`` without an arg.
+        try:
+            sm = _get_store_manager()
+            store_id = sm.active_store_id or None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "store_audit: active_store lookup raised: %s", exc,
+            )
+
+    try:
+        from engines.store_setup.launch_audit import audit_store
+    except Exception as exc:  # noqa: BLE001
+        msg = f"launch_audit unavailable: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    expected_collections = int(
+        getattr(args, "expected_collections", 1) or 1,
+    )
+    expected_discounts = int(
+        getattr(args, "expected_discounts", 1) or 1,
+    )
+
+    result = audit_store(
+        store_id=store_id,
+        expected_collections=expected_collections,
+        expected_discounts=expected_discounts,
+    )
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        ready = result.get("ready_to_launch")
+        pct = result.get("completion_pct", 0)
+        label = "READY" if ready else "NOT READY"
+        print(
+            f"Launch audit: {label}  ({pct}% complete)"
+        )
+        if store_id:
+            print(f"  Store: {store_id}")
+        print()
+        print(
+            f"  {'CHECK':<22s}  {'STATUS':<7s}  "
+            f"{'PROGRESS':<10s}  MISSING"
+        )
+        print("  " + "-" * 70)
+        for check in result.get("checks", []):
+            status = "PASS" if check.get("ok") else "FAIL"
+            progress = (
+                f"{check.get('applied', 0)}/"
+                f"{check.get('expected', 0)}"
+            )
+            missing = ", ".join(
+                check.get("missing") or [],
+            ) or "-"
+            if len(missing) > 35:
+                missing = missing[:32] + "..."
+            print(
+                f"  {check.get('key', ''):<22s}  "
+                f"{status:<7s}  {progress:<10s}  {missing}"
+            )
+        if not ready:
+            print()
+            print(
+                f"  Summary: {result.get('missing_summary', '-')}"
+            )
+
+    if not result.get("ready_to_launch"):
+        sys.exit(1)
 
 
 def _cmd_store_fleet(args) -> None:
@@ -17587,6 +17716,7 @@ def main(argv: list[str] | None = None) -> None:
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
             "fleet": _cmd_store_fleet,
+            "audit": _cmd_store_audit,
         }
         handler = dispatch.get(args.store_action)
         if handler:
@@ -17594,7 +17724,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
+                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet|audit}"
             )
         return
 
