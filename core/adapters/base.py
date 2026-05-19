@@ -207,6 +207,7 @@ class Capability(str, Enum):
     SHOPIFY_CANCEL_BULK_OPERATION = "shopify_cancel_bulk_operation"
     SHOPIFY_GET_SHOP = "shopify_get_shop"
     SHOPIFY_GET_SHOP_POLICIES = "shopify_get_shop_policies"
+    SHOPIFY_UPDATE_SHOP_POLICY = "shopify_update_shop_policy"
     SHOPIFY_LIST_CURRENCIES = "shopify_list_currencies"
     SHOPIFY_LIST_PAGES = "shopify_list_pages"
     SHOPIFY_GET_PAGE = "shopify_get_page"

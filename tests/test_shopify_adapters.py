@@ -790,10 +790,10 @@ class TestShopifyMetafieldAdapter:
 
 
 class TestShopifyBootstrap:
-    def test_register_all_adds_onehundredtwentynine_adapters(self):
+    def test_register_all_adds_onehundredthirty_adapters(self):
         from core.adapters.shopify.bootstrap import register_all
         status = register_all()
-        assert len(status) == 129
+        assert len(status) == 130
         assert set(status.keys()) == {
             "shopify_risk", "shopify_inventory",
             "shopify_fulfillment", "shopify_metafield",
@@ -907,6 +907,7 @@ class TestShopifyBootstrap:
             "shopify_url_redirects",
             "shopify_customer_privacy",
             "shopify_shop_locales",
+            "shopify_shop_policies_write",
             "shopify_product_selling_plan_bindings",
             "shopify_product_feeds",
             "shopify_saved_searches",
@@ -923,7 +924,7 @@ class TestShopifyBootstrap:
         register_all()
         # Second call must not raise
         register_all()
-        assert len(get_registry()) == 129
+        assert len(get_registry()) == 130
 
     def test_explicit_creds_make_adapters_configured(self):
         from core.adapters.shopify.bootstrap import register_all
@@ -1059,6 +1060,7 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_CANCEL_BULK_OPERATION).name == "shopify_bulk"
         assert router.route(Capability.SHOPIFY_GET_SHOP).name == "shopify_shop"
         assert router.route(Capability.SHOPIFY_GET_SHOP_POLICIES).name == "shopify_shop"
+        assert router.route(Capability.SHOPIFY_UPDATE_SHOP_POLICY).name == "shopify_shop_policies_write"
         assert router.route(Capability.SHOPIFY_LIST_CURRENCIES).name == "shopify_shop"
         assert router.route(Capability.SHOPIFY_LIST_PAGES).name == "shopify_pages"
         assert router.route(Capability.SHOPIFY_GET_PAGE).name == "shopify_pages"
@@ -31933,6 +31935,202 @@ class TestShopifyShopLocalesAdapter:
                 {"locale": "ja", "published": True},
             )
         assert not result.ok
+
+
+# ── ShopifyShopPoliciesWriteAdapter ────────────────────────
+
+
+class TestShopifyShopPoliciesWriteAdapter:
+    """Write surface for legal policies (refund / privacy /
+    terms / shipping / etc.) -- mirror of the read-side
+    SHOPIFY_GET_SHOP_POLICIES that's been live since the
+    initial shop.py adapter."""
+
+    def test_metadata(self):
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter()
+        assert a.name == "shopify_shop_policies_write"
+        assert (
+            Capability.SHOPIFY_UPDATE_SHOP_POLICY
+            in a.capabilities
+        )
+        assert "write_shop_policies" in a.required_scopes
+
+    def test_unsupported_capability_returns_failure(self):
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_ASSESS_RISK, {},
+            )
+        assert not result.ok
+
+    # ── Update policy ──────────────────────────────────────
+
+    def test_update_happy_path(self):
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            assert v["shopPolicy"]["type"] == "REFUND_POLICY"
+            assert "30-day refund" in v["shopPolicy"]["body"]
+            return {
+                "shopPolicyUpdate": {
+                    "shopPolicy": {
+                        "id": "gid://shopify/ShopPolicy/1",
+                        "type": "REFUND_POLICY",
+                        "body": "<p>30-day refund...</p>",
+                        "url": "https://x.myshopify.com/policies/refund",
+                        "createdAt": "2026-01-01T00:00:00Z",
+                        "updatedAt": "2026-05-19T00:00:00Z",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_POLICY,
+                {
+                    "policy_type": "REFUND_POLICY",
+                    "body": "<p>30-day refund...</p>",
+                },
+            )
+        assert result.ok
+        policy = result.data["policy"]
+        assert policy["type"] == "REFUND_POLICY"
+        assert policy["id"] == "gid://shopify/ShopPolicy/1"
+
+    def test_policy_type_alias_normalisation(self):
+        """Friendly aliases get normalised to the Shopify
+        enum value before the GraphQL hop."""
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {
+                "shopPolicyUpdate": {
+                    "shopPolicy": {
+                        "id": "x", "type": "PRIVACY_POLICY",
+                        "body": "ok",
+                    },
+                    "userErrors": [],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_POLICY,
+                {"policy_type": "privacy", "body": "ok"},
+            )
+        assert captured["shopPolicy"]["type"] == "PRIVACY_POLICY"
+
+    def test_missing_policy_type_validation_error(self):
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql") as g:
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_POLICY,
+                {"body": "x"},
+            )
+        assert not result.ok
+        # validation fails BEFORE the GraphQL hop
+        g.assert_not_called()
+
+    def test_unknown_policy_type_validation_error(self):
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_POLICY,
+                {"policy_type": "made_up", "body": "x"},
+            )
+        assert not result.ok
+
+    def test_empty_body_validation_error(self):
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_POLICY,
+                {"policy_type": "REFUND_POLICY", "body": "  "},
+            )
+        assert not result.ok
+
+    def test_non_string_body_validation_error(self):
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+        with patch.object(a, "_gql"):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_POLICY,
+                {"policy_type": "REFUND_POLICY", "body": 42},
+            )
+        assert not result.ok
+
+    def test_user_errors_propagate_as_failure(self):
+        from core.adapters.shopify.shop_policies_write import (
+            ShopifyShopPoliciesWriteAdapter,
+        )
+        a = ShopifyShopPoliciesWriteAdapter(
+            shop_url="s", access_token="t",
+        )
+
+        def fake_gql(q, v):
+            return {
+                "shopPolicyUpdate": {
+                    "shopPolicy": None,
+                    "userErrors": [
+                        {"field": ["body"],
+                         "message": "body too long"},
+                    ],
+                },
+            }
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(
+                Capability.SHOPIFY_UPDATE_SHOP_POLICY,
+                {
+                    "policy_type": "REFUND_POLICY",
+                    "body": "x" * 100_000,
+                },
+            )
+        # Base adapter catches AdapterValidationError from
+        # _check_user_errors and surfaces it via result.error
+        # as the exception instance (not a plain string).
+        assert not result.ok
+        assert "body too long" in str(result.error)
 
 
 # ── ShopifyProductSellingPlanBindingsAdapter ──────────────

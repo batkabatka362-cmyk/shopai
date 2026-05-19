@@ -152,6 +152,7 @@ from .selling_plan_groups import ShopifySellingPlanGroupsAdapter
 from .shipping_packages import ShopifyShippingPackagesAdapter
 from .shop import ShopifyShopAdapter
 from .shop_locales import ShopifyShopLocalesAdapter
+from .shop_policies_write import ShopifyShopPoliciesWriteAdapter
 from .subscription_draft import ShopifySubscriptionDraftAdapter
 from .subscription_draft_free_shipping import (
     ShopifySubscriptionDraftFreeShippingAdapter,
@@ -300,6 +301,7 @@ _SHOPIFY_ADAPTER_CLASSES = (
     ShopifyUrlRedirectsAdapter,
     ShopifyCustomerPrivacyAdapter,
     ShopifyShopLocalesAdapter,
+    ShopifyShopPoliciesWriteAdapter,
     ShopifyProductSellingPlanBindingsAdapter,
     ShopifyProductFeedsAdapter,
     ShopifySavedSearchesAdapter,
