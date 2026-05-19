@@ -1,0 +1,336 @@
+"""Tests for ``core.approval.engine_health_history`` -- the
+trajectory recorder for engine_health scores.
+
+Mirrors the ``alert_history`` test surface:
+  - record_score / record_scores append to the persisted log
+  - recent_history filters by window + optional engine
+  - latest_per_engine returns the newest per engine
+  - clear / prune housekeeping
+  - Pattern J guard short-circuits under pytest by default
+  - load_raw_events is fail-open on missing / corrupt file
+"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from core.approval.engine_health_history import (
+    ScoreEvent,
+    _load_raw_events,
+    _save_events,
+    clear,
+    latest_per_engine,
+    prune,
+    recent_history,
+    record_score,
+    record_scores,
+)
+
+
+@pytest.fixture
+def isolated_data(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture
+def no_test_guard():
+    """Disable the Pattern J guard so tests can verify the
+    actual recording behaviour."""
+    with patch(
+        "core.approval.engine_health_history."
+        "_is_test_environment",
+        return_value=False,
+    ):
+        yield
+
+
+class TestRecord:
+
+    def test_pattern_j_guard_skips_under_pytest(
+        self, isolated_data,
+    ):
+        """Default behaviour: PYTEST_CURRENT_TEST is set, so
+        record_score returns False without writing."""
+        out = record_score(
+            "loyalty", score=8, verdict="healthy",
+        )
+        assert out is False
+        # No file was created
+        assert not (
+            isolated_data / "engine_health_history.json"
+        ).exists()
+
+    def test_appends_when_guard_lifted(
+        self, isolated_data, no_test_guard,
+    ):
+        ok = record_score(
+            "loyalty", score=7, verdict="healthy", now=1000.0,
+        )
+        assert ok is True
+        events = _load_raw_events()
+        assert len(events) == 1
+        assert events[0].engine == "loyalty"
+        assert events[0].score == 7
+        assert events[0].verdict == "healthy"
+        assert events[0].recorded_at == 1000.0
+
+    def test_empty_engine_rejected(
+        self, isolated_data, no_test_guard,
+    ):
+        assert record_score(
+            "", score=5, verdict="warning",
+        ) is False
+        assert record_score(
+            "   ", score=5, verdict="warning",
+        ) is False
+        assert _load_raw_events() == []
+
+    def test_batch_record(
+        self, isolated_data, no_test_guard,
+    ):
+        n = record_scores(
+            [
+                {"engine": "a", "score": 9, "verdict": "healthy"},
+                {"engine": "b", "score": 4, "verdict": "unhealthy"},
+                {"engine": "c", "score": 6, "verdict": "warning"},
+            ],
+            now=2000.0,
+        )
+        assert n == 3
+        events = _load_raw_events()
+        assert {e.engine for e in events} == {"a", "b", "c"}
+
+    def test_batch_skips_malformed(
+        self, isolated_data, no_test_guard,
+    ):
+        n = record_scores(
+            [
+                {"engine": "good", "score": 5, "verdict": "warning"},
+                {"engine": "", "score": 5, "verdict": "warning"},
+                "not-a-dict",
+            ],
+            now=2000.0,
+        )
+        # Only the well-formed entry survives. Note: passing a
+        # non-dict entry via `entry.get(...)` raises AttributeError,
+        # which the implementation catches and skips.
+        assert n == 1
+
+
+class TestRecentHistory:
+
+    def test_window_filtering(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        # Three events: 1h, 1d, 10d ago
+        record_score("loyalty", score=8, verdict="healthy",
+                     now=now - 3600.0)
+        record_score("loyalty", score=7, verdict="healthy",
+                     now=now - 86400.0)
+        record_score("loyalty", score=5, verdict="warning",
+                     now=now - 86400.0 * 10.0)
+        # 7-day window → 2 events
+        history = recent_history(
+            since_seconds=86400.0 * 7.0, now=now,
+        )
+        assert len(history) == 2
+
+    def test_engine_filter(
+        self, isolated_data, no_test_guard,
+    ):
+        record_score(
+            "loyalty", score=8, verdict="healthy", now=1000.0,
+        )
+        record_score(
+            "cart_recovery", score=5, verdict="warning",
+            now=1100.0,
+        )
+        loyalty_only = recent_history(
+            "loyalty", since_seconds=86400.0, now=1200.0,
+        )
+        assert len(loyalty_only) == 1
+        assert loyalty_only[0].engine == "loyalty"
+
+    def test_newest_first_ordering(
+        self, isolated_data, no_test_guard,
+    ):
+        record_score(
+            "loyalty", score=8, verdict="healthy", now=1000.0,
+        )
+        record_score(
+            "loyalty", score=5, verdict="warning", now=2000.0,
+        )
+        record_score(
+            "loyalty", score=3, verdict="unhealthy", now=1500.0,
+        )
+        history = recent_history(
+            "loyalty", since_seconds=86400.0, now=2500.0,
+        )
+        assert [e.score for e in history] == [5, 3, 8]
+
+
+class TestLatestPerEngine:
+
+    def test_picks_newest_per_engine(
+        self, isolated_data, no_test_guard,
+    ):
+        record_score(
+            "loyalty", score=8, verdict="healthy", now=1000.0,
+        )
+        record_score(
+            "loyalty", score=5, verdict="warning", now=2000.0,
+        )
+        record_score(
+            "cart_recovery", score=9, verdict="healthy",
+            now=1500.0,
+        )
+        latest = latest_per_engine(
+            since_seconds=86400.0, now=2500.0,
+        )
+        assert latest["loyalty"].score == 5
+        assert latest["cart_recovery"].score == 9
+
+    def test_window_excludes_old(
+        self, isolated_data, no_test_guard,
+    ):
+        record_score(
+            "loyalty", score=8, verdict="healthy", now=1000.0,
+        )
+        # 31 days later -> outside the 30-day default window
+        latest = latest_per_engine(
+            since_seconds=86400.0 * 30.0,
+            now=1000.0 + 86400.0 * 31.0,
+        )
+        assert "loyalty" not in latest
+
+
+class TestHousekeeping:
+
+    def test_clear_wipes_file(
+        self, isolated_data, no_test_guard,
+    ):
+        record_score(
+            "loyalty", score=8, verdict="healthy",
+        )
+        assert _load_raw_events()  # non-empty
+        clear()
+        assert _load_raw_events() == []
+
+    def test_clear_when_no_file(self, isolated_data):
+        # No file present yet -- clear should not crash
+        clear()
+        assert _load_raw_events() == []
+
+    def test_prune_drops_old(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        record_score(
+            "old_engine", score=8, verdict="healthy",
+            now=now - 86400.0 * 100.0,
+        )
+        record_score(
+            "fresh", score=5, verdict="warning",
+            now=now - 86400.0 * 10.0,
+        )
+        dropped = prune(
+            older_than_seconds=86400.0 * 30.0, now=now,
+        )
+        assert dropped == 1
+        remaining = _load_raw_events()
+        assert len(remaining) == 1
+        assert remaining[0].engine == "fresh"
+
+    def test_prune_noop_when_nothing_old(
+        self, isolated_data, no_test_guard,
+    ):
+        record_score("loyalty", score=8, verdict="healthy")
+        dropped = prune(
+            older_than_seconds=86400.0 * 90.0,
+        )
+        assert dropped == 0
+
+
+class TestLoadRawEvents:
+
+    def test_fails_open_on_missing_file(self, isolated_data):
+        assert _load_raw_events() == []
+
+    def test_fails_open_on_corrupt_file(
+        self, isolated_data,
+    ):
+        (
+            isolated_data / "engine_health_history.json"
+        ).write_text("not json {{{")
+        assert _load_raw_events() == []
+
+    def test_skips_non_list_payload(self, isolated_data):
+        (
+            isolated_data / "engine_health_history.json"
+        ).write_text('{"wrong": "shape"}')
+        assert _load_raw_events() == []
+
+    def test_skips_malformed_entries(self, isolated_data):
+        # Mix of well-formed + malformed
+        payload = [
+            {
+                "engine": "loyalty",
+                "recorded_at": 1000.0,
+                "score": 8,
+                "verdict": "healthy",
+            },
+            "not-a-dict",
+            {"engine": "broken", "recorded_at": "abc"},
+        ]
+        (
+            isolated_data / "engine_health_history.json"
+        ).write_text(json.dumps(payload))
+        events = _load_raw_events()
+        # Only the well-formed entry survives
+        engines = {e.engine for e in events}
+        assert "loyalty" in engines
+
+
+class TestPersistence:
+
+    def test_round_trip(
+        self, isolated_data, no_test_guard,
+    ):
+        record_score(
+            "loyalty", score=7, verdict="healthy", now=1000.0,
+        )
+        # Re-read via raw API
+        path = isolated_data / "engine_health_history.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw[0]["engine"] == "loyalty"
+        assert raw[0]["score"] == 7
+        assert raw[0]["verdict"] == "healthy"
+        assert raw[0]["recorded_at"] == 1000.0
+
+    def test_save_events_is_atomic(self, isolated_data):
+        """_save_events should write via temp + rename so no
+        partial file is observable mid-write."""
+        events = [
+            ScoreEvent(
+                engine="loyalty",
+                recorded_at=time.time(),
+                score=8,
+                verdict="healthy",
+            ),
+        ]
+        _save_events(events)
+        # Tmp file should NOT exist after a successful write
+        tmp = (
+            isolated_data / "engine_health_history.json.tmp"
+        )
+        assert not tmp.exists()
+        # Real file exists with content
+        assert (
+            isolated_data / "engine_health_history.json"
+        ).exists()
