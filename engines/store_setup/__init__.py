@@ -7,6 +7,10 @@ in ``execution/store_configurator.py`` handles the procedural
 holds the AGI-driven helpers that need engine + router access.
 
 Modules:
+  * ``announcement_bar`` -- niche-aware top-of-page sticky
+    banner content (shipping threshold / first-order promo /
+    brand claim / subscription pitch); persists as
+    ``announcement-bar`` page.
   * ``brand_uploader`` -- push logo / favicon / hero / og_image
     URLs to Shopify Files via ``SHOPIFY_UPLOAD_FILE``.
   * ``collection_seeder`` -- niche-aware starter collections
