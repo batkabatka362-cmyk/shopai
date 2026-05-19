@@ -508,6 +508,71 @@ class WorldModel:
             "recent": rows,
         }
 
+    def _section_fleet_health(self) -> dict:
+        """Fleet-wide engine_health rollup.
+
+        Scores every engine in ``ENGINE_GOAL_MAP`` and returns
+        the count by verdict + the list of sickest engines (top
+        5 by score asc). This is the snapshot's "is the fleet OK
+        right now" answer; the per-engine quarantine section
+        gives the detail, this gives the rollup.
+
+        Returns ``{checked, verdict_counts, sickest, average_score}``.
+        Source-failure isolated -- a missing engine_health module
+        or roster import returns ``{checked: False, error: ...}``.
+        """
+        try:
+            from core.approval.engine_health import score_engine
+            from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model fleet_health import failed: %s", exc,
+            )
+            return {"checked": False, "error": str(exc)}
+
+        verdict_counts = {
+            "healthy": 0, "warning": 0, "unhealthy": 0,
+        }
+        all_rows: list[dict] = []
+        for engine in sorted(ENGINE_GOAL_MAP):
+            try:
+                h = score_engine(engine)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model fleet_health: score_engine "
+                    "raised for %s: %s", engine, exc,
+                )
+                continue
+            verdict_counts[h.verdict] = (
+                verdict_counts.get(h.verdict, 0) + 1
+            )
+            all_rows.append({
+                "engine": h.engine,
+                "score": h.score,
+                "verdict": h.verdict,
+            })
+
+        if not all_rows:
+            return {
+                "checked": True,
+                "verdict_counts": verdict_counts,
+                "sickest": [],
+                "average_score": None,
+                "total_engines": 0,
+            }
+
+        all_rows.sort(
+            key=lambda r: (int(r["score"]), r["engine"]),
+        )
+        avg = sum(int(r["score"]) for r in all_rows) / len(all_rows)
+        return {
+            "checked": True,
+            "verdict_counts": verdict_counts,
+            "sickest": all_rows[:5],
+            "average_score": round(avg, 2),
+            "total_engines": len(all_rows),
+        }
+
     def _section_quarantine(
         self, store_id: str | None = None,
     ) -> dict:
@@ -722,6 +787,7 @@ class WorldModel:
             store_id=store_id,
         )
         quarantine = self._section_quarantine(store_id=store_id)
+        fleet_health = self._section_fleet_health()
 
         return {
             "store_id": store_id,
@@ -737,6 +803,7 @@ class WorldModel:
             "transfers": transfers,
             "recent_outcomes": recent_outcomes,
             "quarantine": quarantine,
+            "fleet_health": fleet_health,
         }
 
 
