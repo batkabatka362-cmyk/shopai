@@ -11,6 +11,9 @@ Modules:
     URLs to Shopify Files via ``SHOPIFY_UPLOAD_FILE``.
   * ``collection_seeder`` -- niche-aware starter collections
     via ``SHOPIFY_CREATE_COLLECTION``.
+  * ``homepage_hero`` -- niche-aware above-the-fold banner
+    content + applier (persists as a ``homepage-hero`` page
+    via ``SHOPIFY_CREATE_PAGE``).
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
