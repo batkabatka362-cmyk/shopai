@@ -66,7 +66,11 @@ class TagManagementEngine:
 
         _past = read_past_tag_runs(limit=5)
 
-        tag_result = auto_tag(products=products, existing_tags=existing_tags)
+        tag_result = auto_tag(
+            products=products,
+            existing_tags=existing_tags,
+            niche=data.get("niche"),
+        )
         if tag_result.get("status") == "error":
             return self._fail(f"Auto-tagging failed: {tag_result.get('error')}", time.monotonic() - start)
         tag_assignments = tag_result.get("assignments", [])
