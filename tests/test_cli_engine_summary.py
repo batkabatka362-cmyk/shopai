@@ -402,3 +402,129 @@ class TestQuarantineSection:
         # Summary still renders despite quarantine probe failure
         assert code == 0
         assert "loyalty" in out
+
+
+class TestRecentAlerts:
+    """``engine summary`` surfaces the most recent alert events
+    for the target engine -- not just the streak count -- so the
+    operator sees the drop %% trajectory directly."""
+
+    def test_recent_alerts_listed_in_text(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import alert_history
+        now = time.time()
+        # 2 fresh alert events on this engine, with distinct drops
+        alert_history.record_alerts(
+            [
+                type("FA", (), {
+                    "engine": "loyalty",
+                    "drop": 0.40,
+                    "recent_score": 1.2,
+                    "baseline_score": 2.5,
+                })()
+            ],
+            now=now - 1800.0,
+        )
+        alert_history.record_alerts(
+            [
+                type("FA", (), {
+                    "engine": "loyalty",
+                    "drop": 0.55,
+                    "recent_score": 0.9,
+                    "baseline_score": 2.5,
+                })()
+            ],
+            now=now - 600.0,
+        )
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ):
+            out, _ = _capture(cli._cmd_engine_summary, _ns())
+        assert "Recent alerts" in out
+        # Both drops show
+        assert "drop=40%" in out
+        assert "drop=55%" in out
+        # Score columns rendered
+        assert "recent=1.20" in out or "recent=0.90" in out
+
+    def test_recent_alerts_capped_at_five(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import alert_history
+        now = time.time()
+        for i in range(7):
+            alert_history.record_alerts(
+                [
+                    type("FA", (), {
+                        "engine": "loyalty",
+                        "drop": 0.30,
+                        "recent_score": 1.0,
+                        "baseline_score": 2.0,
+                    })()
+                ],
+                now=now - i * 600.0,
+            )
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_summary, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert len(data["quarantine"]["recent_alerts"]) == 5
+
+    def test_recent_alerts_other_engines_filtered_out(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import alert_history
+        now = time.time()
+        # Alert on a DIFFERENT engine -- must not appear in the
+        # ``loyalty`` summary.
+        alert_history.record_alerts(
+            [
+                type("FA", (), {
+                    "engine": "discount_strategy",
+                    "drop": 0.50,
+                    "recent_score": 1.0,
+                    "baseline_score": 2.0,
+                })()
+            ],
+            now=now - 600.0,
+        )
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_summary, _ns(json=True),
+            )
+        data = json.loads(out)
+        # No recent alerts surfaced for ``loyalty``
+        assert data["quarantine"]["recent_alerts"] == []
+
+    def test_recent_alerts_store_scope_rendered(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import alert_history
+        now = time.time()
+        alert_history.record_alerts(
+            [
+                type("FA", (), {
+                    "engine": "loyalty",
+                    "drop": 0.35,
+                    "recent_score": 1.0,
+                    "baseline_score": 2.0,
+                })()
+            ],
+            now=now - 600.0,
+            store_id="store_a",
+        )
+        q = _fake_queue(stats_by_engine={"loyalty": {"executed": 5}})
+        with patch(
+            "core.approval.queue.get_approval_queue", return_value=q,
+        ):
+            out, _ = _capture(cli._cmd_engine_summary, _ns())
+        assert "@store_a" in out
