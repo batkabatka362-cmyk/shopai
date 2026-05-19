@@ -20,6 +20,10 @@ Modules:
   * ``policy_generator`` / ``policy_applier`` -- niche +
     region aware legal policies via
     ``SHOPIFY_UPDATE_SHOP_POLICY``.
+  * ``product_description_enricher`` -- niche-aware product
+    description generation via ``SHOPIFY_UPDATE_PRODUCT``.
+  * ``seo_meta_enricher`` -- niche-aware product SEO meta
+    (title_tag + meta_description) via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``welcome_discount`` -- launch-time WELCOME{N} code via
     ``SHOPIFY_CREATE_DISCOUNT``.
 """
