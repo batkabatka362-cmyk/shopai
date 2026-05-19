@@ -14,6 +14,9 @@ Modules:
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
+  * ``newsletter_popup`` -- niche-aware first-visit +
+    exit-intent newsletter popup content; pairs with
+    ``welcome_discount`` for the email-for-discount swap.
   * ``page_generator`` / ``page_applier`` -- niche-aware
     About / Contact / FAQ / Shipping pages via
     ``SHOPIFY_CREATE_PAGE``.
