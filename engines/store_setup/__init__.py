@@ -24,6 +24,9 @@ Modules:
     description generation via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``seo_meta_enricher`` -- niche-aware product SEO meta
     (title_tag + meta_description) via ``SHOPIFY_UPDATE_PRODUCT``.
+  * ``theme_palette`` -- niche-aware semantic color tokens
+    (primary/secondary/accent/bg/surface/text) with WCAG
+    contrast checks; persists as ``theme-palette`` page.
   * ``welcome_discount`` -- launch-time WELCOME{N} code via
     ``SHOPIFY_CREATE_DISCOUNT``.
 """
