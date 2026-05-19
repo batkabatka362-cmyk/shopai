@@ -3944,6 +3944,57 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Fleet health rollup ────────────────────────────────
+    # Use the composite engine_health scorer to surface the
+    # fleet's directional verdict alongside the static
+    # quarantine state above. Operators reading the morning
+    # brief see "fleet has 3 unhealthy engines" without
+    # having to run ``shopai engine pulse --fleet``.
+    fleet_health: dict = {
+        "checked": False,
+        "verdict_counts": {
+            "healthy": 0, "warning": 0, "unhealthy": 0,
+        },
+        "sickest": [],
+        "average_score": None,
+    }
+    try:
+        from core.approval.engine_health import score_engine
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+        scored: list[dict] = []
+        for engine in sorted(ENGINE_GOAL_MAP):
+            try:
+                h = score_engine(engine)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "daily-brief fleet_health: score_engine "
+                    "raised for %s: %s", engine, exc,
+                )
+                continue
+            scored.append({
+                "engine": h.engine,
+                "score": h.score,
+                "verdict": h.verdict,
+            })
+            fleet_health["verdict_counts"][h.verdict] = (
+                fleet_health["verdict_counts"].get(h.verdict, 0)
+                + 1
+            )
+        if scored:
+            scored.sort(
+                key=lambda r: (int(r["score"]), r["engine"]),
+            )
+            fleet_health["checked"] = True
+            fleet_health["sickest"] = scored[:5]
+            fleet_health["average_score"] = round(
+                sum(int(r["score"]) for r in scored) / len(scored),
+                2,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief fleet_health rollup raised: %s", exc,
+        )
+
     # ── Totals ─────────────────────────────────────────────
     totals = {
         "stores": len(store_rows),
@@ -3958,6 +4009,9 @@ def _cmd_daily_brief(args) -> None:
         ),
         "pending": total_pending,
         "alert_paused": len(quarantine_summary["alert_paused"]),
+        "unhealthy_engines": (
+            fleet_health["verdict_counts"]["unhealthy"]
+        ),
     }
 
     # ── JSON envelope ──────────────────────────────────────
@@ -3969,6 +4023,7 @@ def _cmd_daily_brief(args) -> None:
             "pending_by_engine": pending_by_engine,
             "transfer_activity": transfer_activity,
             "quarantine": quarantine_summary,
+            "fleet_health": fleet_health,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -3990,6 +4045,26 @@ def _cmd_daily_brief(args) -> None:
         f"{totals['failed']} failed, "
         f"{totals['pending']} pending"
     )
+    # Fleet health one-liner -- omitted when scorer probe
+    # produced no scored engines (empty roster / all raises).
+    if fleet_health["checked"]:
+        vc = fleet_health["verdict_counts"]
+        avg = fleet_health["average_score"]
+        print(
+            f"  Fleet health: avg={avg:.1f}/10  "
+            f"healthy={vc['healthy']}  "
+            f"warning={vc['warning']}  "
+            f"unhealthy={vc['unhealthy']}"
+        )
+        # Surface the sickest engines when ANY are unhealthy --
+        # cheap operator nudge to drill in via ``engine pulse``.
+        if vc["unhealthy"] > 0:
+            sickest = fleet_health["sickest"][:3]
+            sickest_str = ", ".join(
+                f"{r['engine']}({r['score']}/10)"
+                for r in sickest
+            )
+            print(f"    Sickest: {sickest_str}")
     print()
 
     # Per-store table (compact)
