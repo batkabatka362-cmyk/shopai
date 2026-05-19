@@ -54,7 +54,9 @@ def _capture(fn, *args, **kwargs):
 def _ns(**kw):
     defaults = dict(
         engine=None, since_days=7.0, clear=False,
-        prune_older_than_days=None, json=False,
+        prune_older_than_days=None,
+        store=None, include_fleet=False,
+        json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -346,3 +348,127 @@ class TestPrune:
             )
         assert "Error" in out
         assert "disk full" in out
+
+
+# ─── Per-store filtering ─────────────────────────────────────
+
+
+class TestStoreFilter:
+    """``--store STORE_ID`` filters to events for that store.
+    Per-store events match exactly; fleet-wide (store_id=None)
+    events are EXCLUDED unless ``--include-fleet`` is set."""
+
+    def test_store_filter_excludes_other_stores(
+        self, cli, data_dir,
+    ):
+        from core.approval import alert_history
+        from core.context.active_store import active_store
+        now = time.time()
+        with active_store("store_a"):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")], now=now - 100,
+            )
+        with active_store("store_b"):
+            alert_history.record_alerts(
+                [_FakeAlert("affiliate")], now=now - 50,
+            )
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(store="store_a", json=True),
+        )
+        data = json.loads(out)
+        # Only store_a's loyalty event surfaces
+        assert data["event_count"] == 1
+        assert data["events"][0]["engine"] == "loyalty"
+        assert data["events"][0]["store_id"] == "store_a"
+
+    def test_store_filter_excludes_fleet_by_default(
+        self, cli, data_dir,
+    ):
+        """Fleet-wide events (store_id=None) are excluded when
+        --store is given, unless --include-fleet."""
+        from core.approval import alert_history
+        from core.context.active_store import active_store
+        now = time.time()
+        with active_store("store_a"):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")], now=now - 100,
+            )
+        # Fleet-wide
+        alert_history.record_alerts(
+            [_FakeAlert("loyalty")], now=now - 50,
+        )
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(store="store_a", json=True),
+        )
+        data = json.loads(out)
+        assert data["event_count"] == 1
+        assert data["events"][0]["store_id"] == "store_a"
+
+    def test_include_fleet_with_store_returns_both(
+        self, cli, data_dir,
+    ):
+        from core.approval import alert_history
+        from core.context.active_store import active_store
+        now = time.time()
+        with active_store("store_a"):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")], now=now - 200,
+            )
+        alert_history.record_alerts(
+            [_FakeAlert("loyalty")], now=now - 100,
+        )
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(
+                store="store_a",
+                include_fleet=True,
+                json=True,
+            ),
+        )
+        data = json.loads(out)
+        assert data["event_count"] == 2
+        store_ids = {e["store_id"] for e in data["events"]}
+        assert store_ids == {"store_a", None}
+
+    def test_text_render_per_store_label(
+        self, cli, data_dir,
+    ):
+        from core.approval import alert_history
+        from core.context.active_store import active_store
+        now = time.time()
+        with active_store("store_a"):
+            alert_history.record_alerts(
+                [_FakeAlert("loyalty")], now=now - 100,
+            )
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(store="store_a"),
+        )
+        assert "@store_a" in out
+        # Header shows the scope
+        assert "store=store_a" in out
+
+    def test_text_render_fleet_label(self, cli, data_dir):
+        """Default-mode fleet events render with (fleet)
+        label."""
+        from core.approval import alert_history
+        now = time.time()
+        alert_history.record_alerts(
+            [_FakeAlert("loyalty")], now=now - 100,
+        )
+        out = _capture(
+            cli._cmd_approvals_alert_history, _ns(),
+        )
+        assert "(fleet)" in out
+
+    def test_empty_with_store_filter_message(
+        self, cli, data_dir,
+    ):
+        out = _capture(
+            cli._cmd_approvals_alert_history,
+            _ns(store="missing"),
+        )
+        assert "No alert firings" in out
+        assert "store=missing" in out
