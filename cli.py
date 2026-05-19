@@ -15869,6 +15869,40 @@ def _cmd_approvals_show(args) -> None:
         )
         payload["engine_quarantine_flags"] = []
 
+    # Recent alerts for THIS engine -- mirrors the field added
+    # to ``engine summary`` so operators get the same trajectory
+    # signal regardless of which command they came in through.
+    # Newest-first within the 7-day window, capped at 5.
+    try:
+        from core.approval import alert_history
+        recent_alerts: list[dict] = []
+        for e in alert_history.recent_history(
+            since_seconds=86400.0 * 7.0,
+        ):
+            if e.engine != action.engine:
+                continue
+            recent_alerts.append({
+                "recorded_at": float(
+                    getattr(e, "recorded_at", 0.0) or 0.0,
+                ),
+                "drop": float(getattr(e, "drop", 0.0) or 0.0),
+                "recent_score": float(
+                    getattr(e, "recent_score", 0.0) or 0.0,
+                ),
+                "baseline_score": float(
+                    getattr(e, "baseline_score", 0.0) or 0.0,
+                ),
+                "store_id": getattr(e, "store_id", None),
+            })
+            if len(recent_alerts) >= 5:
+                break
+        payload["engine_recent_alerts"] = recent_alerts
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "approvals show alert_history probe raised: %s", exc,
+        )
+        payload["engine_recent_alerts"] = []
+
     # AGI decision-retrieval context (opt-in via --with-context).
     # When operator is triaging a PENDING action, the top-k
     # similar past decisions + their outcome rollup answers

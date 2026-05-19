@@ -312,3 +312,131 @@ class TestEngineQuarantineFlags:
         assert code == 0
         data = json.loads(out)
         assert data["engine_quarantine_flags"] == []
+
+
+# --- Recent alerts per engine -----------------------------------
+
+
+@pytest.fixture
+def _alert_history_no_guard():
+    """Lift Pattern J guard so the approvals-show handler can
+    read seeded alert_history data inside tests."""
+    with patch(
+        "core.approval.alert_history._is_test_environment",
+        return_value=False,
+    ):
+        yield
+
+
+class TestEngineRecentAlerts:
+    """``approvals show`` attaches the engine's recent alert
+    events (newest-first, capped at 5) so an operator triaging
+    the action sees the alert trajectory directly."""
+
+    def test_empty_when_no_alerts(self, cli, data_dir):
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ):
+            out, _ = _capture(cli._cmd_approvals_show, _ns())
+        data = json.loads(out)
+        assert data["engine_recent_alerts"] == []
+
+    def test_populated_when_alerts_exist(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import alert_history
+        now = time.time()
+        alert_history.record_alerts(
+            [
+                type("FA", (), {
+                    "engine": "loyalty",
+                    "drop": 0.40,
+                    "recent_score": 1.2,
+                    "baseline_score": 2.5,
+                })()
+            ],
+            now=now - 600.0,
+        )
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ):
+            out, _ = _capture(cli._cmd_approvals_show, _ns())
+        data = json.loads(out)
+        alerts = data["engine_recent_alerts"]
+        assert len(alerts) == 1
+        assert alerts[0]["drop"] == 0.40
+        assert alerts[0]["recent_score"] == 1.2
+
+    def test_filtered_by_engine(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import alert_history
+        now = time.time()
+        alert_history.record_alerts(
+            [
+                type("FA", (), {
+                    "engine": "discount_strategy",
+                    "drop": 0.50,
+                    "recent_score": 1.0,
+                    "baseline_score": 2.0,
+                })()
+            ],
+            now=now - 600.0,
+        )
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ):
+            out, _ = _capture(cli._cmd_approvals_show, _ns())
+        data = json.loads(out)
+        # Alerts on a DIFFERENT engine don't leak in
+        assert data["engine_recent_alerts"] == []
+
+    def test_capped_at_five(
+        self, cli, data_dir, _alert_history_no_guard,
+    ):
+        from core.approval import alert_history
+        now = time.time()
+        for i in range(7):
+            alert_history.record_alerts(
+                [
+                    type("FA", (), {
+                        "engine": "loyalty",
+                        "drop": 0.30,
+                        "recent_score": 1.0,
+                        "baseline_score": 2.0,
+                    })()
+                ],
+                now=now - i * 600.0,
+            )
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ):
+            out, _ = _capture(cli._cmd_approvals_show, _ns())
+        data = json.loads(out)
+        assert len(data["engine_recent_alerts"]) == 5
+
+    def test_alert_history_raise_keeps_payload(
+        self, cli, data_dir,
+    ):
+        action = _fake_action(engine="loyalty")
+        with patch(
+            "core.approval.get_approval_queue",
+            return_value=_fake_queue(action),
+        ), patch(
+            "core.approval.alert_history.recent_history",
+            side_effect=RuntimeError("history corrupted"),
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_show, _ns(),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["engine_recent_alerts"] == []
