@@ -19,6 +19,15 @@ that opt in AND clear a set of outcome / confidence guardrails:
      is ≥ ``MIN_OUTCOME_RATIO`` (default 0.85).
   4. The proposed action's confidence is ≥ ``MIN_CONFIDENCE``
      (default 0.85). Confidence-less actions never auto-approve.
+  5. The engine's :class:`EngineHealth` verdict is NOT
+     ``"unhealthy"``. Composite health scorer (alerts + quarantine
+     + outcome + failure rate) refuses auto-approve when the
+     engine is in degradation -- even if outcome_ratio LOOKED fine
+     on the static window. Refuses ONLY on unhealthy; ``"warning"``
+     still auto-approves (the warning verdict by itself doesn't
+     constitute a degradation signal sharp enough to block). The
+     guard is fail-open: if the health scorer raises, auto-approve
+     proceeds based on the other four guards.
 
 If all four pass, the dispatcher reports ``(True, reason)`` and the
 queue auto-transitions PENDING → APPROVED with
@@ -274,6 +283,19 @@ def evaluate(
             total_outcomes=total,
         )
 
+    # Guardrail #5: composite engine_health verdict. Refuses
+    # auto-approve when the engine is unhealthy by the combined
+    # signals (alerts + quarantine + failure rate). Fail-open:
+    # a health scorer that raises is treated as silent skip.
+    if _engine_unhealthy(engine, queue=queue):
+        return AutoApproveDecision(
+            should_auto=False,
+            reason="engine_health_unhealthy",
+            confidence=conf,
+            outcome_ratio=ratio,
+            total_outcomes=total,
+        )
+
     return AutoApproveDecision(
         should_auto=True,
         reason=(
@@ -285,6 +307,26 @@ def evaluate(
         outcome_ratio=ratio,
         total_outcomes=total,
     )
+
+
+def _engine_unhealthy(
+    engine: str, *, queue: "ApprovalQueue",
+) -> bool:
+    """Returns True when the engine's composite health verdict is
+    ``"unhealthy"``. Fail-open: any error degrades to False so the
+    health guard never blocks more than the other four guards
+    already would in its absence.
+    """
+    try:
+        from core.approval.engine_health import score_engine
+        health = score_engine(engine, queue=queue)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "auto_approve: engine_health probe raised for %s: %s",
+            engine, exc,
+        )
+        return False
+    return health.verdict == "unhealthy"
 
 
 def _is_test_environment() -> bool:
