@@ -39,28 +39,30 @@ def queue(tmp_path: Path):
     q._conn.close()
 
 
-def _seed(q, *, engine, positive, negative=0):
+def _seed(q, *, engine, positive, negative=0, store_id=None):
     for i in range(positive):
         a = q.enqueue(
             engine=engine, action_type="y", capability="z",
             params={}, narrative="",
+            store_id=store_id,
         )
         q.approve(a.id, decided_by="op")
         q.attach_result(a.id, success=True, result={})
         q.record_outcome(
             a.id, topic="orders/create", polarity="positive",
-            metrics={}, source_event=f"p{engine}_{i}",
+            metrics={}, source_event=f"p{engine}_{i}_{store_id}",
         )
     for i in range(negative):
         a = q.enqueue(
             engine=engine, action_type="y", capability="z",
             params={}, narrative="",
+            store_id=store_id,
         )
         q.approve(a.id, decided_by="op")
         q.attach_result(a.id, success=True, result={})
         q.record_outcome(
             a.id, topic="refunds/create", polarity="negative",
-            metrics={}, source_event=f"n{engine}_{i}",
+            metrics={}, source_event=f"n{engine}_{i}_{store_id}",
         )
 
 
@@ -442,3 +444,162 @@ class TestAutoApproveInteraction:
         # the underlying maybe_quarantine import side has its own
         # pytest gate fallback.
         assert mock_q_gate.called is False
+
+
+class TestPerStoreOutcomeQuarantine:
+    """``evaluate(store_id=...)`` quarantines when EITHER the
+    fleet-wide outcome ratio is bad OR the per-store outcome
+    ratio is bad. Empire-AGI: an engine fleet-healthy but bad
+    on store_a still gets per-store-rejected for store_a."""
+
+    def test_fleet_healthy_per_store_bad_quarantines(
+        self, quarantine_data_dir, queue,
+    ):
+        """Engine is healthy fleet-wide but bad on store_a;
+        evaluate(store_id='store_a') should quarantine."""
+        from core.approval.quarantine import (
+            QuarantineState, evaluate,
+        )
+        # store_b: 25 positive, 0 negative (healthy)
+        _seed(queue, engine="x", positive=25, store_id="store_b")
+        # store_a: 5 positive, 25 negative (bad)
+        _seed(
+            queue, engine="x",
+            positive=5, negative=25, store_id="store_a",
+        )
+        # Fleet-wide aggregate: 30 positive + 25 negative = 55
+        # polarised, negative_ratio = 25/55 ≈ 0.45 (below 0.50
+        # threshold) -> fleet is HEALTHY.
+        d_fleet = evaluate(
+            engine="x", queue=queue,
+            state=QuarantineState(
+                exemptions=frozenset(), released=frozenset(),
+            ),
+        )
+        assert d_fleet.should_quarantine is False
+
+        # Per-store: store_a 5/30 = 0.83 negative -> BAD
+        d_a = evaluate(
+            engine="x", queue=queue,
+            store_id="store_a",
+            state=QuarantineState(
+                exemptions=frozenset(), released=frozenset(),
+            ),
+        )
+        assert d_a.should_quarantine is True
+        assert "store=store_a" in d_a.reason
+
+        # store_b: 25/25 = 0 negative -> HEALTHY
+        d_b = evaluate(
+            engine="x", queue=queue,
+            store_id="store_b",
+            state=QuarantineState(
+                exemptions=frozenset(), released=frozenset(),
+            ),
+        )
+        assert d_b.should_quarantine is False
+
+    def test_fleet_bad_short_circuits_before_per_store(
+        self, quarantine_data_dir, queue,
+    ):
+        """If fleet-wide is bad, per-store check is skipped --
+        decision short-circuits with the fleet reason."""
+        from core.approval.quarantine import (
+            QuarantineState, evaluate,
+        )
+        _seed(
+            queue, engine="x",
+            positive=5, negative=25, store_id="store_a",
+        )
+        # Fleet aggregate is also bad (everything's on store_a)
+        d = evaluate(
+            engine="x", queue=queue,
+            store_id="store_a",
+            state=QuarantineState(
+                exemptions=frozenset(), released=frozenset(),
+            ),
+        )
+        assert d.should_quarantine is True
+        # Fleet-side reason wins (no "store=" qualifier)
+        assert "(fleet)" in d.reason
+
+    def test_per_store_insufficient_history_falls_through(
+        self, quarantine_data_dir, queue,
+    ):
+        """If neither fleet nor per-store has enough history,
+        the decision is 'healthy' / 'insufficient' -- no
+        quarantine."""
+        from core.approval.quarantine import (
+            QuarantineState, evaluate,
+        )
+        # Only 5 polarised events on store_a -- below 20 floor
+        _seed(
+            queue, engine="x",
+            positive=1, negative=4, store_id="store_a",
+        )
+        d = evaluate(
+            engine="x", queue=queue,
+            store_id="store_a",
+            state=QuarantineState(
+                exemptions=frozenset(), released=frozenset(),
+            ),
+        )
+        assert d.should_quarantine is False
+        assert "insufficient_history" in d.reason
+
+    def test_no_store_id_preserves_fleet_only_behaviour(
+        self, quarantine_data_dir, queue,
+    ):
+        """Without a store_id, evaluate behaves as before:
+        only fleet-wide outcome stats matter."""
+        from core.approval.quarantine import (
+            QuarantineState, evaluate,
+        )
+        _seed(
+            queue, engine="x",
+            positive=25, negative=0, store_id="store_a",
+        )
+        d = evaluate(
+            engine="x", queue=queue,
+            state=QuarantineState(
+                exemptions=frozenset(), released=frozenset(),
+            ),
+        )
+        assert d.should_quarantine is False
+        assert "healthy" in d.reason
+
+    def test_per_store_queue_stats_failure_falls_back(
+        self, quarantine_data_dir, queue,
+    ):
+        """If the per-store query fails (e.g. pre-extension
+        queue without store_id kwarg), evaluate falls back to
+        the fleet-only decision rather than crashing."""
+        from core.approval.quarantine import (
+            QuarantineState, evaluate,
+        )
+        _seed(queue, engine="x", positive=25)  # store_id=None
+        # Monkeypatch the queue's stats fn to raise TypeError
+        # specifically when store_id is passed (mimics pre-
+        # extension queues).
+        original = queue.engine_outcome_stats
+
+        def stub(engine, *, store_id=None):
+            if store_id is not None:
+                raise TypeError(
+                    "queue lacks store_id kwarg",
+                )
+            return original(engine)
+
+        with patch.object(
+            queue, "engine_outcome_stats", side_effect=stub,
+        ):
+            d = evaluate(
+                engine="x", queue=queue,
+                store_id="store_a",
+                state=QuarantineState(
+                    exemptions=frozenset(),
+                    released=frozenset(),
+                ),
+            )
+        # Fleet was healthy; per-store probe failed gracefully.
+        assert d.should_quarantine is False
