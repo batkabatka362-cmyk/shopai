@@ -971,6 +971,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     engine_alerts_p.add_argument(
+        "--per-store", action="store_true",
+        help=(
+            "Detect per-(engine, store_id) degradation "
+            "instead of aggregating across stores. Catches "
+            "'engine X dropped specifically on store_a' which "
+            "fleet aggregation would hide. Empire-AGI pivot."
+        ),
+    )
+    engine_alerts_p.add_argument(
         "--json", action="store_true",
         help="Emit the alerts as JSON.",
     )
@@ -7981,6 +7990,7 @@ def _cmd_engine_alerts(args) -> None:
     try:
         from core.approval.outcome_trends import (
             compute_engine_alerts,
+            compute_engine_alerts_per_store,
         )
         from core.approval.queue import get_approval_queue
     except Exception as exc:  # noqa: BLE001
@@ -7988,15 +7998,25 @@ def _cmd_engine_alerts(args) -> None:
         return
 
     queue = get_approval_queue()
+    per_store = bool(getattr(args, "per_store", False))
 
     try:
-        engine_alerts = compute_engine_alerts(
-            queue,
-            recent_hours=float(recent_hours),
-            baseline_hours=float(baseline_hours),
-            threshold=threshold,
-            min_recent=min_recent,
-        )
+        if per_store:
+            engine_alerts = compute_engine_alerts_per_store(
+                queue,
+                recent_hours=float(recent_hours),
+                baseline_hours=float(baseline_hours),
+                threshold=threshold,
+                min_recent=min_recent,
+            )
+        else:
+            engine_alerts = compute_engine_alerts(
+                queue,
+                recent_hours=float(recent_hours),
+                baseline_hours=float(baseline_hours),
+                threshold=threshold,
+                min_recent=min_recent,
+            )
     except Exception as exc:  # noqa: BLE001
         _emit_error(f"queue scan failed: {exc}")
         return
@@ -8057,6 +8077,7 @@ def _cmd_engine_alerts(args) -> None:
     alerts = [
         {
             "engine": a.engine,
+            "store_id": getattr(a, "store_id", None),
             "recent_executed": a.recent_executed,
             "baseline_executed": a.baseline_executed,
             "recent_score": a.recent_score,
@@ -8076,6 +8097,7 @@ def _cmd_engine_alerts(args) -> None:
         "baseline_hours": baseline_hours,
         "threshold": threshold,
         "min_recent": min_recent,
+        "per_store": per_store,
         "engine_count": engine_count,
         "alert_count": len(alerts),
         "alerts": alerts,
@@ -8100,14 +8122,20 @@ def _cmd_engine_alerts(args) -> None:
             )
         return
 
-    print(f"  {len(alerts)} engine(s) flagged:")
+    suffix = " (per-store)" if per_store else ""
+    print(f"  {len(alerts)} alert(s) flagged{suffix}:")
     for a in alerts:
+        store_label = (
+            f"@{a['store_id']}" if a.get("store_id")
+            else ""
+        )
+        engine_label = f"{a['engine']}{store_label}"
         flags_str = (
             f"  [{','.join(a['flags'])}]"
             if a.get("flags") else ""
         )
         print(
-            f"  [{a['drop']:.0%} drop] {a['engine']:<22s}  "
+            f"  [{a['drop']:.0%} drop] {engine_label:<32s}  "
             f"{a['detail']}{flags_str}"
         )
         print(
