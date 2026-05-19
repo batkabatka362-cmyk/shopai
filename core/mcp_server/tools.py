@@ -479,3 +479,34 @@ REGISTERED_TOOLS: list[tuple[str, ToolFn, str]] = [
         "Shopify store via SHOPIFY_UPDATE_SHOP_POLICY.",
     ),
 ]
+
+
+def _load_extended_tools() -> None:
+    """Append the EXTENDED_TOOLS from ``extended_tools.py``
+    onto ``REGISTERED_TOOLS`` lazily so callers that only
+    import ``tools.py`` still see the full tool surface.
+
+    Defined as a function rather than a top-level extend
+    so testing can introspect either the core registry
+    alone or core + extended together.
+    """
+    try:
+        from .extended_tools import EXTENDED_TOOLS
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "mcp_server: extended_tools unavailable: %s",
+            exc,
+        )
+        return
+    existing = {name for name, _, _ in REGISTERED_TOOLS}
+    for entry in EXTENDED_TOOLS:
+        name = entry[0]
+        if name in existing:
+            continue
+        REGISTERED_TOOLS.append(entry)
+        existing.add(name)
+
+
+# Append on import so the full surface is exposed
+# when the server registers tools.
+_load_extended_tools()
