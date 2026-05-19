@@ -840,6 +840,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     engine_pulse_p.add_argument(
+        "--history", action="store_true",
+        help=(
+            "Single-engine: also surface the recorded score "
+            "trajectory from engine_health_history. Default "
+            "30-day window. No-op when --fleet is set."
+        ),
+    )
+    engine_pulse_p.add_argument(
+        "--history-days", type=int, default=30,
+        dest="history_days",
+        help=(
+            "Window (in days) for --history. Default 30. "
+            "Capped at the data's natural retention."
+        ),
+    )
+    engine_pulse_p.add_argument(
         "--json", action="store_true",
         help="Emit the raw health envelope(s) as JSON",
     )
@@ -6917,6 +6933,43 @@ def _cmd_engines(*, by_goal: bool = False, unmapped: bool = False) -> None:
         print(f"  {i:3d}. {name}")
 
 
+def _engine_pulse_history_rows(
+    engine: str, *, history_days: int,
+) -> list[dict]:
+    """Fetch + flatten engine_health_history events for the
+    ``--history`` flag. Returns newest-first list of
+    ``{recorded_at, recorded_at_iso, score, verdict}`` dicts.
+    Source-failure isolated: a missing history module returns
+    an empty list."""
+    try:
+        from core.approval.engine_health_history import recent_history
+        days = max(1, int(history_days))
+        events = recent_history(
+            engine, since_seconds=86400.0 * days,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine pulse history fetch raised: %s", exc,
+        )
+        return []
+    out: list[dict] = []
+    for e in events:
+        ts = float(getattr(e, "recorded_at", 0.0) or 0.0)
+        iso = (
+            time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.gmtime(ts),
+            )
+            if ts > 0 else "-"
+        )
+        out.append({
+            "recorded_at": ts,
+            "recorded_at_iso": iso,
+            "score": int(getattr(e, "score", 0) or 0),
+            "verdict": str(getattr(e, "verdict", "") or ""),
+        })
+    return out
+
+
 def _cmd_engine_pulse(args) -> None:
     """Composite engine-health verdict.
 
@@ -6951,6 +7004,16 @@ def _cmd_engine_pulse(args) -> None:
     health = score_engine(engine_name)
     payload = health.to_dict()
 
+    history_rows: list[dict] = []
+    if getattr(args, "history", False):
+        history_rows = _engine_pulse_history_rows(
+            engine_name,
+            history_days=int(
+                getattr(args, "history_days", 30) or 30,
+            ),
+        )
+        payload["history"] = history_rows
+
     if as_json:
         print(json.dumps(payload, indent=2, default=str))
     else:
@@ -6979,6 +7042,27 @@ def _cmd_engine_pulse(args) -> None:
             f"alert_streak_7d={sig.get('alert_streak_7d', 0)}  "
             f"alert_paused={sig.get('alert_paused', False)}"
         )
+        # History trail -- newest first. Render as a tight
+        # date / score / verdict table so trends are scannable.
+        if getattr(args, "history", False):
+            print()
+            if history_rows:
+                hd = int(getattr(args, "history_days", 30) or 30)
+                print(
+                    f"History (last {hd}d, "
+                    f"{len(history_rows)} event(s)):"
+                )
+                for r in history_rows:
+                    ts_str = r["recorded_at_iso"]
+                    print(
+                        f"  {ts_str:<19s}  "
+                        f"{r['score']:>2d}/10  "
+                        f"{r['verdict']}"
+                    )
+            else:
+                print(
+                    "History: (no recorded events in window)"
+                )
 
     if health.verdict == "unhealthy":
         sys.exit(1)
