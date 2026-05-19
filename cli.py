@@ -2270,6 +2270,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    approvals_health_regressions = approvals_sub.add_parser(
+        "health-regressions",
+        help=(
+            "Find engines whose latest recorded health score "
+            "has dropped sharply from their recent baseline"
+        ),
+    )
+    approvals_health_regressions.add_argument(
+        "--min-drop", type=float, default=3.0,
+        help=(
+            "Minimum score-drop in points (default 3.0; range 1-10)"
+        ),
+    )
+    approvals_health_regressions.add_argument(
+        "--baseline-days", type=float, default=7.0,
+        help=(
+            "Baseline look-back window in days (default 7)"
+        ),
+    )
+    approvals_health_regressions.add_argument(
+        "--latest-days", type=float, default=1.0,
+        help=(
+            "How recent the 'latest' event must be in days "
+            "(default 1; matches daily-brief cadence)"
+        ),
+    )
+    approvals_health_regressions.add_argument(
+        "--min-baseline-samples", type=int, default=3,
+        help=(
+            "Skip engines with fewer baseline samples than "
+            "this (default 3)"
+        ),
+    )
+    approvals_health_regressions.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     approvals_alert_history = approvals_sub.add_parser(
         "alert-history",
         help=(
@@ -14241,6 +14279,9 @@ def _cmd_approvals(args) -> None:
     if verb == "alert-history":
         _cmd_approvals_alert_history(args)
         return
+    if verb == "health-regressions":
+        _cmd_approvals_health_regressions(args)
+        return
     if verb == "auto-approve-candidates":
         _cmd_approvals_auto_candidates(args)
         return
@@ -14809,6 +14850,93 @@ def _cmd_approvals_quarantine_simulate(args) -> None:
     print(f"  exempt:       {exempt}")
     print(f"  released:     {released}")
     print(f"  alert_paused: {alert_paused}")
+
+
+def _cmd_approvals_health_regressions(args) -> None:
+    """Surface engines whose latest recorded health score has
+    dropped sharply from their recent baseline.
+
+    Reads ``engine_health_history.find_regressions`` with the
+    operator-supplied window + threshold. Cron-friendly: exit
+    code 1 when any regression is flagged so monitoring
+    pipelines fail-fast.
+    """
+    as_json = bool(getattr(args, "json", False))
+    min_drop = float(getattr(args, "min_drop", 3.0) or 3.0)
+    baseline_days = float(getattr(args, "baseline_days", 7.0) or 7.0)
+    latest_days = float(getattr(args, "latest_days", 1.0) or 1.0)
+    min_samples = int(
+        getattr(args, "min_baseline_samples", 3) or 3,
+    )
+
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions,
+        )
+        regressions = find_regressions(
+            min_drop=min_drop,
+            baseline_window_seconds=86400.0 * baseline_days,
+            latest_window_seconds=86400.0 * latest_days,
+            min_baseline_samples=min_samples,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = (
+            f"engine_health_history unavailable: {exc}"
+        )
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    rows = [
+        {
+            "engine": r.engine,
+            "latest_score": r.latest_score,
+            "latest_verdict": r.latest_verdict,
+            "baseline_score": r.baseline_score,
+            "drop": r.drop,
+            "samples_in_baseline": r.samples_in_baseline,
+        }
+        for r in regressions
+    ]
+
+    if as_json:
+        print(json.dumps({
+            "min_drop": min_drop,
+            "baseline_days": baseline_days,
+            "latest_days": latest_days,
+            "min_baseline_samples": min_samples,
+            "regressions": rows,
+        }, indent=2, default=str))
+    else:
+        if not rows:
+            print("No regressions flagged.")
+            print(
+                f"  (min_drop={min_drop} baseline={baseline_days}d "
+                f"latest={latest_days}d min_samples={min_samples})"
+            )
+            return
+        print(
+            f"Health regressions ({len(rows)} engine(s)):"
+        )
+        print()
+        for r in rows:
+            print(
+                f"  {r['engine']:<28s}  "
+                f"baseline={r['baseline_score']:.1f}/10  "
+                f"latest={r['latest_score']:>2d}/10  "
+                f"drop={r['drop']:>4.1f}pts  "
+                f"({r['latest_verdict']}, "
+                f"n={r['samples_in_baseline']})"
+            )
+
+    if rows:
+        sys.exit(1)
 
 
 def _cmd_approvals_alert_history(args) -> None:
