@@ -14,6 +14,10 @@ Modules:
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
+  * ``order_confirmation_content`` -- niche-aware
+    transactional email content (order_confirmation +
+    shipping_confirmation pre/post-receipt blocks);
+    persists as ``order-confirmation-email`` page.
   * ``page_generator`` / ``page_applier`` -- niche-aware
     About / Contact / FAQ / Shipping pages via
     ``SHOPIFY_CREATE_PAGE``.
