@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shopai"
+version = "0.1.0"
+description = "Autonomous AGI merchant for Shopify -- with a Model Context Protocol server so Claude Desktop / Claude.ai can drive the autonomous launch directly."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "ShopAI" },
+]
+keywords = [
+    "shopify",
+    "mcp",
+    "claude",
+    "model-context-protocol",
+    "ecommerce",
+    "autonomous",
+    "agi",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Internet :: WWW/HTTP",
+]
+# Core dependencies. Anything required to import + run
+# the engine layer + MCP server scaffolding belongs here.
+# Adapter-specific deps (Shopify GraphQL client) are
+# already inlined in the existing engine layer.
+dependencies = [
+    # No required runtime deps for the engine layer
+    # itself -- everything is stdlib + already-installed
+    # transitive deps from the broader ShopAI repo.
+    # The MCP server's only external dep is the `mcp`
+    # package, which is OPTIONAL (see [project.optional-
+    # dependencies]).
+]
+
+[project.optional-dependencies]
+# Install with: pip install "shopai[mcp]"
+# Required to actually run the MCP server. The server
+# module imports `mcp` lazily so the rest of ShopAI is
+# usable without this dep.
+mcp = [
+    "mcp>=0.9.0",
+]
+# Install with: pip install "shopai[dev]"
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[project.urls]
+Repository = "https://github.com/batkabatka362-cmyk/shopai"
+Issues = "https://github.com/batkabatka362-cmyk/shopai/issues"
+
+[project.scripts]
+# `pip install -e .` exposes these as PATH binaries.
+shopai-mcp = "core.mcp_server.server:main"
+# The full ShopAI CLI -- assumes cli.py at repo root
+# exposes a `main()` entry point.
+shopai = "cli:main"
+
+[tool.setuptools]
+# Include the engine + core packages so a user who runs
+# `pip install shopai` gets the full autonomous-merchant
+# surface, not just the MCP wrapper.
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = [
+    "core*",
+    "engines*",
+]
+exclude = [
+    "tests*",
+    "scripts*",
+    "docs*",
+]
+
+[tool.setuptools.package-data]
+"core.mcp_server" = ["*.md", "*.json"]
