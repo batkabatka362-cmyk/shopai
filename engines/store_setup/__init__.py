@@ -11,6 +11,9 @@ Modules:
     URLs to Shopify Files via ``SHOPIFY_UPLOAD_FILE``.
   * ``collection_seeder`` -- niche-aware starter collections
     via ``SHOPIFY_CREATE_COLLECTION``.
+  * ``customer_segments`` -- niche-aware starter segment pack
+    (VIPs / repeat / at-risk / lapsed / subscribers / new +
+    niche-specific). Pushes via ``SHOPIFY_CREATE_SEGMENT``.
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
