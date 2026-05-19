@@ -42,6 +42,10 @@ class EngineAlert:
     alerts`` so callers don't have to translate. Frozen so a
     caller's downstream pipeline can't accidentally mutate the
     detection result.
+
+    ``store_id`` carries the per-store scope when the alert
+    was computed via ``compute_engine_alerts_per_store``;
+    ``None`` for fleet-wide alerts (the default).
     """
 
     engine: str
@@ -54,6 +58,7 @@ class EngineAlert:
     drop: float
     detail: str
     kind: str = "outcome_score_degraded"
+    store_id: str | None = None
 
 
 def compute_engine_alerts(
@@ -185,6 +190,146 @@ def compute_engine_alerts(
                 f"{recent_stats.outcome_score:.0%} recent vs "
                 f"{baseline_stats.outcome_score:.0%} baseline "
                 f"(drop {drop:.0%})"
+            ),
+        ))
+
+    alerts.sort(key=lambda a: -a.drop)
+    return alerts
+
+
+def compute_engine_alerts_per_store(
+    queue: Any,
+    *,
+    recent_hours: float = 24.0,
+    baseline_hours: float = 168.0,
+    threshold: float = 0.2,
+    min_recent: int = 3,
+) -> list[EngineAlert]:
+    """Per-(engine, store_id) degradation detector.
+
+    Same logic as ``compute_engine_alerts`` but the
+    aggregation buckets are ``(engine, store_id)`` pairs
+    instead of just engines. Catches "engine X's score
+    dropped on store_a specifically" -- the empire-AGI pivot.
+
+    Rows with ``store_id=None`` (pre-PR-#239 or unscoped)
+    bucket under ``(engine, None)`` -- effectively the
+    fleet-wide path. Operators can filter them out client-
+    side.
+
+    Returns:
+        List of :class:`EngineAlert` with ``store_id`` set,
+        ranked by drop size (largest first). An engine
+        degrading on multiple stores produces multiple
+        alerts -- one per (engine, store) pair.
+
+    Raises:
+        ValueError: when ``baseline_hours <= recent_hours``.
+        Queue exceptions propagate.
+    """
+    if baseline_hours <= recent_hours:
+        raise ValueError(
+            "baseline_hours must exceed recent_hours"
+        )
+
+    from core.approval.outcome_aggregator import aggregate_outcomes
+
+    now = time.time()
+    recent_cutoff = now - recent_hours * 3600.0
+    baseline_cutoff = now - baseline_hours * 3600.0
+
+    per_pair: dict[tuple[str, str | None], dict] = {}
+
+    def _bucket(engine: str, store_id: str | None) -> dict:
+        key = (engine, store_id)
+        if key not in per_pair:
+            per_pair[key] = {
+                "recent_outcomes": [],
+                "baseline_outcomes": [],
+                "recent_executed": 0,
+                "baseline_executed": 0,
+            }
+        return per_pair[key]
+
+    with queue._conn:
+        rows = queue._conn.execute(
+            """SELECT id, engine, store_id, decided_at
+               FROM pending_actions
+               WHERE status = 'executed'
+                 AND decided_at >= ?""",
+            (baseline_cutoff,),
+        ).fetchall()
+
+    for r in rows:
+        engine = r["engine"] or "(unknown)"
+        try:
+            store_id = r["store_id"]
+        except (IndexError, KeyError):
+            # Pre-#239 schema without store_id column
+            store_id = None
+        b = _bucket(engine, store_id)
+        b["baseline_executed"] += 1
+        decided_at = float(r["decided_at"] or 0)
+        is_recent = decided_at >= recent_cutoff
+        if is_recent:
+            b["recent_executed"] += 1
+        try:
+            outcomes = queue.get_outcomes(r["id"]) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "outcome_trends_per_store get_outcomes "
+                "raised: %s", exc,
+            )
+            outcomes = []
+        b["baseline_outcomes"].extend(outcomes)
+        if is_recent:
+            b["recent_outcomes"].extend(outcomes)
+
+    alerts: list[EngineAlert] = []
+    for (engine, store_id), b in per_pair.items():
+        recent_stats = aggregate_outcomes(b["recent_outcomes"])
+        baseline_stats = aggregate_outcomes(b["baseline_outcomes"])
+        recent_polarised = (
+            recent_stats.positive + recent_stats.negative
+        )
+        baseline_polarised = (
+            baseline_stats.positive + baseline_stats.negative
+        )
+
+        if recent_polarised < min_recent:
+            continue
+        if baseline_polarised < min_recent:
+            continue
+        if (
+            recent_stats.outcome_score is None
+            or baseline_stats.outcome_score is None
+        ):
+            continue
+
+        drop = (
+            baseline_stats.outcome_score
+            - recent_stats.outcome_score
+        )
+        if drop < threshold:
+            continue
+
+        scope_label = (
+            f"@{store_id}" if store_id else " (fleet)"
+        )
+        alerts.append(EngineAlert(
+            engine=engine,
+            store_id=store_id,
+            recent_executed=b["recent_executed"],
+            baseline_executed=b["baseline_executed"],
+            recent_score=recent_stats.outcome_score,
+            baseline_score=baseline_stats.outcome_score,
+            recent_polarised=recent_polarised,
+            baseline_polarised=baseline_polarised,
+            drop=drop,
+            detail=(
+                f"{recent_stats.outcome_score:.0%} recent vs "
+                f"{baseline_stats.outcome_score:.0%} baseline "
+                f"(drop {drop:.0%}){scope_label}"
             ),
         ))
 
