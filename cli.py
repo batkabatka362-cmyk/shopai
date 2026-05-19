@@ -2286,6 +2286,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    approvals_health_history = approvals_sub.add_parser(
+        "health-history",
+        help=(
+            "Inspect the persistent engine_health score log "
+            "(daily-brief records once per engine per run)"
+        ),
+    )
+    approvals_health_history.add_argument(
+        "--engine", default=None,
+        help="Restrict to one engine (default: all)",
+    )
+    approvals_health_history.add_argument(
+        "--since-days", type=float, default=30.0,
+        help="How far back to look (default: 30 days)",
+    )
+    approvals_health_history.add_argument(
+        "--limit", type=int, default=20,
+        help=(
+            "Cap on rendered rows (default: 20). Newest first."
+        ),
+    )
+    approvals_health_history.add_argument(
+        "--clear", action="store_true",
+        help=(
+            "Wipe the health history file. Operator escape "
+            "hatch after rotating ops cycles or fixing the "
+            "root cause."
+        ),
+    )
+    approvals_health_history.add_argument(
+        "--prune-older-than-days", type=float, default=None,
+        metavar="N",
+        help=(
+            "Drop events older than N days. Finer scalpel "
+            "than --clear: routine ops hygiene."
+        ),
+    )
+    approvals_health_history.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     approvals_alert_history = approvals_sub.add_parser(
         "alert-history",
         help=(
@@ -14376,6 +14418,9 @@ def _cmd_approvals(args) -> None:
     if verb == "alert-history":
         _cmd_approvals_alert_history(args)
         return
+    if verb == "health-history":
+        _cmd_approvals_health_history(args)
+        return
     if verb == "auto-approve-candidates":
         _cmd_approvals_auto_candidates(args)
         return
@@ -14944,6 +14989,145 @@ def _cmd_approvals_quarantine_simulate(args) -> None:
     print(f"  exempt:       {exempt}")
     print(f"  released:     {released}")
     print(f"  alert_paused: {alert_paused}")
+
+
+def _cmd_approvals_health_history(args) -> None:
+    """Inspect the persistent engine_health score log.
+
+    Each ``daily-brief`` run that successfully scored the fleet
+    appends one event per engine to
+    ``data/engine_health_history.json`` (or
+    ``$SHOPAI_DATA_DIR/engine_health_history.json``). This
+    command summarises + manages it.
+
+    Default text view: newest-first table of recorded
+    ``{engine, recorded_at, score, verdict}`` events with a
+    one-line header naming the window + count. Operator
+    actions: ``--clear`` nukes the log, ``--prune-older-than-days N``
+    drops events older than N days.
+    """
+    as_json = bool(getattr(args, "json", False))
+
+    try:
+        from core.approval.engine_health_history import (
+            clear, prune, recent_history,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"engine_health_history unavailable: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    if getattr(args, "clear", False):
+        try:
+            clear()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "approvals health-history clear raised: %s",
+                exc,
+            )
+        if as_json:
+            print(json.dumps(
+                {"status": "ok", "cleared": True},
+                indent=2, default=str,
+            ))
+        else:
+            print("Health history cleared.")
+        return
+
+    prune_days = getattr(args, "prune_older_than_days", None)
+    if prune_days is not None:
+        dropped = 0
+        try:
+            dropped = prune(
+                older_than_seconds=86400.0 * float(prune_days),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "approvals health-history prune raised: %s",
+                exc,
+            )
+        if as_json:
+            print(json.dumps(
+                {
+                    "status": "ok",
+                    "dropped": dropped,
+                    "prune_older_than_days": float(prune_days),
+                },
+                indent=2, default=str,
+            ))
+        else:
+            print(
+                f"Pruned {dropped} event(s) older than "
+                f"{prune_days} day(s)."
+            )
+        return
+
+    engine = (getattr(args, "engine", None) or "").strip() or None
+    since_days = float(getattr(args, "since_days", 30.0) or 30.0)
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+
+    try:
+        events = recent_history(
+            engine, since_seconds=86400.0 * since_days,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "approvals health-history recent_history raised: %s",
+            exc,
+        )
+        events = []
+
+    capped = list(events)[:limit]
+    rows = [
+        {
+            "engine": e.engine,
+            "recorded_at": float(e.recorded_at),
+            "score": int(e.score),
+            "verdict": e.verdict,
+        }
+        for e in capped
+    ]
+
+    if as_json:
+        print(json.dumps({
+            "engine": engine,
+            "since_days": since_days,
+            "limit": limit,
+            "total_in_window": len(events),
+            "events": rows,
+        }, indent=2, default=str))
+        return
+
+    suffix = f" for {engine}" if engine else ""
+    print(
+        f"Engine health history{suffix} "
+        f"(last {since_days:g}d, {len(events)} event(s)):"
+    )
+    if not rows:
+        print("  (no events)")
+        return
+    print()
+    print(
+        f"  {'WHEN':<19s}  {'ENGINE':<22s}  "
+        f"{'SCORE':>7s}  VERDICT"
+    )
+    for r in rows:
+        ts = float(r["recorded_at"])
+        when = (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts))
+            if ts > 0 else "-"
+        )
+        print(
+            f"  {when:<19s}  {r['engine']:<22s}  "
+            f"{r['score']:>2d}/10   {r['verdict']}"
+        )
 
 
 def _cmd_approvals_alert_history(args) -> None:
