@@ -68,6 +68,12 @@ _ALL_GOOD = {
     "shopify_list_collections": _ok({
         "collections": [{"title": "All"}],
     }),
+    "shopify_list_products": _ok({
+        "products": [
+            {"id": "gid://shopify/Product/1",
+             "title": "Camping Lantern", "status": "ACTIVE"},
+        ],
+    }),
     "shopify_list_themes": _ok({
         "themes": [{
             "id": "gid://shopify/OnlineStoreTheme/1",
@@ -117,8 +123,8 @@ class TestAllPass:
             "engines.store_setup.launch_audit.record_writeback",
         ):
             result = audit_store()
-        # 4 of 5 pass -> 80%
-        assert result["completion_pct"] == 80
+        # 5 of 6 pass -> round(100 * 5/6) = 83
+        assert result["completion_pct"] == 83
         assert result["ready_to_launch"] is False
 
 
@@ -326,6 +332,122 @@ class TestDesignTokensCheck:
             "assets/shopai-design-tokens.json"
             in tokens["missing"]
         )
+
+
+class TestActiveProductsCheck:
+
+    def test_one_active_product_passes(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        products = next(
+            c for c in result["checks"]
+            if c["key"] == "active_products"
+        )
+        assert products["ok"] is True
+        assert products["applied"] == 1
+        assert products["expected"] == 1
+        assert products["missing"] == []
+
+    def test_zero_products_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_products"] = _ok({
+            "products": [],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        products = next(
+            c for c in result["checks"]
+            if c["key"] == "active_products"
+        )
+        assert products["ok"] is False
+        assert products["applied"] == 0
+        assert products["missing"] == ["need 1 more"]
+
+    def test_draft_and_archived_dont_count(self):
+        """A catalog full of DRAFT / ARCHIVED products still
+        fails the check -- those aren't customer-visible."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_products"] = _ok({
+            "products": [
+                {"id": "p1", "title": "T1", "status": "DRAFT"},
+                {"id": "p2", "title": "T2", "status": "ARCHIVED"},
+                {"id": "p3", "title": "T3", "status": "draft"},
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        products = next(
+            c for c in result["checks"]
+            if c["key"] == "active_products"
+        )
+        assert products["ok"] is False
+        assert products["applied"] == 0
+
+    def test_custom_expected_threshold(self):
+        # 1 ACTIVE product present, but caller expects 5
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store(expected_products=5)
+        products = next(
+            c for c in result["checks"]
+            if c["key"] == "active_products"
+        )
+        assert products["ok"] is False
+        assert products["expected"] == 5
+        assert products["missing"] == ["need 4 more"]
+
+    def test_lowercase_active_normalises(self):
+        """Normaliser uppercases status, but defensively accept
+        lowercase from non-standard read paths."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_products"] = _ok({
+            "products": [
+                {"id": "p1", "title": "T1", "status": "active"},
+                {"id": "p2", "title": "T2", "status": "ACTIVE"},
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        products = next(
+            c for c in result["checks"]
+            if c["key"] == "active_products"
+        )
+        assert products["applied"] == 2
+        assert products["ok"] is True
 
 
 class TestProbeFailureResilience:
