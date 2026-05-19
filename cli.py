@@ -229,6 +229,66 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    launch_p = store_sub.add_parser(
+        "launch",
+        help=(
+            "Autonomous store launch: push legal policies + "
+            "standard pages in one command. Returns a per-step "
+            "checklist + readiness verdict. Exit code 1 when "
+            "any step failed."
+        ),
+    )
+    launch_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    launch_p.add_argument(
+        "--name", default=None,
+        dest="name",
+        help=(
+            "Display name to interpolate into policy + page "
+            "bodies. Defaults to the store's registered name."
+        ),
+    )
+    launch_p.add_argument(
+        "--niche", default=None,
+        help=(
+            "Niche key (beauty / fashion / tech / home / food "
+            "/ general). Defaults to the store's registered "
+            "niche or 'general'."
+        ),
+    )
+    launch_p.add_argument(
+        "--region", default="us",
+        help="Region code (us / eu / uk / ...). Default us.",
+    )
+    launch_p.add_argument(
+        "--founder-name", default=None,
+        dest="founder_name",
+        help=(
+            "Optional founder name -- threaded into the About "
+            "page when present."
+        ),
+    )
+    launch_p.add_argument(
+        "--include-legal-notice", action="store_true",
+        dest="include_legal_notice",
+        help=(
+            "Also push an EU-style Impressum legal notice."
+        ),
+    )
+    launch_p.add_argument(
+        "--include-subscription-policy", action="store_true",
+        dest="include_subscription_policy",
+        help=(
+            "Also push a recurring-billing subscription policy."
+        ),
+    )
+    launch_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the structured envelope as JSON",
+    )
+
     fleet_p = store_sub.add_parser(
         "fleet",
         help=(
@@ -4236,6 +4296,136 @@ def _cmd_daily_brief(args) -> None:
             print(f"  [{a['kind']:<18s}] {target:<22s} {a['detail']}")
     else:
         print("Alerts: (none)")
+
+
+def _cmd_store_launch(args) -> None:
+    """Autonomous store launch -- single command from "store
+    registered" to "launchable storefront".
+
+    Wraps ``engines.store_setup.launch_orchestrator.launch_store``
+    with operator-friendly defaults: pulls niche + display name
+    from the store registry when not supplied as flags.
+
+    Exit code 1 when ANY launch step failed so monitoring
+    pipelines (cron, CI) can fail-fast on incomplete launches.
+    """
+    as_json = bool(getattr(args, "json", False))
+    store_id = (
+        (getattr(args, "store_id", None) or "").strip()
+        or None
+    )
+
+    # Pull defaults from the store registry so the operator
+    # doesn't have to repeat info they already configured.
+    name_override = getattr(args, "name", None)
+    niche_override = getattr(args, "niche", None)
+    store_record: dict[str, Any] = {}
+    try:
+        sm = _get_store_manager()
+        if not store_id:
+            store_id = sm.active_store_id or None
+        if store_id:
+            store_record = sm.get_store(store_id) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "store_launch: store-manager lookup raised: %s", exc,
+        )
+
+    store_name = (
+        (name_override or "").strip()
+        or (store_record.get("name") or "").strip()
+        or (store_id or "").strip()
+    )
+    niche = (
+        (niche_override or "").strip()
+        or (store_record.get("niche") or "").strip()
+        or "general"
+    )
+
+    if not store_name:
+        msg = (
+            "store_name_required (pass --name or register a "
+            "store name with shopai store add)"
+        )
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    try:
+        from engines.store_setup.launch_orchestrator import (
+            launch_store,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"launch_orchestrator unavailable: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    result = launch_store(
+        store_name=store_name,
+        niche=niche,
+        region=getattr(args, "region", "us") or "us",
+        founder_name=getattr(args, "founder_name", None),
+        store_id=store_id,
+        include_legal_notice=bool(
+            getattr(args, "include_legal_notice", False),
+        ),
+        include_subscription_policy=bool(
+            getattr(args, "include_subscription_policy", False),
+        ),
+    )
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        ready = result.get("ready_to_launch")
+        label = "LAUNCHED" if ready else "INCOMPLETE"
+        print(
+            f"Store launch: {label}  "
+            f"({store_name}, niche={niche})"
+        )
+        if store_id:
+            print(f"  Store: {store_id}")
+        print()
+        print(
+            f"  {'STEP':<12s}  {'STATUS':<7s}  "
+            f"{'APPLIED':<8s}  ERROR"
+        )
+        print("  " + "-" * 50)
+        for step in result.get("checklist", []):
+            status = "PASS" if step.get("ok") else "FAIL"
+            applied = str(step.get("applied", 0))
+            err = (step.get("error") or "-")
+            if len(err) > 40:
+                err = err[:37] + "..."
+            print(
+                f"  {step.get('step', ''):<12s}  "
+                f"{status:<7s}  {applied:<8s}  {err}"
+            )
+        if not ready:
+            print()
+            err_top = result.get("error") or ""
+            if err_top:
+                print(f"  Top-level error: {err_top}")
+            print(
+                "  Verify with: shopai store audit "
+                f"{store_id or ''}".strip()
+            )
+
+    if not result.get("ready_to_launch"):
+        sys.exit(1)
 
 
 def _cmd_store_fleet(args) -> None:
@@ -17587,6 +17777,7 @@ def main(argv: list[str] | None = None) -> None:
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
             "fleet": _cmd_store_fleet,
+            "launch": _cmd_store_launch,
         }
         handler = dispatch.get(args.store_action)
         if handler:
@@ -17594,7 +17785,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
+                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet|launch}"
             )
         return
 
