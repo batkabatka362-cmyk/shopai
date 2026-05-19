@@ -94,6 +94,78 @@ def _apply_cognitive_boost(
     return boosted
 
 
+def _compute_fleet_health() -> dict[str, Any]:
+    """Score every engine in ENGINE_GOAL_MAP and return a
+    verdict-counts rollup plus the list of unhealthy engines.
+
+    Lives at module level so the autonomous controller can call
+    it once per cycle and tests can exercise it without
+    spinning up the full controller. Source-failure isolated --
+    a single engine's ``score_engine`` raising is logged at
+    debug and skipped; an ImportError on either dependency
+    surfaces ``{"error": ..., "scored": 0}`` rather than
+    crashing the caller.
+
+    Emits a WARNING log when any engine is unhealthy so
+    operators tailing the cycle logs catch fleet-wide
+    degradation without checking each surface.
+
+    Returns:
+        ``{verdict_counts, scored, unhealthy_engines}`` (and
+        ``error`` when imports fail).
+    """
+    try:
+        from core.approval.engine_health import score_engine
+        from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "controller fleet_health import failed: %s", exc,
+        )
+        return {
+            "verdict_counts": {
+                "healthy": 0, "warning": 0, "unhealthy": 0,
+            },
+            "scored": 0,
+            "unhealthy_engines": [],
+            "error": str(exc),
+        }
+
+    verdict_counts = {
+        "healthy": 0, "warning": 0, "unhealthy": 0,
+    }
+    unhealthy: list[str] = []
+    scored = 0
+    for engine in ENGINE_GOAL_MAP:
+        try:
+            h = score_engine(engine)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "controller fleet_health: score_engine raised "
+                "for %s: %s", engine, exc,
+            )
+            continue
+        verdict_counts[h.verdict] = (
+            verdict_counts.get(h.verdict, 0) + 1
+        )
+        if h.verdict == "unhealthy":
+            unhealthy.append(engine)
+        scored += 1
+
+    if verdict_counts["unhealthy"] > 0:
+        logger.warning(
+            "fleet_health: %d unhealthy engine(s) [%s] -- "
+            "inspect via 'shopai engine pulse --fleet'",
+            verdict_counts["unhealthy"],
+            ", ".join(sorted(unhealthy)[:5]),
+        )
+
+    return {
+        "verdict_counts": verdict_counts,
+        "scored": scored,
+        "unhealthy_engines": sorted(unhealthy),
+    }
+
+
 def _bootstrap_brain_stack() -> bool:
     """Attach goal-feedback handlers to the approval-queue hooks.
 
@@ -537,6 +609,19 @@ class AutonomousController:
                 cycle_result["phases"]["exploration_alert"] = explore
         except Exception as exc:
             _record("exploration_boost", exc)
+
+        # Phase 0.5: FLEET HEALTH -- composite verdict counts +
+        # unhealthy engines across the engine roster. Cheap (each
+        # ``score_engine`` is a few state-file reads). Logged at
+        # WARNING level when any engine is unhealthy so operators
+        # tailing the logs catch fleet-wide degradation without
+        # manually checking each surface.
+        try:
+            cycle_result["phases"]["fleet_health"] = (
+                _compute_fleet_health()
+            )
+        except Exception as exc:
+            _record("fleet_health", exc)
 
         # Phase 1: DATA — Fetch current store state
         data = self._phase_data(sid)
