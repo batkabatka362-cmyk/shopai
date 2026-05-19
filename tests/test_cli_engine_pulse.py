@@ -45,19 +45,25 @@ def _capture(fn, *args, **kwargs):
 
 
 def _ns(**kw):
-    defaults = dict(engine_name="loyalty", json=False)
+    defaults = dict(
+        engine_name="loyalty",
+        json=False,
+        fleet=False,
+        verdict=None,
+    )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
 
 def _make_health(
-    *, score: int = 10,
+    *, engine: str = "loyalty",
+    score: int = 10,
     verdict: str = "healthy",
     concerns=None,
     signals=None,
 ):
     return EngineHealth(
-        engine="loyalty",
+        engine=engine,
         score=score,
         verdict=verdict,
         signals=signals or {
@@ -183,3 +189,176 @@ class TestExitCodes:
         ):
             _, code = _capture(cli._cmd_engine_pulse, _ns())
         assert code == expected_code
+
+
+# --- Fleet mode -----------------------------------------------
+
+
+def _engine_map(*names: str) -> dict[str, str]:
+    """Build a fake ENGINE_GOAL_MAP for tests so the leaderboard
+    iterates a controlled set, not the live roster (which would
+    make assertion ordering fragile)."""
+    return {name: "maximize_profit" for name in names}
+
+
+class TestFleetMode:
+
+    def test_fleet_renders_leaderboard_sickest_first(self, cli):
+        # Each engine returns a distinct score so sort is testable.
+        score_map = {
+            "loyalty": _make_health(
+                engine="loyalty", score=3, verdict="unhealthy",
+            ),
+            "cart_recovery": _make_health(
+                engine="cart_recovery", score=9, verdict="healthy",
+            ),
+            "discount_strategy": _make_health(
+                engine="discount_strategy",
+                score=6, verdict="warning",
+            ),
+        }
+        with patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            _engine_map(*score_map.keys()),
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=lambda engine, **kw: score_map[engine],
+        ):
+            out, code = _capture(
+                cli._cmd_engine_pulse, _ns(fleet=True),
+            )
+        # Exit code 1 because at least one engine is unhealthy
+        assert code == 1
+        # Sickest first: loyalty (3) before discount_strategy (6)
+        # before cart_recovery (9)
+        loyalty_pos = out.find("loyalty")
+        ds_pos = out.find("discount_strategy")
+        cart_pos = out.find("cart_recovery")
+        assert -1 < loyalty_pos < ds_pos < cart_pos
+        # Header rollup
+        assert "healthy=1" in out
+        assert "warning=1" in out
+        assert "unhealthy=1" in out
+
+    def test_fleet_all_healthy_exits_zero(self, cli):
+        with patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            _engine_map("loyalty", "cart_recovery"),
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(),
+        ):
+            out, code = _capture(
+                cli._cmd_engine_pulse, _ns(fleet=True),
+            )
+        assert code == 0
+        assert "unhealthy=0" in out
+
+    def test_fleet_verdict_filter(self, cli):
+        score_map = {
+            "loyalty": _make_health(
+                engine="loyalty", score=3, verdict="unhealthy",
+            ),
+            "cart_recovery": _make_health(
+                engine="cart_recovery", score=9, verdict="healthy",
+            ),
+        }
+        with patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            _engine_map(*score_map.keys()),
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=lambda engine, **kw: score_map[engine],
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_pulse,
+                _ns(fleet=True, verdict="unhealthy"),
+            )
+        # Only loyalty surfaces; cart_recovery filtered out
+        assert "loyalty" in out
+        assert "cart_recovery" not in out
+
+    def test_fleet_json_envelope(self, cli):
+        score_map = {
+            "loyalty": _make_health(
+                engine="loyalty", score=8, verdict="healthy",
+            ),
+            "cart_recovery": _make_health(
+                engine="cart_recovery",
+                score=6, verdict="warning",
+            ),
+        }
+        with patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            _engine_map(*score_map.keys()),
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=lambda engine, **kw: score_map[engine],
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_pulse, _ns(fleet=True, json=True),
+            )
+        data = json.loads(out)
+        assert "fleet" in data
+        assert len(data["fleet"]) == 2
+        # Sickest first
+        assert data["fleet"][0]["engine"] == "cart_recovery"
+        assert data["fleet"][1]["engine"] == "loyalty"
+        assert data["verdict_counts"] == {
+            "healthy": 1, "warning": 1, "unhealthy": 0,
+        }
+
+    def test_fleet_empty_filter_match(self, cli):
+        """When the verdict filter excludes every engine, render
+        a clear no-match message rather than an empty list."""
+        with patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            _engine_map("loyalty", "cart_recovery"),
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(verdict="healthy"),
+        ):
+            out, code = _capture(
+                cli._cmd_engine_pulse,
+                _ns(fleet=True, verdict="unhealthy"),
+            )
+        assert code == 0
+        assert "(no engines match)" in out
+
+    def test_no_engine_no_fleet_exits_two(self, cli):
+        """Calling pulse with neither a name nor --fleet is a
+        usage error -> exit code 2."""
+        _, code = _capture(
+            cli._cmd_engine_pulse,
+            _ns(engine_name=None, fleet=False),
+        )
+        assert code == 2
+
+    def test_fleet_score_failure_skipped(self, cli):
+        """A single engine's score_engine raising doesn't abort
+        the whole fleet -- that engine is omitted, the rest
+        render."""
+        def _maybe_raise(engine, **kw):
+            if engine == "broken":
+                raise RuntimeError("queue dead")
+            return _make_health(verdict="healthy")
+
+        with patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            _engine_map("broken", "loyalty"),
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=_maybe_raise,
+        ):
+            out, code = _capture(
+                cli._cmd_engine_pulse, _ns(fleet=True),
+            )
+        assert code == 0
+        assert "loyalty" in out
+        assert "broken" not in out
