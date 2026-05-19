@@ -785,7 +785,9 @@ class TestSectionQuarantine:
             snap = wm.snapshot("test-store", skip_live=True)
         assert "quarantine" in snap
         assert snap["quarantine"]["checked"] is True
-        assert snap["quarantine"]["scope"] == "fleet"
+        # Snapshot is per-store -- scope reflects that.
+        assert snap["quarantine"]["scope"] == "per_store"
+        assert snap["quarantine"]["store_id"] == "test-store"
 
     def test_candidate_lists_populated(self):
         wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
@@ -829,3 +831,78 @@ class TestSectionQuarantine:
         assert sec["alert_release_candidates"] == []
         # find_pause_candidates may also raise via the same path,
         # but its empty list is the default.
+
+    def test_no_store_filter_yields_fleet_scope(self):
+        """Without store_id, scope is ``fleet`` and the
+        ``for_this_store`` block is empty."""
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine()
+        assert sec["scope"] == "fleet"
+        assert sec["store_id"] is None
+        assert sec["for_this_store"] == {
+            "exempt": [],
+            "released": [],
+            "alert_paused": [],
+        }
+
+    def test_per_store_filter_fleet_pause_affects_all_stores(
+        self,
+    ):
+        """Fleet-wide ``(engine, None)`` pause affects every
+        store; surface in ``for_this_store.alert_paused``."""
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty")  # fleet-wide
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine(store_id="store_a")
+        assert sec["scope"] == "per_store"
+        assert sec["store_id"] == "store_a"
+        assert sec["for_this_store"]["alert_paused"] == [
+            "loyalty",
+        ]
+
+    def test_per_store_filter_per_store_pause_only_matches(
+        self,
+    ):
+        """A ``(engine, 'store_a')`` per-store pause shows in
+        store_a's snapshot but not store_b's."""
+        from core.approval import quarantine
+        quarantine.add_alert_pause("loyalty", store_id="store_a")
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec_a = wm._section_quarantine(store_id="store_a")
+        sec_b = wm._section_quarantine(store_id="store_b")
+        assert sec_a["for_this_store"]["alert_paused"] == [
+            "loyalty",
+        ]
+        assert sec_b["for_this_store"]["alert_paused"] == []
+
+    def test_per_store_filter_includes_exempt_and_released(
+        self,
+    ):
+        """Engine-level exempt + released apply fleet-wide so
+        they surface in for_this_store for any store."""
+        from core.approval import quarantine
+        quarantine.exempt_engine("returns")
+        quarantine.release_engine("affiliate")
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine(store_id="store_a")
+        assert sec["for_this_store"]["exempt"] == ["returns"]
+        assert sec["for_this_store"]["released"] == ["affiliate"]
+
+    def test_snapshot_passes_store_id_to_quarantine_section(
+        self,
+    ):
+        """Full snapshot wires store_id through to the section
+        so the per-store filter activates automatically."""
+        from core.approval import quarantine
+        quarantine.add_alert_pause(
+            "loyalty", store_id="test-store",
+        )
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert snap["quarantine"]["scope"] == "per_store"
+        assert snap["quarantine"]["store_id"] == "test-store"
+        assert snap["quarantine"]["for_this_store"][
+            "alert_paused"
+        ] == ["loyalty"]
