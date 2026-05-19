@@ -20,6 +20,10 @@ Modules:
   * ``policy_generator`` / ``policy_applier`` -- niche +
     region aware legal policies via
     ``SHOPIFY_UPDATE_SHOP_POLICY``.
+  * ``product_alt_text`` -- niche-aware product image
+    alt-text suggestions (operator-facing; no media-alt
+    write adapter yet). Persists as ``product-alt-text``
+    page.
   * ``product_description_enricher`` -- niche-aware product
     description generation via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``seo_meta_enricher`` -- niche-aware product SEO meta
