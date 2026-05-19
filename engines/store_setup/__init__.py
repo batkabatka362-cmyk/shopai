@@ -24,6 +24,9 @@ Modules:
     description generation via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``seo_meta_enricher`` -- niche-aware product SEO meta
     (title_tag + meta_description) via ``SHOPIFY_UPDATE_PRODUCT``.
+  * ``smart_collection_rules`` -- niche-aware
+    ``rule_set``-driven collection specs (auto-populating
+    collections); reuses ``collection_seeder``'s applier.
   * ``tag_library`` -- niche-aware canonical tag taxonomy
     (read-only reference data); helpers for tag suggestions
     + merge. Consumed by ``tag_management`` auto-tagger.
