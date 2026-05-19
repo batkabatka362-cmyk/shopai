@@ -703,6 +703,9 @@ class TestAutoPausePerStore:
         # Per-store pause is NOT redundantly set
         assert ("loyalty", "store_a") not in s.alert_paused
 
+
+class TestAlertPausedExtraCases:
+
     def test_exempt_preserves_alert_paused(self, data_dir):
         """Operator running exempt_engine on a different engine
         shouldn't accidentally wipe the alert_paused set."""
