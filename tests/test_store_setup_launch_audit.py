@@ -79,7 +79,54 @@ _ALL_GOOD = {
             "filename": "assets/shopai-design-tokens.json",
         }],
     }),
+    "shopify_list_files": _ok({
+        "files": [
+            {"alt": "Acme logo", "url": "https://cdn/l.png"},
+            {"alt": "Acme favicon",
+             "url": "https://cdn/f.png"},
+        ],
+    }),
+    "shopify_list_products": _ok({
+        "products": [
+            {
+                "id": "gid://p/1",
+                "title": "Mascara",
+                "body_html": (
+                    "<p>This long-wear mascara delivers "
+                    "extreme volume and a dramatic length "
+                    "boost in one coat -- vegan, "
+                    "cruelty-free, ophthalmologist tested."
+                    "</p>"
+                ),
+                "seo": {
+                    "title": "Mascara | Acme Beauty",
+                    "description": (
+                        "Vegan long-wear mascara. Extreme "
+                        "volume + dramatic length in one "
+                        "coat. Free US shipping."
+                    ),
+                },
+            },
+        ],
+    }),
 }
+
+
+def _audit(*, responses=None, **kwargs):
+    """Shared helper: run audit_store with a patched router
+    backed by ``_ALL_GOOD`` overridden by ``responses``."""
+    merged = dict(_ALL_GOOD)
+    if responses:
+        merged.update(responses)
+    router = type("R", (), {})()
+    router.execute = _router_with(merged)
+    with patch(
+        "core.adapters.get_router",
+        return_value=router,
+    ), patch(
+        "engines.store_setup.launch_audit.record_writeback",
+    ):
+        return audit_store(store_name="Acme", **kwargs)
 
 
 class TestAllPass:
@@ -100,25 +147,17 @@ class TestAllPass:
 
     def test_completion_pct_partial(self):
         # Drop the FAQ page -> standard_pages fails
-        responses = dict(_ALL_GOOD)
-        responses["shopify_list_pages"] = _ok({
-            "pages": [
-                {"handle": "about"},
-                {"handle": "contact"},
-                {"handle": "shipping-returns"},
-            ],
+        result = _audit(responses={
+            "shopify_list_pages": _ok({
+                "pages": [
+                    {"handle": "about"},
+                    {"handle": "contact"},
+                    {"handle": "shipping-returns"},
+                ],
+            }),
         })
-        router = type("R", (), {})()
-        router.execute = _router_with(responses)
-        with patch(
-            "core.adapters.get_router",
-            return_value=router,
-        ), patch(
-            "engines.store_setup.launch_audit.record_writeback",
-        ):
-            result = audit_store()
-        # 4 of 5 pass -> 80%
-        assert result["completion_pct"] == 80
+        # 7 of 8 pass -> 88%
+        assert result["completion_pct"] == 88
         assert result["ready_to_launch"] is False
 
 
@@ -326,6 +365,205 @@ class TestDesignTokensCheck:
             "assets/shopai-design-tokens.json"
             in tokens["missing"]
         )
+
+
+class TestBrandAssetsCheck:
+
+    def test_logo_and_favicon_present(self):
+        result = _audit()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is True
+        assert brand["applied"] == 2
+        assert brand["missing"] == []
+
+    def test_missing_favicon_flagged(self):
+        result = _audit(responses={
+            "shopify_list_files": _ok({
+                "files": [
+                    {"alt": "Acme logo"},
+                ],
+            }),
+        })
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is False
+        assert "favicon" in brand["missing"]
+        assert brand["applied"] == 1
+
+    def test_store_name_prefix_enforced(self):
+        """When store_name is supplied, only alt-text with the
+        ``<store_name> <asset>`` exact prefix counts -- prevents
+        unrelated images from masquerading as brand assets."""
+        result = _audit(responses={
+            "shopify_list_files": _ok({
+                "files": [
+                    # Unrelated product image -- alt ends in
+                    # "logo" but does NOT match the store_name
+                    # prefix
+                    {"alt": "Product hero logo"},
+                    {"alt": "Acme favicon"},
+                ],
+            }),
+        })
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert "logo" in brand["missing"]
+        assert brand["applied"] == 1
+
+    def test_no_store_name_falls_back_to_suffix_match(self):
+        """When store_name is None, any alt ending in
+        ``" logo"`` / ``" favicon"`` counts -- audit can still
+        run without store_name on hand."""
+        router = type("R", (), {})()
+        router.execute = _router_with({
+            **_ALL_GOOD,
+            "shopify_list_files": _ok({
+                "files": [
+                    {"alt": "Some other logo"},
+                    {"alt": "Generic favicon"},
+                ],
+            }),
+        })
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()  # no store_name kwarg
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is True
+
+
+class TestProductDescriptionsCheck:
+
+    def test_meaningful_description_passes(self):
+        result = _audit()
+        desc = next(
+            c for c in result["checks"]
+            if c["key"] == "product_descriptions"
+        )
+        assert desc["ok"] is True
+        assert desc["applied"] == 1
+        assert desc["expected"] == 1
+
+    def test_empty_body_flagged(self):
+        result = _audit(responses={
+            "shopify_list_products": _ok({
+                "products": [
+                    {"id": "gid://p/1",
+                     "title": "Empty", "body_html": ""},
+                ],
+            }),
+        })
+        desc = next(
+            c for c in result["checks"]
+            if c["key"] == "product_descriptions"
+        )
+        assert desc["ok"] is False
+        assert desc["applied"] == 0
+        assert "Empty" in desc["missing"]
+
+    def test_placeholder_tags_dont_count(self):
+        """Strings like ``<p></p>`` with no real text should
+        not pass -- the audit verifies REAL content."""
+        result = _audit(responses={
+            "shopify_list_products": _ok({
+                "products": [
+                    {"id": "gid://p/1",
+                     "title": "Placeholder",
+                     "body_html": "<p></p><br/>"},
+                ],
+            }),
+        })
+        desc = next(
+            c for c in result["checks"]
+            if c["key"] == "product_descriptions"
+        )
+        assert desc["ok"] is False
+
+    def test_no_products_is_ok(self):
+        """An empty catalog passes the check -- the audit
+        can't fail on what isn't there. The orchestrator's
+        product-enrichment step is itself optional."""
+        result = _audit(responses={
+            "shopify_list_products": _ok({"products": []}),
+        })
+        desc = next(
+            c for c in result["checks"]
+            if c["key"] == "product_descriptions"
+        )
+        assert desc["ok"] is True
+        assert desc["expected"] == 0
+
+
+class TestProductSeoCheck:
+
+    def test_full_seo_passes(self):
+        result = _audit()
+        seo = next(
+            c for c in result["checks"]
+            if c["key"] == "product_seo"
+        )
+        assert seo["ok"] is True
+        assert seo["applied"] == 1
+
+    def test_missing_seo_title_flagged(self):
+        result = _audit(responses={
+            "shopify_list_products": _ok({
+                "products": [
+                    {"id": "gid://p/1",
+                     "title": "Untitled SEO",
+                     "body_html": "x" * 200,
+                     "seo": {
+                         "title": "",
+                         "description": (
+                             "Full meta description that "
+                             "passes the length floor."
+                         ),
+                     }},
+                ],
+            }),
+        })
+        seo = next(
+            c for c in result["checks"]
+            if c["key"] == "product_seo"
+        )
+        assert seo["ok"] is False
+
+    def test_legacy_flat_fields_accepted(self):
+        """Some response shapes return ``seo_title`` /
+        ``seo_description`` flat keys instead of the nested
+        ``seo`` dict -- both must work."""
+        result = _audit(responses={
+            "shopify_list_products": _ok({
+                "products": [
+                    {"id": "gid://p/1",
+                     "title": "Mascara",
+                     "body_html": "x" * 200,
+                     "seo_title": "Mascara | Acme Beauty",
+                     "seo_description": (
+                         "Vegan long-wear mascara, free US "
+                         "shipping, cruelty-free."
+                     )},
+                ],
+            }),
+        })
+        seo = next(
+            c for c in result["checks"]
+            if c["key"] == "product_seo"
+        )
+        assert seo["ok"] is True
 
 
 class TestProbeFailureResilience:
