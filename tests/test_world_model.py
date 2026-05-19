@@ -906,3 +906,77 @@ class TestSectionQuarantine:
         assert snap["quarantine"]["for_this_store"][
             "alert_paused"
         ] == ["loyalty"]
+
+    def test_recent_alerts_empty_by_default(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine()
+        assert sec["recent_alerts"] == []
+
+    def test_recent_alerts_populated(self, _data_dir):
+        # Bypass record_alerts' pytest test-env guard by writing
+        # the alert_history.json directly.
+        import json
+        import time
+        now = time.time()
+        events = [
+            {
+                "engine": "loyalty",
+                "recorded_at": now - i * 60.0,
+                "drop": 0.40,
+                "recent_score": 1.0,
+                "baseline_score": 2.5,
+                "store_id": "store_a" if i % 2 == 0 else None,
+            }
+            for i in range(3)
+        ]
+        (_data_dir / "alert_history.json").write_text(
+            json.dumps(events), encoding="utf-8",
+        )
+
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine()
+        assert len(sec["recent_alerts"]) == 3
+        # Newest-first ordering from recent_history
+        first = sec["recent_alerts"][0]
+        assert first["engine"] == "loyalty"
+        assert first["drop"] == 0.40
+        assert first["recent_score"] == 1.0
+        assert first["baseline_score"] == 2.5
+        # store_id flows through (None or str)
+        store_ids = {a["store_id"] for a in sec["recent_alerts"]}
+        assert "store_a" in store_ids
+        assert None in store_ids
+
+    def test_recent_alerts_capped_at_ten(self, _data_dir):
+        import json
+        import time
+        now = time.time()
+        events = [
+            {
+                "engine": f"eng_{i}",
+                "recorded_at": now - i * 60.0,
+                "drop": 0.40,
+                "recent_score": 1.0,
+                "baseline_score": 2.5,
+                "store_id": None,
+            }
+            for i in range(15)
+        ]
+        (_data_dir / "alert_history.json").write_text(
+            json.dumps(events), encoding="utf-8",
+        )
+
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_quarantine()
+        assert len(sec["recent_alerts"]) == 10
+
+    def test_recent_alerts_failure_keeps_section(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.approval.alert_history.recent_history",
+            side_effect=RuntimeError("history corrupted"),
+        ):
+            sec = wm._section_quarantine()
+        # Section still renders; recent_alerts degrades to []
+        assert sec["checked"] is True
+        assert sec["recent_alerts"] == []

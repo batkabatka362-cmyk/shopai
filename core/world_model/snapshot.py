@@ -645,6 +645,40 @@ class WorldModel:
                 engines_blocked,
             )
 
+        # Recent alert events -- gives the snapshot a directional
+        # signal (is this engine getting worse, better, stable?)
+        # beyond the static "currently paused" flag. Capped at 10
+        # so the snapshot stays inspectable in a terminal.
+        recent_alerts: list[dict] = []
+        try:
+            from core.approval.alert_history import recent_history
+            for event in recent_history(since_seconds=86400.0 * 7.0)[:10]:
+                recent_alerts.append({
+                    "engine": getattr(event, "engine", "") or "",
+                    "recorded_at": float(
+                        getattr(event, "recorded_at", 0.0) or 0.0,
+                    ),
+                    "drop": float(
+                        getattr(event, "drop", 0.0) or 0.0,
+                    ),
+                    "recent_score": float(
+                        getattr(event, "recent_score", 0.0) or 0.0,
+                    ),
+                    "baseline_score": float(
+                        getattr(event, "baseline_score", 0.0) or 0.0,
+                    ),
+                    "store_id": getattr(event, "store_id", None),
+                })
+        except ImportError as exc:
+            logger.debug(
+                "world_model alert_history import failed: %s", exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model alert_history readout raised: %s",
+                exc,
+            )
+
         return {
             "checked": True,
             # Scope changed: when a store filter is active the
@@ -660,6 +694,7 @@ class WorldModel:
             "alert_release_candidates": release_candidates,
             "alert_pause_candidates": pause_candidates,
             "for_this_store": for_this_store,
+            "recent_alerts": recent_alerts,
             "bridge": bridge,
         }
 
