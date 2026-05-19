@@ -56,6 +56,7 @@ def launch_store(
     store_id: str | None = None,
     include_legal_notice: bool = False,
     include_subscription_policy: bool = False,
+    support_email: str | None = None,
 ) -> dict[str, Any]:
     """Run the autonomous setup steps and return a checklist.
 
@@ -71,6 +72,10 @@ def launch_store(
             scope on every fan-out call.
         include_legal_notice: Forwarded to policy_generator.
         include_subscription_policy: Forwarded to policy_generator.
+        support_email: Optional customer-support email shown
+            on Contact pages + in Contact-Information policy.
+            Placeholder domains (example.com, test.com, etc.)
+            are auto-rejected -- never ships a fake mailto.
 
     Returns:
         ``{policies, pages, checklist, ready_to_launch}`` --
@@ -105,6 +110,7 @@ def launch_store(
             include_subscription_policy=(
                 include_subscription_policy
             ),
+            support_email=support_email,
         )
         policies_result = apply_policies(
             policies, store_id=store_id,
@@ -132,6 +138,7 @@ def launch_store(
             store_name=name,
             niche=niche,
             founder_name=founder_name,
+            support_email=support_email,
         )
         pages_result = apply_pages(
             pages, store_id=store_id,

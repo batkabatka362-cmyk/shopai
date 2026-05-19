@@ -133,3 +133,70 @@ class TestOptionalPolicies:
         assert "SUBSCRIPTION_POLICY" in out
         # Essentials still there
         assert "REFUND_POLICY" in out
+
+
+class TestSupportEmail:
+    """Contact-information policy + EU legal notice must
+    never carry a placeholder support@example.com mailto.
+    Real email -> mailto link; missing/placeholder ->
+    fallback to contact form link.
+    """
+
+    def test_real_email_in_contact_policy(self):
+        out = generate_policies(
+            store_name="Acme",
+            support_email="hello@acmestore.com",
+        )
+        contact = out["CONTACT_INFORMATION"]
+        assert (
+            "<a href=\"mailto:hello@acmestore.com\">"
+            in contact
+        )
+        assert "support@example.com" not in contact
+
+    def test_no_email_no_mailto_in_contact_policy(self):
+        out = generate_policies(store_name="Acme")
+        contact = out["CONTACT_INFORMATION"]
+        assert "mailto:" not in contact
+        assert "/pages/contact" in contact
+        # The bug: pre-fix this leaked "support@example.com"
+        # into every CONTACT_INFORMATION policy.
+        assert "example.com" not in contact
+
+    def test_placeholder_email_rejected(self):
+        for bad in (
+            "support@example.com",
+            "test@test.com",
+            "x@localhost",
+        ):
+            out = generate_policies(
+                store_name="Acme", support_email=bad,
+            )
+            assert "mailto:" not in out[
+                "CONTACT_INFORMATION"
+            ], bad
+
+    def test_legal_notice_uses_real_email(self):
+        out = generate_policies(
+            store_name="Acme",
+            include_legal_notice=True,
+            support_email="legal@acmestore.com",
+        )
+        legal = out["LEGAL_NOTICE"]
+        assert (
+            "<a href=\"mailto:legal@acmestore.com\">"
+            in legal
+        )
+        assert "example.com" not in legal
+
+    def test_legal_notice_no_email_falls_back(self):
+        out = generate_policies(
+            store_name="Acme",
+            include_legal_notice=True,
+        )
+        legal = out["LEGAL_NOTICE"]
+        assert "mailto:" not in legal
+        assert "/pages/contact" in legal
+        # Pre-fix this leaked placeholder into Impressum
+        # text every EU store would ship.
+        assert "example.com" not in legal
