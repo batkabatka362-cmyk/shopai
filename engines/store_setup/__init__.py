@@ -14,6 +14,9 @@ Modules:
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
+  * ``homepage_sections`` -- niche-aware homepage section
+    ORDER recommender (which sections go above the fold);
+    persists as ``homepage-sections`` operator-paste page.
   * ``page_generator`` / ``page_applier`` -- niche-aware
     About / Contact / FAQ / Shipping pages via
     ``SHOPIFY_CREATE_PAGE``.
