@@ -811,16 +811,37 @@ def build_parser() -> argparse.ArgumentParser:
         "pulse",
         help=(
             "Single-engine health pulse: composite 1-10 score + "
-            "verdict (healthy/warning/unhealthy) over all signals"
+            "verdict (healthy/warning/unhealthy) over all signals. "
+            "Use 'shopai engine pulse --fleet' for a fleet-wide "
+            "leaderboard."
         ),
     )
     engine_pulse_p.add_argument(
-        "engine_name",
-        help="Engine to score (e.g. loyalty, cart_recovery)",
+        "engine_name", nargs="?", default=None,
+        help=(
+            "Engine to score (e.g. loyalty, cart_recovery). "
+            "Omit when using --fleet."
+        ),
+    )
+    engine_pulse_p.add_argument(
+        "--fleet", action="store_true",
+        help=(
+            "Score every engine in ENGINE_GOAL_MAP and render a "
+            "leaderboard ranked by score asc (sickest first). "
+            "Exit code 1 if ANY engine is unhealthy."
+        ),
+    )
+    engine_pulse_p.add_argument(
+        "--verdict", choices=("healthy", "warning", "unhealthy"),
+        default=None,
+        help=(
+            "When used with --fleet: only show engines with this "
+            "verdict. No-op for single-engine mode."
+        ),
     )
     engine_pulse_p.add_argument(
         "--json", action="store_true",
-        help="Emit the raw health envelope as JSON",
+        help="Emit the raw health envelope(s) as JSON",
     )
 
     engine_summary_p = engine_sub.add_parser(
@@ -6890,13 +6911,31 @@ def _cmd_engines(*, by_goal: bool = False, unmapped: bool = False) -> None:
 def _cmd_engine_pulse(args) -> None:
     """Composite engine-health verdict.
 
-    Calls ``core.approval.engine_health.score_engine`` and renders
-    a short, opinionated, cron-friendly summary. Exit code 0 for
-    healthy / warning, 1 for unhealthy -- so monitoring pipelines
-    can flag without having to parse JSON.
+    Single-engine mode: calls
+    ``core.approval.engine_health.score_engine`` and renders a
+    short, opinionated, cron-friendly summary. Exit code 1 when
+    the verdict is ``unhealthy``, 0 otherwise.
+
+    Fleet mode (``--fleet``): scores every engine in
+    ``ENGINE_GOAL_MAP``, renders a leaderboard ranked by score
+    ascending (sickest first). Exit code 1 if ANY engine is
+    unhealthy, so monitoring pipelines fail-fast on fleet
+    degradation.
     """
     as_json = bool(getattr(args, "json", False))
-    engine_name = args.engine_name
+    fleet = bool(getattr(args, "fleet", False))
+    if fleet:
+        _engine_pulse_fleet(args, as_json=as_json)
+        return
+
+    engine_name = getattr(args, "engine_name", None)
+    if not engine_name:
+        print(
+            "Usage: shopai engine pulse <engine_name>  "
+            "(or --fleet for the leaderboard)"
+        )
+        sys.exit(2)
+        return
 
     from core.approval.engine_health import score_engine
 
@@ -6934,6 +6973,77 @@ def _cmd_engine_pulse(args) -> None:
 
     if health.verdict == "unhealthy":
         sys.exit(1)
+
+
+def _engine_pulse_fleet(args, *, as_json: bool) -> None:
+    """Score every engine in ENGINE_GOAL_MAP, render leaderboard
+    sorted by score asc (sickest first).
+    """
+    from core.approval.engine_health import score_engine
+    from core.goals.engine_goal_map import ENGINE_GOAL_MAP
+
+    verdict_filter = getattr(args, "verdict", None) or None
+
+    results: list[dict] = []
+    for engine in sorted(ENGINE_GOAL_MAP):
+        try:
+            health = score_engine(engine)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine pulse fleet: score_engine raised for %s: %s",
+                engine, exc,
+            )
+            continue
+        if verdict_filter and health.verdict != verdict_filter:
+            continue
+        results.append(health.to_dict())
+
+    # Rank: score asc, then engine name asc as tiebreak so order
+    # is deterministic.
+    results.sort(key=lambda r: (int(r["score"]), r["engine"]))
+
+    if as_json:
+        print(json.dumps({
+            "fleet": results,
+            "verdict_counts": _verdict_rollup(results),
+        }, indent=2, default=str))
+    else:
+        if not results:
+            print("(no engines match)")
+        else:
+            rollup = _verdict_rollup(results)
+            print(
+                f"Fleet pulse ({len(results)} engine(s)):  "
+                f"healthy={rollup['healthy']}  "
+                f"warning={rollup['warning']}  "
+                f"unhealthy={rollup['unhealthy']}"
+            )
+            print()
+            for r in results:
+                concerns = r.get("concerns") or []
+                concerns_str = (
+                    f"  [{'; '.join(concerns[:2])}]"
+                    if concerns else ""
+                )
+                print(
+                    f"  {r['score']:>2d}/10  "
+                    f"{r['verdict']:<9s}  "
+                    f"{r['engine']:<28s}"
+                    f"{concerns_str}"
+                )
+
+    if any(r["verdict"] == "unhealthy" for r in results):
+        sys.exit(1)
+
+
+def _verdict_rollup(results: list[dict]) -> dict[str, int]:
+    """Aggregate verdict counts; used by both text + JSON modes."""
+    rollup = {"healthy": 0, "warning": 0, "unhealthy": 0}
+    for r in results:
+        v = r.get("verdict")
+        if v in rollup:
+            rollup[v] += 1
+    return rollup
 
 
 def _cmd_engine_summary(args) -> None:
