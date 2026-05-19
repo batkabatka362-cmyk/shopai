@@ -181,8 +181,8 @@ def _record(
 
 def _get_router() -> Any | None:
     try:
-        from core.adapters.router import AdapterRouter
-        return AdapterRouter()
+        from core.adapters import get_router as _get
+        return _get()
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "page_applier router import failed: %s", exc,
