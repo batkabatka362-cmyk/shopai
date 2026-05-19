@@ -1000,3 +1000,186 @@ class TestQuarantineSummary:
         # Block still present but empty lists
         assert data["quarantine"]["exempt"] == []
         assert data["quarantine"]["alert_paused"] == []
+
+
+# --- Fleet health rollup --------------------------------------
+
+
+def _stub_health(engine, verdict, score=8):
+    from core.approval.engine_health import EngineHealth
+    return EngineHealth(
+        engine=engine, score=score, verdict=verdict,
+        signals={}, concerns=[],
+    )
+
+
+class TestFleetHealthRollup:
+    """``daily-brief`` scores every engine via engine_health and
+    surfaces verdict counts + sickest engines so the morning
+    brief carries a directional read on the fleet."""
+
+    def test_json_envelope_has_fleet_health(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {"loyalty": "g", "cart_recovery": "g"},
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_stub_health("loyalty", "healthy"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert "fleet_health" in data
+        fh = data["fleet_health"]
+        assert fh["checked"] is True
+        assert fh["verdict_counts"]["healthy"] == 2
+        assert fh["verdict_counts"]["unhealthy"] == 0
+        assert fh["average_score"] == 8.0
+
+    def test_unhealthy_count_in_totals(self, cli):
+        sm = _fake_sm([])
+        verdicts = {
+            "loyalty": "unhealthy",
+            "cart_recovery": "warning",
+            "discount_strategy": "healthy",
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {k: "g" for k in verdicts},
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=lambda engine, **kw: _stub_health(
+                engine, verdicts[engine],
+                score={
+                    "unhealthy": 3, "warning": 6, "healthy": 9,
+                }[verdicts[engine]],
+            ),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert data["totals"]["unhealthy_engines"] == 1
+        assert data["fleet_health"][
+            "verdict_counts"
+        ]["unhealthy"] == 1
+
+    def test_text_renders_fleet_health_line(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {"loyalty": "g"},
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_stub_health("loyalty", "healthy"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Fleet health:" in out
+        assert "healthy=1" in out
+        assert "unhealthy=0" in out
+
+    def test_text_sickest_shown_when_unhealthy(self, cli):
+        sm = _fake_sm([])
+        verdicts = {
+            "loyalty": "unhealthy",
+            "cart_recovery": "healthy",
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {k: "g" for k in verdicts},
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=lambda engine, **kw: _stub_health(
+                engine, verdicts[engine],
+                score=3 if verdicts[engine] == "unhealthy" else 9,
+            ),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Sickest:" in out
+        assert "loyalty(3/10)" in out
+
+    def test_text_sickest_hidden_when_all_healthy(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {"loyalty": "g", "cart_recovery": "g"},
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_stub_health("loyalty", "healthy"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Sickest:" not in out
+
+    def test_score_engine_raise_skipped(self, cli):
+        sm = _fake_sm([])
+
+        def _score(engine, **kw):
+            if engine == "broken":
+                raise RuntimeError("scorer down")
+            return _stub_health(engine, "healthy")
+
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            {"broken": "g", "loyalty": "g"},
+            clear=True,
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=_score,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        # broken is skipped; loyalty contributes
+        engines = [r["engine"] for r in data["fleet_health"]["sickest"]]
+        assert "loyalty" in engines
+        assert "broken" not in engines
+
+    def test_import_failure_doesnt_break_brief(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=ImportError("module missing"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        # fleet_health degrades to checked=False; daily-brief
+        # still renders
+        assert data["fleet_health"]["checked"] is False
+        assert data["totals"]["unhealthy_engines"] == 0
