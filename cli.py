@@ -6859,6 +6859,7 @@ def _cmd_engine_summary(args) -> None:
 
     alert_streak = 0
     last_alert_at: float | None = None
+    recent_alerts: list[dict] = []
     try:
         from core.approval import alert_history
         consecutive = (
@@ -6871,9 +6872,34 @@ def _cmd_engine_summary(args) -> None:
             since_seconds=86400.0 * 365.0,
         )
         for e in events:
-            if e.engine == engine_name:
+            if e.engine != engine_name:
+                continue
+            if last_alert_at is None:
                 last_alert_at = e.recorded_at
-                break  # newest-first; first match is the latest
+            # Cap at 5 most recent for this engine. The trajectory
+            # tells operators if alerts are accelerating or dying
+            # down, not just whether they fired.
+            if len(recent_alerts) < 5:
+                recent_alerts.append({
+                    "recorded_at": float(
+                        getattr(e, "recorded_at", 0.0) or 0.0,
+                    ),
+                    "drop": float(
+                        getattr(e, "drop", 0.0) or 0.0,
+                    ),
+                    "recent_score": float(
+                        getattr(e, "recent_score", 0.0) or 0.0,
+                    ),
+                    "baseline_score": float(
+                        getattr(e, "baseline_score", 0.0) or 0.0,
+                    ),
+                    "store_id": getattr(e, "store_id", None),
+                })
+            if (
+                last_alert_at is not None
+                and len(recent_alerts) >= 5
+            ):
+                break
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "engine summary alert_history probe raised: %s", exc,
@@ -6881,6 +6907,7 @@ def _cmd_engine_summary(args) -> None:
     if quarantine_info:
         quarantine_info["alert_streak_7d"] = alert_streak
         quarantine_info["last_alert_at"] = last_alert_at
+        quarantine_info["recent_alerts"] = recent_alerts
 
     # Recent actions across the two most informative statuses --
     # EXECUTED first (the "what's been shipped" feed) then FAILED
@@ -6965,6 +6992,9 @@ def _cmd_engine_summary(args) -> None:
             flags.append("alert_paused")
         streak = quarantine_info.get("alert_streak_7d", 0)
         last = quarantine_info.get("last_alert_at")
+        recent_alerts_list = (
+            quarantine_info.get("recent_alerts") or []
+        )
         if flags or streak > 0:
             print("Quarantine:")
             if flags:
@@ -6980,6 +7010,28 @@ def _cmd_engine_summary(args) -> None:
                     else f"{int(age/86400)}d ago"
                 )
                 print(f"  Last alert firing: {ago}")
+            if recent_alerts_list:
+                print(
+                    f"  Recent alerts ({len(recent_alerts_list)}):"
+                )
+                now = time.time()
+                for ev in recent_alerts_list:
+                    ts = ev.get("recorded_at") or 0
+                    age = now - float(ts) if ts else 0
+                    ago_short = (
+                        f"{int(age/3600)}h ago" if age < 86400
+                        else f"{int(age/86400)}d ago"
+                    )
+                    drop = float(ev.get("drop", 0.0) or 0.0)
+                    sid = ev.get("store_id")
+                    scope = f"@{sid}" if sid else "(fleet)"
+                    rs = float(ev.get("recent_score", 0.0))
+                    bs = float(ev.get("baseline_score", 0.0))
+                    print(
+                        f"    {ago_short:<10s} {scope:<14s} "
+                        f"drop={drop:.0%}  "
+                        f"recent={rs:.2f} baseline={bs:.2f}"
+                    )
             print()
     if recent:
         print(f"Recent activity ({len(recent)}):")
