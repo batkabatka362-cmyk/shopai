@@ -51,7 +51,10 @@ def _capture(fn, *args, **kwargs):
 
 
 def _ns(**kw):
-    defaults = dict(enable=None, disable=None, list=False, json=False)
+    defaults = dict(
+        enable=None, disable=None, list=False, audit=False,
+        json=False,
+    )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
@@ -169,3 +172,138 @@ class TestJsonOutput:
             cli._cmd_approvals_auto_config, _ns(json=True),
         )
         assert out.strip()[0] == "{"
+
+
+# --- Audit flag ----------------------------------------------
+
+
+def _stub_health(engine: str, verdict: str, score: int = 5):
+    from core.approval.engine_health import EngineHealth
+    return EngineHealth(
+        engine=engine, score=score, verdict=verdict,
+        signals={}, concerns=(
+            ["engine is alert_paused"] if verdict == "unhealthy"
+            else []
+        ),
+    )
+
+
+class TestAudit:
+
+    def test_empty_allowlist_renders_nothing_to_audit(
+        self, cli, auto_approve_data_dir,
+    ):
+        out, code = _capture(
+            cli._cmd_approvals_auto_config, _ns(audit=True),
+        )
+        assert code == 0
+        assert "Nothing to audit" in out
+
+    def test_all_healthy_passes(
+        self, cli, auto_approve_data_dir,
+    ):
+        from core.approval import auto_approve as aa
+        aa.enable_engine("loyalty")
+        aa.enable_engine("cart_recovery")
+        with patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=lambda engine, **kw: _stub_health(
+                engine, "healthy", score=9,
+            ),
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_auto_config,
+                _ns(audit=True),
+            )
+        assert code == 0
+        assert "All allowlist engines healthy" in out
+        assert "loyalty" in out
+        assert "cart_recovery" in out
+
+    def test_unhealthy_engine_flagged(
+        self, cli, auto_approve_data_dir,
+    ):
+        from core.approval import auto_approve as aa
+        aa.enable_engine("loyalty")
+
+        def _score(engine, **kw):
+            if engine == "loyalty":
+                return _stub_health(
+                    engine, "unhealthy", score=3,
+                )
+            return _stub_health(engine, "healthy")
+
+        with patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=_score,
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_auto_config,
+                _ns(audit=True),
+            )
+        assert code == 1
+        assert "1 unhealthy engine" in out
+        assert (
+            "shopai approvals auto-config --disable loyalty"
+            in out
+        )
+
+    def test_audit_json_envelope(
+        self, cli, auto_approve_data_dir,
+    ):
+        from core.approval import auto_approve as aa
+        aa.enable_engine("loyalty")
+        aa.enable_engine("cart_recovery")
+
+        def _score(engine, **kw):
+            if engine == "loyalty":
+                return _stub_health(
+                    engine, "unhealthy", score=2,
+                )
+            return _stub_health(engine, "healthy", score=10)
+
+        with patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=_score,
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_auto_config,
+                _ns(audit=True, json=True),
+            )
+        assert code == 1
+        data = json.loads(out)
+        assert data["allowlist_size"] == 2
+        assert "loyalty" in data["unhealthy_engines"]
+        assert "cart_recovery" not in data["unhealthy_engines"]
+        assert len(data["audit_rows"]) == 2
+        assert "remove unhealthy" in data["recommendation"]
+
+    def test_score_raise_skips_engine(
+        self, cli, auto_approve_data_dir,
+    ):
+        """A single engine's score_engine raising shouldn't abort
+        the whole audit -- that engine is omitted."""
+        from core.approval import auto_approve as aa
+        aa.enable_engine("broken")
+        aa.enable_engine("loyalty")
+
+        def _score(engine, **kw):
+            if engine == "broken":
+                raise RuntimeError("score failed")
+            return _stub_health(engine, "healthy")
+
+        with patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=_score,
+        ):
+            out, code = _capture(
+                cli._cmd_approvals_auto_config,
+                _ns(audit=True, json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        engines_in_rows = [
+            r["engine"] for r in data["audit_rows"]
+        ]
+        assert "loyalty" in engines_in_rows
+        assert "broken" not in engines_in_rows
