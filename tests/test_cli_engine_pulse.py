@@ -50,6 +50,8 @@ def _ns(**kw):
         json=False,
         fleet=False,
         verdict=None,
+        history=False,
+        history_days=30,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -362,3 +364,154 @@ class TestFleetMode:
         assert code == 0
         assert "loyalty" in out
         assert "broken" not in out
+
+
+# --- History flag ---------------------------------------------
+
+
+def _stub_event(*, score: int, verdict: str, recorded_at: float):
+    from core.approval.engine_health_history import ScoreEvent
+    return ScoreEvent(
+        engine="loyalty",
+        recorded_at=recorded_at,
+        score=score,
+        verdict=verdict,
+    )
+
+
+class TestHistoryFlag:
+    """``shopai engine pulse <engine> --history`` reads
+    ``engine_health_history.recent_history`` and surfaces the
+    trajectory alongside the current verdict."""
+
+    def test_no_history_flag_omits_history(self, cli):
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(),
+        ), patch(
+            "core.approval.engine_health_history.recent_history",
+        ) as recent:
+            out, _ = _capture(cli._cmd_engine_pulse, _ns())
+        # Without --history, the helper should NEVER be called
+        recent.assert_not_called()
+        assert "History" not in out
+
+    def test_history_flag_json_includes_trail(self, cli):
+        events = [
+            _stub_event(
+                score=7, verdict="warning", recorded_at=2000.0,
+            ),
+            _stub_event(
+                score=5, verdict="warning", recorded_at=1000.0,
+            ),
+        ]
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(),
+        ), patch(
+            "core.approval.engine_health_history.recent_history",
+            return_value=events,
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_pulse,
+                _ns(history=True, json=True),
+            )
+        data = json.loads(out)
+        assert "history" in data
+        assert len(data["history"]) == 2
+        # Each row has the expected shape
+        row = data["history"][0]
+        assert row["score"] == 7
+        assert row["verdict"] == "warning"
+        assert "recorded_at_iso" in row
+
+    def test_history_text_section_renders(self, cli):
+        events = [
+            _stub_event(
+                score=6, verdict="warning",
+                recorded_at=2_000_000.0,
+            ),
+        ]
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(),
+        ), patch(
+            "core.approval.engine_health_history.recent_history",
+            return_value=events,
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_pulse, _ns(history=True),
+            )
+        assert "History" in out
+        assert "6/10" in out
+        assert "warning" in out
+
+    def test_history_empty_text(self, cli):
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(),
+        ), patch(
+            "core.approval.engine_health_history.recent_history",
+            return_value=[],
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_pulse, _ns(history=True),
+            )
+        assert "(no recorded events in window)" in out
+
+    def test_history_days_propagates(self, cli):
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(),
+        ), patch(
+            "core.approval.engine_health_history.recent_history",
+            return_value=[],
+        ) as recent:
+            _capture(
+                cli._cmd_engine_pulse,
+                _ns(history=True, history_days=7),
+            )
+        # Called with the engine + the right window
+        call_args = recent.call_args
+        # Positional engine arg
+        assert call_args.args == ("loyalty",) or (
+            call_args.kwargs.get("engine") == "loyalty"
+        )
+        # since_seconds = 7 * 86400
+        assert call_args.kwargs.get("since_seconds") == (
+            86400.0 * 7
+        )
+
+    def test_history_fetch_raises_renders_empty(self, cli):
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(),
+        ), patch(
+            "core.approval.engine_health_history.recent_history",
+            side_effect=RuntimeError("history file gone"),
+        ):
+            out, code = _capture(
+                cli._cmd_engine_pulse, _ns(history=True),
+            )
+        # Doesn't crash; history renders as empty
+        assert code == 0
+        assert "(no recorded events in window)" in out
+
+    def test_history_ignored_in_fleet_mode(self, cli):
+        """--history is a single-engine flag. Fleet mode
+        shouldn't try to render history."""
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=_make_health(),
+        ), patch.dict(
+            "core.goals.engine_goal_map.ENGINE_GOAL_MAP",
+            _engine_map("loyalty"),
+            clear=True,
+        ), patch(
+            "core.approval.engine_health_history.recent_history",
+        ) as recent:
+            _capture(
+                cli._cmd_engine_pulse,
+                _ns(fleet=True, history=True),
+            )
+        recent.assert_not_called()
