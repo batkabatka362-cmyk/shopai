@@ -509,6 +509,29 @@ def _apply_segment_tag_dispatch(
     )
 
 
+@register_dispatcher("tag_journey_customer")
+def _tag_journey_customer_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay customer_journey's per-customer stage tag write.
+
+    Enqueue carries ``{customer_id, tag, furthest_stage}``.
+    The adapter wants ``{id, tags: [tag]}`` -- same
+    translation ``apply_segment_tag`` does. The
+    ``furthest_stage`` metadata is kept in approval-side
+    params for operator context but isn't part of the
+    Shopify mutation.
+    """
+    customer_id = str(params.get("customer_id", "")).strip()
+    tag = str(params.get("tag", "")).strip()
+    if not customer_id or not tag:
+        return False, {"error": "missing_customer_id_or_tag"}
+    return _router_call(
+        "SHOPIFY_TAG_CUSTOMER",
+        {"id": customer_id, "tags": [tag]},
+    )
+
+
 # ── landing_page → SHOPIFY_CREATE_PAGE ──────────────────────────
 
 
