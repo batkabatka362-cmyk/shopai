@@ -1494,6 +1494,38 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # Auto-register any webhook topic the registry declares but
+    # the live install hasn't subscribed to. The fix for the
+    # webhook drift detector's FAIL output -- specifically the
+    # 3 GDPR-mandatory topics Shopify review requires.
+    shopify_webhooks_register_p = sub.add_parser(
+        "shopify-webhooks-register-missing",
+        help=(
+            "Register missing webhook subscriptions on the live "
+            "Shopify install (fixes shopify-doctor's webhook drift)"
+        ),
+    )
+    shopify_webhooks_register_p.add_argument(
+        "--callback-url", required=True,
+        help=(
+            "HTTPS endpoint Shopify will POST every event to. "
+            "Conventionally a single URL; the receiver dispatches "
+            "on the X-Shopify-Topic header."
+        ),
+    )
+    shopify_webhooks_register_p.add_argument(
+        "--gdpr-only", action="store_true",
+        help=(
+            "Register only the 3 GDPR-mandatory topics "
+            "(customers/data_request, customers/redact, "
+            "shop/redact) -- minimum set for public review"
+        ),
+    )
+    shopify_webhooks_register_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     shopify_webhook_manifest_p = sub.add_parser(
         "shopify-webhook-manifest",
         help=(
@@ -11924,6 +11956,76 @@ def _cmd_shopify_webhooks(args) -> None:
         print(f"    {s.purpose}")
 
 
+def _cmd_shopify_webhooks_register_missing(args) -> None:
+    """Auto-register every webhook topic the registry declares
+    but the live install hasn't subscribed to.
+
+    The matching detector lives in ``shopify-doctor`` /
+    ``shopify-webhooks-live-check``; this command is the
+    fixer. The 3 GDPR-mandatory topics are the priority case
+    -- public-distribution Shopify review requires them and
+    omits a clear error message when they're absent.
+    """
+    from core.feedback.webhook_drift_fixer import (
+        auto_register_missing_topics,
+    )
+
+    callback_url = getattr(args, "callback_url", "") or ""
+    only_gdpr = bool(getattr(args, "gdpr_only", False))
+    as_json = bool(getattr(args, "json", False))
+
+    report = auto_register_missing_topics(
+        callback_url=callback_url,
+        only_gdpr=only_gdpr,
+    )
+
+    if as_json:
+        import json as _json
+        print(_json.dumps({
+            "callback_url": report.callback_url,
+            "target_topics": report.target_topics,
+            "registered": report.registered,
+            "failed": report.failed,
+            "skipped_existing": report.skipped_existing,
+            "drift_unavailable": report.drift_unavailable,
+            "is_clean": report.is_clean,
+        }, indent=2))
+        sys.exit(0 if report.is_clean else 1)
+
+    if report.drift_unavailable:
+        print(
+            "drift detection unavailable -- "
+            "configure Shopify credentials (OAuth flow or "
+            "SHOPAI_SHOPIFY_KEY) and re-run."
+        )
+        sys.exit(1)
+
+    if not report.target_topics and not report.failed:
+        print(
+            "No missing webhook topics -- the live install is "
+            "in sync with the registry."
+        )
+        sys.exit(0)
+
+    print(f"Callback URL: {report.callback_url}")
+    print(f"Target topics: {len(report.target_topics)}")
+    print()
+    if report.registered:
+        print(f"Registered ({len(report.registered)}):")
+        for t in report.registered:
+            print(f"  + {t}")
+    if report.skipped_existing:
+        print(f"Already subscribed ({len(report.skipped_existing)}):")
+        for t in report.skipped_existing:
+            print(f"  = {t}")
+    if report.failed:
+        print(f"Failed ({len(report.failed)}):")
+        for f in report.failed:
+            print(f"  ! {f['topic']}: {f['error']}")
+
+    sys.exit(0 if report.is_clean else 1)
+
+
 def _cmd_shopify_webhook_manifest(args) -> None:
     """Generate a Shopify app webhook subscription manifest.
 
@@ -17786,6 +17888,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-webhooks":
         _cmd_shopify_webhooks(args)
+        return
+
+    if args.command == "shopify-webhooks-register-missing":
+        _cmd_shopify_webhooks_register_missing(args)
         return
 
     if args.command == "shopify-webhook-manifest":
