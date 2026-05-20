@@ -95,7 +95,11 @@ class ShopifyCustomerPaymentMethodOpsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_SEND_PAYMENT_METHOD_UPDATE_EMAIL,
         Capability.SHOPIFY_GET_PAYMENT_METHOD_UPDATE_URL,
     }
-    required_scopes = frozenset({"write_customer_payment_methods"})
+    # Shopify removed ``write_customer_payment_methods`` in 2026+.
+    # The send-email + get-update-url ops are now gated by
+    # ``write_customers`` (they trigger customer-facing
+    # communication / state changes on the customer record).
+    required_scopes = frozenset({"write_customers"})
 
     def _execute(
         self,

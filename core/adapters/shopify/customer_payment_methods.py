@@ -131,9 +131,14 @@ class ShopifyCustomerPaymentMethodsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_GET_CUSTOMER_PAYMENT_METHOD,
         Capability.SHOPIFY_REVOKE_CUSTOMER_PAYMENT_METHOD,
     }
+    # Shopify removed ``write_customer_payment_methods`` in 2026+
+    # (only read remains in the Partners Dashboard scope selector).
+    # Revoke + other write-side operations on payment methods are
+    # now subsumed by the broader ``write_customers`` scope, since
+    # they fundamentally modify customer-attached data.
     required_scopes = frozenset({
         "read_customer_payment_methods",
-        "write_customer_payment_methods",
+        "write_customers",
     })
 
     def _execute(
