@@ -4,12 +4,36 @@ Generates a complete landing page structure from product data,
 campaign context, and brand voice. Produces headline, subheadline,
 hero section, benefits list, CTA, and social proof.
 
-All logic is real. No faking, no random numbers.
+Two paths, in priority order (same pattern as
+``engines/content_generation/copy_writer.py``):
+
+  1. **LLM path** (preferred). Builds a structured prompt from
+     the product / campaign / audience / voice inputs and calls
+     ``Capability.CHAT_COMPLETE`` via the adapter router. The
+     model returns JSON in the canonical ``{headline,
+     subheadline, hero_section, benefits, cta, social_proof}``
+     shape.
+
+  2. **Template path** (fallback). Deterministic
+     ``_build_*`` helpers below. Used when no LLM is
+     configured, when the LLM call times out / errors, when the
+     JSON parse fails, or under pytest (Pattern J guard).
+
+The template path makes the engine usable in any environment;
+the LLM path is what turns generic template prose into
+brand-tuned, conversion-focused landing copy.
 """
 from __future__ import annotations
 
 import copy
+import json
+import os
+import re
 from typing import Any
+
+from utils.logger import get_logger
+
+logger = get_logger("engines.landing_page.generator")
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +57,11 @@ def generate_page(
 ) -> dict[str, Any]:
     """Generate a landing page structure from product and campaign data.
 
+    Tries the LLM path first; on any failure (no provider
+    configured, network blip, malformed JSON) falls back to the
+    deterministic template path so the engine output stays valid
+    in every environment.
+
     Args:
         product: Product data dict.
         campaign: Campaign context dict.
@@ -55,24 +84,34 @@ def generate_page(
         campaign_goal = str(campaign.get("goal", "conversion"))
         channel = str(campaign.get("channel", "web"))
 
-        voice = _VOICE_MODIFIERS.get(brand_voice.lower(), _VOICE_MODIFIERS["professional"])
+        voice_key = brand_voice.lower() if isinstance(brand_voice, str) else "professional"
+        voice = _VOICE_MODIFIERS.get(voice_key, _VOICE_MODIFIERS["professional"])
 
-        # Build headline from product + goal
+        layout = "single_column" if channel == "mobile" else "standard"
+
+        # ── Path 1: LLM-driven generation ────────────────────────
+        llm_page = _generate_page_via_llm(
+            title=title,
+            description=description,
+            price=price,
+            features=features,
+            category=category,
+            target_audience=target_audience,
+            brand_voice=voice_key,
+            voice=voice,
+            campaign_goal=campaign_goal,
+            channel=channel,
+            layout=layout,
+        )
+        if llm_page is not None:
+            return {"status": "success", "page": llm_page}
+
+        # ── Path 2: Deterministic template fallback ──────────────
         headline = _build_headline(title, features, campaign_goal, voice)
-
-        # Build subheadline
         subheadline = _build_subheadline(title, description, target_audience, voice)
-
-        # Build hero section
         hero_section = _build_hero(title, description, price, campaign_goal)
-
-        # Build benefits from features
         benefits = _build_benefits(features, category)
-
-        # Build CTA
         cta = _build_cta(campaign_goal, price, voice)
-
-        # Build social proof
         social_proof = _build_social_proof(category, campaign_goal)
 
         page = {
@@ -82,7 +121,7 @@ def generate_page(
             "benefits": benefits,
             "cta": cta,
             "social_proof": social_proof,
-            "layout": "single_column" if channel == "mobile" else "standard",
+            "layout": layout,
         }
 
         return {
@@ -95,6 +134,204 @@ def generate_page(
             "page": {},
             "error": f"Page generation failed: {exc}",
         }
+
+
+# ---------------------------------------------------------------------------
+# LLM-driven path
+# ---------------------------------------------------------------------------
+
+
+def _generate_page_via_llm(
+    *,
+    title: str,
+    description: str,
+    price: float,
+    features: list[Any],
+    category: str,
+    target_audience: str,
+    brand_voice: str,
+    voice: dict[str, str],
+    campaign_goal: str,
+    channel: str,
+    layout: str,
+) -> dict[str, Any] | None:
+    """Try to generate landing page copy via an LLM through the router.
+
+    Returns the page dict on success, or ``None`` on any failure
+    so the caller falls back to the deterministic template path.
+    Never raises out.
+    """
+    # Pattern J: never call live LLMs under pytest. Tests that
+    # specifically exercise the LLM path mock the router.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM router import failed: %s", exc)
+        return None
+
+    try:
+        router = get_router()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM router init failed: %s", exc)
+        return None
+
+    system_prompt = _build_llm_system_prompt(brand_voice, voice, campaign_goal)
+    user_prompt = _build_llm_user_prompt(
+        title=title,
+        description=description,
+        price=price,
+        features=features,
+        category=category,
+        target_audience=target_audience,
+        campaign_goal=campaign_goal,
+        channel=channel,
+    )
+
+    try:
+        result = router.execute(Capability.CHAT_COMPLETE, {
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "max_tokens": 1200,
+            "temperature": 0.7,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM call raised: %s", exc)
+        return None
+
+    if not getattr(result, "ok", False):
+        logger.debug(
+            "LLM call returned not-ok: %s",
+            getattr(result, "error", "unknown"),
+        )
+        return None
+
+    text = ((result.data or {}).get("text") or "").strip()
+    if not text:
+        return None
+
+    parsed = _parse_llm_json(text)
+    if not parsed:
+        return None
+
+    # Validate the minimum-viable shape. Without headline OR
+    # cta, the rendered page is unusable -- fall back to template.
+    headline = str(parsed.get("headline") or "").strip()
+    cta = str(parsed.get("cta") or "").strip()
+    if not headline or not cta:
+        return None
+
+    subheadline = str(parsed.get("subheadline") or "").strip()
+    hero_section = str(parsed.get("hero_section") or "").strip()
+    social_proof = str(parsed.get("social_proof") or "").strip()
+
+    benefits_raw = parsed.get("benefits") or []
+    benefits = [
+        str(b).strip() for b in benefits_raw if str(b).strip()
+    ][:8]
+    # Benefits is the load-bearing structural element of a landing
+    # page; an empty list is a degenerate result -> fall back.
+    if not benefits:
+        return None
+
+    return {
+        "headline": headline,
+        "subheadline": subheadline,
+        "hero_section": hero_section,
+        "benefits": benefits,
+        "cta": cta,
+        "social_proof": social_proof,
+        "layout": layout,
+    }
+
+
+def _build_llm_system_prompt(
+    brand_voice: str,
+    voice: dict[str, str],
+    campaign_goal: str,
+) -> str:
+    """Build the system prompt that primes the LLM as a Shopify
+    landing-page copywriter with the right voice + goal."""
+    tone = voice.get("tone", "clear and authoritative")
+    cta_style = voice.get("cta_style", "direct")
+    return (
+        "You are an expert Shopify conversion copywriter. You write "
+        "landing pages that convert. Brand voice: "
+        f"{brand_voice} ({tone}). Campaign goal: "
+        f"{campaign_goal}. Preferred CTA style: {cta_style}. "
+        "Write benefit-first (not feature-first) -- every line should "
+        "answer 'what does the visitor get?'. Concrete > vague: "
+        "use numbers, comparisons, specific outcomes. "
+        "Always respond with STRICT JSON in the requested shape; no "
+        "markdown fences, no commentary outside the JSON."
+    )
+
+
+def _build_llm_user_prompt(
+    *,
+    title: str,
+    description: str,
+    price: float,
+    features: list[Any],
+    category: str,
+    target_audience: str,
+    campaign_goal: str,
+    channel: str,
+) -> str:
+    """Build the user prompt with product + campaign context."""
+    price_str = f"${price:.2f}" if price and float(price) > 0 else "n/a"
+    desc_excerpt = description[:400] if description else "(no description provided)"
+
+    return (
+        f"Write a {channel} landing page for the following Shopify product.\n\n"
+        f"Product: {title}\n"
+        f"Category: {category or 'n/a'}\n"
+        f"Price: {price_str}\n"
+        f"Description excerpt: {desc_excerpt}\n"
+        f"Features:\n"
+        + "\n".join(f"  - {f}" for f in features[:10]) + "\n"
+        + f"Target audience: {target_audience}\n"
+        + f"Campaign goal: {campaign_goal}\n\n"
+        + "Return STRICT JSON in this exact shape:\n"
+        + "{\n"
+        + '  "headline": "primary value-proposition headline",\n'
+        + '  "subheadline": "1-sentence supporting line",\n'
+        + '  "hero_section": "2-3 sentence hero paragraph",\n'
+        + '  "benefits": ["benefit 1", "benefit 2", "benefit 3", ...],\n'
+        + '  "cta": "call-to-action phrase",\n'
+        + '  "social_proof": "1-sentence trust signal"\n'
+        + "}"
+    )
+
+
+_JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
+
+
+def _parse_llm_json(text: str) -> dict[str, Any] | None:
+    """Best-effort JSON parse of an LLM response.
+
+    Tolerates the model wrapping the JSON in markdown fences or
+    prefixing it with commentary -- locks onto the outermost
+    ``{...}`` block.
+    """
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:  # noqa: BLE001
+        pass
+    match = _JSON_BLOCK_RE.search(text)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------------------
