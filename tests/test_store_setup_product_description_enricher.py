@@ -317,3 +317,92 @@ class TestStoreIdPropagation:
         params = record_mock.call_args.kwargs["params"]
         assert params["store_id"] == "store-a"
         assert params["product_id"] == "gid://1"
+
+
+# --- LLM-driven enrichment ------------------------------------
+
+
+import json as _json
+
+
+def _ok_llm(data):
+    return SimpleNamespace(ok=True, data=data, error=None)
+
+
+def _prod():
+    return {
+        "id": "gid://shopify/Product/1",
+        "title": "Vitamin C Serum",
+        "product_type": "Skincare",
+        "vendor": "Acme",
+        "body_html": "",
+    }
+
+
+class TestLLMPath:
+
+    def test_pytest_env_blocks_live_llm(self, monkeypatch):
+        """Default pytest run uses template path."""
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "active")
+        out = enrich_products([_prod()], niche="beauty")
+        body = out["generated"][0]["body_html"].lower()
+        # Template fallback hallmark: niche intro / promise
+        assert (
+            "everyday confidence" in body
+            or "clean formulas" in body
+        )
+
+    def test_llm_body_used_when_long_enough(self):
+        long_body = (
+            "<p>" + ("Premium clinical-strength results. " * 20) + "</p>"
+        )
+        llm = _json.dumps({"body_html": long_body})
+        router = SimpleNamespace(
+            execute=lambda c, p: _ok_llm({"text": llm, "model": "x"}),
+        )
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_products([_prod()], niche="beauty")
+        assert "Premium clinical-strength" in out["generated"][0]["body_html"]
+
+    def test_too_short_body_falls_back_to_template(self):
+        """LLM body < _LLM_MIN_BODY_CHARS (600) -> template fallback."""
+        llm = _json.dumps({"body_html": "<p>Buy it.</p>"})
+        router = SimpleNamespace(
+            execute=lambda c, p: _ok_llm({"text": llm, "model": "x"}),
+        )
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_products([_prod()], niche="beauty")
+        body = out["generated"][0]["body_html"].lower()
+        assert "everyday confidence" in body or "clean formulas" in body
+
+    def test_router_raises_falls_back(self):
+        def _raises(c, p):
+            raise RuntimeError("boom")
+        router = SimpleNamespace(execute=_raises)
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_products([_prod()], niche="beauty")
+        assert out["generated"][0]["body_html"]
+
+    def test_garbage_response_falls_back(self):
+        router = SimpleNamespace(
+            execute=lambda c, p: _ok_llm({"text": "nope.", "model": "x"}),
+        )
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_products([_prod()], niche="beauty")
+        assert out["generated"][0]["body_html"]
