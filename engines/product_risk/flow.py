@@ -165,6 +165,51 @@ class ProductRiskEngine:
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_risk_result(risks=risks)
 
+        # ---- Stage 7.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory risk classifications.
+        # When the caller passes ``data.apply_risk_tags=True``,
+        # we push ``shopai-risk-{level}`` on every at-risk
+        # product via SHOPIFY_ADD_TAGS. Merchants then save
+        # admin searches to drive a "products requiring risk
+        # review" worklist; downstream engines (catalog /
+        # storefront / paid_ads) can suppress these from
+        # featured slots, pause ad spend, or gate on legal
+        # review before promoting.
+        #
+        # Only ``critical`` is tagged by default;
+        # ``data.include_high=True`` opts in ``high`` too.
+        # ``moderate`` / ``low`` are noise for the
+        # operational worklist.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_risk_tags") is True:
+            try:
+                from .tag_applier import apply_risk_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                include_high = bool(
+                    data.get("include_high", False),
+                )
+                tag_results = apply_risk_tags(
+                    risks,
+                    include_high=include_high,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_risk tag_applier raised: %s", exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -172,6 +217,9 @@ class ProductRiskEngine:
             "status": "success",
             "data": {
                 "risks": risks,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
