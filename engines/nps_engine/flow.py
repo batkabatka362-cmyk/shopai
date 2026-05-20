@@ -91,6 +91,53 @@ class NpsEngine:
             trends=trends, action_items=action_items,
         )
 
+        # ---- Stage 5.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit aggregate NPS percentages.
+        # When the caller passes ``data.apply_nps_tags=True``,
+        # we push ``shopai-nps-{bucket}`` tags on every
+        # respondent via SHOPIFY_TAG_CUSTOMER. Merchants then
+        # save admin searches for the tag (drive referrals
+        # from promoters, run win-back on detractors), or
+        # downstream engines (loyalty / customer_service)
+        # filter on the bucket to fire bucket-aware retention
+        # plays.
+        #
+        # Passives (7-8) are intentionally NOT tagged by
+        # default -- they're the neutral middle. Set
+        # ``data.include_passives=True`` to override.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_TAG_CUSTOMER directly via
+        #     the router.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_nps_tags") is True:
+            try:
+                from .tag_applier import apply_nps_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                include_passives = bool(
+                    data.get("include_passives", False),
+                )
+                tag_results = apply_nps_tags(
+                    validated_responses,
+                    include_passives=include_passives,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design, but a stray import / typo
+                # shouldn't poison the engine's primary
+                # output.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "nps_engine tag_applier raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -102,6 +149,9 @@ class NpsEngine:
                 "segment_breakdown": segment_breakdown,
                 "trends": trends,
                 "action_items": action_items,
+                # Phase 7 writeback: per-customer tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
