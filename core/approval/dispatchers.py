@@ -485,6 +485,31 @@ def _mint_wholesale_dispatch(
     return _generic_mint_dispatch(params, default_ttl_days=30)
 
 
+# ── cross_sell → SHOPIFY_ADD_TAGS ───────────────────────────────
+
+
+@register_dispatcher("tag_cross_sell_target")
+def _tag_cross_sell_target_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay cross_sell's per-product cross-sell-target tag.
+
+    Enqueue carries ``{product_id, tag, title}``. The adapter
+    side wants ``{id, tags: [tag]}`` — same shape as
+    catalog_apply_tags (title is kept in approval-side params
+    for operator context but isn't part of the mutation).
+    SHOPIFY_ADD_TAGS is additive — existing tags preserved.
+    """
+    product_id = str(params.get("product_id", "")).strip()
+    tag = str(params.get("tag", "")).strip()
+    if not product_id or not tag:
+        return False, {"error": "missing_product_id_or_tag"}
+    return _router_call(
+        "SHOPIFY_ADD_TAGS",
+        {"id": product_id, "tags": [tag]},
+    )
+
+
 # ── customer_segmentation → SHOPIFY_TAG_CUSTOMER ────────────────
 
 

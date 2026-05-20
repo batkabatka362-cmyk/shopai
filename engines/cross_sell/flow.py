@@ -174,6 +174,53 @@ class CrossSellEngine:
 
         estimated_aov_increase = aggregate.get("total_aov_increase", 0.0)
 
+        # Stage 7.5: Phase 7 writeback (opt-in) -----------
+        # Engines today emit advisory cross-sell
+        # recommendations. When the caller passes
+        # ``data.apply_cross_sell_tags=True``, we push
+        # ``shopai-cross-sell-target`` (additive) on every
+        # recommended product via SHOPIFY_ADD_TAGS. Merchants
+        # save admin searches for the tag, build smart
+        # collections, AND downstream engines (email_marketing
+        # / catalog) filter on it to feature cross-sell
+        # candidates in "complete the set" campaigns.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue each tag-add via
+        #     approval queue. Operator reviews before write
+        #     lands.
+        #   * False -- call SHOPIFY_ADD_TAGS directly via the
+        #     router. Used by cycles that already gate this
+        #     engine via the auto-approve allowlist.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        data_in = input_payload.get("data") if isinstance(input_payload, dict) else None
+        opt_in = (
+            isinstance(data_in, dict)
+            and data_in.get("apply_cross_sell_tags") is True
+        )
+        tag_results: list[dict[str, Any]] = []
+        if opt_in:
+            try:
+                from .tag_applier import apply_cross_sell_tags
+                require_approval = bool(
+                    (data_in or {}).get("require_approval", True),
+                )
+                tag_results = apply_cross_sell_tags(
+                    recommendations,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design, but a stray import / typo
+                # shouldn't poison the engine's primary
+                # output.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "cross_sell tag_applier raised: %s", exc,
+                )
+
         output: dict[str, Any] = {
             "status": "success",
             "data": {
@@ -181,6 +228,9 @@ class CrossSellEngine:
                 "bundles": bundles,
                 "estimated_aov_increase": estimated_aov_increase,
                 "confidence": confidence,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
