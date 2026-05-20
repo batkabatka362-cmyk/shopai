@@ -152,6 +152,53 @@ class ImageOptimizationEngine:
             quality_scores=quality_scores,
         )
 
+        # ---- Stage 7.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory image-quality diagnoses.
+        # When the caller passes ``data.apply_image_tags=True``
+        # AND the analysis flagged fixable problems (any
+        # poor-rated image OR any missing required image type),
+        # we push ``shopai-image-needs-work`` on the product via
+        # SHOPIFY_ADD_TAGS. Merchants then save admin searches
+        # / smart collections to drive a "products needing
+        # photo work" worklist; downstream engines (catalog /
+        # storefront) can suppress these from featured slots
+        # until issues are fixed.
+        #
+        # Healthy galleries (poor_count == 0 AND missing_types
+        # empty) are NOT tagged -- merchants want signal, not
+        # noise.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        product_id = str(product.get("id", "")) if isinstance(product, dict) else ""
+        if data.get("apply_image_tags") is True and product_id:
+            try:
+                from .tag_applier import apply_image_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                tag_results = apply_image_tags(
+                    [{
+                        "product_id": product_id,
+                        "quality_scores": quality_scores,
+                        "missing_types": missing_types,
+                    }],
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "image_optimization tag_applier raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -162,6 +209,9 @@ class ImageOptimizationEngine:
                 "gallery_order": gallery_order,
                 "missing_types": missing_types,
                 "quality_scores": quality_scores,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
