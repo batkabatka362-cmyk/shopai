@@ -26,4 +26,8 @@ Modules:
     (title_tag + meta_description) via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``welcome_discount`` -- launch-time WELCOME{N} code via
     ``SHOPIFY_CREATE_DISCOUNT``.
+  * ``winback_email`` -- niche-aware 3-step lapsed-customer
+    reactivation sequence (soft / incentive / last_chance);
+    persists as ``winback-email`` page; pairs with the
+    ``Lapsed (180d)`` segment from ``customer_segments``.
 """
