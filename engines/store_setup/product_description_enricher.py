@@ -106,6 +106,54 @@ _NICHE_CONTEXT: dict[str, dict[str, str]] = {
             "Small batch. Honest sourcing. Real flavour."
         ),
     },
+    "pets": {
+        "intro": (
+            "Made for the animals who run our households."
+        ),
+        "promise": (
+            "Pet-tested. Vet-approved philosophies. "
+            "No questionable fillers."
+        ),
+    },
+    "fitness": {
+        "intro": (
+            "Built for the days when training is the easy part."
+        ),
+        "promise": (
+            "Performance materials. Honest claims. "
+            "Tested by people who actually train."
+        ),
+    },
+    "jewelry": {
+        "intro": (
+            "Pieces designed to stay in rotation, "
+            "not in the drawer."
+        ),
+        "promise": (
+            "Solid materials. Considered craftsmanship. "
+            "Priced for the metal, not the markup."
+        ),
+    },
+    "outdoor": {
+        "intro": (
+            "Gear for the trips you actually take, "
+            "not the catalogue ones."
+        ),
+        "promise": (
+            "Field-tested. Weather-honest. "
+            "Repairs over replacements."
+        ),
+    },
+    "baby": {
+        "intro": (
+            "Made for the small moments that take up "
+            "the whole day."
+        ),
+        "promise": (
+            "Soft fabrics. Safe finishes. "
+            "Parent-tested, baby-approved."
+        ),
+    },
     "general": {
         "intro": (
             "Hand-picked for the people who shop with us."

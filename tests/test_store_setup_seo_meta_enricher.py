@@ -236,6 +236,22 @@ class TestEnrichGeneration:
         # general tagline
         assert "Quality you can trust" in g["seo_description"]
 
+    def test_extended_niches_have_distinct_tagline(self):
+        """Niches added beyond initial 6 each have their own
+        SEO description tagline."""
+        snippets = {
+            "pets": "Pet-tested gear",
+            "fitness": "Honest performance gear",
+            "jewelry": "Heirloom-quality pieces",
+            "outdoor": "Field-tested gear",
+            "baby": "Soft, safe, parent-tested",
+        }
+        for niche, snippet in snippets.items():
+            out = enrich_seo([_product()], niche=niche)
+            desc = out["generated"][0]["seo_description"]
+            assert snippet in desc, niche
+            assert "Quality you can trust" not in desc, niche
+
 
 # --- apply_seo -----------------------------------------------
 

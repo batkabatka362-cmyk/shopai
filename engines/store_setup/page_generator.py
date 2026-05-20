@@ -42,6 +42,25 @@ _NICHE_TAGLINES: dict[str, str] = {
     "food": (
         "Artisanal food + drink, straight to your door."
     ),
+    "pets": (
+        "Better gear, food, and play for the animals "
+        "we love."
+    ),
+    "fitness": (
+        "Training, recovery, and apparel for every body "
+        "that moves."
+    ),
+    "jewelry": (
+        "Heirloom-quality jewelry, honestly priced."
+    ),
+    "outdoor": (
+        "Gear that goes the distance -- trail, water, "
+        "and everywhere in between."
+    ),
+    "baby": (
+        "Soft, safe, and parent-tested -- for the "
+        "smallest moments."
+    ),
     "general": (
         "Quality products you can trust."
     ),

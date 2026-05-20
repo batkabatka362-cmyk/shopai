@@ -99,6 +99,72 @@ _STARTER_SETS: dict[str, list[tuple[str, str]]] = {
         ("Gifts",
          "<p>Bundles + sampler sets, gift-wrapped.</p>"),
     ],
+    "pets": [
+        ("Dogs",
+         "<p>Food, treats, toys, and gear for the four-legged "
+         "members of the family.</p>"),
+        ("Cats",
+         "<p>Food, litter, scratchers, and the things they "
+         "actually use.</p>"),
+        ("Small Pets",
+         "<p>Rabbits, hamsters, birds -- supplies for "
+         "everyone else.</p>"),
+        ("Toys + Treats",
+         "<p>The repeat-purchase section. New picks weekly."
+         "</p>"),
+    ],
+    "fitness": [
+        ("Apparel",
+         "<p>Training shirts, shorts, tights -- gear that "
+         "moves with you.</p>"),
+        ("Equipment",
+         "<p>Bands, weights, mats, and gym tech.</p>"),
+        ("Supplements",
+         "<p>Protein, recovery, and the basics -- "
+         "transparently labelled.</p>"),
+        ("Accessories",
+         "<p>Bottles, belts, wraps, and the small gear "
+         "that holds it all together.</p>"),
+    ],
+    "jewelry": [
+        ("Necklaces",
+         "<p>Pendants, chains, layering pieces.</p>"),
+        ("Earrings",
+         "<p>Studs, hoops, statement drops.</p>"),
+        ("Rings",
+         "<p>Stackers, signets, solitaires.</p>"),
+        ("Bracelets",
+         "<p>Cuffs, bangles, charm and chain.</p>"),
+        ("Engagement + Bridal",
+         "<p>Heirloom-quality pieces for the moments that "
+         "matter.</p>"),
+    ],
+    "outdoor": [
+        ("Camping + Hiking",
+         "<p>Tents, packs, sleep systems, and the trail "
+         "essentials.</p>"),
+        ("Apparel",
+         "<p>Layers, shells, and base layers built for "
+         "weather.</p>"),
+        ("Footwear",
+         "<p>Boots, trail runners, and approach shoes -- "
+         "tested on real ground.</p>"),
+        ("Water + Snow",
+         "<p>Paddle, ski, and snow gear for every "
+         "season.</p>"),
+    ],
+    "baby": [
+        ("Clothing",
+         "<p>Onesies, sleepers, and outfits sized "
+         "0-24 months.</p>"),
+        ("Nursery",
+         "<p>Cribs, bedding, mobiles -- room essentials "
+         "that grow with you.</p>"),
+        ("Feeding",
+         "<p>Bottles, bibs, plates, and weaning gear.</p>"),
+        ("Toys + Books",
+         "<p>Developmental play and bedtime favourites.</p>"),
+    ],
     "general": [
         ("New Arrivals",
          "<p>The latest drops.</p>"),

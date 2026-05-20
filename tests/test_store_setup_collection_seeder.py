@@ -92,6 +92,50 @@ class TestGenerator:
         assert len(specs) >= 4
 
 
+class TestExtendedNiches:
+    """Niches added after the initial 6 (beauty/fashion/
+    tech/home/food/general). Each niche must produce at
+    least 4 collections with the canonical spec shape."""
+
+    NICHES = ("pets", "fitness", "jewelry", "outdoor", "baby")
+
+    def test_every_extended_niche_has_a_set(self):
+        for niche in self.NICHES:
+            specs = generate_starter_collections(niche=niche)
+            assert len(specs) >= 4, niche
+
+    def test_every_extended_niche_spec_is_well_shaped(self):
+        for niche in self.NICHES:
+            specs = generate_starter_collections(niche=niche)
+            for s in specs:
+                assert s["title"], niche
+                assert s["handle"], niche
+                assert s["description_html"].startswith("<p>")
+                assert s["sort_order"] == "BEST_SELLING"
+
+    def test_niche_specific_titles(self):
+        pets = generate_starter_collections(niche="pets")
+        assert "Dogs" in {s["title"] for s in pets}
+        fitness = generate_starter_collections(
+            niche="fitness",
+        )
+        assert "Supplements" in {
+            s["title"] for s in fitness
+        }
+        jewelry = generate_starter_collections(
+            niche="jewelry",
+        )
+        assert "Rings" in {s["title"] for s in jewelry}
+        outdoor = generate_starter_collections(
+            niche="outdoor",
+        )
+        assert "Camping + Hiking" in {
+            s["title"] for s in outdoor
+        }
+        baby = generate_starter_collections(niche="baby")
+        assert "Nursery" in {s["title"] for s in baby}
+
+
 # --- Applier --------------------------------------------------
 
 

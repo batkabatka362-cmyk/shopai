@@ -71,6 +71,22 @@ class TestNicheTone:
         # 30-day default
         assert "30-day refund" in out["REFUND_POLICY"]
 
+    def test_extended_niches_get_appropriate_window(self):
+        """Niches added beyond the initial 6: pets/fitness
+        get 14d (hygiene), jewelry/outdoor/baby get 30d."""
+        expectations = {
+            "pets": "14-day refund",
+            "fitness": "14-day refund",
+            "jewelry": "30-day refund",
+            "outdoor": "30-day refund",
+            "baby": "30-day refund",
+        }
+        for niche, snippet in expectations.items():
+            out = generate_policies(
+                store_name="Acme", niche=niche,
+            )
+            assert snippet in out["REFUND_POLICY"], niche
+
 
 class TestRegionInterpolation:
 

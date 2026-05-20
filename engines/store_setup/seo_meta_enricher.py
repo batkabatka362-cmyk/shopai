@@ -57,6 +57,11 @@ _NICHE_TAGLINES: dict[str, str] = {
     "tech": "Premium tech that just works.",
     "home": "Thoughtful design, built to last.",
     "food": "Small-batch flavours, honestly sourced.",
+    "pets": "Pet-tested gear, food, and play.",
+    "fitness": "Honest performance gear, no fluff.",
+    "jewelry": "Heirloom-quality pieces, honestly priced.",
+    "outdoor": "Field-tested gear that goes the distance.",
+    "baby": "Soft, safe, parent-tested essentials.",
     "general": "Quality you can trust.",
 }
 

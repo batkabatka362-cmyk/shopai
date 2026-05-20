@@ -150,6 +150,25 @@ class TestEnrichGeneration:
         # general fallback tone
         assert "Hand-picked" in body
 
+    def test_extended_niches_have_distinct_tone(self):
+        """Niches added beyond initial 6 each carry their own
+        promise / intro string in the generated body."""
+        snippets = {
+            "pets": "Pet-tested",
+            "fitness": "Performance materials",
+            "jewelry": "Considered craftsmanship",
+            "outdoor": "Field-tested",
+            "baby": "Soft fabrics",
+        }
+        for niche, snippet in snippets.items():
+            out = enrich_products(
+                [_product(body="")], niche=niche,
+            )
+            body = out["generated"][0]["body_html"]
+            assert snippet in body, niche
+            # Not falling through to general
+            assert "Hand-picked" not in body, niche
+
     def test_skips_non_dict_entries(self):
         out = enrich_products(
             ["not a dict", 42, _product(body="")],
