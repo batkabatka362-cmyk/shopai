@@ -41,6 +41,59 @@ _COGNITIVE_ACTION_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _apply_strategist_plan_bias(picks: list[str]) -> list[str]:
+    """Prepend the active strategist plan's recommended engines.
+
+    When the operator has set an active goal via
+    ``shopai goal set ...``, the AGI strategist's plan
+    biases the cycle: substrategy-recommended engines run
+    first, then the recommender / legacy picks fill any
+    remaining slots. With no active goal, this is a no-op
+    (returns the input list unchanged).
+
+    The plan's recommended engines are returned by
+    :func:`engines.agi_strategist.recommended_engines_for_active_plan`
+    in substrategy-priority order. We prepend the ones
+    that aren't already in ``picks`` (dedup) and keep the
+    rest of ``picks`` after.
+
+    Failures (active_goal module missing, file unreadable,
+    plan malformed) all degrade silently to no-op so the
+    autonomous loop stays robust.
+    """
+    try:
+        from engines.agi_strategist import (
+            recommended_engines_for_active_plan,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "strategist bias: import failed: %s", exc,
+        )
+        return picks
+
+    try:
+        strategist_picks = recommended_engines_for_active_plan()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "strategist bias: read failed: %s", exc,
+        )
+        return picks
+
+    if not strategist_picks:
+        return picks
+
+    existing = set(picks)
+    prepended = [e for e in strategist_picks if e not in existing]
+    if not prepended:
+        return picks
+    logger.info(
+        "analysis engines: strategist plan adds %s "
+        "to recommender picks",
+        prepended,
+    )
+    return prepended + picks
+
+
 def _cognitive_action_hints(hypotheses: list) -> set[str]:
     """Extract brain action types implied by cognitive
     hypothesis titles so the ranking pass can boost them."""
@@ -2785,6 +2838,13 @@ class AutonomousController:
             )
             return legacy
         picks = [r.engine for r in result.primary]
+        # AGI Strategist plan bias: when the operator has set
+        # an active goal, prepend the plan's recommended engines
+        # so the cycle prioritises substrategy work over generic
+        # recommender picks. Strategist-recommended engines that
+        # aren't already in `picks` get added; ordering preserves
+        # substrategy priority.
+        picks = _apply_strategist_plan_bias(picks)
         logger.info(
             "analysis engines (recommender-driven, goal=%s): %s",
             result.active_goal, picks,

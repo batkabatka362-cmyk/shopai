@@ -715,6 +715,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="Skip confirmation prompt",
     )
 
+    # ── AGI Strategist commands ──────────────────────────────
+    # Top-level operator goal -> substrategy decomposition.
+    # Distinct from `goal` (brain-stack EMA state). Sets an
+    # active plan the autonomous controller consults each
+    # cycle to bias engine selection toward substrategy work.
+    strat_p = sub.add_parser(
+        "strategist",
+        help="Set / show / clear the AGI strategist's active goal",
+    )
+    strat_sub = strat_p.add_subparsers(dest="strategist_action")
+    strat_set_p = strat_sub.add_parser(
+        "set",
+        help=(
+            "Set the active operator goal -- e.g. 'Increase revenue "
+            "10% this quarter'"
+        ),
+    )
+    strat_set_p.add_argument(
+        "goal", help="The goal text (quote it)",
+    )
+    strat_set_p.add_argument(
+        "--horizon-days", type=int, default=90,
+        help="Time horizon for the strategy (default 90 days)",
+    )
+    strat_set_p.add_argument(
+        "--constraint", action="append", default=[],
+        help=(
+            "Operator constraint (repeatable). Example: "
+            "--constraint 'no paid ads below 2.5 ROAS'"
+        ),
+    )
+    strat_sub.add_parser(
+        "show",
+        help="Show the active goal + decomposed substrategies",
+    )
+    strat_sub.add_parser(
+        "clear",
+        help="Clear the active goal (autonomous loop reverts to default selection)",
+    )
+
     # ── Config commands ──────────────────────────────────────
     config_p = sub.add_parser("config", help="Inspect / validate configuration")
     config_sub = config_p.add_subparsers(dest="config_action")
@@ -6364,6 +6404,105 @@ def _cmd_goal_reset(args) -> None:
         except OSError as exc:
             print(f"Warning: could not remove {state_path}: {exc}")
     print("Per-goal EMA stats cleared.")
+
+
+def _cmd_strategist(args) -> None:
+    """Dispatch ``shopai strategist <action>``."""
+    action = getattr(args, "strategist_action", None)
+    if action == "set":
+        _cmd_strategist_set(args)
+    elif action == "show":
+        _cmd_strategist_show()
+    elif action == "clear":
+        _cmd_strategist_clear()
+    else:
+        print("Usage: shopai strategist {set GOAL|show|clear}")
+
+
+def _cmd_strategist_set(args) -> None:
+    """``shopai strategist set "<goal>" [--horizon-days N]
+    [--constraint ...]``."""
+    from engines.agi_strategist import set_active_goal
+    goal_text = getattr(args, "goal", "") or ""
+    horizon = int(getattr(args, "horizon_days", 90) or 90)
+    constraints = list(getattr(args, "constraint", None) or [])
+    record = set_active_goal(
+        goal=goal_text,
+        horizon_days=horizon,
+        constraints=constraints,
+    )
+    if record.get("status") != "success":
+        print(f"Error: {record.get('error', 'strategist_failed')}")
+        sys.exit(1)
+    plan = record.get("plan", {})
+    print(f"Goal set: {record.get('goal', '')!r}")
+    print(f"Horizon: {record.get('horizon_days', 0)} days")
+    print(
+        f"Plan source: {plan.get('model_note', 'unknown')} "
+        f"(confidence={plan.get('confidence', 0.0)})"
+    )
+    print()
+    subs = plan.get("substrategies", []) or []
+    print(f"Substrategies ({len(subs)}):")
+    for s in subs:
+        if not isinstance(s, dict):
+            continue
+        label = s.get("label", "")
+        metric = s.get("target_metric", "")
+        lift = s.get("expected_lift_pct", 0.0)
+        prio = s.get("priority", 0)
+        engines = ", ".join(s.get("recommended_engines", []) or [])
+        print(
+            f"  [P{prio}] {label}  -> {metric} +{lift}%  "
+            f"({engines})"
+        )
+
+
+def _cmd_strategist_show() -> None:
+    """``shopai strategist show`` -- print the active plan."""
+    from engines.agi_strategist import get_active_goal
+    record = get_active_goal()
+    if not record:
+        print("No active goal set. Use `shopai strategist set ...`")
+        return
+    print(f"Active goal: {record.get('goal', '')!r}")
+    print(f"Horizon: {record.get('horizon_days', 0)} days")
+    set_at = record.get("set_at")
+    if set_at:
+        from datetime import datetime, timezone
+        dt = datetime.fromtimestamp(
+            float(set_at), tz=timezone.utc,
+        )
+        print(f"Set at: {dt.isoformat()}")
+    plan = record.get("plan", {})
+    print(
+        f"Plan source: {plan.get('model_note', 'unknown')} "
+        f"(confidence={plan.get('confidence', 0.0)})"
+    )
+    print()
+    subs = plan.get("substrategies", []) or []
+    print(f"Substrategies ({len(subs)}):")
+    for s in subs:
+        if not isinstance(s, dict):
+            continue
+        label = s.get("label", "")
+        desc = s.get("description", "")
+        metric = s.get("target_metric", "")
+        lift = s.get("expected_lift_pct", 0.0)
+        prio = s.get("priority", 0)
+        engines = ", ".join(s.get("recommended_engines", []) or [])
+        print(f"  [P{prio}] {label}")
+        print(f"       {desc}")
+        print(f"       target: {metric} (+{lift}%)  engines: {engines}")
+
+
+def _cmd_strategist_clear() -> None:
+    """``shopai strategist clear`` -- remove the active plan."""
+    from engines.agi_strategist import clear_active_goal
+    if clear_active_goal():
+        print("Active goal cleared.")
+    else:
+        print("No active goal to clear.")
 
 
 def _cmd_db_info() -> None:
@@ -17644,6 +17783,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "goal":
         _cmd_goal(args)
+        return
+
+    if args.command == "strategist":
+        _cmd_strategist(args)
         return
 
     if args.command == "config":
