@@ -485,6 +485,32 @@ def _mint_wholesale_dispatch(
     return _generic_mint_dispatch(params, default_ttl_days=30)
 
 
+# ── review_management → SHOPIFY_ADD_TAGS ────────────────────────
+
+
+@register_dispatcher("tag_review_product")
+def _tag_review_product_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay review_management's per-product quality tag write.
+
+    Enqueue carries ``{product_id, tag, avg_rating,
+    total_reviews, bucket}``. The adapter side wants
+    ``{id, tags: [tag]}`` — same shape as catalog_apply_tags
+    (rating / count / bucket are kept in approval-side params
+    for operator context but aren't part of the mutation).
+    SHOPIFY_ADD_TAGS is additive — existing tags preserved.
+    """
+    product_id = str(params.get("product_id", "")).strip()
+    tag = str(params.get("tag", "")).strip()
+    if not product_id or not tag:
+        return False, {"error": "missing_product_id_or_tag"}
+    return _router_call(
+        "SHOPIFY_ADD_TAGS",
+        {"id": product_id, "tags": [tag]},
+    )
+
+
 # ── customer_segmentation → SHOPIFY_TAG_CUSTOMER ────────────────
 
 

@@ -183,6 +183,58 @@ class ReviewManagementEngine:
             confidence=confidence,
         )
 
+        # ---- Stage 10.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory review-quality signals.
+        # When the caller passes ``data.apply_review_tags=True``,
+        # we push ``shopai-review-top-rated`` (avg >= 4.5) or
+        # ``shopai-review-low-rated`` (avg <= 2.5) on the
+        # product via SHOPIFY_ADD_TAGS. Merchants then save
+        # admin searches / smart collections; downstream
+        # engines (email_marketing / catalog / storefront)
+        # filter on the tag to feature top-rated or suppress
+        # low-rated SKUs.
+        #
+        # Middle-rated products (2.5 < avg < 4.5) are NOT
+        # tagged -- merchants want signal, not noise. Products
+        # below ``data.min_reviews`` (default 5) are also
+        # skipped: ratings unreliable with too few samples.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_review_tags") is True and product_id:
+            try:
+                from .tag_applier import apply_review_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                min_reviews = int(
+                    data.get("min_reviews", 5) or 5,
+                )
+                tag_results = apply_review_tags(
+                    [{
+                        "product_id": product_id,
+                        "avg_rating": overall_avg,
+                        "total_reviews": int(
+                            summary.get("total_reviews", 0),
+                        ),
+                    }],
+                    min_reviews=min_reviews,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "review_management tag_applier raised: %s",
+                    exc,
+                )
+
         # ---- Stage 11: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -216,6 +268,9 @@ class ReviewManagementEngine:
                 "insights": insights,
                 "improvements": improvements,
                 "confidence": confidence,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
