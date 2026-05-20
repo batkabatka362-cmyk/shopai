@@ -161,7 +161,15 @@ class ShopifyWebhooksAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_WEBHOOK,
         Capability.SHOPIFY_DELETE_WEBHOOK,
     }
-    required_scopes = frozenset({"read_webhooks", "write_webhooks"})
+    # Shopify removed the dedicated ``read_webhooks`` /
+    # ``write_webhooks`` scopes in 2026+ (they no longer appear
+    # in the Partners Dashboard scope selector and including them
+    # in an install URL causes Shopify to silently drop the entire
+    # request as ``invalid_request``). Apps now manage their OWN
+    # webhook subscriptions implicitly; the scope check happens at
+    # the TOPIC level (e.g. subscribing to ``ORDERS_PAID`` requires
+    # ``read_orders``), which is declared by the orders adapter.
+    scope_independent = True
 
     def _execute(
         self,
