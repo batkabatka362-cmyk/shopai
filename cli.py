@@ -5533,6 +5533,33 @@ def _cmd_world_model_show(args) -> None:
     else:
         why = config.get("error", "skipped")
         print(f"  [skip] config  ({why})")
+    scopes = snap.get("scopes") or {}
+    if scopes.get("checked") and "error" not in scopes:
+        verdict = "ok" if scopes.get("is_healthy") else "drift"
+        missing = scopes.get("missing_count", 0)
+        extra = scopes.get("extra_count", 0)
+        granted = scopes.get("granted_count", 0)
+        required = scopes.get("required_count", 0)
+        detail = (
+            f"({granted}/{required} granted"
+            + (f", {missing} missing" if missing else "")
+            + (f", {extra} extra" if extra else "")
+            + ")"
+        )
+        print(f"  [{verdict:4s}] scopes  {detail}")
+        # Surface the first few missing scopes inline so operators
+        # can act without drilling into shopify-scopes-live-check.
+        sample_missing = scopes.get("sample_missing") or []
+        if sample_missing:
+            preview = ", ".join(sample_missing[:3])
+            if missing > 3:
+                preview += f", ... +{missing - 3} more"
+            print(f"          missing: {preview}")
+    elif scopes.get("checked"):
+        why = scopes.get("error", "skipped")
+        print(f"  [skip] scopes  ({why})")
+    else:
+        print("  [skip] scopes")
     if design.get("checked") and "error" not in design:
         lift = design.get("estimated_conversion_lift", 0.0)
         print(
