@@ -170,6 +170,56 @@ class CustomerServiceEngine:
             session_id=session_id,
         )
 
+        # ---- Stage 7.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory escalation decisions.
+        # When the caller passes ``data.apply_cs_tags=True`` AND
+        # the escalation router flagged this interaction for
+        # human follow-up AND a Shopify customer_id is known,
+        # we push ``shopai-cs-escalated`` on the customer via
+        # SHOPIFY_TAG_CUSTOMER. Merchants then save admin
+        # searches to drive a "needs human follow-up" worklist;
+        # downstream engines (loyalty / email_marketing) filter
+        # on the tag for white-glove retention plays.
+        #
+        # Anonymous chats (no customer_id) and auto-resolved
+        # interactions (escalation.needed=False) are NOT
+        # tagged -- merchants want signal, not noise.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_TAG_CUSTOMER directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_cs_tags") is True:
+            try:
+                from .tag_applier import apply_cs_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                tag_results = apply_cs_tags(
+                    [{
+                        "customer_id": customer_id,
+                        "intent": primary_intent,
+                        "escalation_needed": bool(
+                            escalation_result.get("needed", False),
+                        ),
+                        "assigned_team": escalation_result.get(
+                            "assigned_team",
+                        ),
+                    }],
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "customer_service tag_applier raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -198,6 +248,9 @@ class CustomerServiceEngine:
                     "assigned_team": escalation_result.get("assigned_team"),
                     "priority": escalation_result.get("priority"),
                 },
+                # Phase 7 writeback: per-customer tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
