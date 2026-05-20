@@ -159,6 +159,60 @@ class ProfitabilityCalculatorEngine:
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_profitability_result(profitability=profitability)
 
+        # ---- Stage 7.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory per-product profitability.
+        # When the caller passes ``data.apply_margin_tags=True``,
+        # we push ``shopai-margin-high`` on every product with
+        # net_margin >= ``data.min_margin`` (default 0.40) via
+        # SHOPIFY_ADD_TAGS, plus optionally
+        # ``shopai-margin-negative`` for loss-making SKUs when
+        # ``data.include_negative=True``.
+        #
+        # Merchants then save admin searches to drive an
+        # "investment priority" worklist (high-margin SKUs
+        # deserve more ad spend and featured slots);
+        # downstream engines (paid_ads / catalog /
+        # storefront) prefer high-margin products for
+        # promotion.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_margin_tags") is True:
+            try:
+                from .tag_applier import apply_margin_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                min_margin = float(
+                    data.get("min_margin", 0.40) or 0.40,
+                )
+                loss_margin = float(
+                    data.get("loss_margin", 0.0) or 0.0,
+                )
+                include_negative = bool(
+                    data.get("include_negative", False),
+                )
+                tag_results = apply_margin_tags(
+                    profitability,
+                    min_margin=min_margin,
+                    loss_margin=loss_margin,
+                    include_negative=include_negative,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "profitability tag_applier raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -166,6 +220,9 @@ class ProfitabilityCalculatorEngine:
             "status": "success",
             "data": {
                 "profitability": profitability,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
