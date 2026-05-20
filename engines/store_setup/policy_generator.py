@@ -173,12 +173,22 @@ def _shipping_template(
 
 def _contact_template(
     store_name: str, niche: str, region: str,
+    support_email: str | None = None,
 ) -> str:
+    contact_line = (
+        f"<li><strong>Email:</strong> "
+        f"<a href=\"mailto:{support_email}\">"
+        f"{support_email}</a></li>"
+        if support_email else
+        "<li><strong>Form:</strong> use the "
+        "<a href=\"/pages/contact\">contact form</a> on "
+        "the store.</li>"
+    )
     return (
         "<h2>Contact Us</h2>"
         f"<p>Questions or concerns? Reach out to {store_name}:</p>"
         "<ul>"
-        "<li><strong>Email:</strong> support@example.com</li>"
+        f"{contact_line}"
         "<li><strong>Hours:</strong> Monday-Friday, 9am-5pm "
         f"local time ({region.upper()})</li>"
         "</ul>"
@@ -203,6 +213,7 @@ def generate_policies(
     region: str = "us",
     include_legal_notice: bool = False,
     include_subscription_policy: bool = False,
+    support_email: str | None = None,
 ) -> dict[str, str]:
     """Generate niche-aware HTML bodies for the essential
     Shopify shop policies.
@@ -231,11 +242,18 @@ def generate_policies(
         return {}
     niche_n = (niche or "general").strip().lower() or "general"
     region_n = (region or "us").strip().lower() or "us"
+    safe_email = _sanitize_email(support_email)
 
     out: dict[str, str] = {}
     for policy_type, fn in _TEMPLATE_FUNCTIONS.items():
         try:
-            out[policy_type] = fn(name, niche_n, region_n)
+            if fn is _contact_template:
+                out[policy_type] = fn(
+                    name, niche_n, region_n,
+                    safe_email,
+                )
+            else:
+                out[policy_type] = fn(name, niche_n, region_n)
         except Exception:  # noqa: BLE001
             # Defensive: a template raising shouldn't poison
             # the batch. Skip that policy; caller still gets
@@ -243,13 +261,22 @@ def generate_policies(
             continue
 
     if include_legal_notice:
+        contact_line = (
+            f"<p>Contact: "
+            f"<a href=\"mailto:{safe_email}\">"
+            f"{safe_email}</a></p>"
+            if safe_email else
+            "<p>Contact: see the "
+            "<a href=\"/pages/contact\">contact form</a> "
+            "on the store.</p>"
+        )
         out["LEGAL_NOTICE"] = (
             "<h2>Legal Notice / Impressum</h2>"
             f"<p>{name}</p>"
             "<p>For EU customers: this notice satisfies the "
             "Impressum requirement under German law and similar "
             "transparency rules across the EU.</p>"
-            "<p>Contact: support@example.com</p>"
+            f"{contact_line}"
         )
 
     if include_subscription_policy:
@@ -267,3 +294,25 @@ def generate_policies(
         )
 
     return out
+
+
+_PLACEHOLDER_DOMAINS: frozenset[str] = frozenset({
+    "example.com", "example.org", "example.net",
+    "test.com", "localhost", "invalid",
+})
+
+
+def _sanitize_email(value: str | None) -> str | None:
+    """Reject placeholder / clearly-fake emails so policy
+    bodies never ship a working-looking mailto that
+    bounces. Mirrors page_generator._sanitize_email; the
+    duplication is intentional -- inlined per the
+    CLAUDE.md Pattern G convention (per-module utilities
+    over a shared module until 4+ adopt the same helper)."""
+    raw = (value or "").strip()
+    if not raw or "@" not in raw:
+        return None
+    domain = raw.rsplit("@", 1)[-1].lower()
+    if domain in _PLACEHOLDER_DOMAINS:
+        return None
+    return raw

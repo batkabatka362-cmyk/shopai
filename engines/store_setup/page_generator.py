@@ -81,15 +81,25 @@ def _about_body(
     )
 
 
-def _contact_body(store_name: str) -> str:
+def _contact_body(
+    store_name: str, support_email: str | None,
+) -> str:
+    contact_line = (
+        f"<li><strong>Email:</strong> "
+        f"<a href=\"mailto:{support_email}\">"
+        f"{support_email}</a></li>"
+        if support_email else
+        "<li><strong>Form:</strong> use the "
+        "<a href=\"/pages/contact\">contact form</a> on "
+        "this page.</li>"
+    )
     return (
         "<h1>Contact Us</h1>"
         f"<p>Questions about {store_name}? Order issues? "
         "Wholesale inquiries? We're here.</p>"
         "<h2>Reach us</h2>"
         "<ul>"
-        "<li><strong>Email:</strong> "
-        "support@example.com</li>"
+        f"{contact_line}"
         "<li><strong>Hours:</strong> Monday-Friday, "
         "9am-5pm</li>"
         "</ul>"
@@ -173,6 +183,7 @@ def generate_pages(
     store_name: str,
     niche: str = "general",
     founder_name: str | None = None,
+    support_email: str | None = None,
 ) -> dict[str, str]:
     """Generate HTML bodies for the 4 standard storefront pages.
 
@@ -184,6 +195,11 @@ def generate_pages(
         founder_name: Optional founder name for the About page.
             When None, the page uses a brand-only origin
             sentence.
+        support_email: Real customer-support email shown on the
+            Contact page. When None / empty / a placeholder
+            domain (example.com, test.com, localhost), the
+            Contact page falls back to a /pages/contact form
+            link -- never to a fake mailto.
 
     Returns:
         ``{page_title: html_body}``. Pass straight into
@@ -193,6 +209,7 @@ def generate_pages(
     if not name:
         return {}
     niche_n = (niche or "general").strip().lower() or "general"
+    safe_email = _sanitize_email(support_email)
 
     out: dict[str, str] = {}
     for title, builder in _PAGE_BUILDERS.items():
@@ -201,8 +218,29 @@ def generate_pages(
                 out[title] = builder(name, niche_n, founder_name)
             elif builder is _faq_body:
                 out[title] = builder(name, niche_n)
+            elif builder is _contact_body:
+                out[title] = builder(name, safe_email)
             else:
                 out[title] = builder(name)
         except Exception:  # noqa: BLE001
             continue
     return out
+
+
+_PLACEHOLDER_DOMAINS: frozenset[str] = frozenset({
+    "example.com", "example.org", "example.net",
+    "test.com", "localhost", "invalid",
+})
+
+
+def _sanitize_email(value: str | None) -> str | None:
+    """Reject placeholder / clearly-fake emails so the Contact
+    page never ships a working-looking mailto that bounces.
+    """
+    raw = (value or "").strip()
+    if not raw or "@" not in raw:
+        return None
+    domain = raw.rsplit("@", 1)[-1].lower()
+    if domain in _PLACEHOLDER_DOMAINS:
+        return None
+    return raw

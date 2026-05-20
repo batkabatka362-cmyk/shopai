@@ -94,6 +94,67 @@ class TestGeneratePages:
         assert "no returns" in food["FAQ"]
 
 
+class TestSupportEmail:
+    """The Contact page must NEVER ship a placeholder
+    mailto. Either a real email is rendered, or the page
+    falls back to the contact form link.
+    """
+
+    def test_real_email_rendered_as_mailto(self):
+        out = generate_pages(
+            store_name="Acme",
+            support_email="hello@acmestore.com",
+        )
+        contact = out["Contact"]
+        assert (
+            "<a href=\"mailto:hello@acmestore.com\">"
+            in contact
+        )
+        assert "hello@acmestore.com" in contact
+        # Placeholder must NOT be present
+        assert "support@example.com" not in contact
+
+    def test_no_email_falls_back_to_form(self):
+        out = generate_pages(store_name="Acme")
+        contact = out["Contact"]
+        # No mailto attempted -- the form link is shown
+        assert "mailto:" not in contact
+        assert "/pages/contact" in contact
+        # Placeholder must NEVER appear, even without input
+        assert "example.com" not in contact
+
+    def test_placeholder_email_rejected(self):
+        """example.com / test.com / localhost domains are
+        all silently swapped for the contact form link."""
+        for bad in (
+            "support@example.com",
+            "noreply@example.org",
+            "test@test.com",
+            "x@localhost",
+            "invalid@invalid",
+        ):
+            out = generate_pages(
+                store_name="Acme", support_email=bad,
+            )
+            contact = out["Contact"]
+            assert "mailto:" not in contact, bad
+            assert bad not in contact, bad
+            assert "/pages/contact" in contact, bad
+
+    def test_malformed_email_rejected(self):
+        out = generate_pages(
+            store_name="Acme", support_email="not-an-email",
+        )
+        assert "mailto:" not in out["Contact"]
+
+    def test_blank_email_falls_back(self):
+        for blank in ("", "   ", None):
+            out = generate_pages(
+                store_name="Acme", support_email=blank,
+            )
+            assert "mailto:" not in out["Contact"]
+
+
 # --- slug -----------------------------------------------------
 
 
