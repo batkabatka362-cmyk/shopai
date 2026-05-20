@@ -118,7 +118,17 @@ def compare_to_live(adapter: Any = None) -> ScopeHealthReport | None:
     data = getattr(result, "data", {}) or {}
     if not isinstance(data, dict):
         return None
+    # The apps adapter normalises the GraphQL response into a
+    # nested shape:  data = {installation: {access_scopes, ...},
+    # found: True}. Tolerate both shapes -- the older flat
+    # form (data["access_scopes"]) is kept for back-compat in
+    # case the adapter normaliser ever moves the field back to
+    # the top.
     raw_scopes = data.get("access_scopes")
+    if not isinstance(raw_scopes, list):
+        installation = data.get("installation") or {}
+        if isinstance(installation, dict):
+            raw_scopes = installation.get("access_scopes")
     if not isinstance(raw_scopes, list):
         return None
 

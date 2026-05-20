@@ -49,14 +49,34 @@ def _ns(**kw):
     return argparse.Namespace(**defaults)
 
 
-def _mock_adapter(scopes: list[str], ok: bool = True):
+def _mock_adapter(
+    scopes: list[str], ok: bool = True, nested: bool = False,
+):
     """Build a mock adapter whose ``execute`` returns a result
-    with the given access_scopes."""
+    with the given access_scopes.
+
+    Args:
+        scopes: The scope list to surface in the response.
+        ok: Whether the result is marked successful.
+        nested: When True, return the modern apps-adapter shape
+            (``{installation: {access_scopes: [...]}, found:
+            True}``). When False (legacy default), return the
+            flat shape (``{access_scopes: [...]}``). The
+            scope_health module tolerates both.
+    """
     adapter = MagicMock()
     adapter.is_configured.return_value = True
     result = MagicMock()
     result.ok = ok
-    result.data = {"access_scopes": scopes} if ok else {}
+    if not ok:
+        result.data = {}
+    elif nested:
+        result.data = {
+            "installation": {"access_scopes": scopes},
+            "found": True,
+        }
+    else:
+        result.data = {"access_scopes": scopes}
     result.error = "fake error" if not ok else None
     adapter.execute.return_value = result
     return adapter
@@ -77,6 +97,19 @@ class TestCompareToLive:
         assert report.is_healthy is True
         assert report.missing_from_app == []
         assert report.extra_in_app == []
+
+    def test_handles_nested_installation_shape(self):
+        """Modern apps-adapter response nests access_scopes
+        under ``installation``. The healthier reads that key
+        path; existing flat-shape tests cover the legacy form."""
+        from core.adapters.shopify.scope_health import compare_to_live
+        from core.adapters.shopify.scope_registry import all_required_scopes
+        live = sorted(all_required_scopes())
+        adapter = _mock_adapter(live, nested=True)
+        report = compare_to_live(adapter=adapter)
+        assert report is not None
+        assert report.is_healthy is True
+        assert len(report.granted_scopes) == len(live)
 
     def test_missing_when_granted_is_subset(self):
         from core.adapters.shopify.scope_health import compare_to_live
