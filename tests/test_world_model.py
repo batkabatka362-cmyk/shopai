@@ -285,6 +285,183 @@ class TestConfigSection:
         assert "config broke" in c["error"]
 
 
+# ─── Scopes section (live OAuth drift) ──────────────────────
+
+
+class TestScopesSection:
+    """Live scope-drift visibility in the per-store snapshot.
+
+    The section calls ``scope_health.compare_to_live`` and
+    surfaces counts + sample drift inline. Failing to None
+    (no live data) degrades to a structured error envelope.
+    """
+
+    def test_skip_live_marks_unchecked(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert snap["scopes"]["checked"] is False
+
+    def test_unavailable_when_compare_returns_none(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        # _patch_external defaults scope_report=None → unavailable
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=False)
+        s = snap["scopes"]
+        assert s["checked"] is True
+        assert s.get("error") == "live_data_unavailable"
+
+    def test_healthy_report_populates_counts(self):
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({"read_orders", "write_orders"}),
+            required_scopes=frozenset({"read_orders", "write_orders"}),
+            missing_from_app=[],
+            extra_in_app=[],
+            is_healthy=True,
+        )
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(scope_report=report):
+            snap = wm.snapshot("test-store", skip_live=False)
+        s = snap["scopes"]
+        assert s["checked"] is True
+        assert "error" not in s
+        assert s["is_healthy"] is True
+        assert s["granted_count"] == 2
+        assert s["required_count"] == 2
+        assert s["missing_count"] == 0
+        assert s["extra_count"] == 0
+        assert s["sample_missing"] == []
+        assert s["sample_extra"] == []
+
+    def test_drift_report_surfaces_sample_missing(self):
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({"read_orders"}),
+            required_scopes=frozenset({
+                "read_orders", "write_orders", "read_products",
+                "write_products", "read_customers", "write_customers",
+            }),
+            missing_from_app=[
+                "read_customers", "read_products", "write_customers",
+                "write_orders", "write_products",
+            ],
+            extra_in_app=[],
+            is_healthy=False,
+        )
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(scope_report=report):
+            snap = wm.snapshot("test-store", skip_live=False)
+        s = snap["scopes"]
+        assert s["is_healthy"] is False
+        assert s["missing_count"] == 5
+        # Sample capped at 5 entries
+        assert len(s["sample_missing"]) == 5
+        # First missing item surfaces (sorted by compare_to_live)
+        assert "read_customers" in s["sample_missing"]
+
+    def test_sample_missing_capped_at_five(self):
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        many_missing = [f"scope_{i}" for i in range(20)]
+        report = ScopeHealthReport(
+            granted_scopes=frozenset(),
+            required_scopes=frozenset(many_missing),
+            missing_from_app=sorted(many_missing),
+            extra_in_app=[],
+            is_healthy=False,
+        )
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(scope_report=report):
+            snap = wm.snapshot("test-store", skip_live=False)
+        s = snap["scopes"]
+        assert s["missing_count"] == 20
+        assert len(s["sample_missing"]) == 5
+
+    def test_extra_count_surfaces(self):
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({
+                "read_orders", "read_unused_a", "read_unused_b",
+            }),
+            required_scopes=frozenset({"read_orders"}),
+            missing_from_app=[],
+            extra_in_app=["read_unused_a", "read_unused_b"],
+            is_healthy=True,
+        )
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(scope_report=report):
+            snap = wm.snapshot("test-store", skip_live=False)
+        s = snap["scopes"]
+        # Extras don't break health
+        assert s["is_healthy"] is True
+        assert s["extra_count"] == 2
+        assert "read_unused_a" in s["sample_extra"]
+
+    def test_compare_raise_degrades_gracefully(self):
+        """compare_to_live should swallow its own errors and
+        return None, but be defensive: a stray exception inside
+        the probe is caught and surfaces as a structured error
+        rather than crashing the snapshot."""
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls, patch(
+            "execution.store_configurator.StoreConfigurator",
+        ) as configurator_cls, patch(
+            "engines.store_design.flow.StoreDesignEngine",
+        ) as design_cls, patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            side_effect=RuntimeError("scope probe blew up"),
+        ):
+            sync_cls.return_value.get_status.return_value = {"stores": []}
+            configurator_cls.return_value.configure.return_value = (
+                _fake_plan_result(plan_count=0)
+            )
+            design_cls.return_value.run.return_value = {
+                "status": "success",
+                "data": {},
+                "meta": {},
+                "error": None,
+            }
+            snap = wm.snapshot("test-store", skip_live=False)
+        s = snap["scopes"]
+        assert s["checked"] is True
+        assert "probe_failed" in s["error"]
+        assert "scope probe blew up" in s["error"]
+
+    def test_scopes_runs_even_when_connection_fails(self):
+        """Scope health is app-installation-level, not per-store.
+        Even if THIS store's connection fails, the scope probe
+        should still tell the operator whether the app install
+        has the right scopes."""
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({"read_orders"}),
+            required_scopes=frozenset({"read_orders"}),
+            missing_from_app=[],
+            extra_in_app=[],
+            is_healthy=True,
+        )
+        sm = _fake_sm(connected=False)
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(scope_report=report):
+            snap = wm.snapshot("test-store", skip_live=False)
+        # Connection failed → config skipped...
+        assert snap["connection"]["connected"] is False
+        assert snap["config"]["checked"] is False
+        # ... but scopes section still populated.
+        s = snap["scopes"]
+        assert s["checked"] is True
+        assert s["is_healthy"] is True
+
+
 # ─── Design / approvals / decisions ──────────────────────────
 
 
@@ -686,11 +863,17 @@ class TestSnapshotEnvelope:
 # ─── Helper: patch every external probe ──────────────────────
 
 
-def _patch_external(*, plan_result=None):
+def _patch_external(*, plan_result=None, scope_report=None):
     """Return a context manager that patches the four external
     integrations (sync service, configurator, design engine,
     oauth) so each test only needs to opt in to the ones it
-    cares about."""
+    cares about.
+
+    ``scope_report``: optionally override what
+    ``scope_health.compare_to_live`` returns. Default ``None``
+    means "live data unavailable" -- the scope section then
+    surfaces a structured error envelope instead of crashing.
+    """
     import contextlib
 
     @contextlib.contextmanager
@@ -701,7 +884,10 @@ def _patch_external(*, plan_result=None):
             "execution.store_configurator.StoreConfigurator",
         ) as configurator_cls, patch(
             "engines.store_design.flow.StoreDesignEngine",
-        ) as design_cls:
+        ) as design_cls, patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=scope_report,
+        ):
             sync_cls.return_value.get_status.return_value = {"stores": []}
             configurator_cls.return_value.configure.return_value = (
                 plan_result or _fake_plan_result(plan_count=0)

@@ -167,6 +167,71 @@ class WorldModel:
             "feature_count": len(result.get("results") or {}),
         }
 
+    def _section_scopes(self) -> dict:
+        """Compare the registry's declared OAuth scopes against
+        the live app's granted scopes.
+
+        Surfaces scope drift in the per-store world model so
+        operators don't have to run a separate
+        ``shopify-scopes-live-check`` command to see whether the
+        installed app has the right scopes. When missing scopes
+        exist, adapters needing them will fail at runtime with
+        ACCESS_DENIED — getting this visible up-front shortens
+        the debug loop.
+
+        The full lists are NOT embedded (would bloat snapshots
+        when 80+ scopes are declared). We surface counts plus a
+        short ``sample_missing`` list (up to 5 entries) so the
+        operator knows *what kind* of drift exists; for the full
+        list they drill into ``shopai shopify-scopes-live-check``.
+
+        Best-effort: when credentials are missing or the live
+        call fails, returns ``{"checked": True, "error": ...}``.
+        The scope_health module already fails to None for those
+        cases; we translate that into a structured section.
+
+        Note: scope health is FLEET-WIDE -- the app installation
+        is per-shop, but every store under the same install
+        sees the same granted scopes. We surface this here so
+        every per-store snapshot reflects the same number; a
+        future per-store-install variant could attribute scope
+        drift to specific shops.
+        """
+        try:
+            from core.adapters.shopify.scope_health import compare_to_live
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model scope_health import raised: %s", exc,
+            )
+            return {"checked": True, "error": f"import_failed: {exc}"}
+        try:
+            report = compare_to_live()
+        except Exception as exc:  # noqa: BLE001
+            # compare_to_live should swallow its own errors and
+            # return None, but be defensive — never let a scope
+            # probe crash the snapshot assembly.
+            logger.debug(
+                "world_model scope_health raised: %s", exc,
+            )
+            return {"checked": True, "error": f"probe_failed: {exc}"}
+        if report is None:
+            return {
+                "checked": True,
+                "error": "live_data_unavailable",
+            }
+        return {
+            "checked": True,
+            "is_healthy": bool(report.is_healthy),
+            "granted_count": len(report.granted_scopes),
+            "required_count": len(report.required_scopes),
+            "missing_count": len(report.missing_from_app),
+            "extra_count": len(report.extra_in_app),
+            # Drill-in indicators: first 5 of each. Full lists
+            # live behind `shopai shopify-scopes-live-check`.
+            "sample_missing": list(report.missing_from_app[:5]),
+            "sample_extra": list(report.extra_in_app[:5]),
+        }
+
     def _section_design(self) -> dict:
         """Cheap probe: runs the store_design engine with empty
         input. Engine is Pattern Q compliant so this never throws
@@ -794,6 +859,7 @@ class WorldModel:
         if skip_live:
             connection = {"checked": False}
             config = {"checked": False}
+            scopes = {"checked": False}
         else:
             connection = self._section_connection(sm, store_id)
             # Skip the configurator dry-run if connection failed --
@@ -809,6 +875,14 @@ class WorldModel:
                     "checked": False,
                     "error": "connection_failed",
                 }
+            # Scope-health is keyed off the app installation, not
+            # the per-store connection, so it runs even when the
+            # per-store credential check fails -- the operator
+            # still wants to know "does the installed app have
+            # the right scopes?". The probe fails to a structured
+            # error envelope when the apps adapter isn't
+            # configured (no credentials at all).
+            scopes = self._section_scopes()
 
         design = self._section_design()
         # Per-store scope for approvals + decisions when the
@@ -832,6 +906,7 @@ class WorldModel:
             "sync": sync,
             "connection": connection,
             "config": config,
+            "scopes": scopes,
             "design": design,
             "approvals": approvals,
             "decisions": decisions,
