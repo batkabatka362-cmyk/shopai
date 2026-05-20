@@ -116,6 +116,47 @@ class ProductValidationEngine:
             risk_flags=risk_flags,
         )
 
+        # ---- Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory validation results. When
+        # the caller passes ``data.apply_validation_tags=True``,
+        # we push ``shopai-validation-failed`` on every product
+        # that FAILED validation (passed=False) via
+        # SHOPIFY_ADD_TAGS. Merchants then save admin searches
+        # to drive a "products needing review before publish"
+        # worklist; downstream engines (catalog / storefront /
+        # paid_ads) can suppress these from featured slots,
+        # pause ads, or gate them on compliance review before
+        # promoting.
+        #
+        # Passed products are NOT tagged -- merchants want
+        # signal, not noise.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_validation_tags") is True:
+            try:
+                from .tag_applier import apply_validation_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                tag_results = apply_validation_tags(
+                    validated,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_validation tag_applier raised: %s",
+                    exc,
+                )
+
         elapsed = time.monotonic() - start
 
         return {
@@ -125,6 +166,9 @@ class ProductValidationEngine:
                 "compliance_issues": compliance_issues,
                 "quality_summary": quality_summary,
                 "risk_flags": risk_flags,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
