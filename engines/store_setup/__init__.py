@@ -14,6 +14,9 @@ Modules:
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
+  * ``inventory_thresholds`` -- niche-tuned reorder
+    threshold + service-level + stockout-cost defaults;
+    drop-in for ``inventory`` engine config.
   * ``page_generator`` / ``page_applier`` -- niche-aware
     About / Contact / FAQ / Shipping pages via
     ``SHOPIFY_CREATE_PAGE``.
