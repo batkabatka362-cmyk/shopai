@@ -74,6 +74,20 @@ _ALL_GOOD = {
              "title": "Camping Lantern", "status": "ACTIVE"},
         ],
     }),
+    "shopify_list_delivery_profiles": _ok({
+        "profiles": [{
+            "id": "gid://shopify/DeliveryProfile/1",
+            "name": "General",
+            "location_groups": [{
+                "location_group_id": "gid://shopify/DeliveryLocationGroup/1",
+                "locations": [{"id": "loc1", "name": "Warehouse"}],
+                "zones": [{
+                    "id": "gid://shopify/DeliveryZone/1",
+                    "name": "Domestic",
+                }],
+            }],
+        }],
+    }),
     "shopify_list_themes": _ok({
         "themes": [{
             "id": "gid://shopify/OnlineStoreTheme/1",
@@ -123,8 +137,8 @@ class TestAllPass:
             "engines.store_setup.launch_audit.record_writeback",
         ):
             result = audit_store()
-        # 5 of 6 pass -> round(100 * 5/6) = 83
-        assert result["completion_pct"] == 83
+        # 6 of 7 pass -> round(100 * 6/7) = 86
+        assert result["completion_pct"] == 86
         assert result["ready_to_launch"] is False
 
 
@@ -448,6 +462,142 @@ class TestActiveProductsCheck:
         )
         assert products["applied"] == 2
         assert products["ok"] is True
+
+
+class TestShippingZonesCheck:
+
+    def test_one_zone_passes(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        zones = next(
+            c for c in result["checks"]
+            if c["key"] == "shipping_zones"
+        )
+        assert zones["ok"] is True
+        assert zones["applied"] == 1
+        assert zones["expected"] == 1
+        assert zones["missing"] == []
+
+    def test_zero_profiles_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_delivery_profiles"] = _ok({
+            "profiles": [],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        zones = next(
+            c for c in result["checks"]
+            if c["key"] == "shipping_zones"
+        )
+        assert zones["ok"] is False
+        assert zones["applied"] == 0
+        assert zones["missing"] == ["need 1 more"]
+
+    def test_profile_with_no_zones_flagged(self):
+        """A profile that exists but covers no zones is still
+        a launch blocker -- nothing for the rate evaluator to
+        match against at checkout."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_delivery_profiles"] = _ok({
+            "profiles": [{
+                "id": "p1",
+                "name": "Empty",
+                "location_groups": [{
+                    "location_group_id": "g1",
+                    "locations": [],
+                    "zones": [],
+                }],
+            }],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        zones = next(
+            c for c in result["checks"]
+            if c["key"] == "shipping_zones"
+        )
+        assert zones["ok"] is False
+        assert zones["applied"] == 0
+
+    def test_zones_sum_across_profiles(self):
+        """Multiple profiles each contributing zones get
+        summed; the threshold is cumulative."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_delivery_profiles"] = _ok({
+            "profiles": [
+                {"id": "p1", "name": "Domestic",
+                 "location_groups": [{
+                     "location_group_id": "g1",
+                     "locations": [],
+                     "zones": [{"id": "z1", "name": "US"}],
+                 }]},
+                {"id": "p2", "name": "Intl",
+                 "location_groups": [{
+                     "location_group_id": "g2",
+                     "locations": [],
+                     "zones": [
+                         {"id": "z2", "name": "EU"},
+                         {"id": "z3", "name": "APAC"},
+                     ],
+                 }]},
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store(expected_shipping_zones=3)
+        zones = next(
+            c for c in result["checks"]
+            if c["key"] == "shipping_zones"
+        )
+        assert zones["ok"] is True
+        assert zones["applied"] == 3
+        assert zones["expected"] == 3
+
+    def test_custom_threshold_unmet(self):
+        # _ALL_GOOD has 1 zone; caller expects 4
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store(expected_shipping_zones=4)
+        zones = next(
+            c for c in result["checks"]
+            if c["key"] == "shipping_zones"
+        )
+        assert zones["ok"] is False
+        assert zones["applied"] == 1
+        assert zones["expected"] == 4
+        assert zones["missing"] == ["need 3 more"]
 
 
 class TestProbeFailureResilience:
