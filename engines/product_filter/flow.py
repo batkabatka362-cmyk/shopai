@@ -154,6 +154,45 @@ class ProductFilterEngine:
             filter_summary=filter_summary,
         )
 
+        # ---- Stage 7.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory rejection decisions.
+        # When the caller passes ``data.apply_filter_tags=True``,
+        # we push ``shopai-filter-rejected-{reason}`` on each
+        # rejected product via SHOPIFY_ADD_TAGS. ``reason`` is
+        # the filter-stage slug (margin / legal / shipping /
+        # brand). Merchants then save admin searches / smart
+        # collections to drive a "products that didn't clear
+        # our filter, by reason" worklist; downstream engines
+        # (catalog / storefront / paid_ads) suppress these
+        # from recommendation slots or scope ad spend away
+        # from them.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_filter_tags") is True:
+            try:
+                from .tag_applier import apply_filter_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                tag_results = apply_filter_tags(
+                    all_rejected,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_filter tag_applier raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -163,6 +202,9 @@ class ProductFilterEngine:
                 "accepted_products": brand_passed,
                 "rejected_products": all_rejected,
                 "filter_summary": filter_summary,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
