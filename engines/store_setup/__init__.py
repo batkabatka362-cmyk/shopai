@@ -24,6 +24,9 @@ Modules:
     description generation via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``seo_meta_enricher`` -- niche-aware product SEO meta
     (title_tag + meta_description) via ``SHOPIFY_UPDATE_PRODUCT``.
+  * ``loyalty_tiers`` -- niche-aware tier templates +
+    points_per_dollar rates tuned to category AOV; drop-in
+    for ``loyalty.program_designer.design_program``.
   * ``welcome_discount`` -- launch-time WELCOME{N} code via
     ``SHOPIFY_CREATE_DISCOUNT``.
 """
