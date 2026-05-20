@@ -398,3 +398,160 @@ class TestResilience:
             )
         assert results[0]["status"] == "skipped"
         assert "enqueue_raised" in results[0]["reason"]
+
+
+# ─── Direct-apply path (require_approval=False) ────────────────
+
+
+class TestDirectApplyPath:
+    """``require_approval=False`` calls
+    ``Capability.SHOPIFY_UPDATE_VARIANTS`` directly through the
+    router, bypassing the approval queue. Result status is
+    ``applied`` (not ``queued``)."""
+
+    def test_direct_apply_calls_router(self, isolated_queue):
+        from types import SimpleNamespace
+        from engines.product_optimization.optimization_applier import (
+            apply_pricing_optimizations,
+        )
+
+        captured = {}
+
+        def _exec(cap, params):
+            captured["capability"] = cap
+            captured["params"] = params
+            return SimpleNamespace(ok=True, data={}, error=None)
+
+        router = SimpleNamespace(execute=_exec)
+        with patch("core.adapters.get_router", return_value=router):
+            results = apply_pricing_optimizations(
+                adjustments=[{
+                    "product_id": "p1",
+                    "current_price": 10.0,
+                    "suggested_price": 12.0,
+                    "adjustment_pct": 20.0,
+                }],
+                products=[{
+                    "id": "p1",
+                    "variants": [{"id": "v11"}, {"id": "v12"}],
+                }],
+                require_approval=False,
+            )
+        # Router was called with SHOPIFY_UPDATE_VARIANTS
+        assert captured["capability"].name == "SHOPIFY_UPDATE_VARIANTS"
+        # Both variants were sent
+        assert len(captured["params"]["variants"]) == 2
+        # Result is ``applied`` (not ``queued``)
+        assert results[0]["status"] == "applied"
+        assert results[0]["variants_updated"] == 2
+
+    def test_direct_apply_router_failure_returns_skipped(
+        self, isolated_queue,
+    ):
+        from types import SimpleNamespace
+        from engines.product_optimization.optimization_applier import (
+            apply_pricing_optimizations,
+        )
+
+        router = SimpleNamespace(
+            execute=lambda c, p: SimpleNamespace(
+                ok=False, data=None, error="rate_limited",
+            ),
+        )
+        with patch("core.adapters.get_router", return_value=router):
+            results = apply_pricing_optimizations(
+                adjustments=[{
+                    "product_id": "p1",
+                    "current_price": 10.0,
+                    "suggested_price": 12.0,
+                    "adjustment_pct": 20.0,
+                }],
+                products=[{"id": "p1", "variants": [{"id": "v11"}]}],
+                require_approval=False,
+            )
+        assert results[0]["status"] == "skipped"
+        assert "direct_apply_failed" in results[0]["reason"]
+        assert "rate_limited" in results[0]["reason"]
+
+    def test_direct_apply_router_raise_returns_skipped(
+        self, isolated_queue,
+    ):
+        from types import SimpleNamespace
+        from engines.product_optimization.optimization_applier import (
+            apply_pricing_optimizations,
+        )
+
+        def _raises(c, p):
+            raise RuntimeError("boom")
+
+        router = SimpleNamespace(execute=_raises)
+        with patch("core.adapters.get_router", return_value=router):
+            results = apply_pricing_optimizations(
+                adjustments=[{
+                    "product_id": "p1",
+                    "current_price": 10.0,
+                    "suggested_price": 12.0,
+                    "adjustment_pct": 20.0,
+                }],
+                products=[{"id": "p1", "variants": [{"id": "v11"}]}],
+                require_approval=False,
+            )
+        assert results[0]["status"] == "skipped"
+        assert "router_raised" in results[0]["reason"]
+
+
+# ─── Flow plumbing of require_approval ─────────────────────────
+
+
+class TestFlowRequireApprovalRouting:
+    """The engine's flow reads ``data.require_approval`` (default
+    True) and forwards it to the applier."""
+
+    def test_default_routes_to_queue_path(self, isolated_queue):
+        """Without ``require_approval`` in input, the flow goes
+        through the queue (existing behavior)."""
+        from engines.product_optimization.flow import (
+            ProductOptimizationEngine,
+        )
+
+        with patch(
+            "engines.product_optimization.optimization_applier."
+            "apply_pricing_optimizations",
+        ) as applier_mock:
+            applier_mock.return_value = []
+            ProductOptimizationEngine().run({
+                "status": "success",
+                "data": {
+                    "products": [{"id": "p1", "title": "T"}],
+                    "apply_pricing_adjustments": True,
+                },
+                "meta": {},
+                "error": None,
+            })
+        kwargs = applier_mock.call_args.kwargs
+        assert kwargs["require_approval"] is True
+
+    def test_explicit_false_routes_to_direct_apply(
+        self, isolated_queue,
+    ):
+        from engines.product_optimization.flow import (
+            ProductOptimizationEngine,
+        )
+
+        with patch(
+            "engines.product_optimization.optimization_applier."
+            "apply_pricing_optimizations",
+        ) as applier_mock:
+            applier_mock.return_value = []
+            ProductOptimizationEngine().run({
+                "status": "success",
+                "data": {
+                    "products": [{"id": "p1", "title": "T"}],
+                    "apply_pricing_adjustments": True,
+                    "require_approval": False,
+                },
+                "meta": {},
+                "error": None,
+            })
+        kwargs = applier_mock.call_args.kwargs
+        assert kwargs["require_approval"] is False
