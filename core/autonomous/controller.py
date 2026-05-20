@@ -232,6 +232,84 @@ def _detect_regressions() -> dict[str, Any]:
     return {"regressions": rows, "count": len(rows)}
 
 
+def _check_scope_health() -> dict[str, Any]:
+    """Probe the live Shopify app installation for OAuth scope
+    drift. Surfaces per-cycle so operators tailing autonomous
+    logs see scope misconfig BEFORE adapters fail with
+    ACCESS_DENIED downstream.
+
+    Net cost: one Shopify GraphQL hop per cycle. Cheap relative
+    to the data-fetch phase. The check is fail-open:
+    ``compare_to_live`` returns ``None`` when credentials aren't
+    available or the API call fails -- we translate that to a
+    structured ``{"checked": False, "error": ...}`` envelope so
+    the cycle never crashes on a scope probe.
+
+    Returns:
+        ``{is_healthy: bool, granted_count, required_count,
+        missing_count, extra_count, sample_missing: list[str],
+        sample_extra: list[str]}`` on success.
+
+        ``{"checked": False, "error": "..."}`` when live data
+        is unavailable (no credentials, network failure,
+        malformed response).
+
+    A WARNING line is emitted when ``missing_count > 0`` so
+    operators tailing the logs catch the drift directly --
+    inline with the existing ``health_regressions`` pattern.
+    """
+    try:
+        from core.adapters.shopify.scope_health import compare_to_live
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "controller _check_scope_health import failed: %s",
+            exc,
+        )
+        return {"checked": False, "error": f"import_failed: {exc}"}
+
+    try:
+        report = compare_to_live()
+    except Exception as exc:  # noqa: BLE001
+        # compare_to_live should swallow its own errors and
+        # return None -- belt-and-braces in case a future
+        # change skips that guard.
+        logger.debug(
+            "controller _check_scope_health raised: %s", exc,
+        )
+        return {"checked": False, "error": f"probe_failed: {exc}"}
+
+    if report is None:
+        return {"checked": False, "error": "live_data_unavailable"}
+
+    missing = list(report.missing_from_app)
+    extra = list(report.extra_in_app)
+
+    if missing:
+        preview = ", ".join(missing[:5])
+        if len(missing) > 5:
+            preview += f", ... +{len(missing) - 5} more"
+        logger.warning(
+            "scope_health: %d scope(s) missing from app install "
+            "[%s] -- adapters needing them will fail with "
+            "ACCESS_DENIED. Inspect via 'shopai "
+            "shopify-scopes-live-check'.",
+            len(missing), preview,
+        )
+
+    return {
+        "checked": True,
+        "is_healthy": bool(report.is_healthy),
+        "granted_count": len(report.granted_scopes),
+        "required_count": len(report.required_scopes),
+        "missing_count": len(missing),
+        "extra_count": len(extra),
+        # Drill-in indicators: first 5 of each. Full lists
+        # behind ``shopai shopify-scopes-live-check``.
+        "sample_missing": missing[:5],
+        "sample_extra": extra[:5],
+    }
+
+
 def _bootstrap_brain_stack() -> bool:
     """Attach goal-feedback handlers to the approval-queue hooks.
 
@@ -701,6 +779,21 @@ class AutonomousController:
             )
         except Exception as exc:
             _record("health_regressions", exc)
+
+        # Phase 0.7: SCOPE HEALTH -- compare live app's granted
+        # OAuth scopes vs the registry's declared scopes. Surface
+        # drift directly so operators see ACCESS_DENIED root
+        # causes BEFORE the actual capability fails downstream.
+        # Cost: one Shopify GraphQL call per cycle (cheap
+        # relative to phase-1 data fetch). Fails to a structured
+        # ``{checked: False, error: ...}`` envelope when live
+        # data unavailable so the cycle never crashes here.
+        try:
+            cycle_result["phases"]["scope_health"] = (
+                _check_scope_health()
+            )
+        except Exception as exc:
+            _record("scope_health", exc)
 
         # Phase 1: DATA — Fetch current store state
         data = self._phase_data(sid)
