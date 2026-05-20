@@ -96,6 +96,47 @@ class ProductRankingEngine:
             top_tier_count=top_tier,
         )
 
+        # ---- Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory ranks. When the caller
+        # passes ``data.apply_ranking_tags=True``, we push
+        # ``shopai-rank-top`` (additive) on every top-N
+        # ranked product via SHOPIFY_ADD_TAGS. Merchants then
+        # save admin searches / "top picks" smart collections,
+        # AND downstream engines (email_marketing /
+        # storefront) filter on the tag to feature top-ranked
+        # SKUs in homepage carousels, "featured" sections, or
+        # upsell slots.
+        #
+        # ``data.top_n`` (default 10) controls cohort size.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_ranking_tags") is True:
+            try:
+                from .tag_applier import apply_ranking_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                top_n = int(data.get("top_n", 10) or 10)
+                tag_results = apply_ranking_tags(
+                    explained,
+                    top_n=top_n,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_ranking tag_applier raised: %s",
+                    exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -103,6 +144,9 @@ class ProductRankingEngine:
                 "ranked_products": explained,
                 "total_ranked": len(explained),
                 "top_tier_count": top_tier,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
