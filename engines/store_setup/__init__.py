@@ -24,6 +24,9 @@ Modules:
     description generation via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``seo_meta_enricher`` -- niche-aware product SEO meta
     (title_tag + meta_description) via ``SHOPIFY_UPDATE_PRODUCT``.
+  * ``tag_library`` -- niche-aware canonical tag taxonomy
+    (read-only reference data); helpers for tag suggestions
+    + merge. Consumed by ``tag_management`` auto-tagger.
   * ``welcome_discount`` -- launch-time WELCOME{N} code via
     ``SHOPIFY_CREATE_DISCOUNT``.
 """
