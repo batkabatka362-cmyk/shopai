@@ -132,6 +132,56 @@ class SubscriptionEngine:
             mrr=mrr,
         )
 
+        # ---- Stage 6.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory churn-risk
+        # classifications. When the caller passes
+        # ``data.apply_subscription_tags=True``, we push
+        # ``shopai-subscription-at-risk`` on every high-risk
+        # subscriber via SHOPIFY_TAG_CUSTOMER. Merchants then
+        # save admin searches to drive a "subscriptions about
+        # to cancel" worklist; downstream engines (loyalty /
+        # customer_service / email_marketing) filter on the
+        # tag to fire win-back retention plays before cancel.
+        #
+        # Distinct from ``shopai-churn-*`` (churn_prediction
+        # tags) because subscription-side churn is a separate
+        # failure mode (billing problems, plan retention)
+        # from broader customer churn (purchase recency,
+        # engagement). A subscriber may be flagged by ONE
+        # axis but not the OTHER.
+        #
+        # Only "high" risk tagged by default;
+        # ``data.include_medium=True`` opts in medium too.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_TAG_CUSTOMER directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_subscription_tags") is True:
+            try:
+                from .tag_applier import apply_subscription_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                include_medium = bool(
+                    data.get("include_medium", False),
+                )
+                tag_results = apply_subscription_tags(
+                    churn_risks,
+                    include_medium=include_medium,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "subscription tag_applier raised: %s", exc,
+                )
+
         # ---- Stage 7: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -143,6 +193,9 @@ class SubscriptionEngine:
                 "churn_risks": churn_risks,
                 "upgrade_opportunities": upgrade_opportunities,
                 "mrr": mrr,
+                # Phase 7 writeback: per-subscriber tag
+                # results when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
