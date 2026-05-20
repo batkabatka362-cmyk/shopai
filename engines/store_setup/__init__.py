@@ -7,6 +7,9 @@ in ``execution/store_configurator.py`` handles the procedural
 holds the AGI-driven helpers that need engine + router access.
 
 Modules:
+  * ``ad_copy_templates`` -- niche-aware paid ad creative
+    (Meta / Google Search / TikTok) ready to paste into
+    ad-platform UIs. Pairs with marketing_event_templates.
   * ``brand_uploader`` -- push logo / favicon / hero / og_image
     URLs to Shopify Files via ``SHOPIFY_UPLOAD_FILE``.
   * ``collection_seeder`` -- niche-aware starter collections
