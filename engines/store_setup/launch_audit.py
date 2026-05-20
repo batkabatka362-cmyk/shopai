@@ -71,6 +71,12 @@ _EXPECTED_PAGE_HANDLES: tuple[str, ...] = (
 # visible, so they don't count even if present in the catalog.
 _ACTIVE_PRODUCT_STATUSES: frozenset[str] = frozenset({"ACTIVE"})
 
+# Minimum count of shipping zones across all delivery profiles
+# below which the store can't take orders that ship anywhere.
+# A zone-less profile is functionally "ships nowhere" -- the
+# rate evaluation has nothing to match against at checkout.
+_MIN_SHIPPING_ZONES: int = 1
+
 
 def audit_store(
     *,
@@ -78,6 +84,7 @@ def audit_store(
     expected_collections: int = 1,
     expected_discounts: int = 1,
     expected_products: int = 1,
+    expected_shipping_zones: int = _MIN_SHIPPING_ZONES,
 ) -> dict[str, Any]:
     """Run the full launch-readiness audit.
 
@@ -93,6 +100,10 @@ def audit_store(
             (default 1 -- a store with zero sellable products
             literally can't take orders). DRAFT and ARCHIVED
             products don't count.
+        expected_shipping_zones: Minimum count of configured
+            shipping zones across all delivery profiles
+            (default 1 -- a store with zero shipping zones
+            can't quote shipping at checkout).
 
     Returns:
         Dict with the schema documented in the module docstring.
@@ -115,6 +126,11 @@ def audit_store(
     checks.append(
         _check_active_products(
             expected=expected_products,
+        ),
+    )
+    checks.append(
+        _check_shipping_zones(
+            expected=expected_shipping_zones,
         ),
     )
 
@@ -366,6 +382,58 @@ def _check_design_tokens() -> dict[str, Any]:
             [] if present
             else ["assets/shopai-design-tokens.json"]
         ),
+    }
+
+
+def _check_shipping_zones(*, expected: int) -> dict[str, Any]:
+    """Count configured shipping zones via
+    SHOPIFY_LIST_DELIVERY_PROFILES.
+
+    A "zone" is a country/region grouping configured in
+    Settings > Shipping. Without at least one zone covering
+    the customer's address, checkout shows "shipping isn't
+    available to your location" -- a hard launch blocker for
+    any store selling physical products.
+
+    Sums zone counts across every profile's location-groups.
+    Profiles that hold rate definitions for the same zone
+    (e.g. a per-country profile in addition to the default)
+    each contribute to the count -- the threshold is
+    cumulative, not per-profile.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_LIST_DELIVERY_PROFILES",
+        params={"limit": 50},
+        empty_default={},
+    )
+    profiles = data.get("profiles") if isinstance(data, dict) else []
+    zone_count = 0
+    if isinstance(profiles, list):
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            location_groups = profile.get("location_groups") or []
+            if not isinstance(location_groups, list):
+                continue
+            for group in location_groups:
+                if not isinstance(group, dict):
+                    continue
+                zones = group.get("zones") or []
+                if isinstance(zones, list):
+                    zone_count += sum(
+                        1 for z in zones if isinstance(z, dict)
+                    )
+
+    threshold = max(0, int(expected))
+    missing: list[str] = []
+    if zone_count < threshold:
+        missing = [f"need {threshold - zone_count} more"]
+    return {
+        "key": "shipping_zones",
+        "ok": zone_count >= threshold,
+        "applied": zone_count,
+        "expected": threshold,
+        "missing": missing,
     }
 
 
