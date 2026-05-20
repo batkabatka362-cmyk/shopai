@@ -66,12 +66,18 @@ _EXPECTED_PAGE_HANDLES: tuple[str, ...] = (
     "shipping-returns",
 )
 
+# Active-product statuses that count toward "store has sellable
+# inventory". DRAFT and ARCHIVED products are not customer-
+# visible, so they don't count even if present in the catalog.
+_ACTIVE_PRODUCT_STATUSES: frozenset[str] = frozenset({"ACTIVE"})
+
 
 def audit_store(
     *,
     store_id: str | None = None,
     expected_collections: int = 1,
     expected_discounts: int = 1,
+    expected_products: int = 1,
 ) -> dict[str, Any]:
     """Run the full launch-readiness audit.
 
@@ -83,6 +89,10 @@ def audit_store(
             collection).
         expected_discounts: Minimum active discount count
             (default 1 -- the welcome code).
+        expected_products: Minimum count of ACTIVE products
+            (default 1 -- a store with zero sellable products
+            literally can't take orders). DRAFT and ARCHIVED
+            products don't count.
 
     Returns:
         Dict with the schema documented in the module docstring.
@@ -102,6 +112,11 @@ def audit_store(
         ),
     )
     checks.append(_check_design_tokens())
+    checks.append(
+        _check_active_products(
+            expected=expected_products,
+        ),
+    )
 
     total = len(checks)
     passed = sum(1 for c in checks if c["ok"])
@@ -243,6 +258,47 @@ def _check_curated_collections(
             [f"need {expected - count} more"]
             if count < expected else []
         ),
+    }
+
+
+def _check_active_products(*, expected: int) -> dict[str, Any]:
+    """Count ACTIVE products via SHOPIFY_LIST_PRODUCTS.
+
+    A launchable store needs at least one sellable product.
+    DRAFT and ARCHIVED products are not customer-visible, so a
+    catalog full of drafts still fails this check -- exactly
+    the failure mode we want to surface BEFORE the operator
+    declares the store ready.
+
+    Returns ``applied`` as the count of ACTIVE products (capped
+    by the read's limit) and ``missing`` as a single
+    "need N more" hint when the threshold isn't met.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_LIST_PRODUCTS",
+        params={"limit": 50},
+        empty_default={},
+    )
+    raw = data.get("products") if isinstance(data, dict) else []
+    active = 0
+    if isinstance(raw, list):
+        for product in raw:
+            if not isinstance(product, dict):
+                continue
+            status = (product.get("status") or "").upper()
+            if status in _ACTIVE_PRODUCT_STATUSES:
+                active += 1
+
+    threshold = max(0, int(expected))
+    missing: list[str] = []
+    if active < threshold:
+        missing = [f"need {threshold - active} more"]
+    return {
+        "key": "active_products",
+        "ok": active >= threshold,
+        "applied": active,
+        "expected": threshold,
+        "missing": missing,
     }
 
 
