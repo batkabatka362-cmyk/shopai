@@ -22,7 +22,20 @@ Owner workflow::
     # plan["data"]["actions"] -> first-step actions per
     # substrategy.
 """
+from .active_goal import (
+    clear_active_goal,
+    get_active_goal,
+    recommended_engines_for_active_plan,
+    set_active_goal,
+)
 from .decomposer import decompose_goal
 from .flow import AGIStrategistEngine
 
-__all__ = ["AGIStrategistEngine", "decompose_goal"]
+__all__ = [
+    "AGIStrategistEngine",
+    "clear_active_goal",
+    "decompose_goal",
+    "get_active_goal",
+    "recommended_engines_for_active_plan",
+    "set_active_goal",
+]
