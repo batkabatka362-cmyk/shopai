@@ -104,6 +104,46 @@ class CohortAnalysisEngine:
             best_cohort=best_cohort, trends=trends,
         )
 
+        # ---- Stage 5.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory cohort assignments.
+        # When the caller passes ``data.apply_cohort_tags=True``,
+        # we push ``shopai-cohort-{period}`` tags on every
+        # customer in every cohort via SHOPIFY_TAG_CUSTOMER.
+        # Merchants then save admin searches for those tags AND
+        # downstream engines (email_marketing / loyalty) filter
+        # on the cohort to fire period-aware retention plays.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue each tag via approval
+        #     queue. Operator reviews before write lands.
+        #   * False -- call SHOPIFY_TAG_CUSTOMER directly via
+        #     the router. Used by cycles that already gate this
+        #     engine via the auto-approve allowlist.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on. We pass the
+        # raw cohorts (with customer_ids) from build_cohorts,
+        # NOT the LTV projections (which strip customer_ids).
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_cohort_tags") is True:
+            try:
+                from .tag_applier import apply_cohort_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                tag_results = apply_cohort_tags(
+                    cohorts,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises out
+                # by design, but a stray import / typo shouldn't
+                # poison the engine's primary output.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "cohort_analysis tag_applier raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -112,6 +152,9 @@ class CohortAnalysisEngine:
                 "retention_matrix": retention_matrix,
                 "best_cohort": best_cohort,
                 "trends": trends,
+                # Phase 7 writeback: per-customer tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

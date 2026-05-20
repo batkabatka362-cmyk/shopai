@@ -509,6 +509,30 @@ def _apply_segment_tag_dispatch(
     )
 
 
+# ── cohort_analysis → SHOPIFY_TAG_CUSTOMER ──────────────────────
+
+
+@register_dispatcher("tag_cohort_customer")
+def _tag_cohort_customer_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay cohort_analysis's per-customer cohort-period tag.
+
+    Enqueue carries ``{customer_id, tag, cohort_period}``. The
+    adapter side wants ``{id, tags: [tag]}`` — same shape as
+    apply_segment_tag (cohort_period is kept in approval-side
+    params for operator context but isn't part of the mutation).
+    """
+    customer_id = str(params.get("customer_id", "")).strip()
+    tag = str(params.get("tag", "")).strip()
+    if not customer_id or not tag:
+        return False, {"error": "missing_customer_id_or_tag"}
+    return _router_call(
+        "SHOPIFY_TAG_CUSTOMER",
+        {"id": customer_id, "tags": [tag]},
+    )
+
+
 # ── landing_page → SHOPIFY_CREATE_PAGE ──────────────────────────
 
 
