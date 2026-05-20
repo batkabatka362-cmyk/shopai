@@ -208,3 +208,150 @@ class TestEngineFlowWiring:
         # Engine still produced a healthy envelope
         assert result["status"] == "success"
         assert "layout_recommendations" in result["data"]
+
+
+class TestApplyDesignOptIn:
+    """Stage-10 opt-in: ``data.apply_design=True`` triggers the
+    design_applier path. Default OFF (mirrors loyalty /
+    dynamic_pricing / etc. opt-in shape)."""
+
+    def test_apply_design_false_by_default(self):
+        """Without ``apply_design=True``, no applier call fires
+        and ``apply_results`` is an empty list."""
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+        ) as applier_mock:
+            result = StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                },
+                "meta": {},
+                "error": None,
+            })
+        applier_mock.assert_not_called()
+        assert result["data"]["apply_results"] == []
+
+    def test_apply_design_true_calls_applier(self):
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+            return_value={
+                "applied": True,
+                "theme_id": "gid://shopify/OnlineStoreTheme/1",
+                "files_written": [
+                    "assets/shopai-design-tokens.json",
+                    "snippets/shopai-design-recommendations.liquid",
+                ],
+                "error": None,
+            },
+        ) as applier_mock:
+            result = StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                    "apply_design": True,
+                    "theme_id": "gid://shopify/OnlineStoreTheme/1",
+                },
+                "meta": {},
+                "error": None,
+            })
+        applier_mock.assert_called_once()
+        # Caller-supplied theme_id propagates
+        kwargs = applier_mock.call_args.kwargs
+        assert kwargs["theme_id"] == "gid://shopify/OnlineStoreTheme/1"
+        # apply_results carries the applier output
+        apply_results = result["data"]["apply_results"]
+        assert len(apply_results) == 1
+        assert apply_results[0]["applied"] is True
+        assert (
+            "assets/shopai-design-tokens.json"
+            in apply_results[0]["files_written"]
+        )
+
+    def test_apply_design_true_without_theme_id_errors(self):
+        """Opt-in is on but caller didn't supply theme_id ->
+        error surfaced in apply_results, no applier call."""
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+        ) as applier_mock:
+            result = StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                    "apply_design": True,
+                    # no theme_id
+                },
+                "meta": {},
+                "error": None,
+            })
+        applier_mock.assert_not_called()
+        apply_results = result["data"]["apply_results"]
+        assert len(apply_results) == 1
+        assert apply_results[0]["applied"] is False
+        assert apply_results[0]["error"] == "theme_id_required"
+
+    def test_applier_raise_doesnt_break_engine(self):
+        """A raising applier surfaces as an apply_result error
+        but the engine still returns its envelope."""
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                    "apply_design": True,
+                    "theme_id": "gid://x",
+                },
+                "meta": {},
+                "error": None,
+            })
+        # Engine still produced a healthy envelope
+        assert result["status"] == "success"
+        apply_results = result["data"]["apply_results"]
+        assert len(apply_results) == 1
+        assert apply_results[0]["applied"] is False
+        assert "applier_raised" in apply_results[0]["error"]
+
+    def test_store_id_propagates_to_applier(self):
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+            return_value={
+                "applied": True, "theme_id": "gid://x",
+                "files_written": [], "error": None,
+            },
+        ) as applier_mock:
+            StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                    "apply_design": True,
+                    "theme_id": "gid://x",
+                    "store_id": "store-deguar",
+                },
+                "meta": {},
+                "error": None,
+            })
+        kwargs = applier_mock.call_args.kwargs
+        assert kwargs["store_id"] == "store-deguar"
