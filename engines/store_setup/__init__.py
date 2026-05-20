@@ -14,6 +14,13 @@ Modules:
   * ``launch_audit`` -- read-only check: which launch-readiness
     items are done vs missing on a live store.
   * ``launch_orchestrator`` -- single-command autonomous launch.
+  * ``marketing_event_templates`` -- niche-aware paid +
+    organic marketing campaign templates ready for
+    ``SHOPIFY_CREATE_MARKETING_ACTIVITY``; covers
+    universal (Google brand search / Meta prospecting /
+    Meta retargeting / TikTok / email welcome) plus
+    niche-specific (Pinterest / YouTube / influencer
+    networks / Reddit / Houzz).
   * ``page_generator`` / ``page_applier`` -- niche-aware
     About / Contact / FAQ / Shipping pages via
     ``SHOPIFY_CREATE_PAGE``.
