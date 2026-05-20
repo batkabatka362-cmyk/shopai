@@ -127,6 +127,10 @@ class ChurnPredictionEngine:
                     "avg_churn_probability": avg_churn_probability,
                 },
                 "confidence": confidence,
+                # Phase 7 writeback: list of per-customer
+                # tag-apply results when ``data.apply_at_risk_tags``
+                # is opted in. Empty otherwise.
+                "tag_results": [],
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
@@ -140,6 +144,46 @@ class ChurnPredictionEngine:
             },
             "error": None,
         }
+
+        # Stage 7.5: Phase 7 writeback (opt-in) ----------------
+        # Engines today emit advisory predictions. When the
+        # caller passes ``data.apply_at_risk_tags=True``, we
+        # push ``shopai-churn-{risk_level}`` tags on every
+        # critical/high-risk customer.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via the approval queue
+        #     so the operator can review before the tag lands.
+        #   * False -- call SHOPIFY_TAG_CUSTOMER directly via
+        #     the adapter router, no human in the loop. Used
+        #     by cycles that gate this engine via the
+        #     auto-approve allowlist.
+        #
+        # ``data.apply_at_risk_tags`` default OFF preserves
+        # the pure-recommendation behavior every existing
+        # caller relies on.
+        data = (
+            input_payload.get("data", {})
+            if isinstance(input_payload, dict) else {}
+        )
+        if isinstance(data, dict) and data.get("apply_at_risk_tags") is True:
+            try:
+                from .tag_applier import apply_at_risk_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                output["data"]["tag_results"] = apply_at_risk_tags(
+                    predictions,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises out
+                # by design, but a stray import / typo shouldn't
+                # poison the engine's primary output.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "churn_prediction tag_applier raised: %s", exc,
+                )
 
         # Persist to memory for accuracy tracking
         write_to_memory(output)
