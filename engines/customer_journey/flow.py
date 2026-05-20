@@ -128,6 +128,44 @@ class CustomerJourneyEngine:
             )
         optimizations = opt_result.get("optimizations", [])
 
+        # ---- Stage 4.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory journey classifications.
+        # When the caller passes ``data.apply_journey_tags=True``,
+        # we push ``shopai-journey-{stage}`` tags on every
+        # customer journey via SHOPIFY_TAG_CUSTOMER. Merchants
+        # then save admin searches for those tags AND downstream
+        # engines (email_marketing / loyalty) filter on the
+        # stage to fire stage-aware retention plays.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue each tag via approval
+        #     queue. Operator reviews before write lands.
+        #   * False -- call SHOPIFY_TAG_CUSTOMER directly via
+        #     the router. Used by cycles that already gate
+        #     this engine via the auto-approve allowlist.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_journey_tags") is True:
+            try:
+                from .tag_applier import apply_journey_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                tag_results = apply_journey_tags(
+                    customer_journeys,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises out
+                # by design, but a stray import / typo shouldn't
+                # poison the engine's primary output.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "customer_journey tag_applier raised: %s", exc,
+                )
+
         # ---- Stage 5: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -138,6 +176,9 @@ class CustomerJourneyEngine:
                 "stage_metrics": stage_metrics,
                 "drop_off_points": drop_off_points,
                 "optimizations": optimizations,
+                # Phase 7 writeback: per-customer tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
