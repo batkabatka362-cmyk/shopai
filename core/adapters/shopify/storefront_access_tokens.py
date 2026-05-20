@@ -134,7 +134,14 @@ class ShopifyStorefrontAccessTokensAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_CREATE_STOREFRONT_ACCESS_TOKEN,
         Capability.SHOPIFY_DELETE_STOREFRONT_ACCESS_TOKEN,
     }
-    required_scopes = frozenset({"read_storefront_tokens", "write_storefront_tokens"})
+    # Shopify removed the dedicated ``read_storefront_tokens`` /
+    # ``write_storefront_tokens`` scopes in 2026+ (no longer in
+    # the Partners Dashboard scope selector; including them in an
+    # install URL causes Shopify to silently reject the request).
+    # The storefrontAccessToken CRUD mutations are still callable
+    # without a dedicated scope -- treat the adapter as
+    # scope_independent, same shape as webhooks / shop / bulk.
+    scope_independent = True
 
     def _execute(
         self,
