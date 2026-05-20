@@ -10202,6 +10202,7 @@ def _cmd_shopify_scopes_live_check(args) -> None:
             "required_scope_count": len(report.required_scopes),
             "missing_from_app": report.missing_from_app,
             "extra_in_app": report.extra_in_app,
+            "missing_adapters": report.missing_adapters,
         }, indent=2))
         if report.missing_from_app:
             sys.exit(1)
@@ -10223,9 +10224,21 @@ def _cmd_shopify_scopes_live_check(args) -> None:
             "calling these surfaces WILL fail with ACCESS_DENIED."
         )
         print()
-        print("Missing scopes:")
+        print("Missing scopes (blast radius):")
         for s in report.missing_from_app:
-            print(f"  {s}")
+            adapters = report.missing_adapters.get(s, [])
+            if adapters:
+                # Show first 4 adapter names then collapse the rest
+                if len(adapters) <= 4:
+                    adapters_str = ", ".join(adapters)
+                else:
+                    adapters_str = (
+                        ", ".join(adapters[:4])
+                        + f", ... +{len(adapters) - 4} more"
+                    )
+                print(f"  {s:<40s} → {adapters_str}")
+            else:
+                print(f"  {s}")
         if report.extra_in_app:
             print()
             print(

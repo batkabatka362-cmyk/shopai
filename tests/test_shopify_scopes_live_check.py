@@ -161,6 +161,75 @@ class TestCompareToLive:
         assert "" not in report.granted_scopes
         assert "  " not in report.granted_scopes
 
+    def test_missing_adapters_blast_radius_populated(self):
+        """When scopes are missing, the report includes the
+        blast radius: which adapters declared a need for each
+        missing scope. Operators see who will fail with
+        ACCESS_DENIED without having to grep the codebase."""
+        from core.adapters.shopify.scope_health import compare_to_live
+        # Grant nothing → everything is missing
+        adapter = _mock_adapter([])
+        report = compare_to_live(adapter=adapter)
+        assert report is not None
+        assert report.is_healthy is False
+        # missing_adapters should be populated for at least
+        # one missing scope. Real adapter manifest has many
+        # scopes with declared adapters.
+        assert isinstance(report.missing_adapters, dict)
+        assert len(report.missing_adapters) > 0
+        # Every key in missing_adapters must be in missing_from_app
+        for scope in report.missing_adapters:
+            assert scope in report.missing_from_app
+        # Every value must be a non-empty list of adapter names
+        for adapters in report.missing_adapters.values():
+            assert isinstance(adapters, list)
+            assert len(adapters) > 0
+
+    def test_missing_adapters_empty_when_healthy(self):
+        """No drift → empty missing_adapters."""
+        from core.adapters.shopify.scope_health import compare_to_live
+        from core.adapters.shopify.scope_registry import all_required_scopes
+        adapter = _mock_adapter(sorted(all_required_scopes()))
+        report = compare_to_live(adapter=adapter)
+        assert report is not None
+        assert report.is_healthy is True
+        assert report.missing_adapters == {}
+
+    def test_missing_adapters_default_when_field_unset(self):
+        """The dataclass default factory ensures missing_adapters
+        is always a dict, never None. Important for callers that
+        treat it as a mapping without isinstance checks."""
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        # Construct without missing_adapters -- default kicks in
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({"read_orders"}),
+            required_scopes=frozenset({"read_orders"}),
+            missing_from_app=[],
+            extra_in_app=[],
+            is_healthy=True,
+        )
+        assert isinstance(report.missing_adapters, dict)
+        assert report.missing_adapters == {}
+
+    def test_registry_failure_yields_empty_blast_radius(self):
+        """If the manifest collection raises while building the
+        blast radius, the report still returns (with empty
+        missing_adapters) -- the granted/missing comparison
+        is the critical info; adapter resolution is a bonus."""
+        from core.adapters.shopify.scope_health import compare_to_live
+        adapter = _mock_adapter(["read_orders"])
+        with patch(
+            "core.adapters.shopify.scope_health.collect_manifest",
+            side_effect=RuntimeError("manifest broke"),
+        ):
+            report = compare_to_live(adapter=adapter)
+        assert report is not None
+        assert report.is_healthy is False
+        # Drift IS detected
+        assert len(report.missing_from_app) > 0
+        # ... but blast radius gracefully empty
+        assert report.missing_adapters == {}
+
 
 # ─── CLI ───────────────────────────────────────────────────────
 
@@ -323,3 +392,118 @@ class TestCli:
             )
         assert code == 0
         assert "unavailable" in out.lower()
+
+    def test_blast_radius_renders_adapters_per_scope(self, cli):
+        """Missing scopes show which adapters need them on the
+        same line. Operators see the blast radius of the drift
+        without grepping the codebase."""
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({"read_orders"}),
+            required_scopes=frozenset({
+                "read_orders", "write_orders", "read_customers",
+            }),
+            missing_from_app=["read_customers", "write_orders"],
+            extra_in_app=[],
+            is_healthy=False,
+            missing_adapters={
+                "read_customers": [
+                    "shopify_customers", "shopify_segments",
+                ],
+                "write_orders": ["shopify_orders"],
+            },
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_scopes_live_check, _ns(),
+            )
+        assert code == 1
+        assert "read_customers" in out
+        assert "shopify_customers" in out
+        assert "shopify_segments" in out
+        assert "write_orders" in out
+        assert "shopify_orders" in out
+
+    def test_blast_radius_truncates_past_4_adapters(self, cli):
+        """When many adapters need a scope, collapse the
+        readout to keep the line manageable."""
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        many = [f"adapter_{i}" for i in range(10)]
+        report = ScopeHealthReport(
+            granted_scopes=frozenset(),
+            required_scopes=frozenset({"read_orders"}),
+            missing_from_app=["read_orders"],
+            extra_in_app=[],
+            is_healthy=False,
+            missing_adapters={"read_orders": many},
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_scopes_live_check, _ns(),
+            )
+        assert code == 1
+        # First 4 adapters appear, rest collapsed
+        assert "adapter_0" in out
+        assert "adapter_3" in out
+        assert "+6 more" in out
+
+    def test_blast_radius_json_includes_missing_adapters(self, cli):
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({"read_orders"}),
+            required_scopes=frozenset({
+                "read_orders", "write_orders",
+            }),
+            missing_from_app=["write_orders"],
+            extra_in_app=[],
+            is_healthy=False,
+            missing_adapters={"write_orders": ["shopify_orders"]},
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_scopes_live_check,
+                _ns(json=True),
+            )
+        assert code == 1
+        data = json.loads(out)
+        assert data["missing_adapters"] == {
+            "write_orders": ["shopify_orders"],
+        }
+
+    def test_missing_scope_without_known_adapters_renders_plain(
+        self, cli,
+    ):
+        """When a scope is in missing_from_app but no adapter
+        is mapped to it (e.g., registry resolution failed),
+        render the scope alone without the arrow."""
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({"read_orders"}),
+            required_scopes=frozenset({
+                "read_orders", "write_orders",
+            }),
+            missing_from_app=["write_orders"],
+            extra_in_app=[],
+            is_healthy=False,
+            missing_adapters={},  # No resolution available
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_scopes_live_check, _ns(),
+            )
+        assert code == 1
+        assert "write_orders" in out
+        # No arrow because no adapters resolved
+        assert "write_orders →" not in out

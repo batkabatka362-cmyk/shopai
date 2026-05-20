@@ -38,25 +38,38 @@ decide what to do.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from utils.logger import get_logger
 
-from core.adapters.shopify.scope_registry import all_required_scopes
+from core.adapters.shopify.scope_registry import (
+    all_required_scopes,
+    collect_manifest,
+)
 
 logger = get_logger("adapters.shopify.scope_health")
 
 
 @dataclass(frozen=True)
 class ScopeHealthReport:
-    """Live vs declared scope comparison."""
+    """Live vs declared scope comparison.
+
+    ``missing_adapters`` maps each missing scope to the
+    adapter(s) that declared a need for it -- the blast
+    radius of the drift. When ``missing_from_app`` lists
+    ``read_customers``, ``missing_adapters["read_customers"]``
+    lists the adapters whose live calls will fail with
+    ``ACCESS_DENIED`` until the install is re-authorized.
+    Empty dict when the drift is healthy.
+    """
 
     granted_scopes: frozenset[str]
     required_scopes: frozenset[str]
     missing_from_app: list[str]
     extra_in_app: list[str]
     is_healthy: bool
+    missing_adapters: dict[str, list[str]] = field(default_factory=dict)
 
 
 def compare_to_live(adapter: Any = None) -> ScopeHealthReport | None:
@@ -130,10 +143,30 @@ def compare_to_live(adapter: Any = None) -> ScopeHealthReport | None:
     missing = sorted(required - granted)
     extra = sorted(granted - required)
 
+    # Build blast radius: which adapters will fail with
+    # ACCESS_DENIED because the scope they need isn't granted.
+    # Empty when healthy. Belt-and-braces: a registry import /
+    # collect failure shouldn't break the live check -- we still
+    # return the granted/missing comparison, just without the
+    # adapter resolution.
+    missing_adapters: dict[str, list[str]] = {}
+    if missing:
+        try:
+            manifest = collect_manifest()
+            for scope in missing:
+                adapters = manifest.by_scope.get(scope, [])
+                if adapters:
+                    missing_adapters[scope] = list(adapters)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "scope_health adapter resolution raised: %s", exc,
+            )
+
     return ScopeHealthReport(
         granted_scopes=granted,
         required_scopes=required,
         missing_from_app=missing,
         extra_in_app=extra,
         is_healthy=not missing,
+        missing_adapters=missing_adapters,
     )
