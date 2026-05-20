@@ -118,7 +118,17 @@ def compare_to_live(adapter: Any = None) -> ScopeHealthReport | None:
     data = getattr(result, "data", {}) or {}
     if not isinstance(data, dict):
         return None
-    raw_scopes = data.get("access_scopes")
+    # The apps adapter nests the granted scopes under
+    # ``installation.access_scopes`` (production shape). Older
+    # mocks / fixtures sometimes use the flat ``access_scopes``
+    # form; tolerate both so existing tests don't regress while
+    # the live call actually works.
+    installation = data.get("installation")
+    raw_scopes: Any
+    if isinstance(installation, dict):
+        raw_scopes = installation.get("access_scopes")
+    else:
+        raw_scopes = data.get("access_scopes")
     if not isinstance(raw_scopes, list):
         return None
 

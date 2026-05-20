@@ -161,6 +161,115 @@ class TestCompareToLive:
         assert "" not in report.granted_scopes
         assert "  " not in report.granted_scopes
 
+    def test_nested_installation_shape_read(self):
+        """REGRESSION: the apps adapter wraps scopes under
+        ``data.installation.access_scopes`` -- the production
+        shape. Earlier the check only read the flat
+        ``data.access_scopes`` key and silently returned None
+        in production. Tests passed because mocks used the
+        flat shape too. This test asserts the nested shape
+        works end-to-end so the live drift check stays
+        functional."""
+        from core.adapters.shopify.scope_health import compare_to_live
+        from core.adapters.shopify.scope_registry import all_required_scopes
+
+        adapter = MagicMock()
+        adapter.is_configured.return_value = True
+        result = MagicMock()
+        result.ok = True
+        # Production shape: scopes nested under "installation".
+        result.data = {
+            "installation": {
+                "installation_id": "gid://shopify/AppInstallation/1",
+                "access_scopes": sorted(all_required_scopes()),
+                "app_title": "ShopAI",
+            },
+            "found": True,
+        }
+        adapter.execute.return_value = result
+
+        report = compare_to_live(adapter=adapter)
+        assert report is not None
+        assert report.is_healthy is True
+        assert report.missing_from_app == []
+
+    def test_nested_shape_drift_detection(self):
+        """Same nested-shape regression but with actual drift
+        present -- the comparison logic still works."""
+        from core.adapters.shopify.scope_health import compare_to_live
+
+        adapter = MagicMock()
+        adapter.is_configured.return_value = True
+        result = MagicMock()
+        result.ok = True
+        result.data = {
+            "installation": {
+                "access_scopes": ["read_orders", "read_some_extra"],
+            },
+            "found": True,
+        }
+        adapter.execute.return_value = result
+
+        report = compare_to_live(adapter=adapter)
+        assert report is not None
+        # Missing scopes registered → not healthy
+        assert report.is_healthy is False
+        assert "read_some_extra" in report.extra_in_app
+        # The granted scopes parsed from the nested shape
+        assert "read_orders" in report.granted_scopes
+
+    def test_nested_installation_with_missing_access_scopes(self):
+        """Defensive: ``installation`` key present but
+        ``access_scopes`` missing under it. Should return None
+        rather than crash."""
+        from core.adapters.shopify.scope_health import compare_to_live
+
+        adapter = MagicMock()
+        adapter.is_configured.return_value = True
+        result = MagicMock()
+        result.ok = True
+        result.data = {
+            "installation": {"installation_id": "gid://1"},
+            "found": True,
+        }
+        adapter.execute.return_value = result
+
+        report = compare_to_live(adapter=adapter)
+        assert report is None
+
+    def test_nested_installation_with_non_list_access_scopes(self):
+        """Defensive: ``installation.access_scopes`` present
+        but not a list. Should return None."""
+        from core.adapters.shopify.scope_health import compare_to_live
+
+        adapter = MagicMock()
+        adapter.is_configured.return_value = True
+        result = MagicMock()
+        result.ok = True
+        result.data = {
+            "installation": {
+                "access_scopes": "read_orders,write_orders",
+            },
+        }
+        adapter.execute.return_value = result
+
+        report = compare_to_live(adapter=adapter)
+        assert report is None
+
+    def test_flat_shape_still_supported_for_mocks(self):
+        """Backward compat: existing test mocks that use the
+        flat ``data.access_scopes`` shape continue to work.
+        The fallback path reads from the flat key when
+        ``data.installation`` is absent."""
+        from core.adapters.shopify.scope_health import compare_to_live
+        from core.adapters.shopify.scope_registry import all_required_scopes
+
+        adapter = _mock_adapter(sorted(all_required_scopes()))
+        # The default _mock_adapter uses the flat shape.
+        report = compare_to_live(adapter=adapter)
+        assert report is not None
+        assert report.is_healthy is True
+
 
 # ─── CLI ───────────────────────────────────────────────────────
 
