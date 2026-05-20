@@ -106,6 +106,57 @@ class CustomerEffortScoreEngine:
         improvements = improvement_result.get("improvements", [])
         trend = improvement_result.get("trend", "unknown")
 
+        # ---- Stage 4.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory per-interaction effort
+        # scores. When the caller passes
+        # ``data.apply_ces_tags=True``, we push
+        # ``shopai-ces-{bucket}`` on every customer (worst
+        # score wins) via SHOPIFY_TAG_CUSTOMER. Merchants
+        # then save admin searches to focus support attention
+        # or run reach-out campaigns; downstream engines
+        # (customer_service / loyalty) filter on the bucket
+        # for friction-aware retention plays.
+        #
+        # Only the "high" bucket is tagged by default --
+        # tagging happy customers as "low effort" is noise.
+        # ``data.include_low=True`` / ``include_medium=True``
+        # opt back in.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_TAG_CUSTOMER directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_ces_tags") is True:
+            try:
+                from .tag_applier import apply_ces_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                include_low = bool(
+                    data.get("include_low", False),
+                )
+                include_medium = bool(
+                    data.get("include_medium", False),
+                )
+                tag_results = apply_ces_tags(
+                    interaction_scores,
+                    include_low=include_low,
+                    include_medium=include_medium,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises out
+                # by design, but a stray import / typo
+                # shouldn't poison the engine's primary
+                # output.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "ces tag_applier raised: %s", exc,
+                )
+
         # ---- Stage 5: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -117,6 +168,9 @@ class CustomerEffortScoreEngine:
                 "friction_points": friction_points,
                 "improvements": improvements,
                 "trend": trend,
+                # Phase 7 writeback: per-customer tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
