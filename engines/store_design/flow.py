@@ -197,6 +197,55 @@ class StoreDesignEngine:
                 "store_design: design_recorder raised: %s", exc,
             )
 
+        # ---- Stage 10: Optional Shopify theme apply ---------
+        # Opt-in via ``data.apply_design = True`` (default OFF,
+        # mirrors the Phase 6/7 writer pattern). When the
+        # caller opts in AND supplies a target ``data.theme_id``,
+        # the design_applier upserts two additive theme files
+        # (``assets/shopai-design-tokens.json`` +
+        # ``snippets/shopai-design-recommendations.liquid``) so
+        # the recommendations land in the live theme rather
+        # than just the audit log.
+        #
+        # Apply results are surfaced under ``data.apply_results``
+        # so the operator approval queue / dashboard can see
+        # what was written.
+        envelope["data"]["apply_results"] = []
+        if bool(data.get("apply_design")):
+            try:
+                from engines.store_design.design_applier import (
+                    apply_design,
+                )
+                theme_id = str(data.get("theme_id") or "").strip()
+                store_id = str(data.get("store_id") or "").strip() or None
+                if not theme_id:
+                    envelope["data"]["apply_results"].append({
+                        "applied": False,
+                        "theme_id": "",
+                        "files_written": [],
+                        "error": "theme_id_required",
+                    })
+                else:
+                    apply_result = apply_design(
+                        engine_output=envelope,
+                        theme_id=theme_id,
+                        store_id=store_id,
+                    )
+                    envelope["data"]["apply_results"].append(
+                        apply_result,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "store_design: apply_design raised: %s", exc,
+                )
+                envelope["data"]["apply_results"].append({
+                    "applied": False,
+                    "theme_id": "",
+                    "files_written": [],
+                    "error": f"applier_raised: {exc}",
+                })
+
         return envelope
 
     # -------------------------------------------------------------------
