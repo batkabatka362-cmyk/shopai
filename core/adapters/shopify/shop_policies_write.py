@@ -34,8 +34,9 @@ type (no ``code`` field) -- confirmed by Shopify's schema.
 Don't add ``code`` to the userErrors selection or the query
 fails with "Field 'code' doesn't exist on type 'UserError'".
 
-Required scopes: ``write_shop_policies`` (plus ``read_shop_policies``
-for the reader half).
+Required scopes: ``write_legal_policies`` (plus ``read_legal_policies``
+for the reader half). Shopify renamed these from ``read/write_shop_policies``;
+the legacy names are silently dropped from install URLs in 2026+.
 """
 from __future__ import annotations
 
@@ -88,8 +89,13 @@ class ShopifyShopPoliciesWriteAdapter(ShopifyBaseAdapter):
 
     name = "shopify_shop_policies_write"
     capabilities = {Capability.SHOPIFY_UPDATE_SHOP_POLICY}
+    # Shopify renamed these scopes from ``read/write_shop_policies``
+    # to ``read/write_legal_policies`` (date unknown; surfaced
+    # during a live install audit where the legacy names were
+    # silently dropped from the install URL by Shopify and the
+    # token came back with only the granted-and-renamed subset).
     required_scopes = frozenset({
-        "read_shop_policies", "write_shop_policies",
+        "read_legal_policies", "write_legal_policies",
     })
 
     def _execute(

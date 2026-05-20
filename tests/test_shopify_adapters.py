@@ -31956,7 +31956,12 @@ class TestShopifyShopPoliciesWriteAdapter:
             Capability.SHOPIFY_UPDATE_SHOP_POLICY
             in a.capabilities
         )
-        assert "write_shop_policies" in a.required_scopes
+        assert "write_legal_policies" in a.required_scopes
+        assert "read_legal_policies" in a.required_scopes
+        # Legacy names are intentionally gone -- Shopify renamed
+        # these in 2026+ and silently drops them from install URLs.
+        assert "write_shop_policies" not in a.required_scopes
+        assert "read_shop_policies" not in a.required_scopes
 
     def test_unsupported_capability_returns_failure(self):
         from core.adapters.shopify.shop_policies_write import (
