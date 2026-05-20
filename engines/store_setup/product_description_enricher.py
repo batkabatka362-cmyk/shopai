@@ -51,7 +51,10 @@ via :func:`apply_descriptions` later.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import re
 from typing import Any, Iterable
 
 from engines._writeback_recorder import record_writeback
@@ -190,9 +193,15 @@ def enrich_products(
             })
             continue
 
-        body_html = _build_description(
-            product, context,
+        # ── Path 1: LLM ──────────────────────────────────────
+        llm_body = _enrich_one_via_llm(
+            product=product, niche=niche_n, context=context,
         )
+        if llm_body:
+            body_html = llm_body
+        else:
+            # ── Path 2: Templates ────────────────────────────
+            body_html = _build_description(product, context)
         generated.append({
             "product_id": product_id,
             "title": title,
@@ -200,6 +209,134 @@ def enrich_products(
         })
 
     return {"generated": generated, "skipped": skipped}
+
+
+# ── LLM-driven enrichment (per product) ───────────────────
+
+
+_JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
+
+# A landing-quality body should be 150-400 words. Below 100
+# words is a degenerate result -- fall back to template.
+_LLM_MIN_BODY_CHARS = 600
+
+
+def _enrich_one_via_llm(
+    *,
+    product: dict[str, Any],
+    niche: str,
+    context: dict[str, str],
+) -> str | None:
+    """Generate a single product's body_html via the LLM router.
+
+    Returns the HTML body on success, ``None`` on any failure
+    (caller falls back to template builder). Never raises.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+
+    try:
+        from core.adapters import get_router as _get_router_fn
+        from core.adapters.base import Capability
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM router import failed: %s", exc)
+        return None
+
+    try:
+        router = _get_router_fn()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM router init failed: %s", exc)
+        return None
+
+    title = (product.get("title") or "").strip()
+    product_type = (
+        product.get("product_type")
+        or product.get("type")
+        or ""
+    ).strip()
+    vendor = (product.get("vendor") or "").strip()
+    tags = product.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    tags_line = ", ".join(str(t) for t in tags[:8]) if tags else "n/a"
+
+    system_prompt = (
+        "You are an expert Shopify product copywriter. Write "
+        "product descriptions that convert. Lead with the "
+        f"benefit, not the feature. Niche framing: '{context.get('intro', '')}' "
+        f"and '{context.get('promise', '')}'. Length: 200-400 "
+        "words. Format: clean HTML with <p>, <ul>, <li> tags "
+        "(no <html>/<body> wrapper, no <h1>). Always respond "
+        "with STRICT JSON; no markdown fences."
+    )
+
+    user_prompt = (
+        f"Product: {title}\n"
+        f"Product type: {product_type or 'n/a'}\n"
+        f"Vendor: {vendor or 'n/a'}\n"
+        f"Tags: {tags_line}\n"
+        f"Niche: {niche}\n\n"
+        "Return STRICT JSON in this exact shape:\n"
+        "{\n"
+        '  "body_html": "the full HTML body (200-400 words, <p>/<ul>/<li>)"\n'
+        "}"
+    )
+
+    try:
+        result = router.execute(Capability.CHAT_COMPLETE, {
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "max_tokens": 1500,
+            "temperature": 0.7,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM call raised for %s: %s", title, exc)
+        return None
+
+    if not getattr(result, "ok", False):
+        logger.debug(
+            "LLM call returned not-ok for %s: %s",
+            title, getattr(result, "error", "unknown"),
+        )
+        return None
+
+    text = ((result.data or {}).get("text") or "").strip()
+    if not text:
+        return None
+
+    parsed = _parse_llm_json(text)
+    if not parsed:
+        return None
+
+    body_html = str(parsed.get("body_html") or "").strip()
+    if not body_html:
+        return None
+
+    # Degenerate-result guard: too short means the model
+    # likely returned a slogan, not a description. Fall back.
+    if len(body_html) < _LLM_MIN_BODY_CHARS:
+        return None
+
+    return body_html
+
+
+def _parse_llm_json(text: str) -> dict[str, Any] | None:
+    """Best-effort JSON parse, tolerates markdown fences."""
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:  # noqa: BLE001
+        pass
+    match = _JSON_BLOCK_RE.search(text)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def apply_descriptions(
