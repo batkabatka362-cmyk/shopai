@@ -134,6 +134,11 @@ class StockPredictionEngine:
         recommendations = restock_result.get("recommendations", [])
 
         # ---- Stage 6: Assemble predictions ----
+        # ``urgency`` is forwarded from the recommender so the
+        # opt-in tag_applier (Stage 7.5) can bucket on it. Existing
+        # callers ignore the extra key; new callers can drive a
+        # "show me products about to stock out" view directly off
+        # the engine output.
         predictions: list[dict[str, Any]] = []
         for rec in recommendations:
             predictions.append({
@@ -142,6 +147,7 @@ class StockPredictionEngine:
                 "predicted_demand_90d": rec.get("predicted_demand_90d", 0.0),
                 "restock_date": rec.get("restock_date", ""),
                 "restock_qty": rec.get("restock_qty", 0),
+                "urgency": rec.get("urgency", "low"),
             })
 
         # Compute overall confidence
@@ -158,6 +164,52 @@ class StockPredictionEngine:
             confidence=avg_confidence,
         )
 
+        # ---- Stage 7.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory urgency classifications.
+        # When the caller passes ``data.apply_stock_tags=True``,
+        # we push ``shopai-stock-{urgency}`` on every at-risk
+        # product via SHOPIFY_ADD_TAGS. Merchants then save
+        # admin searches to drive a "products needing restock"
+        # worklist; downstream engines (catalog / storefront /
+        # paid_ads) can suppress these from featured slots or
+        # pause ad spend on products that will stock out
+        # before the ads ROI.
+        #
+        # Only ``critical`` is tagged by default;
+        # ``data.include_high=True`` opts in ``high`` too.
+        # ``medium`` / ``low`` are noise for the operational
+        # worklist.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_stock_tags") is True:
+            try:
+                from .tag_applier import apply_stock_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                include_high = bool(
+                    data.get("include_high", False),
+                )
+                tag_results = apply_stock_tags(
+                    predictions,
+                    include_high=include_high,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "stock_prediction tag_applier raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -167,6 +219,9 @@ class StockPredictionEngine:
                 "predictions": predictions,
                 "seasonal_factors": seasonal_factors,
                 "confidence": avg_confidence,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
