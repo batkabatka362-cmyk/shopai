@@ -3,13 +3,40 @@
 Writes the actual marketing copy: headlines, body text, bullet points, and
 calls-to-action, tailored to the content type and tone.
 
-Model note: Uses LLaMA for creative writing tasks.
+Two paths, in priority order:
+
+  1. **LLM path** (preferred). Builds a structured prompt from the
+     brief / tone / keyword / product / brand inputs and calls
+     ``Capability.CHAT_COMPLETE`` via the adapter router. The
+     router picks whichever LLM provider is configured first
+     (Ollama local / Groq / Gemini / DeepSeek / Mistral / OpenAI /
+     Anthropic, in that fallback order). The LLM returns JSON
+     with the canonical ``{headline, body, bullets, cta,
+     alt_headlines}`` shape, which we hand straight back to the
+     caller.
+
+  2. **Template path** (fallback). Pure string interpolation
+     against the ``_CONTENT_TEMPLATES`` / ``_CTA_PHRASES`` /
+     ``_TONE_ADJECTIVES`` constants. Used when no LLM is wired
+     up, when the LLM call times out / errors, when the JSON
+     parse fails, or under pytest (Pattern J guard).
+
+The template path is deterministic and test-friendly; the LLM
+path is what makes the AI behave at master-level (brand-tuned
+voice, audience-aware framing, SEO-keyword woven naturally
+into prose rather than awkward feature dumps).
 """
 from __future__ import annotations
 
 import copy
+import json
+import os
 import re
 from typing import Any
+
+from utils.logger import get_logger
+
+logger = get_logger("engines.content_generation.copy_writer")
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +128,11 @@ def write_copy(
 ) -> dict[str, Any]:
     """Write marketing copy based on analysis results.
 
+    Tries the LLM path first; on any failure (no provider
+    configured, network blip, timeout, malformed JSON response)
+    falls back to the deterministic template path so the engine
+    output stays valid in every environment.
+
     Args:
         brief_analysis: Output from brief_analyzer.
         tone_selection: Output from tone_selector.
@@ -137,25 +169,39 @@ def write_copy(
             content_type, _CONTENT_TEMPLATES["product_description"],
         )
 
-        # --- Build headline ---
+        # ── Path 1: LLM-driven generation ────────────────────────
+        llm_draft = _write_copy_via_llm(
+            title=title,
+            features=features,
+            price=price,
+            category=category,
+            brand_name=brand_name,
+            content_type=content_type,
+            usps=usps,
+            target_audience=target_audience,
+            desired_outcome=desired_outcome,
+            primary_tone=primary_tone,
+            emotional_appeal=emotional_appeal,
+            primary_keywords=primary_keywords,
+            secondary_keywords=secondary_keywords,
+            template=template,
+        )
+        if llm_draft is not None:
+            return {"status": "success", "draft": llm_draft}
+
+        # ── Path 2: Deterministic template fallback ──────────────
         headline = _build_headline(
             title, usps, primary_tone, category, content_type,
         )
         alt_headlines = _build_alt_headlines(
             title, usps, primary_tone, category,
         )
-
-        # --- Build body ---
         body = _build_body(
             title, features, usps, primary_tone, emotional_appeal,
             target_audience, primary_keywords, secondary_keywords,
             brand_name, price, content_type, template,
         )
-
-        # --- Build bullets ---
         bullets = _build_bullets(features, usps, primary_tone, template)
-
-        # --- Select CTA ---
         cta_style = template.get("cta_style", "purchase")
         cta_options = _CTA_PHRASES.get(cta_style, _CTA_PHRASES["purchase"])
         cta = cta_options[0]
@@ -168,7 +214,10 @@ def write_copy(
                 "bullets": bullets,
                 "cta": cta,
                 "alt_headlines": alt_headlines,
-                "model_note": "LLaMA: creative copy generation with tone and keyword integration",
+                "model_note": (
+                    "template fallback: no LLM provider configured "
+                    "or LLM call failed; deterministic copy returned"
+                ),
             },
         }
     except Exception as exc:
@@ -177,6 +226,242 @@ def write_copy(
             "draft": {},
             "error": f"Copy writing failed: {exc}",
         }
+
+
+# ---------------------------------------------------------------------------
+# LLM-driven path
+# ---------------------------------------------------------------------------
+
+# Token budget for the JSON response. Product descriptions tend
+# to fit comfortably in 800; blogs may need 1500-2000.
+_LLM_MAX_TOKENS_BY_CONTENT_TYPE: dict[str, int] = {
+    "product_description": 800,
+    "ad_copy": 400,
+    "social_post": 400,
+    "blog": 2000,
+    "email": 700,
+}
+
+
+def _write_copy_via_llm(
+    *,
+    title: str,
+    features: list[str],
+    price: float,
+    category: str,
+    brand_name: str,
+    content_type: str,
+    usps: list[str],
+    target_audience: str,
+    desired_outcome: str,
+    primary_tone: str,
+    emotional_appeal: str,
+    primary_keywords: list[str],
+    secondary_keywords: list[str],
+    template: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Try to generate copy via an LLM provider through the router.
+
+    Returns the draft dict on success, or ``None`` on any failure
+    (so the caller falls back to the deterministic template).
+    The return value never raises -- failures are logged and the
+    caller routes around them.
+    """
+    # Pattern J: never call live LLMs under pytest. Tests that
+    # specifically want to exercise the LLM path mock the router
+    # via patch().
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM router import failed: %s", exc)
+        return None
+
+    try:
+        router = get_router()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM router init failed: %s", exc)
+        return None
+
+    system_prompt = _build_llm_system_prompt(primary_tone, emotional_appeal)
+    user_prompt = _build_llm_user_prompt(
+        title=title,
+        features=features,
+        price=price,
+        category=category,
+        brand_name=brand_name,
+        content_type=content_type,
+        usps=usps,
+        target_audience=target_audience,
+        desired_outcome=desired_outcome,
+        primary_keywords=primary_keywords,
+        secondary_keywords=secondary_keywords,
+        template=template,
+    )
+
+    max_tokens = _LLM_MAX_TOKENS_BY_CONTENT_TYPE.get(content_type, 800)
+    try:
+        result = router.execute(Capability.CHAT_COMPLETE, {
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "max_tokens": max_tokens,
+            "temperature": 0.7,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM call raised: %s", exc)
+        return None
+
+    if not getattr(result, "ok", False):
+        logger.debug(
+            "LLM call returned not-ok: %s",
+            getattr(result, "error", "unknown"),
+        )
+        return None
+
+    text = ((result.data or {}).get("text") or "").strip()
+    if not text:
+        return None
+
+    parsed = _parse_llm_json(text)
+    if not parsed:
+        return None
+
+    # Validate shape and coerce types defensively (LLM output is
+    # untrusted no matter how strict the prompt is).
+    headline = str(parsed.get("headline") or "").strip()
+    body = str(parsed.get("body") or "").strip()
+    if not headline or not body:
+        return None
+
+    bullets_raw = parsed.get("bullets") or []
+    bullets = [str(b).strip() for b in bullets_raw if str(b).strip()][:8]
+
+    cta = str(parsed.get("cta") or "").strip()
+    if not cta:
+        # Fall back to the canned CTA for this content type rather
+        # than failing the whole LLM path on a missing CTA.
+        cta_style = template.get("cta_style", "purchase")
+        cta = _CTA_PHRASES.get(cta_style, _CTA_PHRASES["purchase"])[0]
+
+    alt_headlines_raw = parsed.get("alt_headlines") or []
+    alt_headlines = [
+        str(h).strip() for h in alt_headlines_raw if str(h).strip()
+    ][:5]
+
+    model = ""
+    try:
+        model = str((result.data or {}).get("model") or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "headline": headline,
+        "body": body,
+        "bullets": bullets,
+        "cta": cta,
+        "alt_headlines": alt_headlines,
+        "model_note": (
+            f"llm: {model}" if model else "llm: provider-default"
+        ),
+    }
+
+
+def _build_llm_system_prompt(tone: str, emotional_appeal: str) -> str:
+    """Build the system prompt that primes the LLM as a Shopify
+    copywriter with the right tone."""
+    return (
+        "You are an expert Shopify copywriter. You write marketing "
+        "copy that converts. Voice: "
+        f"{tone}. Emotional appeal: {emotional_appeal}. "
+        "Weave keywords naturally into prose -- never keyword-stuff. "
+        "Address the target audience directly. Highlight USPs "
+        "concretely (numbers, comparisons, specifics) over generic "
+        "claims. Always respond with STRICT JSON in the requested "
+        "shape; no markdown fences, no commentary outside the JSON."
+    )
+
+
+def _build_llm_user_prompt(
+    *,
+    title: str,
+    features: list[str],
+    price: float,
+    category: str,
+    brand_name: str,
+    content_type: str,
+    usps: list[str],
+    target_audience: str,
+    desired_outcome: str,
+    primary_keywords: list[str],
+    secondary_keywords: list[str],
+    template: dict[str, Any],
+) -> str:
+    """Build the user prompt with the product + brief context."""
+    body_min, body_max = template.get("body_length", (150, 300))
+    bullet_min, bullet_max = template.get("bullet_count", (3, 6))
+    price_str = f"${price:.2f}" if price and float(price) > 0 else "n/a"
+    brand_line = f"Brand: {brand_name}" if brand_name else "Brand: (unbranded)"
+
+    return (
+        f"Write {content_type.replace('_', ' ')} copy for the following "
+        f"Shopify product.\n\n"
+        f"Product: {title}\n"
+        f"{brand_line}\n"
+        f"Category: {category or 'n/a'}\n"
+        f"Price: {price_str}\n"
+        f"Features:\n"
+        + "\n".join(f"  - {f}" for f in features[:10]) + "\n"
+        + f"Unique selling points:\n"
+        + "\n".join(f"  - {u}" for u in usps[:5]) + "\n"
+        + f"Target audience: {target_audience}\n"
+        + f"Desired outcome: {desired_outcome or 'drive purchase'}\n"
+        + f"Primary keywords (work these in naturally): "
+        + (", ".join(primary_keywords[:5]) or "n/a") + "\n"
+        + f"Secondary keywords: "
+        + (", ".join(secondary_keywords[:5]) or "n/a") + "\n\n"
+        + f"Length constraints: body {body_min}-{body_max} words, "
+        + f"{bullet_min}-{bullet_max} bullet points.\n\n"
+        + "Return STRICT JSON:\n"
+        + "{\n"
+        + '  "headline": "primary catchy headline",\n'
+        + '  "alt_headlines": ["alt 1", "alt 2", "alt 3"],\n'
+        + '  "body": "main marketing copy",\n'
+        + '  "bullets": ["bullet 1", "bullet 2", ...],\n'
+        + '  "cta": "call-to-action phrase"\n'
+        + "}"
+    )
+
+
+_JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
+
+
+def _parse_llm_json(text: str) -> dict[str, Any] | None:
+    """Best-effort JSON parse of an LLM response.
+
+    Tolerates the model wrapping the JSON in markdown fences or
+    prefixing it with commentary -- locks onto the outermost
+    ``{...}`` block.
+    """
+    if not text:
+        return None
+    # Direct parse first (the strictly-prompted happy path).
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:  # noqa: BLE001
+        pass
+    # Find the outermost JSON object.
+    match = _JSON_BLOCK_RE.search(text)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------------------
