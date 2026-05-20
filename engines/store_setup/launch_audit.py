@@ -77,6 +77,12 @@ _ACTIVE_PRODUCT_STATUSES: frozenset[str] = frozenset({"ACTIVE"})
 # rate evaluation has nothing to match against at checkout.
 _MIN_SHIPPING_ZONES: int = 1
 
+# A location counts toward "fulfillment-ready" only when it is
+# both active AND opted into online-order fulfillment. An
+# active warehouse that doesn't fulfill online orders (e.g. a
+# pickup-only outpost) can't satisfy a website checkout.
+_MIN_FULFILLABLE_LOCATIONS: int = 1
+
 
 def audit_store(
     *,
@@ -85,6 +91,9 @@ def audit_store(
     expected_discounts: int = 1,
     expected_products: int = 1,
     expected_shipping_zones: int = _MIN_SHIPPING_ZONES,
+    expected_fulfillable_locations: int = (
+        _MIN_FULFILLABLE_LOCATIONS
+    ),
 ) -> dict[str, Any]:
     """Run the full launch-readiness audit.
 
@@ -104,6 +113,10 @@ def audit_store(
             shipping zones across all delivery profiles
             (default 1 -- a store with zero shipping zones
             can't quote shipping at checkout).
+        expected_fulfillable_locations: Minimum count of
+            locations that are BOTH active AND opted into
+            online-order fulfillment (default 1 -- without
+            one, every order errors at fulfillment routing).
 
     Returns:
         Dict with the schema documented in the module docstring.
@@ -131,6 +144,11 @@ def audit_store(
     checks.append(
         _check_shipping_zones(
             expected=expected_shipping_zones,
+        ),
+    )
+    checks.append(
+        _check_fulfillable_locations(
+            expected=expected_fulfillable_locations,
         ),
     )
 
@@ -432,6 +450,55 @@ def _check_shipping_zones(*, expected: int) -> dict[str, Any]:
         "key": "shipping_zones",
         "ok": zone_count >= threshold,
         "applied": zone_count,
+        "expected": threshold,
+        "missing": missing,
+    }
+
+
+def _check_fulfillable_locations(
+    *, expected: int,
+) -> dict[str, Any]:
+    """Count fulfillment-ready locations via
+    SHOPIFY_LIST_LOCATIONS.
+
+    A location counts only when both ``is_active`` AND
+    ``fulfills_online_orders`` are true. An active pickup-only
+    outpost (active but not fulfills_online_orders) does NOT
+    satisfy this check -- the autonomous merchant's whole
+    point is fulfilling website orders.
+
+    Stores are typically created with one default location
+    that satisfies the threshold automatically; the check
+    catches the edge cases where an operator deactivated the
+    default location, migrated to a 3PL and forgot to flip
+    fulfills_online_orders, or set up an inactive outpost as
+    placeholder.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_LIST_LOCATIONS",
+        params={"limit": 50},
+        empty_default={},
+    )
+    raw = data.get("locations") if isinstance(data, dict) else []
+    fulfillable = 0
+    if isinstance(raw, list):
+        for location in raw:
+            if not isinstance(location, dict):
+                continue
+            if (
+                bool(location.get("is_active"))
+                and bool(location.get("fulfills_online_orders"))
+            ):
+                fulfillable += 1
+
+    threshold = max(0, int(expected))
+    missing: list[str] = []
+    if fulfillable < threshold:
+        missing = [f"need {threshold - fulfillable} more"]
+    return {
+        "key": "fulfillable_locations",
+        "ok": fulfillable >= threshold,
+        "applied": fulfillable,
         "expected": threshold,
         "missing": missing,
     }

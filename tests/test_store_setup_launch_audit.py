@@ -88,6 +88,14 @@ _ALL_GOOD = {
             }],
         }],
     }),
+    "shopify_list_locations": _ok({
+        "locations": [{
+            "id": "gid://shopify/Location/1",
+            "name": "Warehouse",
+            "is_active": True,
+            "fulfills_online_orders": True,
+        }],
+    }),
     "shopify_list_themes": _ok({
         "themes": [{
             "id": "gid://shopify/OnlineStoreTheme/1",
@@ -137,8 +145,8 @@ class TestAllPass:
             "engines.store_setup.launch_audit.record_writeback",
         ):
             result = audit_store()
-        # 6 of 7 pass -> round(100 * 6/7) = 86
-        assert result["completion_pct"] == 86
+        # 7 of 8 pass -> round(100 * 7/8) = 88
+        assert result["completion_pct"] == 88
         assert result["ready_to_launch"] is False
 
 
@@ -598,6 +606,159 @@ class TestShippingZonesCheck:
         assert zones["applied"] == 1
         assert zones["expected"] == 4
         assert zones["missing"] == ["need 3 more"]
+
+
+class TestFulfillableLocationsCheck:
+
+    def test_one_fulfillable_passes(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        locations = next(
+            c for c in result["checks"]
+            if c["key"] == "fulfillable_locations"
+        )
+        assert locations["ok"] is True
+        assert locations["applied"] == 1
+        assert locations["expected"] == 1
+        assert locations["missing"] == []
+
+    def test_zero_locations_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_locations"] = _ok({
+            "locations": [],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        locations = next(
+            c for c in result["checks"]
+            if c["key"] == "fulfillable_locations"
+        )
+        assert locations["ok"] is False
+        assert locations["applied"] == 0
+        assert locations["missing"] == ["need 1 more"]
+
+    def test_inactive_location_doesnt_count(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_locations"] = _ok({
+            "locations": [{
+                "id": "loc1",
+                "name": "Old Warehouse",
+                "is_active": False,
+                "fulfills_online_orders": True,
+            }],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        locations = next(
+            c for c in result["checks"]
+            if c["key"] == "fulfillable_locations"
+        )
+        assert locations["ok"] is False
+        assert locations["applied"] == 0
+
+    def test_pickup_only_location_doesnt_count(self):
+        """A location that's active but opted out of
+        online-order fulfillment (pickup-only outpost) can't
+        satisfy a website order."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_locations"] = _ok({
+            "locations": [{
+                "id": "loc1",
+                "name": "Pickup Counter",
+                "is_active": True,
+                "fulfills_online_orders": False,
+            }],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        locations = next(
+            c for c in result["checks"]
+            if c["key"] == "fulfillable_locations"
+        )
+        assert locations["ok"] is False
+        assert locations["applied"] == 0
+
+    def test_mixed_locations_only_fulfillable_counted(self):
+        """Three locations: one fulfillable, one inactive, one
+        pickup-only. Only the fulfillable one counts."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_locations"] = _ok({
+            "locations": [
+                {"id": "loc1", "name": "Main",
+                 "is_active": True,
+                 "fulfills_online_orders": True},
+                {"id": "loc2", "name": "Closed",
+                 "is_active": False,
+                 "fulfills_online_orders": True},
+                {"id": "loc3", "name": "Pickup",
+                 "is_active": True,
+                 "fulfills_online_orders": False},
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        locations = next(
+            c for c in result["checks"]
+            if c["key"] == "fulfillable_locations"
+        )
+        assert locations["applied"] == 1
+        assert locations["ok"] is True
+
+    def test_custom_threshold_unmet(self):
+        # _ALL_GOOD has 1 fulfillable; caller expects 3
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store(
+                expected_fulfillable_locations=3,
+            )
+        locations = next(
+            c for c in result["checks"]
+            if c["key"] == "fulfillable_locations"
+        )
+        assert locations["ok"] is False
+        assert locations["expected"] == 3
+        assert locations["missing"] == ["need 2 more"]
 
 
 class TestProbeFailureResilience:
