@@ -96,6 +96,55 @@ class WishlistEngine:
 
         _write = write_wishlist_result(analysis=analysis, recommendations_count=len(conversion_recommendations))
 
+        # ---- Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory wishlist-popularity
+        # signals. When the caller passes
+        # ``data.apply_wishlist_tags=True``, we push
+        # ``shopai-wishlisted-hot`` (additive) on every
+        # top-wishlisted product above the count threshold via
+        # SHOPIFY_ADD_TAGS. Merchants then save admin searches
+        # for the tag, build "popular in wishlists" smart
+        # collections, AND downstream engines (email_marketing
+        # / back_in_stock) filter on it to drive demand-pull
+        # campaigns.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue each tag-add via
+        #     approval queue. Operator reviews before write
+        #     lands.
+        #   * False -- call SHOPIFY_ADD_TAGS directly via the
+        #     router. Used by cycles that already gate this
+        #     engine via the auto-approve allowlist.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on. The
+        # ``min_wishlist_count`` floor (default 3) lives in
+        # input data so callers can tune signal strength.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_wishlist_tags") is True:
+            try:
+                from .tag_applier import apply_wishlist_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                min_count = int(
+                    data.get("min_wishlist_count", 3) or 3,
+                )
+                tag_results = apply_wishlist_tags(
+                    analysis.get("top_wishlisted", []),
+                    min_wishlist_count=min_count,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises out
+                # by design, but a stray import / typo
+                # shouldn't poison the engine's primary
+                # output.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "wishlist tag_applier raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -104,6 +153,9 @@ class WishlistEngine:
                 "price_alerts": price_alerts,
                 "conversion_recommendations": conversion_recommendations,
                 "social_proof_data": social_proof_data,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {"engine": self.ENGINE_NAME, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "elapsed_seconds": round(elapsed, 3)},
             "error": None,
