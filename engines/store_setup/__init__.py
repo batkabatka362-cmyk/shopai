@@ -24,6 +24,10 @@ Modules:
     description generation via ``SHOPIFY_UPDATE_PRODUCT``.
   * ``seo_meta_enricher`` -- niche-aware product SEO meta
     (title_tag + meta_description) via ``SHOPIFY_UPDATE_PRODUCT``.
+  * ``thank_you_card`` -- niche-aware physical-insert
+    card content (greeting / value / single ask /
+    QR-code target / design notes); print-ready
+    operator-facing reference.
   * ``welcome_discount`` -- launch-time WELCOME{N} code via
     ``SHOPIFY_CREATE_DISCOUNT``.
 """
