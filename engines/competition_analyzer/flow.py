@@ -23,6 +23,9 @@ from .share_estimator import estimate_share
 from .memory_reader import read_past_results
 from .memory_writer import write_result
 from engines._shopify_hydrator import hydrate
+from engines._external_signal_hydrator import (
+    hydrate_competitors_via_search,
+)
 
 
 class CompetitionAnalyzerEngine:
@@ -73,6 +76,23 @@ class CompetitionAnalyzerEngine:
             limit=data.get("hydrate_limit"),
             query=data.get("hydrate_query"),
         )
+
+        # Auto-hydrate competitors via WEB_SEARCH when the caller
+        # left the list empty. Falls back gracefully -- search
+        # unavailable / no key / no hits -> still empty list, and
+        # the original "Competitors list is required" failure
+        # fires. This turns the engine from a hard-fail on
+        # missing input to a soft-degrade when external search
+        # is reachable.
+        if not competitors:
+            competitors = hydrate_competitors_via_search(
+                supplied=None,
+                query=data.get("competitor_query"),
+                niche=data.get("niche"),
+                max_results=int(
+                    data.get("competitor_hydrate_limit") or 10,
+                ),
+            )
 
         if not competitors:
             return self._fail("Competitors list is required", 0.0)
