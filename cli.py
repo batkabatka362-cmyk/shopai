@@ -13010,9 +13010,13 @@ def _cmd_suggest(args) -> None:
 
     Two output formats:
       * Table (default) — human-readable rendering of the primary
-        recommendations + optional alternatives.
+        recommendations + optional alternatives. When the
+        operator has previously saved notes for a recommended
+        engine (via ``shopai knowledge import``), each row is
+        followed by a one-line preview tagged ``📝 note``.
       * JSON (``--json``) — raw ``RecommendationResult.to_dict()``
-        for piping into other tools.
+        plus an ``operator_context`` field per primary entry
+        (or ``None`` when no note exists).
     """
     from core.brain.engine_recommender import recommend_engines
 
@@ -13022,8 +13026,17 @@ def _cmd_suggest(args) -> None:
         include_alternatives=not args.no_alternatives,
     )
 
+    # Pull operator notes once for the engines we'll display so
+    # we don't repeatedly hit the NotesStore.
+    note_for_engine = _suggest_collect_operator_notes(result)
+
     if args.json:
-        print(json.dumps(result.to_dict(), indent=2, default=str))
+        payload = result.to_dict()
+        for entry in payload.get("primary", []):
+            entry["operator_context"] = note_for_engine.get(
+                entry.get("engine"),
+            )
+        print(json.dumps(payload, indent=2, default=str))
         return
 
     print(f"Active goal: {result.active_goal}")
@@ -13039,18 +13052,53 @@ def _cmd_suggest(args) -> None:
                 f"  {i:<4}  {r.engine:<28} "
                 f"{r.priority:<10.2f} {r.effectiveness:<14.2f}"
             )
+            note = note_for_engine.get(r.engine)
+            if note:
+                preview = note.get("note", "").splitlines()[0][:100]
+                if preview:
+                    print(f"        note: {preview}")
     else:
         print(f"No engines mapped to goal {result.active_goal!r}.")
 
     if result.alternatives and not args.no_alternatives:
         print()
-        print("Alternatives (other goals — manual override):")
+        print("Alternatives (other goals - manual override):")
         print(f"  {'engine':<28} {'goal':<22} {'effectiveness':<14}")
         for r in result.alternatives:
             print(
                 f"  {r.engine:<28} {r.goal:<22} "
                 f"{r.effectiveness:<14.2f}"
             )
+
+
+def _suggest_collect_operator_notes(result):
+    """Pull NotesStore context for every engine in ``result.primary``.
+
+    Returns ``{engine_name: operator_context_dict}``. Engines
+    without a note are absent from the map (not present as
+    ``None``) so the caller can use a simple ``.get`` lookup.
+    Source-failure isolated — a missing knowledge layer leaves
+    the map empty and the CLI degrades to the pre-enrichment
+    output.
+    """
+    try:
+        from core.knowledge import get_operator_context
+    except Exception as exc:
+        logger.debug("knowledge import failed for suggest: %s", exc)
+        return {}
+    out = {}
+    for r in result.primary:
+        try:
+            ctx = get_operator_context(engine=r.engine)
+        except Exception as exc:
+            logger.debug(
+                "operator-context lookup raised for %s: %s",
+                r.engine, exc,
+            )
+            ctx = None
+        if ctx is not None:
+            out[r.engine] = ctx
+    return out
 
 
 def _cmd_knowledge(args) -> None:
