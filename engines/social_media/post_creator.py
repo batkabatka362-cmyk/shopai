@@ -1,15 +1,37 @@
 """Social Media Engine — post creator.
 
-Creates post content for each platform: caption, visual description, CTA,
-and platform-specific formatting notes.  Adapts tone and length to the
-platform's character limits and audience expectations.
+Creates post content for each platform: caption, visual
+description, CTA, and platform-specific formatting notes.
+Adapts tone and length to the platform's character limits and
+audience expectations.
 
-Model note: Uses LLaMA for creative post composition.
+Multi-modal output (opt-in via ``generate_media=True``):
+
+  * For image-type posts (single_image / photo / carousel /
+    pin / etc.), calls ``Capability.GENERATE_IMAGE`` via the
+    adapter router. DALL-E 3 is wired today; future
+    free-tier image providers route in automatically once
+    registered.
+  * The post output gains ``media_url`` (URL or b64) +
+    ``media_model`` fields so the publisher can pick up the
+    asset directly. On any generation failure (no provider
+    configured, network blip, validation reject), the post
+    still publishes with the textual visual_description as
+    before -- multi-modal degrades to text gracefully.
+
+Video gen (Replicate / Higgsfield) is intentionally NOT in
+this PR. Video is async + needs status polling; it's a
+follow-up.
 """
 from __future__ import annotations
 
 import copy
+import os
 from typing import Any
+
+from utils.logger import get_logger
+
+logger = get_logger("engines.social_media.post_creator")
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +128,8 @@ def create_posts(
     brand: dict[str, Any],
     goal: str,
     products: list[dict[str, Any]],
+    *,
+    generate_media: bool = False,
 ) -> dict[str, Any]:
     """Create post content for each entry in the content calendar.
 
@@ -114,9 +138,19 @@ def create_posts(
         brand: Brand info dict with 'name' and 'voice'.
         goal: Campaign goal.
         products: Product list for rotating through posts.
+        generate_media: Opt-in. When True, image-type posts get
+            an AI-generated visual via ``Capability.GENERATE_IMAGE``
+            (DALL-E 3 or whichever provider is configured). Default
+            False so legacy callers + cost-sensitive cycles stay
+            unchanged.
 
     Returns:
-        Structured dict with created posts.
+        Structured dict with created posts. Each post carries
+        ``platform``, ``post_type``, ``caption``,
+        ``visual_description``, ``cta``, ``formatting_notes``,
+        ``model_note``, and -- when ``generate_media`` is True
+        and the generation succeeded -- ``media_url`` (or
+        ``media_b64``) + ``media_model``.
     """
     try:
         calendar_entries = copy.deepcopy(calendar_entries)
@@ -155,8 +189,25 @@ def create_posts(
                 "visual_description": visual,
                 "cta": cta,
                 "formatting_notes": formatting,
-                "model_note": "LLaMA: creative post composition",
+                "model_note": "template fallback: caption built from per-goal templates",
             }
+
+            # ── Multi-modal media generation (opt-in) ───────────
+            if generate_media and _is_image_post_type(post_type):
+                media = _generate_image_for_post(
+                    product_title=product_title,
+                    brand_name=brand_name,
+                    brand_voice=brand_voice,
+                    platform=platform,
+                    post_type=post_type,
+                    visual_description=visual,
+                )
+                if media is not None:
+                    post["media_url"] = media.get("url", "")
+                    post["media_b64"] = media.get("b64", "")
+                    post["media_model"] = media.get("model", "")
+                    post["media_size"] = media.get("size", "")
+
             posts.append(post)
 
         return {
@@ -169,6 +220,147 @@ def create_posts(
             "posts": [],
             "error": f"Post creation failed: {exc}",
         }
+
+
+# ---------------------------------------------------------------------------
+# Multi-modal media generation
+# ---------------------------------------------------------------------------
+
+
+# post_types that map to a still image (vs video). Video
+# generation is async + heavier; deferred to a follow-up PR.
+_IMAGE_POST_TYPES: frozenset[str] = frozenset({
+    "single_image", "carousel", "photo", "link_post",
+    "standard_pin", "idea_pin", "product_pin",
+    "image",
+})
+
+
+def _is_image_post_type(post_type: str) -> bool:
+    return post_type in _IMAGE_POST_TYPES
+
+
+# Platform-aspect-ratio map. DALL-E 3 supports 1024x1024 /
+# 1024x1792 / 1792x1024 only; map platforms to the closest
+# native ratio.
+_PLATFORM_TO_SIZE: dict[str, str] = {
+    "instagram": "1024x1024",       # square is the IG sweet spot
+    "facebook": "1024x1024",
+    "tiktok": "1024x1792",          # vertical 9:16 closest
+    "pinterest": "1024x1792",       # tall pins rank higher
+    "twitter": "1792x1024",         # landscape for tweets
+}
+_DEFAULT_SIZE = "1024x1024"
+
+
+def _generate_image_for_post(
+    *,
+    product_title: str,
+    brand_name: str,
+    brand_voice: str,
+    platform: str,
+    post_type: str,
+    visual_description: str,
+) -> dict[str, Any] | None:
+    """Generate an AI image for a social post via the router.
+
+    Returns ``{url, b64, model, size}`` on success or ``None``
+    on any failure (caller publishes the post without media).
+    Never raises.
+    """
+    # Pattern J -- never make live API calls under pytest.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("media gen: router import failed: %s", exc)
+        return None
+
+    try:
+        router = get_router()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("media gen: router init failed: %s", exc)
+        return None
+
+    size = _PLATFORM_TO_SIZE.get(platform, _DEFAULT_SIZE)
+    prompt = _build_image_prompt(
+        product_title=product_title,
+        brand_name=brand_name,
+        brand_voice=brand_voice,
+        platform=platform,
+        post_type=post_type,
+        visual_description=visual_description,
+    )
+
+    try:
+        result = router.execute(Capability.GENERATE_IMAGE, {
+            "prompt": prompt,
+            "size": size,
+            "quality": "standard",
+            "n": 1,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("media gen: GENERATE_IMAGE raised: %s", exc)
+        return None
+
+    if not getattr(result, "ok", False):
+        logger.debug(
+            "media gen: GENERATE_IMAGE not-ok: %s",
+            getattr(result, "error", "unknown"),
+        )
+        return None
+
+    data = result.data or {}
+    if not isinstance(data, dict):
+        return None
+
+    # The image adapter contract returns ``{images: [...]}``
+    # with each image being ``{url, b64_json, revised_prompt}``.
+    images = data.get("images") or []
+    if not isinstance(images, list) or not images:
+        return None
+    first = images[0]
+    if not isinstance(first, dict):
+        return None
+
+    return {
+        "url": str(first.get("url") or "").strip(),
+        "b64": str(first.get("b64_json") or "").strip(),
+        "model": str(data.get("model") or "").strip(),
+        "size": size,
+    }
+
+
+def _build_image_prompt(
+    *,
+    product_title: str,
+    brand_name: str,
+    brand_voice: str,
+    platform: str,
+    post_type: str,
+    visual_description: str,
+) -> str:
+    """Build a clear image-gen prompt grounded in brand + product context."""
+    voice_phrase = {
+        "professional": "clean, premium, editorial photography style",
+        "casual": "candid lifestyle photography with natural lighting",
+        "playful": "vibrant, fun, slightly exaggerated colors",
+        "luxury": "moody, high-contrast luxury aesthetic",
+        "minimal": "minimal flat lay, neutral background, single focal point",
+        "bold": "high-contrast, oversaturated, billboard-aggressive composition",
+    }.get(brand_voice, "clean, professional product photography")
+
+    return (
+        f"Photorealistic product image for a {platform} {post_type} post. "
+        f"Subject: {product_title} by {brand_name}. "
+        f"Visual style: {voice_phrase}. "
+        f"Composition guidance: {visual_description}. "
+        f"No text overlay, no logos other than the product's. "
+        f"On-brand for {brand_name}."
+    )
 
 
 # ---------------------------------------------------------------------------
