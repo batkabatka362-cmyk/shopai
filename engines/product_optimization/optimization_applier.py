@@ -51,24 +51,44 @@ def apply_pricing_optimizations(
     adjustments: list[dict[str, Any]],
     products: list[dict[str, Any]],
     store: dict[str, Any] | None = None,
+    *,
+    require_approval: bool = True,
 ) -> list[dict[str, Any]]:
-    """Enqueue Shopify variant-price updates for each qualifying
+    """Apply Shopify variant-price updates for each qualifying
     adjustment.
+
+    Two paths, selected by ``require_approval``:
+
+      * ``require_approval=True`` (default) -- enqueue each
+        adjustment via the approval queue. The operator (or
+        the auto-approve allowlist) approves, then the queue
+        dispatcher executes. Safer; preserves the
+        human-in-the-loop default the engine has shipped with.
+      * ``require_approval=False`` -- call
+        ``Capability.SHOPIFY_UPDATE_VARIANTS`` directly through
+        the adapter router, bypassing the queue. Used by
+        cycles that already have an auto-approve allowlist
+        gating this engine, or for ad-hoc operator-triggered
+        bulk applies.
 
     Args:
         adjustments: engine's per-product price recommendations
             (output of ``price_adjuster.adjust_prices``).
         products: the same products list the adjuster ran against
-            — used to look up variant IDs that aren't on the
+            -- used to look up variant IDs that aren't on the
             adjustment row itself.
         store: optional store context passed through to the
             recorder; not used in the enqueue wire format.
+        require_approval: When True, enqueue via approval queue
+            (default). When False, call SHOPIFY_UPDATE_VARIANTS
+            directly through the router.
 
     Returns:
         A list of result dicts (one per adjustment), each
-        carrying ``status`` (``queued`` | ``skipped``), the
-        ``pending_action_id`` (when queued), and the
-        ``reason`` (when skipped). The order matches the input.
+        carrying ``status`` (``queued`` | ``applied`` |
+        ``skipped``), the ``pending_action_id`` (queue path),
+        and the ``reason`` (when skipped). The order matches
+        the input.
     """
     results: list[dict[str, Any]] = []
     if not isinstance(adjustments, list) or not adjustments:
@@ -152,7 +172,7 @@ def apply_pricing_optimizations(
             })
             continue
 
-        # ── Enqueue ──────────────────────────────────────────
+        # ── Common params ────────────────────────────────────
         narrative = (
             f"product_optimization: adjust price to "
             f"${price:.2f} ({adjustment_pct:+.1f}%) — "
@@ -167,51 +187,148 @@ def apply_pricing_optimizations(
             "rationale": adj.get("rationale", ""),
         }
 
-        try:
-            from core.approval import get_approval_queue
-            action = get_approval_queue().enqueue(
-                engine="product_optimization",
-                action_type="apply_strategic_price",
-                capability="SHOPIFY_UPDATE_VARIANTS",
-                params=params,
-                narrative=narrative,
+        if require_approval:
+            # ── Path A: enqueue for approval ────────────────
+            try:
+                from core.approval import get_approval_queue
+                action = get_approval_queue().enqueue(
+                    engine="product_optimization",
+                    action_type="apply_strategic_price",
+                    capability="SHOPIFY_UPDATE_VARIANTS",
+                    params=params,
+                    narrative=narrative,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "product_optimization enqueue raised "
+                    "for %s: %s", product_id, exc,
+                )
+                results.append({
+                    "status": "skipped",
+                    "product_id": product_id,
+                    "reason": f"enqueue_raised: {exc}",
+                })
+                continue
+
+            _record_writeback_safely(
+                params=params, success=True,
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "product_optimization enqueue raised for %s: %s",
-                product_id, exc,
+
+            results.append({
+                "status": "queued",
+                "product_id": product_id,
+                "pending_action_id": action.id,
+                "suggested_price": price,
+                "adjustment_pct": adjustment_pct,
+            })
+            continue
+
+        # ── Path B: direct execute via router ───────────────
+        result = _direct_apply_via_router(
+            product_id=product_id,
+            new_price=price,
+            variant_ids=variant_ids,
+        )
+        if result.get("ok"):
+            _record_writeback_safely(
+                params=params, success=True,
+            )
+            results.append({
+                "status": "applied",
+                "product_id": product_id,
+                "suggested_price": price,
+                "adjustment_pct": adjustment_pct,
+                "variants_updated": result.get(
+                    "variants_updated", 0,
+                ),
+            })
+        else:
+            err = result.get("error", "unknown")
+            _record_writeback_safely(
+                params=params, success=False, error=err,
             )
             results.append({
                 "status": "skipped",
                 "product_id": product_id,
-                "reason": f"enqueue_raised: {exc}",
+                "reason": f"direct_apply_failed: {err}",
             })
-            continue
-
-        try:
-            from engines._writeback_recorder import record_writeback
-            record_writeback(
-                engine="product_optimization",
-                action_type="apply_strategic_price",
-                capability="SHOPIFY_UPDATE_VARIANTS",
-                params=params,
-                success=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            # Recorder is best-effort — the enqueue already
-            # happened, so don't let the recorder failure
-            # propagate.
-            logger.debug(
-                "writeback recorder raised for %s: %s",
-                product_id, exc,
-            )
-
-        results.append({
-            "status": "queued",
-            "product_id": product_id,
-            "pending_action_id": action.id,
-            "suggested_price": price,
-            "adjustment_pct": adjustment_pct,
-        })
 
     return results
+
+
+def _record_writeback_safely(
+    *,
+    params: dict[str, Any],
+    success: bool,
+    error: str | None = None,
+) -> None:
+    """Best-effort Phase 8 writeback recording. Failures are
+    logged and swallowed so the recorder never breaks the
+    apply path."""
+    try:
+        from engines._writeback_recorder import record_writeback
+        record_writeback(
+            engine="product_optimization",
+            action_type="apply_strategic_price",
+            capability="SHOPIFY_UPDATE_VARIANTS",
+            params=params,
+            success=success,
+            error=error,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "writeback recorder raised for %s: %s",
+            params.get("product_id", ""), exc,
+        )
+
+
+def _direct_apply_via_router(
+    *,
+    product_id: str,
+    new_price: float,
+    variant_ids: list[str],
+) -> dict[str, Any]:
+    """Call ``SHOPIFY_UPDATE_VARIANTS`` directly via the
+    adapter router. Returns ``{ok, variants_updated, error}``.
+    Never raises."""
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"router_import_failed: {exc}",
+        }
+    try:
+        router = get_router()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False, "error": f"router_init_failed: {exc}",
+        }
+
+    payload = {
+        "product_id": product_id,
+        "variants": [
+            {"id": vid, "price": f"{new_price:.2f}"}
+            for vid in variant_ids
+        ],
+    }
+    try:
+        result = router.execute(
+            Capability.SHOPIFY_UPDATE_VARIANTS, payload,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"router_raised: {exc}",
+        }
+
+    if not getattr(result, "ok", False):
+        return {
+            "ok": False,
+            "error": str(getattr(result, "error", "rejected")),
+        }
+    return {
+        "ok": True,
+        "variants_updated": len(variant_ids),
+    }

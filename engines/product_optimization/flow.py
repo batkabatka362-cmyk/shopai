@@ -160,10 +160,23 @@ class ProductOptimizationEngine:
         # ---- Stage 6.5: Phase 7 writeback (opt-in) ----
         # Engines today emit advisory recommendations. When the
         # caller passes ``data.apply_pricing_adjustments = True``,
-        # we enqueue the structured pricing adjustments via the
-        # approval queue (operator review → executor →
-        # SHOPIFY_UPDATE_VARIANTS). Default OFF preserves the
-        # pure-recommendation behavior callers rely on.
+        # we apply the structured pricing adjustments.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via the approval queue
+        #     (operator review -> executor -> SHOPIFY_UPDATE_VARIANTS).
+        #     Same human-in-the-loop default the engine has shipped
+        #     with -- preserves back-compat for every existing
+        #     caller.
+        #   * False -- call SHOPIFY_UPDATE_VARIANTS directly through
+        #     the adapter router, bypassing the queue. Used by
+        #     cycles that already gate this engine via the
+        #     auto-approve allowlist, or for ad-hoc operator-
+        #     triggered bulk applies.
+        #
+        # ``data.apply_pricing_adjustments`` default OFF preserves
+        # the pure-recommendation behavior every existing caller
+        # relies on.
         pricing_pending_actions: list[dict[str, Any]] = []
         if data.get("apply_pricing_adjustments") is True:
             from .optimization_applier import (
@@ -172,10 +185,14 @@ class ProductOptimizationEngine:
             store_cfg = data.get("store") if isinstance(
                 data.get("store"), dict,
             ) else None
+            require_approval = bool(
+                data.get("require_approval", True),
+            )
             pricing_pending_actions = apply_pricing_optimizations(
                 adjustments=adjustments,
                 products=products,
                 store=store_cfg,
+                require_approval=require_approval,
             )
 
         # ---- Stage 7: Memory Writer (non-fatal) ----
