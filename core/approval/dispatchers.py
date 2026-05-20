@@ -485,6 +485,31 @@ def _mint_wholesale_dispatch(
     return _generic_mint_dispatch(params, default_ttl_days=30)
 
 
+# ── customer_effort_score → SHOPIFY_TAG_CUSTOMER ────────────────
+
+
+@register_dispatcher("tag_ces_customer")
+def _tag_ces_customer_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay customer_effort_score's per-customer bucket tag.
+
+    Enqueue carries ``{customer_id, tag, effort_score, bucket}``.
+    The adapter side wants ``{id, tags: [tag]}`` — same shape
+    as apply_segment_tag (effort_score / bucket are kept in
+    approval-side params for operator context but aren't part
+    of the mutation).
+    """
+    customer_id = str(params.get("customer_id", "")).strip()
+    tag = str(params.get("tag", "")).strip()
+    if not customer_id or not tag:
+        return False, {"error": "missing_customer_id_or_tag"}
+    return _router_call(
+        "SHOPIFY_TAG_CUSTOMER",
+        {"id": customer_id, "tags": [tag]},
+    )
+
+
 # ── customer_segmentation → SHOPIFY_TAG_CUSTOMER ────────────────
 
 
