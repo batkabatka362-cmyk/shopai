@@ -151,6 +151,54 @@ class PriceElasticityEngine:
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_elasticity_result(elasticity=elasticity)
 
+        # ---- Stage 7.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory price-sensitivity
+        # signals. When the caller passes
+        # ``data.apply_elasticity_tags=True``, we push
+        # ``shopai-price-inelastic`` on every product whose
+        # demand is INELASTIC (safe candidates for upward
+        # repricing) via SHOPIFY_ADD_TAGS. Elastic products
+        # are NOT tagged by default -- they need careful price
+        # management, which most operators handle case-by-case
+        # rather than via a "warning" worklist.
+        # ``data.include_elastic=True`` opts in elastic
+        # tagging too.
+        #
+        # Merchants then save admin searches to drive a "safe
+        # to reprice upward" worklist; downstream engines
+        # (dynamic_pricing / paid_ads) gate margin-improvement
+        # plays on the inelastic tag to avoid demand cliffs.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_elasticity_tags") is True:
+            try:
+                from .tag_applier import apply_elasticity_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                include_elastic = bool(
+                    data.get("include_elastic", False),
+                )
+                tag_results = apply_elasticity_tags(
+                    elasticity,
+                    include_elastic=include_elastic,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "price_elasticity tag_applier raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -158,6 +206,9 @@ class PriceElasticityEngine:
             "status": "success",
             "data": {
                 "elasticity": elasticity,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
