@@ -103,6 +103,50 @@ class OrderQualityEngine:
             inspection_plan=inspection_plan, improvement_actions=improvement_actions,
         )
 
+        # ---- Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory defect rates. When the
+        # caller passes ``data.apply_quality_tags=True``, we
+        # push ``shopai-defect-high-rate`` on every product
+        # with defect_rate >= ``data.min_defect_rate`` (default
+        # 0.10) via SHOPIFY_ADD_TAGS. Supplier rollups skipped
+        # -- we tag PRODUCTS (Shopify entities), not arbitrary
+        # supplier strings.
+        #
+        # Merchants then save admin searches to drive a "QA
+        # hot list" worklist; downstream engines (catalog /
+        # storefront / paid_ads) can suppress these from
+        # featured slots, pause ads, or trigger
+        # supplier-review workflows before promoting.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_quality_tags") is True:
+            try:
+                from .tag_applier import apply_quality_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                min_defect_rate = float(
+                    data.get("min_defect_rate", 0.10) or 0.10,
+                )
+                tag_results = apply_quality_tags(
+                    defect_rates,
+                    min_defect_rate=min_defect_rate,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "order_quality tag_applier raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -111,6 +155,9 @@ class OrderQualityEngine:
                 "supplier_quality_scores": supplier_quality_scores,
                 "inspection_plan": inspection_plan,
                 "improvement_actions": improvement_actions,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
