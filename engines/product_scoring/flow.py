@@ -106,6 +106,49 @@ class ProductScoringEngine:
             avg_composite_score=avg_score,
         )
 
+        # ---- Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory tier classifications.
+        # When the caller passes ``data.apply_scoring_tags=True``,
+        # we push ``shopai-tier-{A|B}`` on every top-tier
+        # product via SHOPIFY_ADD_TAGS. Merchants then save
+        # admin searches / smart collections to drive an
+        # "investment-worthy" worklist; downstream engines
+        # (paid_ads / catalog / storefront) prefer A/B tiers
+        # for ad spend, featured slots, and homepage
+        # carousels.
+        #
+        # Only ``A`` is tagged by default;
+        # ``data.include_b=True`` opts in ``B`` too. ``C`` /
+        # ``D`` are noise.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_scoring_tags") is True:
+            try:
+                from .tag_applier import apply_scoring_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                include_b = bool(data.get("include_b", False))
+                tag_results = apply_scoring_tags(
+                    scored_products,
+                    include_b=include_b,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_scoring tag_applier raised: %s",
+                    exc,
+                )
+
         elapsed = time.monotonic() - start
 
         return {
@@ -114,6 +157,9 @@ class ProductScoringEngine:
                 "scored_products": scored_products,
                 "score_distribution": score_distribution,
                 "avg_composite_score": avg_score,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

@@ -485,6 +485,33 @@ def _mint_wholesale_dispatch(
     return _generic_mint_dispatch(params, default_ttl_days=30)
 
 
+# ── product_scoring → SHOPIFY_ADD_TAGS ──────────────────────────
+
+
+@register_dispatcher("tag_product_tier")
+def _tag_product_tier_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Replay product_scoring's per-product tier tag.
+
+    Enqueue carries ``{product_id, tag, tier,
+    composite_score, title}``. The adapter side wants
+    ``{id, tags: [tag]}`` — same shape as catalog_apply_tags
+    (tier / composite_score / title are kept in approval-side
+    params for operator context but aren't part of the
+    mutation). SHOPIFY_ADD_TAGS is additive — existing tags
+    preserved.
+    """
+    product_id = str(params.get("product_id", "")).strip()
+    tag = str(params.get("tag", "")).strip()
+    if not product_id or not tag:
+        return False, {"error": "missing_product_id_or_tag"}
+    return _router_call(
+        "SHOPIFY_ADD_TAGS",
+        {"id": product_id, "tags": [tag]},
+    )
+
+
 # ── customer_segmentation → SHOPIFY_TAG_CUSTOMER ────────────────
 
 
