@@ -394,3 +394,136 @@ class TestStoreIdPropagation:
             )
         params = record_mock.call_args.kwargs["params"]
         assert params["store_id"] == "store-a"
+
+
+# --- LLM-driven enrichment ------------------------------------
+
+
+import json as _json
+
+
+def _ok_llm(data):
+    return SimpleNamespace(ok=True, data=data, error=None)
+
+
+class TestLLMPath:
+    """LLM path is only invoked when PYTEST_CURRENT_TEST is
+    falsey OR the router is explicitly patched. The default
+    test environment short-circuits to the template path
+    (Pattern J)."""
+
+    def test_pytest_env_blocks_live_llm(self, monkeypatch):
+        """Default pytest run uses template path -- LLM never
+        called even when products lack SEO fields."""
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "active")
+        out = enrich_seo(
+            [_product()], niche="beauty", store_name="Acme",
+        )
+        gen = out["generated"][0]
+        # Template-built title has the brand suffix pattern
+        assert "Acme" in gen["seo_title"] or "Vitamin" in gen["seo_title"]
+        # Niche tagline ("Clean beauty, ...") is template signal
+        assert "beauty" in gen["seo_description"].lower() \
+            or "honest" in gen["seo_description"].lower()
+
+    def test_llm_pair_used_when_returned(self):
+        llm = _json.dumps({
+            "seo_title": "Pro-grade Vitamin C Serum -- 4 weeks",
+            "seo_description": (
+                "Clinical-strength brightening serum -- visible "
+                "results in 4 weeks. FDA-tested ingredients, "
+                "vegan, cruelty-free."
+            ),
+        })
+        router = SimpleNamespace(
+            execute=lambda c, p: _ok_llm({"text": llm, "model": "x"}),
+        )
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_seo(
+                [_product()], niche="beauty", store_name="Acme",
+            )
+        gen = out["generated"][0]
+        assert gen["seo_title"] == (
+            "Pro-grade Vitamin C Serum -- 4 weeks"
+        )
+        assert gen["seo_description"].startswith(
+            "Clinical-strength brightening serum"
+        )
+
+    def test_overlong_title_truncated_post_llm(self):
+        """If the model overshoots, we still cap at _TITLE_MAX
+        (58 chars)."""
+        llm = _json.dumps({
+            "seo_title": "A" * 80,
+            "seo_description": "B" * 120,
+        })
+        router = SimpleNamespace(
+            execute=lambda c, p: _ok_llm({"text": llm, "model": "x"}),
+        )
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_seo(
+                [_product()], niche="beauty", store_name="Acme",
+            )
+        gen = out["generated"][0]
+        assert len(gen["seo_title"]) <= 58
+
+    def test_too_short_description_falls_back(self):
+        """A description shorter than 40 chars is treated as
+        a degenerate LLM result -- falls back to template."""
+        llm = _json.dumps({
+            "seo_title": "OK",
+            "seo_description": "tiny",  # < 40 chars
+        })
+        router = SimpleNamespace(
+            execute=lambda c, p: _ok_llm({"text": llm, "model": "x"}),
+        )
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_seo(
+                [_product()], niche="beauty", store_name="Acme",
+            )
+        gen = out["generated"][0]
+        # Template path used -- description has the niche tagline
+        assert "honest" in gen["seo_description"].lower() \
+            or "beauty" in gen["seo_description"].lower()
+
+    def test_router_raises_falls_back_to_template(self):
+        def _raises(c, p):
+            raise RuntimeError("boom")
+        router = SimpleNamespace(execute=_raises)
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_seo(
+                [_product()], niche="beauty", store_name="Acme",
+            )
+        # Template path output still produced
+        assert out["generated"][0]["seo_title"]
+        assert out["generated"][0]["seo_description"]
+
+    def test_garbage_response_falls_back(self):
+        router = SimpleNamespace(
+            execute=lambda c, p: _ok_llm({"text": "no json", "model": "x"}),
+        )
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), \
+             patch(
+                "core.adapters.get_router",
+                return_value=router,
+             ):
+            out = enrich_seo(
+                [_product()], niche="beauty", store_name="Acme",
+            )
+        assert out["generated"][0]["seo_description"]

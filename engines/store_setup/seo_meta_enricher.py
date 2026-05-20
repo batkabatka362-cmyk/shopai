@@ -42,7 +42,10 @@ as a readiness indicator.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import re
 from typing import Any, Iterable
 
 from engines._writeback_recorder import record_writeback
@@ -149,19 +152,33 @@ def enrich_seo(
             })
             continue
 
-        seo_title = _build_title(
-            title, brand_suffix,
+        product_type = (
+            product.get("product_type")
+            or product.get("type")
+            or ""
         )
-        seo_description = _build_meta(
+        vendor = product.get("vendor", "") or ""
+
+        # ── Path 1: LLM ──────────────────────────────────────
+        llm_pair = _enrich_one_via_llm(
             title=title,
-            product_type=(
-                product.get("product_type")
-                or product.get("type")
-                or ""
-            ),
-            vendor=product.get("vendor", "") or "",
+            product_type=product_type,
+            vendor=vendor,
+            niche=niche_n,
+            brand_suffix=brand_suffix,
             tagline=tagline,
         )
+        if llm_pair is not None:
+            seo_title, seo_description = llm_pair
+        else:
+            # ── Path 2: Templates ────────────────────────────
+            seo_title = _build_title(title, brand_suffix)
+            seo_description = _build_meta(
+                title=title,
+                product_type=product_type,
+                vendor=vendor,
+                tagline=tagline,
+            )
 
         # If the caller already had ONE of the two fields and
         # we're not overwriting, keep the existing one.
@@ -290,6 +307,141 @@ def apply_seo(
                 error=str(error or "rejected"),
             )
     return {"applied_count": applied, "results": results}
+
+
+# ── LLM-driven enrichment (per product) ───────────────────
+
+
+_JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
+
+
+def _enrich_one_via_llm(
+    *,
+    title: str,
+    product_type: str,
+    vendor: str,
+    niche: str,
+    brand_suffix: str,
+    tagline: str,
+) -> tuple[str, str] | None:
+    """Generate ``(seo_title, seo_description)`` for a single
+    product via the LLM router.
+
+    Returns the pair on success, ``None`` on any failure
+    (caller falls back to the template builders). Never
+    raises.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+
+    try:
+        from core.adapters import get_router as _get_router_fn
+        from core.adapters.base import Capability
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM router import failed: %s", exc)
+        return None
+
+    try:
+        router = _get_router_fn()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM router init failed: %s", exc)
+        return None
+
+    system_prompt = (
+        "You are an expert e-commerce SEO copywriter. Your "
+        "single job: write Google-friendly SEO meta for "
+        "Shopify products. STRICT length rules: title <= "
+        f"{_TITLE_MAX} chars, description {_META_TARGET_MIN}-"
+        f"{_META_MAX} chars. Lead with the benefit, fit the "
+        "keyword naturally. Always respond with STRICT JSON; "
+        "no markdown fences, no commentary outside the JSON."
+    )
+
+    brand_line = (
+        f"Store/brand: {brand_suffix}\n"
+        if brand_suffix
+        else "Store/brand: (unbranded)\n"
+    )
+    vendor_line = (
+        f"Vendor: {vendor}\n" if vendor else ""
+    )
+    user_prompt = (
+        f"Product: {title}\n"
+        f"{brand_line}"
+        f"Product type: {product_type or 'n/a'}\n"
+        f"{vendor_line}"
+        f"Niche: {niche}\n"
+        f"Niche tagline guide: {tagline}\n\n"
+        f"Return STRICT JSON:\n"
+        '{\n'
+        f'  "seo_title": "search-friendly title (<= {_TITLE_MAX} chars)",\n'
+        f'  "seo_description": "search-friendly description ({_META_TARGET_MIN}-{_META_MAX} chars)"\n'
+        '}'
+    )
+
+    try:
+        result = router.execute(Capability.CHAT_COMPLETE, {
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "max_tokens": 400,
+            "temperature": 0.5,  # lower -- SEO meta favors precision
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("LLM call raised for %s: %s", title, exc)
+        return None
+
+    if not getattr(result, "ok", False):
+        logger.debug(
+            "LLM call returned not-ok for %s: %s",
+            title, getattr(result, "error", "unknown"),
+        )
+        return None
+
+    text = ((result.data or {}).get("text") or "").strip()
+    if not text:
+        return None
+
+    parsed = _parse_llm_json(text)
+    if not parsed:
+        return None
+
+    seo_title = str(parsed.get("seo_title") or "").strip()
+    seo_description = str(parsed.get("seo_description") or "").strip()
+
+    if not seo_title or not seo_description:
+        return None
+
+    # Enforce length caps post-LLM (don't trust the model).
+    if len(seo_title) > _TITLE_MAX:
+        seo_title = _truncate_at_word(seo_title, _TITLE_MAX)
+    if len(seo_description) > _META_MAX:
+        seo_description = _truncate_at_word(seo_description, _META_MAX)
+    # A too-short description is fine to surface -- Google
+    # accepts it -- but if the model returned literally a few
+    # chars, treat that as a degenerate result.
+    if len(seo_description) < 40:
+        return None
+
+    return (seo_title, seo_description)
+
+
+def _parse_llm_json(text: str) -> dict[str, Any] | None:
+    """Best-effort JSON parse, tolerates markdown fences."""
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:  # noqa: BLE001
+        pass
+    match = _JSON_BLOCK_RE.search(text)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ── Helpers ────────────────────────────────────────────────
