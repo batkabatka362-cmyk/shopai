@@ -1,0 +1,68 @@
+{
+  "name": "shopai",
+  "version": "0.1.0",
+  "description": "Autonomous AGI merchant for Shopify -- 130+ adapters, 24+ niche-aware launch modules, exposed as MCP tools so Claude Code drives autonomous launch from a conversation.",
+  "author": "ShopAI",
+  "license": "MIT",
+  "homepage": "https://github.com/batkabatka362-cmyk/shopai",
+  "type": "claude-code-plugin",
+  "mcp_servers": {
+    "shopai": {
+      "command": "shopai-mcp",
+      "args": [],
+      "description": "ShopAI autonomous-merchant MCP server. 40+ tools covering niche-aware launch, audits, content recommendations, and Shopify writes via 130+ adapters.",
+      "env": {
+        "SHOPAI_SHOPIFY_URL": "${SHOPAI_SHOPIFY_URL}",
+        "SHOPAI_SHOPIFY_KEY": "${SHOPAI_SHOPIFY_KEY}"
+      },
+      "required_env": [
+        "SHOPAI_SHOPIFY_URL",
+        "SHOPAI_SHOPIFY_KEY"
+      ]
+    }
+  },
+  "slash_commands": [
+    {
+      "name": "shopai-launch",
+      "file": "commands/shopai-launch.md",
+      "description": "Run the full autonomous launch on a Shopify store (recommend + apply)."
+    },
+    {
+      "name": "shopai-audit",
+      "file": "commands/shopai-audit.md",
+      "description": "Audit a Shopify store's launch readiness."
+    },
+    {
+      "name": "shopai-recommend",
+      "file": "commands/shopai-recommend.md",
+      "description": "Get niche-aware recommendations for a specific module."
+    },
+    {
+      "name": "shopai-niches",
+      "file": "commands/shopai-niches.md",
+      "description": "List the niches ShopAI supports."
+    }
+  ],
+  "install_instructions": [
+    "1. Clone the ShopAI repo: git clone https://github.com/batkabatka362-cmyk/shopai",
+    "2. Install: cd shopai && pip install -e \".[mcp]\"",
+    "3. Set Shopify credentials: SHOPAI_SHOPIFY_URL + SHOPAI_SHOPIFY_KEY env vars",
+    "4. Register with Claude Code: claude mcp add shopai shopai-mcp",
+    "5. Copy slash commands: cp -r plugin/commands ~/.claude/commands/"
+  ],
+  "categories": [
+    "ecommerce",
+    "autonomous-agent",
+    "shopify",
+    "code-generation"
+  ],
+  "keywords": [
+    "shopify",
+    "mcp",
+    "autonomous",
+    "ai-merchant",
+    "niche-aware",
+    "launch",
+    "ecommerce"
+  ]
+}
