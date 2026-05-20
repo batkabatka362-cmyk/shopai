@@ -143,6 +143,52 @@ class SelectionDecisionEngine:
             portfolio_balance=portfolio_balance,
         )
 
+        # ---- Stage 7.5: Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory selection verdicts.
+        # When the caller passes
+        # ``data.apply_selection_tags=True``, we push
+        # ``shopai-selection-selected`` on every product the
+        # engine selected via SHOPIFY_ADD_TAGS. Merchants then
+        # save admin searches to drive an "AI-approved
+        # investment list" worklist; downstream engines
+        # (catalog / storefront / paid_ads) can prioritise
+        # these for featured slots, ad spend, and homepage
+        # carousels.
+        #
+        # ``data.min_confidence`` (default 0.0 -- all
+        # selected) lets callers filter to only
+        # high-confidence picks.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_selection_tags") is True:
+            try:
+                from .tag_applier import apply_selection_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                min_confidence = float(
+                    data.get("min_confidence", 0.0) or 0.0,
+                )
+                tag_results = apply_selection_tags(
+                    selected,
+                    min_confidence=min_confidence,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "selection_decision tag_applier raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -152,6 +198,9 @@ class SelectionDecisionEngine:
                 "selected": selected,
                 "rejected": rejected,
                 "portfolio_balance": portfolio_balance,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
