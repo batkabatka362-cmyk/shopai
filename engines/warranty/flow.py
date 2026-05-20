@@ -86,6 +86,43 @@ class WarrantyEngine:
 
         _write = write_warranty_result(claims_processed=claims_processed, costs=costs)
 
+        # ---- Phase 7 writeback (opt-in) ----------
+        # Engines today emit advisory warranty-risk
+        # classifications. When the caller passes
+        # ``data.apply_warranty_tags=True``, we push
+        # ``shopai-warranty-high-risk`` on every high-risk
+        # product via SHOPIFY_ADD_TAGS. Merchants then save
+        # admin searches to drive a "warranty hotspots"
+        # worklist; downstream engines (catalog / storefront
+        # / paid_ads) can suppress these from featured slots,
+        # gate them on supplier review, or pause ads on
+        # chronically defective SKUs.
+        #
+        # Two paths, controlled by ``data.require_approval``:
+        #   * True (default) -- enqueue via approval queue.
+        #   * False -- call SHOPIFY_ADD_TAGS directly.
+        #
+        # Default OFF preserves the pure-recommendation
+        # behavior every existing caller relies on.
+        tag_results: list[dict[str, Any]] = []
+        if data.get("apply_warranty_tags") is True:
+            try:
+                from .tag_applier import apply_warranty_tags
+                require_approval = bool(
+                    data.get("require_approval", True),
+                )
+                tag_results = apply_warranty_tags(
+                    risk_analysis,
+                    require_approval=require_approval,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Belt-and-braces: the applier never raises
+                # out by design.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "warranty tag_applier raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -94,6 +131,9 @@ class WarrantyEngine:
                 "costs": costs,
                 "risk_analysis": risk_analysis,
                 "policy_recommendations": policy_recommendations,
+                # Phase 7 writeback: per-product tag results
+                # when opted in. Empty otherwise.
+                "tag_results": tag_results,
             },
             "meta": {"engine": self.ENGINE_NAME, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "elapsed_seconds": round(elapsed, 3)},
             "error": None,
