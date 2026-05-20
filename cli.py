@@ -1246,6 +1246,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    shopify_scopes_which_p = sub.add_parser(
+        "shopify-scopes-which-adapter",
+        help=(
+            "Given a Shopify OAuth scope, list every adapter "
+            "that declared a need for it. Use this after a live "
+            "scope-check or an ACCESS_DENIED error to map the "
+            "scope back to the adapter(s) responsible."
+        ),
+    )
+    shopify_scopes_which_p.add_argument(
+        "scope",
+        help=(
+            "Shopify OAuth scope name (e.g. read_orders, "
+            "write_customers). Case-sensitive -- matches the "
+            "registry exactly."
+        ),
+    )
+    shopify_scopes_which_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     shopify_scopes_audit_p = sub.add_parser(
         "shopify-scopes-audit",
         help=(
@@ -10073,6 +10095,111 @@ def _cmd_shopify_scopes(args) -> None:
                 print(f"  ... and {len(gaps) - 40} more")
 
 
+def _cmd_shopify_scopes_which_adapter(args) -> None:
+    """Reverse lookup: given a Shopify OAuth scope name, list
+    every adapter that declared a need for it.
+
+    Use case 1 -- post-drift: ``shopai shopify-scopes-live-check``
+    already shows the blast radius inline (PR #461), but the
+    operator may want to drill into ONE specific missing scope
+    without scanning the whole drift summary.
+
+    Use case 2 -- post-ACCESS_DENIED: an adapter call fails
+    with "missing scope: read_customers". The operator runs
+    ``shopai shopify-scopes-which-adapter read_customers`` to
+    see every adapter that will hit the same wall.
+
+    Exit codes:
+      - 0: scope found in registry, adapters listed.
+      - 1: scope NOT declared by any adapter (typo? Shopify
+        legacy scope no longer in use?).
+
+    The lookup is purely registry-driven (no live Shopify
+    call): it reads ``collect_manifest().by_scope`` which is
+    the same reverse index used by the install-manifest and
+    blast-radius surfaces.
+    """
+    scope = (
+        str(getattr(args, "scope", "") or "").strip()
+    )
+    as_json = bool(getattr(args, "json", False))
+
+    if not scope:
+        if as_json:
+            print(json.dumps({
+                "scope": "",
+                "error": "scope_required",
+            }, indent=2))
+        else:
+            print("Error: scope name is required.")
+        sys.exit(1)
+
+    try:
+        from core.adapters.shopify.scope_registry import (
+            collect_manifest,
+        )
+        manifest = collect_manifest()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "shopify-scopes-which-adapter manifest raised: %s",
+            exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "scope": scope,
+                "error": f"manifest_unavailable: {exc}",
+            }, indent=2))
+        else:
+            print(f"Manifest unavailable: {exc}")
+        sys.exit(1)
+
+    adapters = list(manifest.by_scope.get(scope, []))
+    declared = scope in manifest.all_scopes
+
+    if as_json:
+        print(json.dumps({
+            "scope": scope,
+            "declared": declared,
+            "adapters": adapters,
+            "adapter_count": len(adapters),
+        }, indent=2))
+        if not declared:
+            sys.exit(1)
+        return
+
+    if not declared:
+        print(
+            f"Scope '{scope}' is NOT declared by any adapter "
+            f"in the current registry."
+        )
+        print()
+        print("Possible reasons:")
+        print(
+            "  - Typo (scope names are case-sensitive; check "
+            "the Shopify docs for the canonical name)."
+        )
+        print(
+            "  - Legacy scope removed from the manifest "
+            "(Shopify renamed / dropped several scopes in "
+            "the 2026+ API revision)."
+        )
+        print(
+            "  - The scope is GRANTED on the live install "
+            "but no adapter needs it (over-requesting). Run "
+            "`shopai shopify-scopes-live-check` to confirm."
+        )
+        sys.exit(1)
+
+    plural = "s" if len(adapters) != 1 else ""
+    print(
+        f"Scope '{scope}' is declared by "
+        f"{len(adapters)} adapter{plural}:"
+    )
+    print()
+    for a in adapters:
+        print(f"  {a}")
+
+
 def _cmd_shopify_scopes_audit(args) -> None:
     """CI gate: exit 1 if any Shopify adapter is missing a scope
     declaration.
@@ -17750,6 +17877,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-scopes-audit":
         _cmd_shopify_scopes_audit(args)
+        return
+
+    if args.command == "shopify-scopes-which-adapter":
+        _cmd_shopify_scopes_which_adapter(args)
         return
 
     if args.command == "capabilities-audit":
