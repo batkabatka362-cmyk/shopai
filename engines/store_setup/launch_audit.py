@@ -151,6 +151,7 @@ def audit_store(
             expected=expected_fulfillable_locations,
         ),
     )
+    checks.append(_check_shop_setup_complete())
 
     total = len(checks)
     passed = sum(1 for c in checks if c["ok"])
@@ -501,6 +502,62 @@ def _check_fulfillable_locations(
         "applied": fulfillable,
         "expected": threshold,
         "missing": missing,
+    }
+
+
+def _check_shop_setup_complete() -> dict[str, Any]:
+    """Read Shopify's own ``Shop.setupRequired`` flag via
+    SHOPIFY_GET_SHOP.
+
+    This is the merchant-admin equivalent of "have you finished
+    onboarding?". When ``setupRequired=True``, Shopify itself
+    still considers the store unfinished: the storefront shows
+    a "this store is still in development" banner, real payment
+    capture is gated, and the admin home page renders a
+    setup-tasks checklist instead of analytics. None of the
+    other launch checks reliably catch this state -- a store
+    can have products, pages, policies, shipping zones, and
+    locations all configured while ``setupRequired`` is still
+    True because the operator hasn't completed Shopify's own
+    plan selection / billing / domain steps.
+
+    A False value means Shopify considers the store fully set
+    up. We don't infer anything more granular about which step
+    is outstanding (Shopify doesn't expose that on the GraphQL
+    Admin API surface) -- the check is binary: setup-complete
+    or not. The fix is always the same: complete the merchant-
+    admin setup tasks at admin.shopify.com.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_GET_SHOP",
+        params={},
+        empty_default={},
+    )
+    shop = data.get("shop") if isinstance(data, dict) else {}
+    # Pre-launch stores typically have setup_required=True;
+    # post-launch stores have it absent / False. We treat
+    # "couldn't read the field" the same as "not yet complete"
+    # so this check stays conservative when the adapter is
+    # unreachable.
+    if not isinstance(shop, dict) or not shop:
+        return {
+            "key": "shop_setup_complete",
+            "ok": False,
+            "applied": 0,
+            "expected": 1,
+            "missing": ["shop_data_unavailable"],
+        }
+    setup_required = bool(shop.get("setup_required", True))
+    ok = not setup_required
+    return {
+        "key": "shop_setup_complete",
+        "ok": ok,
+        "applied": 1 if ok else 0,
+        "expected": 1,
+        "missing": (
+            [] if ok
+            else ["complete setup tasks at admin.shopify.com"]
+        ),
     }
 
 

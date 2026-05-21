@@ -107,6 +107,12 @@ _ALL_GOOD = {
             "filename": "assets/shopai-design-tokens.json",
         }],
     }),
+    "shopify_get_shop": _ok({
+        "shop": {
+            "name": "Test Store",
+            "setup_required": False,
+        },
+    }),
 }
 
 
@@ -145,8 +151,8 @@ class TestAllPass:
             "engines.store_setup.launch_audit.record_writeback",
         ):
             result = audit_store()
-        # 7 of 8 pass -> round(100 * 7/8) = 88
-        assert result["completion_pct"] == 88
+        # 8 of 9 pass -> round(100 * 8/9) = 89
+        assert result["completion_pct"] == 89
         assert result["ready_to_launch"] is False
 
 
@@ -850,3 +856,124 @@ class TestStoreIdPropagation:
             audit_store(store_id="store-a")
         params = record_mock.call_args.kwargs["params"]
         assert params["store_id"] == "store-a"
+
+
+class TestShopSetupCompleteCheck:
+    """`Shop.setupRequired` is Shopify's own "is this store ready
+    to launch" flag. The check passes when False (admin setup
+    finished) and fails when True (or when the shop probe is
+    unreachable). Catches the case where every other check
+    passes but the operator never finished Shopify's own
+    plan-selection / billing / domain wizard at admin.shopify.com."""
+
+    def _run(self, shop_data):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({"shop": shop_data})
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        return next(
+            c for c in result["checks"]
+            if c["key"] == "shop_setup_complete"
+        )
+
+    def test_setup_required_false_passes(self):
+        check = self._run({"setup_required": False})
+        assert check["ok"] is True
+        assert check["applied"] == 1
+        assert check["expected"] == 1
+        assert check["missing"] == []
+
+    def test_setup_required_true_fails(self):
+        check = self._run({"setup_required": True})
+        assert check["ok"] is False
+        assert check["applied"] == 0
+        assert "admin.shopify.com" in check["missing"][0]
+
+    def test_missing_setup_field_treated_as_required(self):
+        """When the shop response lacks ``setup_required``
+        entirely, default conservatively to True (not yet
+        complete) so the check fails closed rather than
+        masking a real launch blocker."""
+        check = self._run({"name": "Some Store"})
+        assert check["ok"] is False
+
+    def test_empty_shop_data_marks_unavailable(self):
+        """A missing/empty shop dict (adapter unconfigured or
+        the call returned no shop) yields a distinct missing
+        reason so operators can tell "unreachable" apart from
+        "actually still in setup"."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({"shop": {}})
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        check = next(
+            c for c in result["checks"]
+            if c["key"] == "shop_setup_complete"
+        )
+        assert check["ok"] is False
+        assert check["missing"] == ["shop_data_unavailable"]
+
+    def test_router_raise_marks_unavailable(self):
+        """If SHOPIFY_GET_SHOP raises the audit still completes
+        and the shop_setup_complete check reports unavailable."""
+        def _exec(cap, params):
+            if getattr(cap, "value", "") == "shopify_get_shop":
+                raise RuntimeError("network")
+            return _router_with(_ALL_GOOD)(cap, params)
+        router = type("R", (), {})()
+        router.execute = _exec
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        check = next(
+            c for c in result["checks"]
+            if c["key"] == "shop_setup_complete"
+        )
+        assert check["ok"] is False
+        assert check["missing"] == ["shop_data_unavailable"]
+
+    def test_check_blocks_overall_ready_to_launch(self):
+        """When every OTHER check passes but setup_required=True,
+        ready_to_launch is False. This is the bug-class the
+        check exists to catch: a store with full inventory +
+        policies + pages that still can't take real payments
+        because the operator never finished admin setup."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {"setup_required": True},
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert result["ready_to_launch"] is False
+        # All other checks must still be passing -- this proves
+        # the new check is the lone blocker
+        for check in result["checks"]:
+            if check["key"] != "shop_setup_complete":
+                assert check["ok"] is True, (
+                    f"unexpected failure: {check['key']}"
+                )
