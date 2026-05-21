@@ -170,8 +170,11 @@ class StoreOptimizer:
                     "id": c["product_id"],
                     "success": True,
                 }, source="store_optimizer", score=4.5)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "store_optimizer data-architecture record "
+                "failed (%d changes): %s", len(changes), exc,
+            )
         try:
             from core.memory.intelligence import get_memory_intelligence
             mi = get_memory_intelligence()
@@ -183,8 +186,11 @@ class StoreOptimizer:
                     score=4.0,
                     tags=["live_execution", "shopify", c["type"]],
                 )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "store_optimizer memory-intelligence record "
+                "failed (%d changes): %s", len(changes), exc,
+            )
 
     def get_changes(self) -> list[dict]:
         return list(self._changes)

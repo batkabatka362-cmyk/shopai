@@ -1332,8 +1332,11 @@ class StoreConfigurator:
                 source="configurator",
                 score=4.5,
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "store_configurator telemetry write failed: %s",
+                exc,
+            )
 
 
 _instance: Optional[StoreConfigurator] = None
