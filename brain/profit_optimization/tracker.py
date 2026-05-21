@@ -11,16 +11,28 @@ System-ийн жинхэнэ зорилго: АШИГ нэмэгдүүлэх.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 
 try:
     from core.memory.storage_config import get_path
     _PROFIT_DIR = get_path("brain")
-except Exception:
+except Exception as exc:  # noqa: BLE001
+    # storage_config is the canonical source of the brain dir.
+    # Falling back to /tmp keeps the module importable in
+    # dev environments but operators should see the signal --
+    # without this log a misconfigured deployment looks fine
+    # until the first restart wipes the tmp dir.
+    logger.warning(
+        "ProfitTracker storage_config unavailable, "
+        "falling back to /tmp/shopai_brain: %s", exc,
+    )
     _PROFIT_DIR = "/tmp/shopai_brain"
 
 
@@ -152,20 +164,35 @@ class ProfitTracker:
     def _persist(self) -> None:
         if len(self._actions) > 10000:
             self._actions = self._actions[-10000:]
+        path = os.path.join(self._dir, "profit_tracking.json")
         try:
-            path = os.path.join(self._dir, "profit_tracking.json")
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(self._actions, f, default=str)
             os.replace(tmp, path)
-        except Exception:
-            pass
+        except (OSError, TypeError, ValueError) as exc:
+            # Profit data being silently lost is a real bug.
+            # Surface as a warning so a stuck disk / permission
+            # error doesn't hide for weeks until an audit
+            # notices the tracker is empty.
+            logger.warning(
+                "ProfitTracker._persist failed (%s): %s",
+                path, exc,
+            )
 
     def _load(self) -> None:
+        path = os.path.join(self._dir, "profit_tracking.json")
         try:
-            path = os.path.join(self._dir, "profit_tracking.json")
             if os.path.exists(path):
                 with open(path) as f:
                     self._actions = json.load(f)
-        except Exception:
+        except (OSError, ValueError) as exc:
+            # Corrupt / unreadable existing file -- start fresh
+            # but log so operator sees the data loss. Don't
+            # raise (the tracker is non-critical at startup;
+            # raising would break the autonomous loop).
+            logger.warning(
+                "ProfitTracker._load failed (%s), starting "
+                "with empty actions: %s", path, exc,
+            )
             self._actions = []

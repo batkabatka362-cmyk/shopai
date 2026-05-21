@@ -55,7 +55,14 @@ class TelegramBot:
                 headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=10)
             return True
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Log so "messages not arriving" is debuggable. The
+            # token is omitted from the log -- exc usually carries
+            # status code + reason which is the diagnostic signal.
+            logger.warning(
+                "telegram send failed (chat=%s, text_len=%d): %s",
+                chat_id, len(text or ""), exc,
+            )
             return False
 
     def broadcast(self, text):
@@ -72,8 +79,15 @@ class TelegramBot:
                         self._offset = updates[-1]["update_id"] + 1
                     for u in updates:
                         self._handle(u)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # Silent-fail would let the bot "look running" while
+                # auth/network errors mean it never receives an
+                # update. Log per-iteration so operators see the
+                # signal.
+                logger.warning(
+                    "telegram poll iteration failed (offset=%s): %s",
+                    self._offset, exc,
+                )
             time.sleep(2)
 
     def _handle(self, update):
@@ -86,7 +100,10 @@ class TelegramBot:
         parts = text.split()
         cmd = parts[0].lower()
 
-        # Record every command in data architecture
+        # Record every command in data architecture. The bot's
+        # main work continues regardless; telemetry being down
+        # shouldn't block command handling. Debug-level so noisy
+        # ImportError-on-startup paths don't spam.
         try:
             from core.data.architecture import get_data_architecture
             da = get_data_architecture()
@@ -96,8 +113,11 @@ class TelegramBot:
                 "sentiment": "neutral",
                 "urgency": "low",
             }, source="telegram_bot", score=3.5)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "telegram command telemetry failed (cmd=%s): %s",
+                cmd, exc,
+            )
 
         # Special: /addstore url token name niche
         if cmd == "/addstore" and len(parts) >= 3:
@@ -150,7 +170,8 @@ class TelegramBot:
                 from core.system.cycle_reporter import get_cycle_reporter
                 return get_cycle_reporter().report(sc._last_result)
             return "No cycle yet. /cycle first."
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("telegram /report failed: %s", exc)
             return "Unavailable"
 
     @staticmethod
@@ -164,7 +185,8 @@ class TelegramBot:
                 lines.append("{}: {}".format(k, v))
             lines.append("Score: {}".format(s["avg_score"]))
             return "\n".join(lines)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("telegram /memory failed: %s", exc)
             return "Unavailable"
 
     @staticmethod
@@ -175,7 +197,8 @@ class TelegramBot:
             if not alerts:
                 return "No alerts"
             return "\n".join("[{}] {}".format(a.get("severity"), a.get("message")) for a in alerts)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("telegram /alerts failed: %s", exc)
             return "Unavailable"
 
     @staticmethod
@@ -187,7 +210,8 @@ class TelegramBot:
             p = pc.calculate_store(StoreManager().get_products("deguar"))
             return "Profit: {}/{} profitable, {}% margin".format(
                 p["profitable"], p["products"], p["avg_margin"])
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("telegram /profit failed: %s", exc)
             return "Unavailable"
 
     @staticmethod
@@ -204,7 +228,8 @@ class TelegramBot:
                     s.get("store_id", "?"), s.get("status", "?"),
                     s.get("products_count", 0), s.get("health_score", 0)))
             return "\n".join(lines)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("telegram /stores failed: %s", exc)
             return "Unavailable"
 
     @staticmethod
