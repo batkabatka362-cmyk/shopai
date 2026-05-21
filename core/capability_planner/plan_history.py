@@ -400,6 +400,107 @@ def goal_breakdown(
     return rows[:max(1, int(top_n))]
 
 
+def successful_plans(
+    *,
+    since_seconds: int = 86400 * 30,
+    exclude_store_id: str = "",
+    top_n: int = 10,
+) -> list[dict[str, Any]]:
+    """Return successful past plans ranked by recency +
+    frequency. The recommendation primitive for cross-store
+    learning.
+
+    Filters:
+      - ``since_seconds`` -- look-back window (default 30
+        days)
+      - ``exclude_store_id`` -- skip plans from this store
+        (when recommending for store X, don't surface X's
+        own past plans -- transfer is the point)
+
+    Each returned row:
+
+        {
+          "goal":          str (original goal phrase),
+          "capabilities":  list[str] (capability_names from
+                           plan.steps),
+          "cli_sequence":  list[str] (from the plan dict),
+          "success_count": int (how many times this exact
+                           goal + capability combo succeeded),
+          "last_success":  float (latest success timestamp),
+          "stores":        list[str] (store_ids where it
+                           succeeded).
+        }
+
+    Ranked by ``success_count`` desc, tie-broken by
+    ``last_success`` desc. Top ``top_n`` returned.
+    """
+    events = recent_history(since_seconds=since_seconds)
+    # Filter: successful + not excluded store
+    candidates = [
+        e for e in events
+        if e.get("outcome") == "success"
+        and (
+            not exclude_store_id
+            or e.get("store_id", "") != exclude_store_id
+        )
+    ]
+    if not candidates:
+        return []
+
+    # Group by (goal, capability tuple)
+    grouped: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+    for e in candidates:
+        goal = (e.get("goal") or "").strip()
+        plan = e.get("plan") or {}
+        steps = plan.get("steps") or []
+        caps = tuple(
+            s.get("capability_name", "")
+            for s in steps
+            if isinstance(s, dict)
+            and s.get("capability_name")
+        )
+        if not goal or not caps:
+            continue
+        key = (goal, caps)
+        if key not in grouped:
+            grouped[key] = {
+                "goal": goal,
+                "capabilities": list(caps),
+                "cli_sequence": list(
+                    plan.get("cli_sequence") or []
+                ),
+                "success_count": 0,
+                "last_success": 0.0,
+                "stores": set(),
+            }
+        entry = grouped[key]
+        entry["success_count"] += 1
+        ts = float(e.get("timestamp", 0) or 0)
+        if ts > entry["last_success"]:
+            entry["last_success"] = ts
+        sid = e.get("store_id", "")
+        if sid:
+            entry["stores"].add(sid)
+
+    rows = []
+    for entry in grouped.values():
+        rows.append({
+            "goal": entry["goal"],
+            "capabilities": entry["capabilities"],
+            "cli_sequence": entry["cli_sequence"],
+            "success_count": entry["success_count"],
+            "last_success": entry["last_success"],
+            "stores": sorted(entry["stores"]),
+        })
+    rows.sort(
+        key=lambda r: (
+            -r["success_count"],
+            -r["last_success"],
+        ),
+    )
+    return rows[:max(1, int(top_n))]
+
+
 def clear() -> None:
     """Wipe the history. Operator escape hatch / test
     cleanup."""

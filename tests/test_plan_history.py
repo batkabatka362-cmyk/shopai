@@ -310,6 +310,95 @@ class TestGoalBreakdown:
         assert len(rows) == 3
 
 
+class TestSuccessfulPlans:
+    """Cross-store recommendation surface. Lists successful
+    past plans ranked by frequency + recency."""
+
+    def _seed_invocation(
+        self, goal, store_id, caps,
+        outcome, sleep_ts=0,
+    ):
+        eid = ph.record_plan_invocation(
+            goal=goal,
+            plan={
+                "steps": [
+                    {"capability_name": c} for c in caps
+                ],
+                "cli_sequence": [f"shopai {goal}"],
+            },
+            store_id=store_id,
+            executed=True,
+        )
+        ph.record_outcome(eid, outcome)
+        if sleep_ts:
+            time.sleep(sleep_ts)
+
+    def test_returns_only_success_outcomes(
+        self, temp_history,
+    ):
+        self._seed_invocation(
+            "g1", "s1", ["launch_store"], "success",
+        )
+        self._seed_invocation(
+            "g2", "s1", ["launch_store"], "fail",
+        )
+        self._seed_invocation(
+            "g3", "s1", ["launch_store"], "partial",
+        )
+        rows = ph.successful_plans(since_seconds=3600)
+        # Only the success outcome
+        goals = {r["goal"] for r in rows}
+        assert goals == {"g1"}
+
+    def test_groups_by_goal_and_capabilities(
+        self, temp_history,
+    ):
+        # Same goal + caps from two stores
+        self._seed_invocation(
+            "launch", "store-a", ["launch_store"],
+            "success",
+        )
+        self._seed_invocation(
+            "launch", "store-b", ["launch_store"],
+            "success",
+        )
+        rows = ph.successful_plans(since_seconds=3600)
+        assert len(rows) == 1
+        assert rows[0]["success_count"] == 2
+        assert set(rows[0]["stores"]) == {
+            "store-a", "store-b",
+        }
+
+    def test_exclude_store_filter(self, temp_history):
+        self._seed_invocation(
+            "g", "store-a", ["x"], "success",
+        )
+        self._seed_invocation(
+            "g", "store-b", ["x"], "success",
+        )
+        rows = ph.successful_plans(
+            since_seconds=3600,
+            exclude_store_id="store-a",
+        )
+        # Only store-b's success surfaces
+        assert len(rows) == 1
+        assert rows[0]["stores"] == ["store-b"]
+
+    def test_ranked_by_count_desc(self, temp_history):
+        # 3 successes for "popular"; 1 for "rare"
+        for _ in range(3):
+            self._seed_invocation(
+                "popular", "s", ["x"], "success",
+            )
+        self._seed_invocation(
+            "rare", "s", ["y"], "success",
+        )
+        rows = ph.successful_plans(since_seconds=3600)
+        assert rows[0]["goal"] == "popular"
+        assert rows[0]["success_count"] == 3
+        assert rows[1]["goal"] == "rare"
+
+
 class TestFailOpen:
 
     def test_missing_file_returns_empty(

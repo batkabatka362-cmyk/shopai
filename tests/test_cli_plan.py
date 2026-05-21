@@ -67,6 +67,9 @@ def _ns(**kw):
         llm_model="qwen2.5",
         history=False,
         history_window=86400 * 7,
+        recommend=False,
+        recommend_window=86400 * 30,
+        recommend_top=10,
         json=False,
     )
     defaults.update(kw)
@@ -133,6 +136,106 @@ class TestGoalPath:
         assert "apply_design" in names
         assert isinstance(data["cli_sequence"], list)
         assert isinstance(data["audit_coverage"], list)
+
+
+class TestRecommend:
+    """``shopai plan --recommend`` surfaces successful past
+    plans from peer stores. Empire-AGI cross-store learning
+    primitive."""
+
+    def test_empty_recommendations_friendly(self, cli):
+        with patch(
+            "core.capability_planner.successful_plans",
+            return_value=[],
+        ), patch.object(
+            cli, "_get_store_manager",
+            return_value=_fake_sm(),
+        ):
+            out, code = _capture(
+                cli._cmd_plan, _ns(recommend=True),
+            )
+        assert code == 0
+        assert "No successful peer-store plans" in out
+
+    def test_recommendations_render_with_capabilities(
+        self, cli,
+    ):
+        rows = [{
+            "goal": "launch store",
+            "capabilities": [
+                "launch_store", "audit_store",
+            ],
+            "cli_sequence": ["shopai launch <name>"],
+            "success_count": 5,
+            "last_success": 1234567890.0,
+            "stores": ["store-a", "store-b", "store-c"],
+        }]
+        with patch(
+            "core.capability_planner.successful_plans",
+            return_value=rows,
+        ), patch.object(
+            cli, "_get_store_manager",
+            return_value=_fake_sm(),
+        ):
+            out, code = _capture(
+                cli._cmd_plan, _ns(recommend=True),
+            )
+        assert code == 0
+        assert "Cross-store plan recommendations" in out
+        assert "launch store" in out
+        assert "succeeded 5x" in out
+        assert "3 store(s)" in out
+        assert "launch_store, audit_store" in out
+        assert "shopai launch <name>" in out
+
+    def test_recommend_json_envelope(self, cli):
+        rows = [{
+            "goal": "x", "capabilities": ["y"],
+            "cli_sequence": ["shopai x"],
+            "success_count": 2, "last_success": 0.0,
+            "stores": ["a"],
+        }]
+        sm = _fake_sm()
+        sm.active_store_id = "current-store"
+        with patch(
+            "core.capability_planner.successful_plans",
+            return_value=rows,
+        ) as mock_sp, patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(recommend=True, json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["exclude_store"] == "current-store"
+        assert data["recommendations"] == rows
+        # Active store passed as exclude filter
+        kwargs = mock_sp.call_args.kwargs
+        assert (
+            kwargs["exclude_store_id"] == "current-store"
+        )
+
+    def test_recommend_window_and_top_propagate(self, cli):
+        with patch(
+            "core.capability_planner.successful_plans",
+            return_value=[],
+        ) as mock_sp, patch.object(
+            cli, "_get_store_manager",
+            return_value=_fake_sm(),
+        ):
+            _capture(
+                cli._cmd_plan,
+                _ns(
+                    recommend=True,
+                    recommend_window=86400 * 7,
+                    recommend_top=5,
+                ),
+            )
+        kwargs = mock_sp.call_args.kwargs
+        assert kwargs["since_seconds"] == 86400 * 7
+        assert kwargs["top_n"] == 5
 
 
 class TestHistory:

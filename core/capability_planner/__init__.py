@@ -56,6 +56,7 @@ from .plan_history import (
     record_outcome,
     record_plan_invocation,
     recent_history,
+    successful_plans,
 )
 
 __all__ = [
@@ -72,5 +73,6 @@ __all__ = [
     "recent_history",
     "outcome_breakdown",
     "goal_breakdown",
+    "successful_plans",
     "clear_plan_history",
 ]

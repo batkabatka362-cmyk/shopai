@@ -579,6 +579,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan_p.add_argument(
+        "--recommend", action="store_true",
+        help=(
+            "Empire-AGI recommendation surface. Shows past "
+            "plans that SUCCEEDED elsewhere in the fleet, "
+            "ranked by frequency + recency. Use --store to "
+            "exclude that store's own past plans (so "
+            "recommendations come from peers). Read-only."
+        ),
+    )
+    plan_p.add_argument(
+        "--recommend-window", type=int, default=86400 * 30,
+        dest="recommend_window",
+        help=(
+            "With --recommend, the look-back window in "
+            "seconds (default 2592000 = 30 days)."
+        ),
+    )
+    plan_p.add_argument(
+        "--recommend-top", type=int, default=10,
+        dest="recommend_top",
+        help=(
+            "With --recommend, max rows to return "
+            "(default 10)."
+        ),
+    )
+    plan_p.add_argument(
         "--history-window", type=int, default=86400 * 7,
         dest="history_window",
         help=(
@@ -10989,6 +11015,97 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_plan_recommend(args) -> None:
+    """Cross-store recommendation surface. Lists plans that
+    SUCCEEDED elsewhere in the fleet, ranked by frequency +
+    recency. The empire-AGI primitive: when launching a new
+    store, find what's worked on other stores.
+    """
+    as_json = bool(getattr(args, "json", False))
+    window = max(0, int(
+        getattr(args, "recommend_window", 86400 * 30) or
+        86400 * 30,
+    ))
+    top_n = max(1, int(
+        getattr(args, "recommend_top", 10) or 10,
+    ))
+    # Resolve the store_id to EXCLUDE -- so recommendations
+    # come from peer stores, not the operator's current one.
+    sm = _get_store_manager()
+    exclude_sid = (
+        getattr(args, "store", None)
+        or sm.active_store_id
+        or ""
+    )
+
+    try:
+        from core.capability_planner import successful_plans
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "plan recommend: import failed: %s", exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "planner_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"plan recommend unavailable: {exc}")
+        return
+
+    rows = successful_plans(
+        since_seconds=window,
+        exclude_store_id=exclude_sid,
+        top_n=top_n,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "exclude_store": exclude_sid,
+            "window_seconds": window,
+            "recommendations": rows,
+        }, indent=2, default=str))
+        return
+
+    if not rows:
+        print(
+            f"No successful peer-store plans in the last "
+            f"{window // 86400} day(s). Run "
+            f"``shopai plan --execute --yes`` on other "
+            f"stores to populate the history."
+        )
+        return
+
+    print(
+        f"Cross-store plan recommendations "
+        f"({len(rows)} found in last "
+        f"{window // 86400} day(s)):"
+    )
+    if exclude_sid:
+        print(f"  Excluding own store: {exclude_sid}")
+    print()
+    for i, r in enumerate(rows, start=1):
+        n_stores = len(r["stores"])
+        print(
+            f"  {i}. {r['goal']!r} -- "
+            f"succeeded {r['success_count']}x across "
+            f"{n_stores} store(s)"
+        )
+        print(
+            f"     Capabilities: "
+            f"{', '.join(r['capabilities'])}"
+        )
+        if r["cli_sequence"]:
+            for c in r["cli_sequence"][:3]:
+                print(f"     $ {c}")
+    print()
+    print(
+        "To apply one of these to the current store, run "
+        "``shopai plan \"<goal>\" --execute --yes``."
+    )
+
+
 def _cmd_plan_history(args) -> None:
     """Print recent plan invocations from
     ``data/plan_history.json``. Newest-first within the
@@ -11110,6 +11227,11 @@ def _cmd_plan(args) -> None:
     # ── --history mode: show recent plan invocations ────
     if bool(getattr(args, "history", False)):
         _cmd_plan_history(args)
+        return
+
+    # ── --recommend mode: cross-store learning surface ──
+    if bool(getattr(args, "recommend", False)):
+        _cmd_plan_recommend(args)
         return
 
     try:
