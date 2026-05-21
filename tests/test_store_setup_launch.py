@@ -84,6 +84,29 @@ class TestAllSuccess:
                 ],
             },
         ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4,
+                "results": [
+                    {"title": "Featured", "handle": "featured",
+                     "ok": True, "error": None},
+                    {"title": "New",      "handle": "new",
+                     "ok": True, "error": None},
+                    {"title": "Bestsellers", "handle": "bestsellers",
+                     "ok": True, "error": None},
+                    {"title": "Sale",     "handle": "sale",
+                     "ok": True, "error": None},
+                ],
+            },
+        ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
         ):
@@ -116,6 +139,19 @@ class TestAllSuccess:
             "engines.store_setup.page_applier.apply_pages",
             return_value={"applied_count": 1, "results": []},
         ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4, "results": [],
+            },
+        ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
         ) as record_mock:
@@ -128,6 +164,8 @@ class TestAllSuccess:
         assert kwargs["success"] is True
         assert kwargs["metrics"]["policies_applied"] == 1
         assert kwargs["metrics"]["pages_applied"] == 1
+        assert kwargs["metrics"]["discount_applied"] == 1
+        assert kwargs["metrics"]["collections_applied"] == 4
 
 
 class TestPartialFailure:
@@ -152,6 +190,29 @@ class TestPartialFailure:
         ), patch(
             "engines.store_setup.page_applier.apply_pages",
             return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4,
+                "results": [
+                    {"title": "Featured", "handle": "featured",
+                     "ok": True, "error": None},
+                    {"title": "New",      "handle": "new",
+                     "ok": True, "error": None},
+                    {"title": "Bestsellers", "handle": "bestsellers",
+                     "ok": True, "error": None},
+                    {"title": "Sale",     "handle": "sale",
+                     "ok": True, "error": None},
+                ],
+            },
         ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
@@ -183,6 +244,29 @@ class TestPartialFailure:
                 ],
             },
         ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4,
+                "results": [
+                    {"title": "Featured", "handle": "featured",
+                     "ok": True, "error": None},
+                    {"title": "New",      "handle": "new",
+                     "ok": True, "error": None},
+                    {"title": "Bestsellers", "handle": "bestsellers",
+                     "ok": True, "error": None},
+                    {"title": "Sale",     "handle": "sale",
+                     "ok": True, "error": None},
+                ],
+            },
+        ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
         ):
@@ -204,6 +288,29 @@ class TestModuleException:
             "engines.store_setup.page_applier.apply_pages",
             return_value={"applied_count": 1, "results": []},
         ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4,
+                "results": [
+                    {"title": "Featured", "handle": "featured",
+                     "ok": True, "error": None},
+                    {"title": "New",      "handle": "new",
+                     "ok": True, "error": None},
+                    {"title": "Bestsellers", "handle": "bestsellers",
+                     "ok": True, "error": None},
+                    {"title": "Sale",     "handle": "sale",
+                     "ok": True, "error": None},
+                ],
+            },
+        ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
         ):
@@ -224,6 +331,29 @@ class TestModuleException:
         ), patch(
             "engines.store_setup.page_generator.generate_pages",
             side_effect=RuntimeError("generator broken"),
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4,
+                "results": [
+                    {"title": "Featured", "handle": "featured",
+                     "ok": True, "error": None},
+                    {"title": "New",      "handle": "new",
+                     "ok": True, "error": None},
+                    {"title": "Bestsellers", "handle": "bestsellers",
+                     "ok": True, "error": None},
+                    {"title": "Sale",     "handle": "sale",
+                     "ok": True, "error": None},
+                ],
+            },
         ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
@@ -250,6 +380,17 @@ class TestStoreIdPropagation:
             "engines.store_setup.page_applier.apply_pages",
             return_value={"applied_count": 1, "results": []},
         ) as page_mock, patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ) as discount_mock, patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={"applied_count": 4, "results": []},
+        ) as coll_mock, patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
         ) as record_mock:
@@ -264,6 +405,14 @@ class TestStoreIdPropagation:
         )
         assert (
             page_mock.call_args.kwargs["store_id"]
+            == "store-a"
+        )
+        assert (
+            discount_mock.call_args.kwargs["store_id"]
+            == "store-a"
+        )
+        assert (
+            coll_mock.call_args.kwargs["store_id"]
             == "store-a"
         )
         # Rollup recording also carries store_id
@@ -289,6 +438,29 @@ class TestOptionalFlags:
         ), patch(
             "engines.store_setup.page_applier.apply_pages",
             return_value={"applied_count": 0, "results": []},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4,
+                "results": [
+                    {"title": "Featured", "handle": "featured",
+                     "ok": True, "error": None},
+                    {"title": "New",      "handle": "new",
+                     "ok": True, "error": None},
+                    {"title": "Bestsellers", "handle": "bestsellers",
+                     "ok": True, "error": None},
+                    {"title": "Sale",     "handle": "sale",
+                     "ok": True, "error": None},
+                ],
+            },
         ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
@@ -317,6 +489,29 @@ class TestOptionalFlags:
             "engines.store_setup.page_applier.apply_pages",
             return_value={"applied_count": 0, "results": []},
         ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4,
+                "results": [
+                    {"title": "Featured", "handle": "featured",
+                     "ok": True, "error": None},
+                    {"title": "New",      "handle": "new",
+                     "ok": True, "error": None},
+                    {"title": "Bestsellers", "handle": "bestsellers",
+                     "ok": True, "error": None},
+                    {"title": "Sale",     "handle": "sale",
+                     "ok": True, "error": None},
+                ],
+            },
+        ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
         ):
@@ -329,3 +524,174 @@ class TestOptionalFlags:
             gen_mock.call_args.kwargs["founder_name"]
             == "Jane"
         )
+
+
+# ─── Discount + collections fan-out (added when the orchestrator
+#     grew from 2 steps to 4) ─────────────────────────────────
+
+
+class TestDiscountStep:
+    """The orchestrator's third step calls
+    ``welcome_discount.generate`` then ``apply``. A successful
+    application contributes to ``ready_to_launch``."""
+
+    def _patch_first_two_steps_ok(self):
+        return (
+            patch(
+                "engines.store_setup.policy_generator."
+                "generate_policies",
+                return_value={"REFUND_POLICY": "r"},
+            ),
+            patch(
+                "engines.store_setup.policy_applier.apply_policies",
+                return_value={"applied_count": 1, "results": []},
+            ),
+            patch(
+                "engines.store_setup.page_generator.generate_pages",
+                return_value={"About": "<h1>x</h1>"},
+            ),
+            patch(
+                "engines.store_setup.page_applier.apply_pages",
+                return_value={"applied_count": 1, "results": []},
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "apply_starter_collections",
+                return_value={"applied_count": 4, "results": []},
+            ),
+            patch(
+                "engines.store_setup.launch_orchestrator."
+                "record_writeback",
+            ),
+        )
+
+    def test_discount_success_contributes_to_ready(self):
+        patches = self._patch_first_two_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ):
+            result = launch_store(
+                store_name="Acme", niche="beauty",
+            )
+        assert result["ready_to_launch"] is True
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["discount"]["ok"] is True
+        assert steps["discount"]["applied"] == 1
+        assert result["discount"]["code"] == "WELCOME15"
+
+    def test_discount_failure_blocks_ready(self):
+        patches = self._patch_first_two_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": False, "code": None,
+                "percentage": None, "error": "duplicate_code",
+            },
+        ):
+            result = launch_store(store_name="Acme")
+        assert result["ready_to_launch"] is False
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["discount"]["ok"] is False
+        assert steps["discount"]["error"] == "duplicate_code"
+
+    def test_discount_module_raise_captured(self):
+        patches = self._patch_first_two_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "engines.store_setup.welcome_discount."
+            "generate_welcome_discount",
+            side_effect=RuntimeError("welcome broken"),
+        ):
+            result = launch_store(store_name="Acme")
+        assert "welcome broken" in result["discount"]["error"]
+        assert result["ready_to_launch"] is False
+        # Other steps still completed
+        assert result["policies"]["applied_count"] == 1
+        assert result["pages"]["applied_count"] == 1
+
+
+class TestCollectionsStep:
+
+    def _patch_first_three_steps_ok(self):
+        return (
+            patch(
+                "engines.store_setup.policy_generator."
+                "generate_policies",
+                return_value={"REFUND_POLICY": "r"},
+            ),
+            patch(
+                "engines.store_setup.policy_applier.apply_policies",
+                return_value={"applied_count": 1, "results": []},
+            ),
+            patch(
+                "engines.store_setup.page_generator.generate_pages",
+                return_value={"About": "<h1>x</h1>"},
+            ),
+            patch(
+                "engines.store_setup.page_applier.apply_pages",
+                return_value={"applied_count": 1, "results": []},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "apply_welcome_discount",
+                return_value={
+                    "applied": True, "code": "WELCOME15",
+                    "percentage": 15, "error": None,
+                },
+            ),
+            patch(
+                "engines.store_setup.launch_orchestrator."
+                "record_writeback",
+            ),
+        )
+
+    def test_collections_success_contributes_to_ready(self):
+        patches = self._patch_first_three_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4, "results": [],
+            },
+        ):
+            result = launch_store(
+                store_name="Acme", niche="beauty",
+            )
+        assert result["ready_to_launch"] is True
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["collections"]["ok"] is True
+        assert steps["collections"]["applied"] == 4
+
+    def test_collections_zero_blocks_ready(self):
+        patches = self._patch_first_three_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={"applied_count": 0, "results": []},
+        ):
+            result = launch_store(store_name="Acme")
+        assert result["ready_to_launch"] is False
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["collections"]["ok"] is False
+
+    def test_collections_module_raise_captured(self):
+        patches = self._patch_first_three_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "engines.store_setup.collection_seeder."
+            "generate_starter_collections",
+            side_effect=RuntimeError("seeder broken"),
+        ):
+            result = launch_store(store_name="Acme")
+        assert "seeder broken" in result["collections"]["error"]
+        assert result["ready_to_launch"] is False

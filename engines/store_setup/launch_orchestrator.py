@@ -1,8 +1,9 @@
 """Single-command autonomous store launch.
 
 Bundles the per-capability generators + appliers introduced in
-PRs #364 (policies) and #365 (pages) so an operator can run a
-SINGLE command to take a fresh Shopify store from "credentials
+PRs #364 (policies), #365 (pages), #367 (welcome discount), and
+#370 (starter collections) so an operator can run a SINGLE
+command to take a fresh Shopify store from "credentials
 configured" to "launchable" with no manual paste required.
 
 Workflow::
@@ -18,11 +19,15 @@ Workflow::
         founder_name="Jane Doe",
     )
     # result = {
-    #     "policies": {applied_count: 5, results: [...]},
-    #     "pages":    {applied_count: 4, results: [...]},
+    #     "policies":    {applied_count: 5, results: [...]},
+    #     "pages":       {applied_count: 4, results: [...]},
+    #     "discount":    {applied: True, code: "WELCOME15", ...},
+    #     "collections": {applied_count: 4, results: [...]},
     #     "checklist": [
-    #         {step: "policies", ok: True, applied: 5},
-    #         {step: "pages",    ok: True, applied: 4},
+    #         {step: "policies",    ok: True, applied: 5},
+    #         {step: "pages",       ok: True, applied: 4},
+    #         {step: "discount",    ok: True, applied: 1},
+    #         {step: "collections", ok: True, applied: 4},
     #     ],
     #     "ready_to_launch": True,
     # }
@@ -73,14 +78,18 @@ def launch_store(
         include_subscription_policy: Forwarded to policy_generator.
 
     Returns:
-        ``{policies, pages, checklist, ready_to_launch}`` --
-        see module docstring for the schema.
+        ``{policies, pages, discount, collections, checklist,
+        ready_to_launch}`` -- see module docstring for the schema.
     """
     name = (store_name or "").strip()
     if not name:
         return {
             "policies": {"applied_count": 0, "results": []},
             "pages": {"applied_count": 0, "results": []},
+            "discount": {"applied": False, "code": None,
+                         "percentage": None,
+                         "error": "store_name_required"},
+            "collections": {"applied_count": 0, "results": []},
             "checklist": [],
             "ready_to_launch": False,
             "error": "store_name_required",
@@ -146,6 +155,73 @@ def launch_store(
             "error": str(exc),
         }
 
+    # ── Step 3: Welcome discount ─────────────────────────
+    # A launchable storefront with no discount code still
+    # technically takes orders, but the standard launch flow
+    # creates a WELCOME{N} code so first-time visitors have
+    # an incentive to convert. The launch-audit's
+    # ``active_discounts`` check needs at least one code; a
+    # default-args call here satisfies it.
+    discount_result: dict[str, Any] = {
+        "applied": False,
+        "code": None,
+        "percentage": None,
+        "error": None,
+    }
+    try:
+        from engines.store_setup.welcome_discount import (
+            apply_welcome_discount,
+            generate_welcome_discount,
+        )
+        discount_params = generate_welcome_discount(
+            store_name=name,
+            niche=niche,
+        )
+        discount_result = apply_welcome_discount(
+            discount_params, store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "launch_orchestrator discount step raised: %s", exc,
+        )
+        discount_result = {
+            "applied": False,
+            "code": None,
+            "percentage": None,
+            "error": str(exc),
+        }
+
+    # ── Step 4: Starter collections ──────────────────────
+    # Niche-aware curated collections give the storefront
+    # structure beyond the auto-generated "All" collection.
+    # Launch-audit's ``curated_collections`` check expects
+    # at least one; the niche-set generators produce 3-5
+    # per niche.
+    collections_result: dict[str, Any] = {
+        "applied_count": 0, "results": [],
+    }
+    try:
+        from engines.store_setup.collection_seeder import (
+            apply_starter_collections,
+            generate_starter_collections,
+        )
+        collection_specs = generate_starter_collections(
+            niche=niche,
+        )
+        collections_result = apply_starter_collections(
+            collection_specs, store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "launch_orchestrator collections step raised: %s",
+            exc,
+        )
+        collections_result = {
+            "applied_count": 0,
+            "results": [],
+            "error": str(exc),
+        }
+
     # ── Checklist ────────────────────────────────────────
     checklist: list[dict[str, Any]] = []
 
@@ -171,11 +247,40 @@ def launch_store(
         "error": pages_result.get("error"),
     })
 
-    ready_to_launch = bool(policies_ok and pages_ok)
+    discount_ok = (
+        bool(discount_result.get("applied"))
+        and not discount_result.get("error")
+    )
+    checklist.append({
+        "step": "discount",
+        "ok": discount_ok,
+        "applied": 1 if discount_ok else 0,
+        "error": discount_result.get("error"),
+    })
+
+    collections_ok = (
+        collections_result.get("applied_count", 0) > 0
+        and not collections_result.get("error")
+    )
+    checklist.append({
+        "step": "collections",
+        "ok": collections_ok,
+        "applied": collections_result.get("applied_count", 0),
+        "error": collections_result.get("error"),
+    })
+
+    ready_to_launch = bool(
+        policies_ok
+        and pages_ok
+        and discount_ok
+        and collections_ok
+    )
 
     out = {
         "policies": policies_result,
         "pages": pages_result,
+        "discount": discount_result,
+        "collections": collections_result,
         "checklist": checklist,
         "ready_to_launch": ready_to_launch,
     }
@@ -211,6 +316,10 @@ def launch_store(
                 ),
                 "pages_applied": (
                     pages_result.get("applied_count", 0)
+                ),
+                "discount_applied": 1 if discount_ok else 0,
+                "collections_applied": (
+                    collections_result.get("applied_count", 0)
                 ),
                 "ready_to_launch": ready_to_launch,
             },
