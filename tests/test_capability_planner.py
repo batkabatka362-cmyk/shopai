@@ -248,6 +248,79 @@ class TestCliSequenceDedup:
         )
 
 
+class TestHistoryDecoration:
+    """Planner populates ``history_sample_size`` +
+    ``history_success_rate`` on each step from
+    ``plan_history.outcome_breakdown``. Best-effort: missing
+    history -> 0 / 0.0 (default values)."""
+
+    def _seed_simple(self):
+        register_capability(Capability(
+            name="x_engine",
+            kind=CapabilityKind.ENGINE,
+            description="x",
+            when_to_use="use for x",
+            module_path="m:x",
+            tags=["x"],
+        ))
+
+    def test_missing_history_stays_at_defaults(self):
+        self._seed_simple()
+        # No mocking -> real plan_history reads (test env
+        # guard returns empty)
+        p = Planner(skip_bootstrap=True).plan_for_goal("x")
+        step = next(
+            s for s in p.steps
+            if s.capability_name == "x_engine"
+        )
+        assert step.history_sample_size == 0
+        assert step.history_success_rate == 0.0
+
+    def test_history_populates_when_breakdown_returns(self):
+        from unittest.mock import patch
+        self._seed_simple()
+        # Patch outcome_breakdown to return a known sample
+        with patch(
+            "core.capability_planner.plan_history."
+            "outcome_breakdown",
+            return_value={
+                "total": 5, "executed_total": 5,
+                "by_outcome": {"success": 4, "fail": 1},
+                "success_rate": 0.8,
+            },
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("x")
+        step = next(
+            s for s in p.steps
+            if s.capability_name == "x_engine"
+        )
+        assert step.history_sample_size == 5
+        assert abs(step.history_success_rate - 0.8) < 0.001
+
+    def test_history_lookup_failure_is_silent(self):
+        from unittest.mock import patch
+        self._seed_simple()
+        # outcome_breakdown raises -> step stays at defaults,
+        # no crash
+        with patch(
+            "core.capability_planner.plan_history."
+            "outcome_breakdown",
+            side_effect=RuntimeError("disk error"),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("x")
+        step = next(
+            s for s in p.steps
+            if s.capability_name == "x_engine"
+        )
+        # Defaults preserved despite the raise
+        assert step.history_sample_size == 0
+        assert step.history_success_rate == 0.0
+
+
 class TestCompositionPiping:
     """When a downstream applier declares ``composes_input``
     and the planner places it after a peer in

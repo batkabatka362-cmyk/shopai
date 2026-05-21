@@ -54,6 +54,17 @@ class PlanStep:
     pipe_from: str = ""
     pipe_as: str = ""
 
+    # Historical observability: when plan_history has prior
+    # invocations involving this capability, the planner
+    # populates these so consumers (LLM, operator UI) see
+    # the past-success signal alongside the recommendation.
+    # ``history_sample_size`` is the count of executed past
+    # plans that included this step; ``history_success_rate``
+    # is the success / sample_size ratio. Both default to
+    # 0 / 0.0 when no history exists.
+    history_sample_size: int = 0
+    history_success_rate: float = 0.0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "capability_name": self.capability_name,
@@ -67,6 +78,8 @@ class PlanStep:
             "suggested_args": dict(self.suggested_args),
             "pipe_from": self.pipe_from,
             "pipe_as": self.pipe_as,
+            "history_sample_size": self.history_sample_size,
+            "history_success_rate": self.history_success_rate,
         }
 
 

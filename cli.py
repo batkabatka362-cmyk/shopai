@@ -11168,6 +11168,15 @@ def _cmd_plan(args) -> None:
                 f"     closes: "
                 f"{', '.join(s.closes_audits)}"
             )
+        # Historical success-rate signal -- only render when
+        # sample size >= 3 so single-event noise doesn't
+        # mislead the operator.
+        if s.history_sample_size >= 3:
+            rate_pct = s.history_success_rate * 100
+            print(
+                f"     history: {rate_pct:.0f}% success "
+                f"over {s.history_sample_size} past run(s)"
+            )
     print()
     if plan.cli_sequence:
         print("Run:")

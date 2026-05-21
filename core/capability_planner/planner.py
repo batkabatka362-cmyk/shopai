@@ -456,6 +456,44 @@ class Planner:
             "plan's outcome is checkable."
         )
 
+    def _decorate_with_history(self, plan: Plan) -> None:
+        """Populate ``history_sample_size`` +
+        ``history_success_rate`` on each step from
+        ``plan_history.outcome_breakdown``. Best-effort:
+        missing / failing history is silently skipped.
+
+        Sample size cutoff: when fewer than 1 prior
+        executed invocation exists for a capability, the
+        success_rate stays at 0.0. Operators see the small
+        sample via history_sample_size = 0/1/2 etc.
+        """
+        try:
+            from .plan_history import outcome_breakdown
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_decorate_with_history: import raised: %s",
+                exc,
+            )
+            return
+        for step in plan.steps:
+            try:
+                b = outcome_breakdown(
+                    capability=step.capability_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "_decorate_with_history: lookup "
+                    "raised for %s: %s",
+                    step.capability_name, exc,
+                )
+                continue
+            step.history_sample_size = int(
+                b.get("executed_total", 0)
+            )
+            step.history_success_rate = float(
+                b.get("success_rate", 0.0)
+            )
+
     def _finalise(self, plan: Plan) -> None:
         """Compute audit_coverage + cli_sequence + piping
         wire-up from the plan's step list.
@@ -518,6 +556,13 @@ class Planner:
                 continue
             cmds.append(s.cli_command)
         plan.cli_sequence = cmds
+
+        # Best-effort: decorate steps with historical
+        # success rates from plan_history. Missing /
+        # erroring history is silently skipped so the
+        # planner stays usable when the history file is
+        # empty / corrupt / hidden by the test-env guard.
+        self._decorate_with_history(plan)
 
 
 # ── Module-level convenience wrappers ─────────────────────
