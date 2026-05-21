@@ -65,6 +65,8 @@ def _ns(**kw):
         yes=False,
         llm=False,
         llm_model="qwen2.5",
+        history=False,
+        history_window=86400 * 7,
         json=False,
     )
     defaults.update(kw)
@@ -131,6 +133,78 @@ class TestGoalPath:
         assert "apply_design" in names
         assert isinstance(data["cli_sequence"], list)
         assert isinstance(data["audit_coverage"], list)
+
+
+class TestHistory:
+    """``shopai plan --history`` reads plan_history.json
+    and renders recent invocations."""
+
+    def test_empty_history_friendly(self, cli):
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_plan, _ns(history=True),
+            )
+        assert code == 0
+        assert "No plan invocations" in out
+
+    def test_recent_events_render(self, cli):
+        import time as _time
+        events = [
+            {
+                "event_id": "plan_a",
+                "timestamp": _time.time() - 3600,
+                "goal": "mobile design",
+                "store_id": "store-a",
+                "executed": True,
+                "outcome": "success",
+                "notes": "closed 3 of 5 gaps",
+            },
+            {
+                "event_id": "plan_b",
+                "timestamp": _time.time() - 7200,
+                "goal": "launch store",
+                "store_id": "store-b",
+                "executed": False,
+                "outcome": "skipped",
+                "notes": "",
+            },
+        ]
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ):
+            out, code = _capture(
+                cli._cmd_plan, _ns(history=True),
+            )
+        assert code == 0
+        assert "Plan history -- 2 invocation(s)" in out
+        assert "mobile design" in out
+        assert "launch store" in out
+        assert "success" in out
+        assert "skipped" in out
+        assert "closed 3 of 5 gaps" in out
+
+    def test_history_json_passthrough(self, cli):
+        events = [{
+            "event_id": "x", "timestamp": 0,
+            "goal": "g", "store_id": "s",
+            "executed": True, "outcome": "success",
+            "notes": "",
+        }]
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(history=True, json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data == events
 
 
 class TestLlmFlag:

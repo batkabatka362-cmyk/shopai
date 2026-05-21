@@ -48,6 +48,13 @@ from __future__ import annotations
 from .plan import Plan, PlanStep
 from .planner import Planner, plan_for_goal, plan_for_audit_gaps
 from .llm_planner import LLMPlanner, plan_for_goal_with_llm
+from .plan_history import (
+    PlanEvent,
+    clear as clear_plan_history,
+    record_outcome,
+    record_plan_invocation,
+    recent_history,
+)
 
 __all__ = [
     "Plan",
@@ -57,4 +64,9 @@ __all__ = [
     "plan_for_audit_gaps",
     "LLMPlanner",
     "plan_for_goal_with_llm",
+    "PlanEvent",
+    "record_plan_invocation",
+    "record_outcome",
+    "recent_history",
+    "clear_plan_history",
 ]

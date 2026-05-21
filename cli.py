@@ -570,6 +570,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan_p.add_argument(
+        "--history", action="store_true",
+        help=(
+            "Show recent plan invocations from "
+            "data/plan_history.json instead of building a "
+            "new plan. Lists newest-first within the "
+            "--history-window window."
+        ),
+    )
+    plan_p.add_argument(
+        "--history-window", type=int, default=86400 * 7,
+        dest="history_window",
+        help=(
+            "With --history, the window in seconds (default "
+            "604800 = 7 days)."
+        ),
+    )
+    plan_p.add_argument(
         "--llm", action="store_true",
         help=(
             "Use LLM-driven seed selection (local Ollama) "
@@ -10908,6 +10925,67 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_plan_history(args) -> None:
+    """Print recent plan invocations from
+    ``data/plan_history.json``. Newest-first within the
+    --history-window window (default 7 days)."""
+    as_json = bool(getattr(args, "json", False))
+    window = max(
+        0,
+        int(getattr(args, "history_window", 86400 * 7) or
+            86400 * 7),
+    )
+    try:
+        from core.capability_planner import recent_history
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "plan history: import failed: %s", exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "plan_history_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"plan history unavailable: {exc}")
+        return
+
+    events = recent_history(since_seconds=window)
+    if as_json:
+        print(json.dumps(events, indent=2, default=str))
+        return
+
+    if not events:
+        print(
+            f"No plan invocations in the last "
+            f"{window // 86400} day(s). Try "
+            f"--history-window <seconds> for a wider lens."
+        )
+        return
+    print(
+        f"Plan history -- {len(events)} invocation(s) "
+        f"(last {window // 86400} day(s)):"
+    )
+    print()
+    import time as _t
+    for e in events:
+        ts = float(e.get("timestamp", 0) or 0)
+        age_h = max(0, int((_t.time() - ts) / 3600))
+        outcome = e.get("outcome") or "(no outcome)"
+        executed = "yes" if e.get("executed") else "no"
+        sid = e.get("store_id") or "-"
+        goal = e.get("goal") or "-"
+        print(
+            f"  [{age_h:>3}h] [{outcome:>12}] "
+            f"executed={executed:<3} store={sid:<16} "
+            f"goal={goal}"
+        )
+        notes = e.get("notes")
+        if notes:
+            print(f"          notes: {notes}")
+
+
 def _cmd_plan(args) -> None:
     """Build a capability plan for a goal phrase or for the
     audit's failing checks.
@@ -10926,6 +11004,11 @@ def _cmd_plan(args) -> None:
     close_gaps = bool(getattr(args, "close_audit_gaps", False))
     goal = (getattr(args, "goal", "") or "").strip()
 
+    # ── --history mode: show recent plan invocations ────
+    if bool(getattr(args, "history", False)):
+        _cmd_plan_history(args)
+        return
+
     try:
         from core.capability_planner import (
             plan_for_audit_gaps,
@@ -10936,6 +11019,10 @@ def _cmd_plan(args) -> None:
         print(f"plan unavailable: {exc}")
         return
 
+    # Pre-execution audit snapshot when --close-audit-gaps
+    # mode is on. Saved so the post-execution outcome
+    # correlation can compare which gaps closed.
+    pre_audit_failing: set[str] = set()
     if close_gaps:
         sm = _get_store_manager()
         store_id = (
@@ -10963,6 +11050,7 @@ def _cmd_plan(args) -> None:
             for c in (audit.get("checks") or [])
             if not c.get("ok")
         ]
+        pre_audit_failing = set(failing)
         plan = plan_for_audit_gaps(failing)
     else:
         if not goal:
@@ -11011,6 +11099,7 @@ def _cmd_plan(args) -> None:
             yes=bool(getattr(args, "yes", False)),
             as_json=as_json,
             store_id=store_id,
+            pre_audit_failing=pre_audit_failing,
         )
         return
 
@@ -11192,6 +11281,7 @@ def _cmd_fleet_plan(args) -> None:
 def _run_plan_multi_step(
     plan, *, yes: bool, as_json: bool,
     store_id: str | None = None,
+    pre_audit_failing: set | None = None,
 ) -> None:
     """Execute each step of a plan via the in-process
     capability executor, using ``suggested_args`` from the
@@ -11255,6 +11345,27 @@ def _run_plan_multi_step(
     # composition piping.
     prior_results: dict = {}
 
+    # Record this plan invocation BEFORE executing -- gives
+    # us an event_id we can update post-execution with the
+    # actual outcome (success / partial / fail / skipped).
+    # No-op under pytest (Pattern J guard inside).
+    history_event_id = ""
+    try:
+        from core.capability_planner import (
+            record_plan_invocation,
+        )
+        history_event_id = record_plan_invocation(
+            goal=plan.goal,
+            plan=plan,
+            store_id=str(store_id or ""),
+            executed=yes,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "plan history: record_invocation raised: %s",
+            exc,
+        )
+
     with scope:
         for step in plan.steps:
             args_dict = dict(step.suggested_args or {})
@@ -11296,11 +11407,89 @@ def _run_plan_multi_step(
                 overall_ok = False
                 break
 
+    # Record the outcome of this plan invocation. Outcome
+    # semantics:
+    #   skipped     -- dry-run only (no --yes)
+    #   fail        -- execution failed
+    #   executed_ok -- steps OK; audit closure not verified
+    #   success     -- audit verified: pre-execution gaps
+    #                  all closed
+    #   partial     -- audit verified: some gaps closed,
+    #                  others remain
+    #   no_change   -- audit verified: no gaps closed
+    #                  despite execution
+    #
+    # The success / partial / no_change outcomes only fire
+    # when ``pre_audit_failing`` was supplied (i.e. the
+    # operator used --close-audit-gaps mode). For free-form
+    # goal plans we can't easily verify audit-based closure
+    # so the outcome stays at executed_ok.
+    outcome = ""
+    outcome_notes = ""
+    if history_event_id:
+        if not yes:
+            outcome = "skipped"
+        elif not overall_ok:
+            outcome = "fail"
+        elif pre_audit_failing:
+            # Post-execution audit verification.
+            try:
+                from engines.store_setup.launch_audit \
+                    import audit_store
+                post_audit = audit_store(
+                    store_id=store_id,
+                )
+                still_failing = {
+                    c.get("key", "")
+                    for c in (
+                        post_audit.get("checks") or []
+                    )
+                    if not c.get("ok")
+                }
+                closed = pre_audit_failing - still_failing
+                remaining = (
+                    pre_audit_failing & still_failing
+                )
+                outcome_notes = (
+                    f"closed {len(closed)} of "
+                    f"{len(pre_audit_failing)} gaps; "
+                    f"completion_pct: "
+                    f"{post_audit.get('completion_pct', 0)}"
+                )
+                if not closed:
+                    outcome = "no_change"
+                elif remaining:
+                    outcome = "partial"
+                else:
+                    outcome = "success"
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "plan history: post-audit raised: %s",
+                    exc,
+                )
+                outcome = "executed_ok"
+        else:
+            outcome = "executed_ok"
+        try:
+            from core.capability_planner import (
+                record_outcome,
+            )
+            record_outcome(
+                history_event_id, outcome,
+                notes=outcome_notes,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "plan history: record_outcome raised: %s",
+                exc,
+            )
+
     if as_json:
         print(json.dumps({
             "goal": plan.goal,
             "executed": yes,
             "ok": overall_ok,
+            "history_event_id": history_event_id,
             "steps": steps_out,
         }, indent=2, default=str))
         if not overall_ok:
