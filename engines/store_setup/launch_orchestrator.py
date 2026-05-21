@@ -65,6 +65,7 @@ def launch_store(
     favicon_url: str | None = None,
     hero_url: str | None = None,
     og_image_url: str | None = None,
+    seed_products: bool = False,
 ) -> dict[str, Any]:
     """Run the autonomous setup steps and return a checklist.
 
@@ -87,6 +88,11 @@ def launch_store(
         favicon_url: Optional brand favicon URL.
         hero_url: Optional hero image URL.
         og_image_url: Optional social-sharing image URL.
+        seed_products: When True, Step 7 seeds 4 niche-aware
+            placeholder products (ACTIVE, tagged ``starter``)
+            so the audit's active_products check passes on a
+            fresh store. Default False -- operators with their
+            own catalog should NOT opt in.
 
     Returns:
         ``{policies, pages, checklist, ready_to_launch}`` --
@@ -112,6 +118,10 @@ def launch_store(
             "design": {
                 "applied": False, "theme_id": "",
                 "files_written": [],
+                "skipped": True, "error": None,
+            },
+            "products": {
+                "applied_count": 0, "results": [],
                 "skipped": True, "error": None,
             },
             "checklist": [],
@@ -371,6 +381,49 @@ def launch_store(
             "error": str(exc),
         }
 
+    # ── Step 7: Product seeder (optional) ───────────────
+    # Seeds 4 niche-aware placeholder products (ACTIVE,
+    # tagged ``starter``) so the audit's active_products
+    # check passes. Default SKIPPED -- only fires when the
+    # caller opts in via ``seed_products=True``. Operators
+    # with their own catalog should NOT opt in; the
+    # seeded items would be junk to clean up later. The
+    # CLI's ``--seed-products`` flag is the operator gate.
+    products_result: dict[str, Any] = {
+        "applied_count": 0, "results": [],
+        "skipped": True, "error": None,
+    }
+    if seed_products:
+        try:
+            from engines.store_setup.product_seeder import (
+                generate_starter_products,
+                apply_starter_products,
+            )
+            starter_products = generate_starter_products(
+                niche=niche,
+                vendor=name,
+            )
+            applied = apply_starter_products(
+                starter_products, store_id=store_id,
+            )
+            products_result = {
+                "applied_count": applied.get(
+                    "applied_count", 0,
+                ),
+                "results": applied.get("results") or [],
+                "skipped": False,
+                "error": None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "launch_orchestrator products step raised: %s",
+                exc,
+            )
+            products_result = {
+                "applied_count": 0, "results": [],
+                "skipped": False, "error": str(exc),
+            }
+
     # ── Checklist ────────────────────────────────────────
     checklist: list[dict[str, Any]] = []
 
@@ -455,6 +508,25 @@ def launch_store(
         "error": design_result.get("error"),
     })
 
+    # Product seeder: same skip semantics. Skipped = opted
+    # out (the default); attempted-but-failed contributes
+    # ok=False.
+    products_skipped = bool(products_result.get("skipped"))
+    products_ok = (
+        products_skipped
+        or (
+            products_result.get("applied_count", 0) > 0
+            and not products_result.get("error")
+        )
+    )
+    checklist.append({
+        "step": "products",
+        "ok": products_ok,
+        "applied": products_result.get("applied_count", 0),
+        "skipped": products_skipped,
+        "error": products_result.get("error"),
+    })
+
     ready_to_launch = bool(
         policies_ok
         and pages_ok
@@ -462,6 +534,7 @@ def launch_store(
         and collections_ok
         and brand_ok
         and design_ok
+        and products_ok
     )
 
     out = {
@@ -471,6 +544,7 @@ def launch_store(
         "collections": collections_result,
         "brand": brand_result,
         "design": design_result,
+        "products": products_result,
         "checklist": checklist,
         "ready_to_launch": ready_to_launch,
     }
@@ -525,6 +599,10 @@ def launch_store(
                     else 0
                 ),
                 "design_skipped": design_skipped,
+                "products_seeded": (
+                    products_result.get("applied_count", 0)
+                ),
+                "products_skipped": products_skipped,
                 "ready_to_launch": ready_to_launch,
             },
         )

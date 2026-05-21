@@ -1014,3 +1014,165 @@ class TestDesignStep:
         assert "design_skipped" in m
         assert m["design_applied"] == 0
         assert m["design_skipped"] is True
+
+
+class TestProductsStep:
+    """Product seeder as OPTIONAL Step 7.
+
+    seed_products=False (default) -> skipped=True, doesn't
+    block ready_to_launch.
+    seed_products=True + apply succeeds -> step ok.
+    seed_products=True + apply fails -> step ok=False,
+    blocks ready_to_launch.
+    """
+
+    def _upstream_patches(self):
+        return [
+            patch(
+                "engines.store_setup.policy_generator."
+                "generate_policies",
+                return_value={"REFUND_POLICY": "r"},
+            ),
+            patch(
+                "engines.store_setup.policy_applier."
+                "apply_policies",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.page_generator."
+                "generate_pages",
+                return_value={"About": "<h1>x</h1>"},
+            ),
+            patch(
+                "engines.store_setup.page_applier.apply_pages",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "generate_welcome_discount",
+                return_value={"code": "W", "percentage": 10},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "apply_welcome_discount",
+                return_value={
+                    "applied": True, "code": "W",
+                    "percentage": 10, "error": None,
+                },
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "generate_starter_collections",
+                return_value=[{"title": "x", "handle": "x"}],
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "apply_starter_collections",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.launch_orchestrator."
+                "record_writeback",
+            ),
+        ]
+
+    def test_default_skipped_doesnt_block(self):
+        p = self._upstream_patches()
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6], \
+                p[7], p[8]:
+            result = launch_store(store_name="Acme")
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["products"]["ok"] is True
+        assert steps["products"]["skipped"] is True
+        assert steps["products"]["applied"] == 0
+        # Mandatory steps ok + optional all skipped -> ready
+        assert result["ready_to_launch"] is True
+
+    def test_opt_in_success_marks_step_ok(self):
+        p = self._upstream_patches()
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6], \
+                p[7], p[8], patch(
+            "engines.store_setup.product_seeder."
+            "generate_starter_products",
+            return_value=[
+                {"title": "X", "handle": "x"},
+                {"title": "Y", "handle": "y"},
+                {"title": "Z", "handle": "z"},
+                {"title": "Q", "handle": "q"},
+            ],
+        ), patch(
+            "engines.store_setup.product_seeder."
+            "apply_starter_products",
+            return_value={"applied_count": 4, "results": []},
+        ):
+            result = launch_store(
+                store_name="Acme", seed_products=True,
+            )
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["products"]["ok"] is True
+        assert steps["products"]["skipped"] is False
+        assert steps["products"]["applied"] == 4
+        assert result["ready_to_launch"] is True
+
+    def test_opt_in_failure_blocks_ready(self):
+        p = self._upstream_patches()
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6], \
+                p[7], p[8], patch(
+            "engines.store_setup.product_seeder."
+            "generate_starter_products",
+            return_value=[
+                {"title": "X", "handle": "x"},
+            ],
+        ), patch(
+            "engines.store_setup.product_seeder."
+            "apply_starter_products",
+            return_value={"applied_count": 0, "results": []},
+        ):
+            result = launch_store(
+                store_name="Acme", seed_products=True,
+            )
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["products"]["ok"] is False
+        assert steps["products"]["skipped"] is False
+        assert result["ready_to_launch"] is False
+
+    def test_opt_in_raise_captured(self):
+        p = self._upstream_patches()
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6], \
+                p[7], p[8], patch(
+            "engines.store_setup.product_seeder."
+            "generate_starter_products",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = launch_store(
+                store_name="Acme", seed_products=True,
+            )
+        assert "boom" in (result["products"]["error"] or "")
+        assert result["ready_to_launch"] is False
+
+    def test_rollup_carries_products_metrics(self):
+        p = self._upstream_patches()
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6], \
+                p[7], patch(
+            "engines.store_setup.product_seeder."
+            "generate_starter_products",
+            return_value=[{"title": "X", "handle": "x"}],
+        ), patch(
+            "engines.store_setup.product_seeder."
+            "apply_starter_products",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ) as record_mock:
+            launch_store(
+                store_name="Acme", seed_products=True,
+            )
+        m = record_mock.call_args.kwargs["metrics"]
+        assert "products_seeded" in m
+        assert "products_skipped" in m
+        assert m["products_seeded"] == 1
+        assert m["products_skipped"] is False

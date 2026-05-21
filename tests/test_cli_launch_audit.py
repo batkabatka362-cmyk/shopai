@@ -295,7 +295,7 @@ class TestNextAction:
         assert "Next action: Visit admin.shopify.com" in out
         assert "shipping" in out
 
-    def test_only_seeder_gap_recommends_products(self, cli):
+    def test_only_seeder_gap_recommends_seed_products(self, cli):
         with patch.object(
             cli, "_get_store_manager", return_value=_fake_sm(),
         ), patch(
@@ -305,8 +305,11 @@ class TestNextAction:
             }),
         ):
             out, code = _capture(cli._cmd_launch_audit, _ns())
-        assert "Next action:" in out
-        assert "active_products" in out
+        # active_products is now closeable via the seeder, so
+        # the recommendation is a launch invocation that
+        # includes --seed-products.
+        assert "Next action: shopai launch" in out
+        assert "--seed-products" in out
 
     def test_all_pass_no_next_action(self, cli):
         with patch.object(

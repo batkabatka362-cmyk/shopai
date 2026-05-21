@@ -61,6 +61,7 @@ def _ns(**kw):
         favicon_url=None,
         hero_url=None,
         og_image_url=None,
+        seed_products=False,
         strict=False,
         audit=False,
         json=False,
@@ -428,6 +429,19 @@ class TestKwargPropagation:
         assert code == 0
         assert "READY TO LAUNCH" in out
         assert "unavailable" in out.lower()
+
+    def test_seed_products_flag_forwarded(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value=_ready_result(),
+        ) as launch_mock:
+            _capture(
+                cli._cmd_launch, _ns(seed_products=True),
+            )
+        kwargs = launch_mock.call_args.kwargs
+        assert kwargs["seed_products"] is True
 
     def test_brand_urls_forwarded(self, cli):
         with patch.object(

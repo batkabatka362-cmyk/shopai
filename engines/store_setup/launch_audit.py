@@ -119,8 +119,10 @@ _FIX_HINTS: dict[str, str] = {
         "Run: shopai launch --logo-url URL --favicon-url URL"
     ),
     "active_products": (
-        "Add ACTIVE products via Shopify admin or run a niche "
-        "seeder; shopai post-launch enriches what exists"
+        "Run: shopai launch --seed-products  (or "
+        "shopai store seed-products) for niche-aware "
+        "starter products; or add ACTIVE products via "
+        "Shopify admin"
     ),
     "shipping_zones": (
         "Manual: configure at "

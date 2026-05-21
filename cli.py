@@ -1464,6 +1464,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Public HTTPS URL for the social-sharing image",
     )
     launch_p.add_argument(
+        "--seed-products", action="store_true",
+        help=(
+            "Step 7 (optional): seed 4 niche-aware "
+            "placeholder products (ACTIVE, tagged "
+            "``starter``) so the launch_audit's "
+            "active_products check passes on a fresh "
+            "store. Operators with their own catalog "
+            "should NOT opt in -- the seeded items would "
+            "be junk to clean up later."
+        ),
+    )
+    launch_p.add_argument(
         "--strict", action="store_true",
         help=(
             "Exit 1 when ready_to_launch is False. Default "
@@ -10410,6 +10422,9 @@ def _cmd_launch(args) -> None:
             favicon_url=getattr(args, "favicon_url", None),
             hero_url=getattr(args, "hero_url", None),
             og_image_url=getattr(args, "og_image_url", None),
+            seed_products=bool(
+                getattr(args, "seed_products", False)
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("launch_store raised: %s", exc)
@@ -10674,11 +10689,11 @@ def _suggest_next_audit_action(
         "legal_policies", "standard_pages",
         "active_discounts", "curated_collections",
         "design_tokens", "brand_assets",
+        "active_products",
     }
     manual_admin_keys = {
         "shipping_zones", "fulfillable_locations",
     }
-    seeder_keys = {"active_products"}
 
     failing = [c for c in checks if not c.get("ok")]
     if not failing:
@@ -10687,24 +10702,27 @@ def _suggest_next_audit_action(
 
     launchable_gaps = failing_keys & launch_keys
     manual_gaps = failing_keys & manual_admin_keys
-    seeder_gaps = failing_keys & seeder_keys
 
     # Pick the bucket that closes the most gaps in one shot
     if (
         len(launchable_gaps) >= len(manual_gaps)
-        and len(launchable_gaps) >= len(seeder_gaps)
         and launchable_gaps
     ):
+        # active_products requires the --seed-products opt-in.
+        # Include it in the suggested command only when that
+        # gap is in the recommended bundle.
+        seed_flag = (
+            " --seed-products"
+            if "active_products" in launchable_gaps
+            else ""
+        )
         return (
             f"shopai launch --store-name <NAME> "
-            f"--niche <NICHE>  "
+            f"--niche <NICHE>{seed_flag}  "
             f"(closes {len(launchable_gaps)} of "
             f"{len(failing)} gaps)"
         )
-    if (
-        len(manual_gaps) >= len(seeder_gaps)
-        and manual_gaps
-    ):
+    if manual_gaps:
         urls = {
             "shipping_zones":
                 "admin.shopify.com/settings/shipping",
@@ -10715,11 +10733,6 @@ def _suggest_next_audit_action(
         return (
             f"Visit {urls.get(target, 'Shopify admin')} "
             f"to close {target}"
-        )
-    if seeder_gaps:
-        return (
-            "Add ACTIVE products via Shopify admin (or a "
-            "niche seeder) to close active_products"
         )
     return ""
 
