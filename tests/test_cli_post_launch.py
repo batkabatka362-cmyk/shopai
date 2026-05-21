@@ -57,6 +57,7 @@ def _ns(**kw):
         min_description_length=80,
         overwrite_seo=False,
         apply=False,
+        audit=False,
         json=False,
     )
     defaults.update(kw)
@@ -260,6 +261,162 @@ class TestResilience:
             )
         # Probe failure isn't a launch failure -- exit 0
         assert code == 0
+        assert "unavailable" in out.lower()
+
+
+class TestAuditFollowUp:
+    """post-launch --audit chains the launch-audit after the
+    apply phase so a single command does enrichment + readiness
+    verification."""
+
+    def test_default_off_no_audit_call(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "core.adapters.get_router",
+            return_value=_ok_router(_SAMPLE),
+        ), patch(
+            "engines.store_setup.seo_meta_enricher.apply_seo",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.product_description_enricher."
+            "apply_descriptions",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+        ) as audit_mock:
+            out, code = _capture(
+                cli._cmd_post_launch, _ns(apply=True),
+            )
+        assert code == 0
+        # Default --audit unset -> audit_store never called
+        audit_mock.assert_not_called()
+        assert "Launch-audit follow-up" not in out
+
+    def test_audit_flag_runs_after_apply(self, cli):
+        audit_result = {
+            "checks": [
+                {"key": "legal_policies", "ok": True,
+                 "applied": 5, "expected": 5, "missing": [],
+                 "fix_hint": ""},
+                {"key": "active_products", "ok": False,
+                 "applied": 0, "expected": 1,
+                 "missing": ["need 1"],
+                 "fix_hint": "Run: shopai launch "
+                             "--seed-products"},
+            ],
+            "ready_to_launch": False,
+            "completion_pct": 50,
+            "missing_summary": "active_products",
+            "next_action": (
+                "shopai launch --store-name <NAME> "
+                "--niche <NICHE> --seed-products"
+            ),
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "core.adapters.get_router",
+            return_value=_ok_router(_SAMPLE),
+        ), patch(
+            "engines.store_setup.seo_meta_enricher.apply_seo",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.product_description_enricher."
+            "apply_descriptions",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ) as audit_mock:
+            out, code = _capture(
+                cli._cmd_post_launch,
+                _ns(apply=True, audit=True),
+            )
+        assert code == 0
+        audit_mock.assert_called_once()
+        assert "post-launch APPLIED" in out
+        # Audit section + Next-action surfaced
+        assert "Launch-audit follow-up" in out
+        assert "[MISS] active_products" in out
+        assert "fix: Run: shopai launch --seed-products" in out
+        assert "Next: shopai launch" in out
+
+    def test_audit_in_json(self, cli):
+        audit_result = {
+            "checks": [],
+            "ready_to_launch": True,
+            "completion_pct": 100,
+            "missing_summary": "",
+            "next_action": "",
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "core.adapters.get_router",
+            return_value=_ok_router(_SAMPLE),
+        ), patch(
+            "engines.store_setup.seo_meta_enricher.apply_seo",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.product_description_enricher."
+            "apply_descriptions",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ):
+            out, code = _capture(
+                cli._cmd_post_launch,
+                _ns(apply=True, audit=True, json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert "audit_after_post_launch" in data
+        assert data["audit_after_post_launch"]["ready_to_launch"] is True
+
+    def test_audit_skipped_on_preview(self, cli):
+        """--audit is intentionally a post-apply check.
+        Running on preview (no --apply) doesn't fire the
+        audit since no writes happened."""
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "core.adapters.get_router",
+            return_value=_ok_router(_SAMPLE),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+        ) as audit_mock:
+            out, code = _capture(
+                cli._cmd_post_launch, _ns(audit=True),
+            )
+        # Preview path returns before the audit follow-up
+        audit_mock.assert_not_called()
+
+    def test_audit_raise_doesnt_break_apply(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "core.adapters.get_router",
+            return_value=_ok_router(_SAMPLE),
+        ), patch(
+            "engines.store_setup.seo_meta_enricher.apply_seo",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.product_description_enricher."
+            "apply_descriptions",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            side_effect=RuntimeError("network"),
+        ):
+            out, code = _capture(
+                cli._cmd_post_launch,
+                _ns(apply=True, audit=True),
+            )
+        # Apply phase still succeeds; audit reports unavailable
+        assert code == 0
+        assert "post-launch APPLIED" in out
         assert "unavailable" in out.lower()
 
 

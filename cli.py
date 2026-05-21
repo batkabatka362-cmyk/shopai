@@ -1659,6 +1659,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     post_launch_p.add_argument(
+        "--audit", action="store_true",
+        help=(
+            "After enrichment, run ``shopai launch-audit`` "
+            "and surface its readiness summary. Lets a single "
+            "``post-launch --apply --audit`` confirm the "
+            "store stayed launchable after the polish."
+        ),
+    )
+    post_launch_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -11152,8 +11161,16 @@ def _cmd_post_launch(args) -> None:
 
     total_failures = len(seo_failures) + len(desc_failures)
 
+    # Optionally chase with launch-audit. The enrichers
+    # don't typically affect audit checks (they only touch
+    # product metadata), but the follow-up is useful for
+    # operators wanting "post-launch + verify" in one shot.
+    audit_after = _run_post_launch_audit_followup(
+        args, store_id,
+    )
+
     if as_json:
-        print(json.dumps({
+        payload: dict[str, Any] = {
             "ok": total_failures == 0,
             "applied": True,
             "products_total": len(products),
@@ -11165,7 +11182,10 @@ def _cmd_post_launch(args) -> None:
                 "applied_count": desc_applied,
                 "failure_count": len(desc_failures),
             },
-        }, indent=2))
+        }
+        if audit_after is not None:
+            payload["audit_after_post_launch"] = audit_after
+        print(json.dumps(payload, indent=2))
         if total_failures:
             sys.exit(1)
         return
@@ -11177,6 +11197,7 @@ def _cmd_post_launch(args) -> None:
             f"{desc_applied} description updates "
             f"across {len(products)} product(s)."
         )
+        _render_post_launch_audit_followup(audit_after)
         return
 
     print(
@@ -11202,7 +11223,74 @@ def _cmd_post_launch(args) -> None:
             )
         if len(desc_failures) > 3:
             print(f"    ... +{len(desc_failures) - 3} more")
+    _render_post_launch_audit_followup(audit_after)
     sys.exit(1)
+
+
+def _run_post_launch_audit_followup(
+    args, store_id: str | None,
+) -> dict | None:
+    """Run launch-audit after the post-launch enrichment when
+    ``--audit`` is set, otherwise return None. Probe errors
+    become an error dict rather than propagating -- the
+    post-launch result is the primary output."""
+    if not getattr(args, "audit", False):
+        return None
+    try:
+        from engines.store_setup.launch_audit import (
+            audit_store,
+        )
+        return audit_store(store_id=store_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "post-launch --audit follow-up raised: %s", exc,
+        )
+        return {
+            "error": "audit_unavailable",
+            "message": str(exc),
+        }
+
+
+def _render_post_launch_audit_followup(
+    audit_after: dict | None,
+) -> None:
+    """Text view for the audit follow-up. No-op when not
+    requested. Re-uses the same MISS-line + Next-action
+    rendering as ``shopai launch --audit``."""
+    if audit_after is None:
+        return
+    if audit_after.get("error"):
+        print()
+        print(
+            "Launch-audit follow-up: unavailable "
+            f"({audit_after.get('message') or audit_after.get('error')})"
+        )
+        return
+    a_checks = audit_after.get("checks") or []
+    a_passed = sum(1 for c in a_checks if c.get("ok"))
+    a_pct = audit_after.get("completion_pct", 0)
+    a_ready = audit_after.get("ready_to_launch", False)
+    print()
+    print(
+        f"Launch-audit follow-up -- "
+        f"{'READY' if a_ready else 'NOT READY'} "
+        f"({a_passed}/{len(a_checks)} pass, {a_pct}%)"
+    )
+    for c in a_checks:
+        if c.get("ok"):
+            continue
+        key = c.get("key", "?")
+        missing = c.get("missing") or []
+        hint = c.get("fix_hint") or ""
+        line = f"  [MISS] {key}"
+        if missing:
+            line += f"  missing: {', '.join(missing)}"
+        print(line)
+        if hint:
+            print(f"        fix: {hint}")
+    nxt = audit_after.get("next_action") or ""
+    if not a_ready and nxt:
+        print(f"  Next: {nxt}")
 
 
 def _cmd_shopify_scopes_live_check(args) -> None:
