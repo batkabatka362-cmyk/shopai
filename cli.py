@@ -4501,6 +4501,9 @@ def _cmd_daily_brief(args) -> None:
                         "next_action": (
                             audit.get("next_action") or ""
                         ),
+                        # Structured planner plan (None when
+                        # ready or when planner unavailable).
+                        "plan": audit.get("plan"),
                     })
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(
@@ -4717,6 +4720,15 @@ def _cmd_daily_brief(args) -> None:
                 nxt = lr.get("next_action") or ""
                 if nxt:
                     print(f"    Next: {nxt}")
+                # Mini-plan: when the audit attached a
+                # structured plan, surface the top 2 CLI
+                # commands so the operator's morning brief
+                # doubles as a punch-list.
+                plan = lr.get("plan") or {}
+                cli_seq = plan.get("cli_sequence") or []
+                if cli_seq:
+                    for cmd in cli_seq[:2]:
+                        print(f"    $ {cmd}")
         print()
 
     # Alerts

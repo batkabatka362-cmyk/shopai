@@ -1443,6 +1443,96 @@ class TestLaunchReadiness:
         assert by_id["broken"]["error"]
         assert by_id["broken"]["ready_to_launch"] is None
 
+    def test_per_store_plan_surfaces_in_text(self, cli):
+        """When the audit attached a structured plan, the
+        text view surfaces the top CLI commands as a
+        per-store mini-punch-list."""
+        sm = _fake_sm([
+            {"store_id": "store-a", "shop_url": "x",
+             "is_active": True},
+        ])
+        audit_result = {
+            "checks": [],
+            "ready_to_launch": False,
+            "completion_pct": 40,
+            "missing_summary": "...",
+            "next_action": (
+                "shopai launch --store-name <NAME> "
+                "--niche <NICHE>"
+            ),
+            "plan": {
+                "goal": "close audit gaps: ...",
+                "steps": [],
+                "cli_sequence": [
+                    "shopai launch <store_name>",
+                    "shopai launch-audit",
+                ],
+                "audit_coverage": ["legal_policies"],
+                "notes": [],
+                "relevant_capabilities": [],
+            },
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ):
+            out = _capture(
+                cli._cmd_daily_brief,
+                _ns(include_launch_readiness=True),
+            )
+        # Mini-plan CLI commands surface inline
+        assert "$ shopai launch <store_name>" in out
+
+    def test_per_store_plan_surfaces_in_json(self, cli):
+        """JSON envelope carries the structured plan
+        per-store -- LLM agents reading the brief get
+        actionable structure."""
+        sm = _fake_sm([
+            {"store_id": "store-a", "shop_url": "x",
+             "is_active": True},
+        ])
+        audit_result = {
+            "checks": [],
+            "ready_to_launch": False,
+            "completion_pct": 40,
+            "missing_summary": "...",
+            "next_action": "shopai launch ...",
+            "plan": {
+                "goal": "close audit gaps",
+                "steps": [],
+                "cli_sequence": ["shopai launch"],
+                "audit_coverage": [],
+                "notes": [],
+                "relevant_capabilities": [],
+            },
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ):
+            out = _capture(
+                cli._cmd_daily_brief,
+                _ns(
+                    json=True,
+                    include_launch_readiness=True,
+                ),
+            )
+        data = json.loads(out)
+        stores_lr = data["launch_readiness"]["stores"]
+        assert stores_lr[0]["plan"]["goal"] == (
+            "close audit gaps"
+        )
+
     def test_launchable_count_in_totals(self, cli):
         sm = _fake_sm([
             {"store_id": "a", "shop_url": "x",
