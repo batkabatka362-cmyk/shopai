@@ -41,8 +41,11 @@ class QwenWrapper(BaseModel):
                 if any("qwen" in m.lower() for m in models):
                     self._backend = backend
                     self.logger.info("Qwen connected via Ollama")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug(
+                "Qwen Ollama backend init failed (will run "
+                "computed-mode): %s", exc,
+            )
         self._loaded = True
         self.logger.info("Qwen model ready (backend=%s)", "ollama" if self._backend else "computed")
 
