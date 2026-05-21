@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _PERSIST_PATH = "/tmp/shopai_strategies.json"
 
@@ -107,8 +110,11 @@ class StrategyStore:
         try:
             with open(self._persist_path, "w") as f:
                 json.dump(self._strategies, f, indent=2)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "StrategyStore._persist failed (%s): %s",
+                self._persist_path, exc,
+            )
 
     def _load(self) -> None:
         if not os.path.exists(self._persist_path):
@@ -116,5 +122,8 @@ class StrategyStore:
         try:
             with open(self._persist_path) as f:
                 self._strategies = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "StrategyStore._load failed (%s): %s",
+                self._persist_path, exc,
+            )

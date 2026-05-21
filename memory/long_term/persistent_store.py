@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _BASE_PATH = "/tmp/shopai_memory/"
 
@@ -83,8 +86,14 @@ class PersistentStore:
             for fname in os.listdir(self._base_path):
                 if fname.endswith(".json"):
                     on_disk.add(fname[:-5])
-        except OSError:
-            pass
+        except OSError as exc:
+            # Silent failure here means ``list_namespaces``
+            # returns only the in-memory set, hiding the fact
+            # that the persistence directory is unreadable.
+            logger.warning(
+                "PersistentStore.list_namespaces listdir "
+                "failed (%s): %s", self._base_path, exc,
+            )
         return sorted(set(self._namespaces.keys()) | on_disk)
 
     def get_stats(self) -> dict:
@@ -109,8 +118,15 @@ class PersistentStore:
             os.makedirs(self._base_path, exist_ok=True)
             with open(path, "w") as f:
                 json.dump(self._namespaces.get(namespace, {}), f, indent=2)
-        except OSError:
-            pass
+        except OSError as exc:
+            # Without this log a stuck disk / permission error
+            # would silently drop every persistent_store write
+            # until someone notices the JSON files are stale.
+            logger.warning(
+                "PersistentStore._persist_namespace failed "
+                "(namespace=%s, path=%s): %s",
+                namespace, path, exc,
+            )
 
     def _load_namespace(self, namespace: str) -> dict[str, dict[str, Any]]:
         """Load a namespace from its JSON file. Returns the dict."""
