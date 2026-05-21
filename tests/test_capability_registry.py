@@ -275,6 +275,45 @@ class TestBootstrap:
         # launch_store can close up to 7 audit checks
         assert len(cap.audit_checks_closed) >= 5
 
+    def test_audits_batch_registered(self):
+        """The fifth batch (institutional audits) locks in
+        the dev-facing audit suite + the consolidated
+        runner."""
+        ensure_registered()
+        names = set(get_registry().names())
+        expected = {
+            "pattern_k_audit", "pattern_y_audit",
+            "pattern_i_audit", "pattern_j_audit",
+            "pattern_z_audit", "pattern_q_audit",
+            "pattern_s_audit", "oauth_audit",
+            "scope_health_check", "audit_all",
+        }
+        missing = expected - names
+        assert not missing, (
+            f"audits batch missing: {missing}"
+        )
+
+    def test_audit_all_orchestrator_composes_with_each(self):
+        """audit_all is the consolidated runner -- its
+        composes_with must cover every other audit so
+        planner can route 'verify everything' queries to
+        the single orchestrator CLI."""
+        ensure_registered()
+        cap = get_registry().get("audit_all")
+        assert cap is not None
+        every_audit = {
+            "pattern_k_audit", "pattern_y_audit",
+            "pattern_i_audit", "pattern_j_audit",
+            "pattern_z_audit", "pattern_q_audit",
+            "pattern_s_audit", "oauth_audit",
+            "scope_health_check",
+        }
+        composed = set(cap.composes_with)
+        missing = every_audit - composed
+        assert not missing, (
+            f"audit_all should compose_with: {missing}"
+        )
+
     def test_analytics_batch_registered(self):
         """The fourth batch (analytics / financial /
         competitive / strategy / ops) locks in the

@@ -74,6 +74,15 @@ def ensure_registered() -> None:
             exc,
         )
 
+    try:
+        from . import _register_audits
+        _register_audits.register_all()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "capability_registry: audits batch raised: %s",
+            exc,
+        )
+
     _BOOTSTRAPPED = True
 
 
