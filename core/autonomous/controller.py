@@ -3415,7 +3415,14 @@ class LearningPipeline:
                 if r.get("success_count", 0) > 0:
                     updates += 1
             return updates
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Without this log, "0 updates because no rules" and
+            # "MI call broken" look identical to operators --
+            # the learning subsystem could be silently dead.
+            logger.warning(
+                "_update_weights_from_rules failed; returning 0: %s",
+                exc,
+            )
             return 0
 
     def _store_episode(self, store_id: str, cycle_id: str, learning: dict[str, Any]) -> None:
@@ -3448,7 +3455,15 @@ class LearningPipeline:
         try:
             from core.intelligence.loop.weight_manager import _learned_weights
             result["weights"] = dict(_learned_weights)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # An empty weights dict in the learning summary
+            # could mean "no weights learned yet" (normal) OR
+            # "weight_manager import broken" (bad). Log so the
+            # latter is visible.
+            logger.debug(
+                "weight_manager import for summary failed: %s",
+                exc,
+            )
             result["weights"] = {}
 
         return result
