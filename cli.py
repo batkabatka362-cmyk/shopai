@@ -1337,6 +1337,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    pattern_s_audit_p = sub.add_parser(
+        "pattern-s-audit",
+        help=(
+            "Pattern S audit: find ``except: pass`` blocks whose "
+            "body is exactly one ``pass`` statement (silent "
+            "exception swallows). Default exit 0 (informational); "
+            "pass --strict to exit 1 when any silent site exists."
+        ),
+    )
+    pattern_s_audit_p.add_argument(
+        "--strict", action="store_true",
+        help=(
+            "Exit 1 when at least one silent site is found. "
+            "Default is informational only (exit 0)."
+        ),
+    )
+    pattern_s_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     pattern_q_audit_p = sub.add_parser(
         "pattern-q-audit",
         help=(
@@ -10604,6 +10625,80 @@ def _cmd_engines_capability_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_pattern_s_audit(args) -> None:
+    """Pattern S audit: find ``except: pass`` blocks whose body
+    is exactly one ``pass`` statement (silent exception
+    swallows).
+
+    Catches the bug class PRs #475-#478 each fixed manually:
+    code that catches exceptions and discards them produces
+    debugging blindspots (telegram bot looking ""running"" while
+    every poll failed; profit tracker silently losing writes;
+    learning subsystem silently dead).
+
+    Default exit 0 (informational only). Pass ``--strict`` to
+    exit 1 when any silent site is found -- useful as a CI gate
+    after the existing baseline is driven down.
+    """
+    try:
+        from engines._pattern_s_audit import audit_pattern_s
+        report = audit_pattern_s()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pattern S audit raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Pattern S audit unavailable: {exc}")
+        return
+
+    strict = bool(getattr(args, "strict", False))
+    if getattr(args, "json", False):
+        payload = {
+            "ok": not report.has_violations,
+            "scanned_modules": report.scanned_modules,
+            "silent_count": len(report.silent_sites),
+            "silent_sites": [
+                {"file": s.file, "lineno": s.lineno}
+                for s in report.silent_sites
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        if strict and report.has_violations:
+            sys.exit(1)
+        return
+
+    if not report.has_violations:
+        print(
+            f"Pattern S OK -- no silent ``except: pass`` blocks "
+            f"across {report.scanned_modules} scanned modules."
+        )
+        return
+
+    label = "FAILED" if strict else "found"
+    print(
+        f"Pattern S {label}: {len(report.silent_sites)} silent "
+        "``except: pass`` block(s) across "
+        f"{report.scanned_modules} scanned modules."
+    )
+    print()
+    # Group by file to make the output scannable
+    by_file: dict[str, list[int]] = {}
+    for s in report.silent_sites:
+        by_file.setdefault(s.file, []).append(s.lineno)
+    for fpath, linenos in sorted(by_file.items()):
+        linenos_str = ", ".join(str(ln) for ln in sorted(linenos))
+        print(f"  {fpath}: {linenos_str}")
+    print()
+    print(
+        "Fix template: replace ``except Exception: pass`` with "
+        "``except Exception as exc:  # noqa: BLE001`` + a "
+        "``logger.debug/warning(..., exc)`` so the failure is "
+        "debuggable."
+    )
+    if strict and report.has_violations:
+        sys.exit(1)
+
+
 def _cmd_pattern_j_audit(args) -> None:
     """CI gate (Pattern J): every write to
     MemoryIntelligence / DataArchitecture / LearningLoop
@@ -17758,6 +17853,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "engines-capability-audit":
         _cmd_engines_capability_audit(args)
+        return
+
+    if args.command == "pattern-s-audit":
+        _cmd_pattern_s_audit(args)
         return
 
     if args.command == "pattern-j-audit":
