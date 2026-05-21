@@ -503,6 +503,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan_p.add_argument(
+        "--as-context", action="store_true",
+        dest="as_context",
+        help=(
+            "Emit an LLM-ready markdown context block. "
+            "Pipes cleanly into any downstream LLM (Claude "
+            "API, ChatGPT, sub-agent prompts) for further "
+            "reasoning beyond the deterministic walker."
+        ),
+    )
+    plan_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of text view.",
     )
@@ -10846,6 +10856,10 @@ def _cmd_plan(args) -> None:
         print(json.dumps(plan.to_dict(), indent=2, default=str))
         return
 
+    if bool(getattr(args, "as_context", False)):
+        _render_plan_as_context(plan)
+        return
+
     # ── Text view ───────────────────────────────────────────
     print(f"Plan for: {plan.goal}")
     print()
@@ -10880,6 +10894,97 @@ def _cmd_plan(args) -> None:
         print("Notes:")
         for n in plan.notes:
             print(f"  - {n}")
+
+
+def _render_plan_as_context(plan) -> None:
+    """Render a Plan as an LLM-ready markdown block.
+
+    Operators feeding the plan to a downstream LLM (Claude
+    API, ChatGPT, sub-agent prompt) get a structured but
+    prose-style context. Each step includes the capability's
+    full registry record (description / when_to_use /
+    inputs / outputs / example_input / scopes_used) so the
+    downstream LLM has everything it needs to reason about
+    the plan without re-querying the registry.
+    """
+    from core.capability_registry import get_registry
+    registry = get_registry()
+    print(f"# Plan for: {plan.goal}")
+    print()
+    if plan.is_empty():
+        print("> No matching capabilities in registry.")
+        for n in plan.notes:
+            print(f"- *{n}*")
+        return
+    if plan.audit_coverage:
+        print(
+            f"**Audit coverage:** "
+            f"{', '.join(plan.audit_coverage)}"
+        )
+        print()
+    print(f"## Steps ({len(plan.steps)})")
+    print()
+    for i, step in enumerate(plan.steps, start=1):
+        cap = registry.get(step.capability_name)
+        print(
+            f"### {i}. `{step.capability_name}` "
+            f"({step.role})"
+        )
+        print()
+        print(step.description)
+        if cap and cap.when_to_use:
+            print()
+            print(f"**When to use:** {cap.when_to_use}")
+        if step.cli_command:
+            print()
+            print(f"**CLI:** `{step.cli_command}`")
+        if step.closes_audits:
+            print()
+            print(
+                f"**Closes audit checks:** "
+                f"{', '.join(step.closes_audits)}"
+            )
+        if cap and cap.inputs:
+            print()
+            print("**Inputs:**")
+            for k, v in cap.inputs.items():
+                print(f"  - `{k}`: {v}")
+        if cap and cap.outputs:
+            print()
+            print("**Outputs:**")
+            for k, v in cap.outputs.items():
+                print(f"  - `{k}`: {v}")
+        if cap and cap.example_input:
+            print()
+            print("**Example input:**")
+            print("```json")
+            print(json.dumps(cap.example_input, indent=2))
+            print("```")
+        if cap and cap.scopes_used:
+            print()
+            print(
+                f"**Shopify scopes:** "
+                f"{', '.join(cap.scopes_used)}"
+            )
+        if cap and cap.side_effects:
+            print()
+            print("**Side effects:**")
+            for se in cap.side_effects:
+                print(f"  - {se}")
+        print()
+    if plan.cli_sequence:
+        print("## Run")
+        print()
+        print("```bash")
+        for c in plan.cli_sequence:
+            print(c)
+        print("```")
+        print()
+    if plan.notes:
+        print("## Notes")
+        print()
+        for n in plan.notes:
+            print(f"- {n}")
 
 
 def _cmd_capabilities(args) -> None:

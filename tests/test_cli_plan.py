@@ -60,6 +60,7 @@ def _ns(**kw):
         goal="",
         close_audit_gaps=False,
         store=None,
+        as_context=False,
         json=False,
     )
     defaults.update(kw)
@@ -126,6 +127,51 @@ class TestGoalPath:
         assert "apply_design" in names
         assert isinstance(data["cli_sequence"], list)
         assert isinstance(data["audit_coverage"], list)
+
+
+class TestAsContext:
+    """--as-context emits LLM-ready markdown so operators
+    can pipe the plan into any downstream LLM (Claude API,
+    ChatGPT, sub-agent) for further reasoning."""
+
+    def test_as_context_emits_markdown_headers(self, cli):
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(goal="mobile design", as_context=True),
+        )
+        assert code == 0
+        # Markdown headers
+        assert "# Plan for: mobile design" in out
+        assert "## Steps" in out
+        # Per-step h3 header with backticked capability name
+        assert "### 1. `store_design_engine`" in out
+        # Sections that LLM consumers need
+        assert "**When to use:**" in out
+        assert "**CLI:** `shopai store design-apply`" in out
+        assert "**Closes audit checks:** design_tokens" in out
+        assert "**Shopify scopes:**" in out
+
+    def test_as_context_includes_run_block(self, cli):
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(goal="launch store", as_context=True),
+        )
+        assert code == 0
+        # Bash fenced block for run-it instructions
+        assert "## Run" in out
+        assert "```bash" in out
+        assert "shopai launch" in out
+
+    def test_as_context_no_steps_renders_note(self, cli):
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(
+                goal="cryptocurrency_mining",
+                as_context=True,
+            ),
+        )
+        assert code == 0
+        assert "No matching capabilities" in out
 
 
 class TestAuditGapPath:
