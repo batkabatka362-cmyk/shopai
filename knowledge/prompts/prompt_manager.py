@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import string
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _PERSIST_PATH = "/tmp/shopai_prompts.json"
 
@@ -167,8 +170,11 @@ class PromptManager:
         try:
             with open(self._persist_path, "w") as f:
                 json.dump(serializable, f, indent=2)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(
+                "PromptManager._persist failed (%s): %s",
+                self._persist_path, exc,
+            )
 
     def _load(self) -> None:
         if not os.path.exists(self._persist_path):
@@ -184,5 +190,8 @@ class PromptManager:
                 entry["versions"] = versions
                 entry["current_version"] = int(entry.get("current_version", 1))
                 self._prompts[key] = entry
-        except (OSError, json.JSONDecodeError, ValueError):
-            pass
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "PromptManager._load failed (%s): %s",
+                self._persist_path, exc,
+            )
