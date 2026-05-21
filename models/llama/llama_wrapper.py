@@ -41,8 +41,17 @@ class LlamaWrapper(BaseModel):
                 if any("llama" in m.lower() for m in models):
                     self._backend = backend
                     self.logger.info("LLaMA connected via Ollama")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Falling back to ""computed"" mode silently means the
+            # operator never sees that Ollama / a llama model
+            # wasn't available. Debug-level so dev environments
+            # without Ollama don't spam, but the signal is
+            # available when diagnosing ""why is the LLM not
+            # being used?"" questions.
+            self.logger.debug(
+                "LLaMA Ollama backend init failed (will run "
+                "computed-mode): %s", exc,
+            )
         self._loaded = True
         self.logger.info("LLaMA model ready (backend=%s)", "ollama" if self._backend else "computed")
 
