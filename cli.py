@@ -6161,8 +6161,15 @@ def _import_registered_dbs() -> None:
         try:
             module = __import__(module_name, fromlist=[class_name])
             getattr(module, class_name)()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # ``db status`` walks the registry after this --
+            # silently dropped imports show up as missing
+            # entries with no breadcrumb. Debug-level so the
+            # noise stays low on fresh-install ImportError.
+            logger.debug(
+                "_import_registered_dbs: %s.%s init failed: %s",
+                module_name, class_name, exc,
+            )
 
 
 def _cmd_db_status() -> None:
@@ -6645,8 +6652,11 @@ def _print_mind_llm_summary() -> None:
             f"  hits={c.get('hits', 0)}  misses={c.get('misses', 0)}"
             f"  hit_rate={hit_pct:.1f}%"
         )
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # LLM cache stats are optional -- the rest of the
+        # status already printed. Debug log so operators
+        # debugging ""why no cache line?"" see the signal.
+        logger.debug("llm-cache stats render failed: %s", exc)
 
 
 def _cmd_mind_cycle(args=None) -> None:
@@ -6886,8 +6896,11 @@ def _cmd_mind_think(args) -> None:
                 narrative = mind.self_model.narrative()
                 if narrative and "no data" not in narrative.lower():
                     context_parts.append(f"Who I am: {narrative}")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "mind.think: self_model.narrative failed: %s",
+                    exc,
+                )
         if mind.goal_manager is not None:
             try:
                 active = mind.goal_manager.active(limit=5)
@@ -6897,8 +6910,11 @@ def _cmd_mind_think(args) -> None:
                         for g in active[:5]
                     )
                     context_parts.append(f"Current goals:\n{goal_lines}")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "mind.think: goal_manager.active failed: %s",
+                    exc,
+                )
 
     self_context = "\n\n".join(context_parts)
     if self_context:
@@ -17565,8 +17581,17 @@ def main(argv: list[str] | None = None) -> None:
         try:
             from infrastructure.config.env_manager import EnvManager
             EnvManager().load_env_file(env_path)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Silent .env load failure means env-var-driven
+            # config (Shopify creds, etc.) silently isn't
+            # applied. Operators chasing ""why is creds env-var
+            # not set?"" need this log. Use stderr (logger may
+            # not be configured yet at startup).
+            print(
+                f"config warning: .env load failed ({env_path}): "
+                f"{exc}",
+                file=sys.stderr,
+            )
 
     parser = build_parser()
     args = parser.parse_args(argv)
