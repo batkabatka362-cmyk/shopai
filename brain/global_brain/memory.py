@@ -11,16 +11,28 @@ Storage: ~/.shopai/data/brain/
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 
 try:
     from core.memory.storage_config import get_path
     _BRAIN_DIR = get_path("brain")
-except Exception:
+except Exception as exc:  # noqa: BLE001
+    # storage_config is the canonical brain dir source. Falling
+    # back to /tmp keeps the module importable in dev but a
+    # misconfigured deployment looks fine until the first
+    # restart wipes the tmp dir -- log so operators see the
+    # signal at import time.
+    logger.warning(
+        "GlobalBrainMemory storage_config unavailable, "
+        "falling back to /tmp/shopai_brain: %s", exc,
+    )
     _BRAIN_DIR = "/tmp/shopai_brain"
 
 
@@ -212,23 +224,39 @@ class GlobalBrainMemory:
     def _persist(self) -> None:
         if len(self._knowledge) > 10000:
             self._knowledge = self._knowledge[-10000:]
+        path = os.path.join(self._dir, "knowledge.json")
         try:
-            path = os.path.join(self._dir, "knowledge.json")
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
                 json.dump({"knowledge": self._knowledge, "patterns": self._patterns}, f, default=str)
             os.replace(tmp, path)
-        except Exception:
-            pass
+        except (OSError, TypeError, ValueError) as exc:
+            # Global brain knowledge being silently lost is a
+            # real bug -- patterns + cross-agent insights are
+            # the whole reason this layer exists. Warn so a
+            # stuck disk / permission error doesn't hide for
+            # weeks until someone notices the file is stale.
+            logger.warning(
+                "GlobalBrainMemory._persist failed (%s): %s",
+                path, exc,
+            )
 
     def _load(self) -> None:
+        path = os.path.join(self._dir, "knowledge.json")
         try:
-            path = os.path.join(self._dir, "knowledge.json")
             if os.path.exists(path):
                 with open(path) as f:
                     data = json.load(f)
                 self._knowledge = data.get("knowledge", [])
                 self._patterns = data.get("patterns", [])
-        except Exception:
+        except (OSError, ValueError) as exc:
+            # Corrupt / unreadable existing file -- start fresh
+            # but log so the data loss is visible. Don't raise
+            # (the brain is non-critical at startup; raising
+            # would break the autonomous loop).
+            logger.warning(
+                "GlobalBrainMemory._load failed (%s), "
+                "starting with empty knowledge: %s", path, exc,
+            )
             self._knowledge = []
             self._patterns = []
