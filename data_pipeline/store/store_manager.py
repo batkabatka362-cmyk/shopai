@@ -184,8 +184,17 @@ class StoreManager:
                                            creds["client_id"],
                                            creds["client_secret"])
                 return auth.get_token()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # OAuth path failed -- fall back to the static
+                # key. Without this log, broken OAuth credentials
+                # silently degrade to legacy key auth and the
+                # operator never sees the signal until the next
+                # token rotation.
+                logger.warning(
+                    "OAuth token resolve failed for %s, "
+                    "falling back to static key: %s",
+                    creds.get("shop_url", "?"), exc,
+                )
         return creds.get("api_key", "")
 
     @staticmethod
@@ -198,8 +207,12 @@ class StoreManager:
             try:
                 auth = _get_auth_instance(shop_url, client_id, client_secret)
                 return auth.get_token()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "OAuth env-token resolve failed for %s, "
+                    "falling back to SHOPAI_SHOPIFY_KEY: %s",
+                    shop_url, exc,
+                )
         return os.environ.get("SHOPAI_SHOPIFY_KEY", "")
 
     def set_credentials(self, store_id: str, shop_url: str, api_key: str) -> None:
