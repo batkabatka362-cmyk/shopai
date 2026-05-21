@@ -424,6 +424,7 @@ class Planner:
             cli_command=cli,
             closes_audits=list(cap.audit_checks_closed),
             composes_with_next=list(cap.composes_with),
+            suggested_args=dict(cap.example_input),
         )
 
     def _append_verification_step(

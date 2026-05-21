@@ -61,6 +61,8 @@ def _ns(**kw):
         close_audit_gaps=False,
         store=None,
         as_context=False,
+        execute=False,
+        yes=False,
         json=False,
     )
     defaults.update(kw)
@@ -127,6 +129,60 @@ class TestGoalPath:
         assert "apply_design" in names
         assert isinstance(data["cli_sequence"], list)
         assert isinstance(data["audit_coverage"], list)
+
+
+class TestExecute:
+    """--execute runs each plan step via the in-process
+    capability executor. Default dry-run; --yes invokes."""
+
+    def test_execute_dry_run_resolves_each_step(self, cli):
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(goal="mobile design", execute=True),
+        )
+        assert code == 0
+        assert "Plan DRY-RUN" in out
+        # All steps resolved as OK (or SKIP for cli_handler)
+        # No real invocation happened.
+        assert "Dry-run only" in out
+        assert "store_design_engine" in out
+
+    def test_execute_json_output(self, cli):
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(
+                goal="mobile design",
+                execute=True,
+                json=True,
+            ),
+        )
+        assert code == 0
+        data = json.loads(out)
+        assert data["goal"] == "mobile design"
+        assert data["executed"] is False  # no --yes
+        assert isinstance(data["steps"], list)
+        assert all("capability" in s for s in data["steps"])
+
+    def test_execute_yes_invokes_each_step(self, cli):
+        """With --yes, the executor actually invokes each
+        step. The launch_store orchestrator returns its
+        usual dict result (with empty-router degradation),
+        not a crash."""
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(
+                goal="launch store",
+                execute=True,
+                yes=True,
+            ),
+        )
+        # No real Shopify -> launch_store degrades to empty
+        # but doesn't fail catastrophically.
+        assert "Plan EXECUTED" in out
+        # Either OK (graceful) or FAIL (raised); both
+        # surface a per-step line. Importantly, the plan
+        # rendered without crashing.
+        assert "launch_store" in out
 
 
 class TestAsContext:

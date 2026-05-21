@@ -25,6 +25,12 @@ class PlanStep:
     Each step references a capability by name (resolvable
     via the registry) and carries the operator-runnable form
     when one exists.
+
+    ``suggested_args`` is the capability's ``example_input``
+    from the registry, copied in so consumers of the Plan
+    (LLM, executor, operator) don't need a second registry
+    lookup. Empty dict when the capability doesn't declare
+    example_input.
     """
 
     capability_name: str
@@ -34,6 +40,9 @@ class PlanStep:
     cli_command: str = ""  # e.g. "shopai launch <store_name>"
     closes_audits: list[str] = field(default_factory=list)
     composes_with_next: list[str] = field(default_factory=list)
+    suggested_args: dict[str, Any] = field(
+        default_factory=dict,
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +54,7 @@ class PlanStep:
             "composes_with_next": list(
                 self.composes_with_next,
             ),
+            "suggested_args": dict(self.suggested_args),
         }
 
 

@@ -570,6 +570,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan_p.add_argument(
+        "--execute", action="store_true",
+        help=(
+            "Run each step's capability in-process using "
+            "the registry-declared example_input. Each "
+            "step's outcome surfaces in the output. Stops "
+            "at the first failure. Skips steps whose "
+            "module_path is a CLI handler (operator must "
+            "invoke those manually). Default is DRY-RUN; "
+            "pass --yes to actually invoke."
+        ),
+    )
+    plan_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "With --execute, actually invoke each step. "
+            "Without --yes, --execute prints the planned "
+            "invocations as a dry-run."
+        ),
+    )
+    plan_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of text view.",
     )
@@ -10909,6 +10929,14 @@ def _cmd_plan(args) -> None:
             sys.exit(1)
         plan = plan_for_goal(goal)
 
+    if bool(getattr(args, "execute", False)):
+        _run_plan_multi_step(
+            plan,
+            yes=bool(getattr(args, "yes", False)),
+            as_json=as_json,
+        )
+        return
+
     if as_json:
         print(json.dumps(plan.to_dict(), indent=2, default=str))
         return
@@ -10951,6 +10979,118 @@ def _cmd_plan(args) -> None:
         print("Notes:")
         for n in plan.notes:
             print(f"  - {n}")
+
+
+def _run_plan_multi_step(
+    plan, *, yes: bool, as_json: bool,
+) -> None:
+    """Execute each step of a plan via the in-process
+    capability executor, using ``suggested_args`` from the
+    plan as kwargs.
+
+    Steps whose module_path is a CLI handler are SKIPPED
+    (the executor refuses them). Stops at the first
+    invocation failure. Each step's outcome is captured +
+    emitted in the per-step result.
+
+    Default DRY-RUN. With --yes, actually invokes; without,
+    just resolves each step's module + reports.
+    """
+    try:
+        from core.capability_executor import (
+            CapabilityExecutor,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "plan --execute: executor import failed: %s",
+            exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "executor_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"executor unavailable: {exc}")
+        sys.exit(1)
+
+    executor = CapabilityExecutor()
+    steps_out: list[dict] = []
+    overall_ok = True
+
+    for step in plan.steps:
+        args_dict = dict(step.suggested_args or {})
+        if yes:
+            result = executor.execute(
+                step.capability_name, args_dict,
+            )
+        else:
+            result = executor.dry_run(
+                step.capability_name, args_dict,
+            )
+        steps_out.append(result.to_dict())
+        # CLI handler refusals don't break the chain --
+        # they're informational. Real failures (raise,
+        # bad args) do stop the chain.
+        if not result.ok and (
+            result.invocation_kind != "cli_handler"
+        ):
+            overall_ok = False
+            break
+
+    if as_json:
+        print(json.dumps({
+            "goal": plan.goal,
+            "executed": yes,
+            "ok": overall_ok,
+            "steps": steps_out,
+        }, indent=2, default=str))
+        if not overall_ok:
+            sys.exit(1)
+        return
+
+    mode = "EXECUTED" if yes else "DRY-RUN"
+    print(f"Plan {mode}: {plan.goal}")
+    print()
+    for i, step_res in enumerate(steps_out, start=1):
+        mark = "OK  " if step_res["ok"] else "FAIL"
+        if step_res.get("invocation_kind") == "cli_handler":
+            mark = "SKIP"
+        print(
+            f"  {i}. [{mark}] {step_res['capability']}  "
+            f"({step_res.get('invocation_kind', '-')})"
+        )
+        if step_res.get("error"):
+            print(f"        error: {step_res['error']}")
+        if (
+            yes and step_res["ok"]
+            and step_res.get("data") is not None
+        ):
+            # Render a one-line summary of the result
+            d = step_res["data"]
+            if isinstance(d, list):
+                print(
+                    f"        result: list of "
+                    f"{len(d)} items"
+                )
+            elif isinstance(d, dict):
+                keys = ", ".join(list(d.keys())[:5])
+                print(
+                    f"        result: dict with keys "
+                    f"{{{keys}}}"
+                )
+            else:
+                preview = str(d)[:80]
+                print(f"        result: {preview}")
+    print()
+    if not yes:
+        print(
+            "Dry-run only. Pass --yes to actually invoke "
+            "each step."
+        )
+    elif not overall_ok:
+        sys.exit(1)
 
 
 def _render_plan_as_context(plan) -> None:
