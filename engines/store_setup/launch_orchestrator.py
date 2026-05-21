@@ -109,6 +109,11 @@ def launch_store(
                 "missing_assets": [], "ok": True,
                 "skipped": True, "error": None,
             },
+            "design": {
+                "applied": False, "theme_id": "",
+                "files_written": [],
+                "skipped": True, "error": None,
+            },
             "checklist": [],
             "ready_to_launch": False,
             "error": "store_name_required",
@@ -277,6 +282,95 @@ def launch_store(
                 "error": str(exc),
             }
 
+    # ── Step 6: Design tokens (optional) ────────────────
+    # Writes ``assets/shopai-design-tokens.json`` + the
+    # matching snippet into the MAIN theme so the audit's
+    # design_tokens check passes. Skipped when no MAIN theme
+    # can be located (skipped contributes ok=True so a store
+    # without a MAIN theme installed yet stays launchable on
+    # the four mandatory steps).
+    design_result: dict[str, Any] = {
+        "applied": False, "theme_id": "",
+        "files_written": [], "skipped": True, "error": None,
+    }
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+        from engines.store_design.flow import StoreDesignEngine
+        from engines.store_design.design_applier import (
+            apply_design,
+        )
+
+        router = get_router()
+        themes_result = router.execute(
+            Capability.SHOPIFY_LIST_THEMES, {},
+        )
+        main_theme_id = ""
+        if getattr(themes_result, "ok", False):
+            themes_data = (
+                getattr(themes_result, "data", None) or {}
+            )
+            themes = themes_data.get("themes") or []
+            for t in themes:
+                if isinstance(t, dict) and t.get("role") == "MAIN":
+                    main_theme_id = str(t.get("id", "") or "")
+                    break
+
+        if not main_theme_id:
+            design_result["error"] = "no_main_theme"
+        else:
+            # We have a theme -- the step is now attempted.
+            # Any failure below is an error, not a skip.
+            design_result["skipped"] = False
+            engine_input = {
+                "status": "success",
+                "data": {
+                    "brand": {
+                        "name": name, "niche": niche,
+                        "colors": [], "fonts": [],
+                        "voice": "professional",
+                    },
+                    "products": [],
+                    "analytics": {
+                        "bounce_rate": 0.0,
+                        "device_split": {},
+                    },
+                },
+                "meta": {}, "error": None,
+            }
+            engine_out = StoreDesignEngine().run(engine_input)
+            if engine_out.get("status") != "success":
+                design_result["error"] = (
+                    f"engine: "
+                    f"{engine_out.get('error', 'unknown')}"
+                )
+            else:
+                applied = apply_design(
+                    engine_out,
+                    theme_id=main_theme_id,
+                    store_id=store_id,
+                )
+                design_result = {
+                    "applied": bool(applied.get("applied")),
+                    "theme_id": applied.get(
+                        "theme_id", main_theme_id,
+                    ),
+                    "files_written": (
+                        applied.get("files_written") or []
+                    ),
+                    "skipped": False,
+                    "error": applied.get("error"),
+                }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "launch_orchestrator design step raised: %s", exc,
+        )
+        design_result = {
+            "applied": False, "theme_id": "",
+            "files_written": [], "skipped": False,
+            "error": str(exc),
+        }
+
     # ── Checklist ────────────────────────────────────────
     checklist: list[dict[str, Any]] = []
 
@@ -342,12 +436,32 @@ def launch_store(
         "error": brand_result.get("error"),
     })
 
+    # Design tokens: same skip semantics as brand.
+    design_skipped = bool(design_result.get("skipped"))
+    design_ok = (
+        design_skipped
+        or (
+            bool(design_result.get("applied"))
+            and not design_result.get("error")
+        )
+    )
+    checklist.append({
+        "step": "design",
+        "ok": design_ok,
+        "applied": (
+            1 if design_result.get("applied") else 0
+        ),
+        "skipped": design_skipped,
+        "error": design_result.get("error"),
+    })
+
     ready_to_launch = bool(
         policies_ok
         and pages_ok
         and discount_ok
         and collections_ok
         and brand_ok
+        and design_ok
     )
 
     out = {
@@ -356,6 +470,7 @@ def launch_store(
         "discount": discount_result,
         "collections": collections_result,
         "brand": brand_result,
+        "design": design_result,
         "checklist": checklist,
         "ready_to_launch": ready_to_launch,
     }
@@ -405,6 +520,11 @@ def launch_store(
                     brand_result.get("uploaded_count", 0)
                 ),
                 "brand_skipped": brand_skipped,
+                "design_applied": (
+                    1 if design_result.get("applied")
+                    else 0
+                ),
+                "design_skipped": design_skipped,
                 "ready_to_launch": ready_to_launch,
             },
         )

@@ -18,7 +18,7 @@ Coverage:
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from engines.store_setup.launch_orchestrator import launch_store
 
@@ -761,3 +761,256 @@ class TestBrandStep:
         m = record_mock.call_args.kwargs["metrics"]
         assert m["brand_uploaded"] == 2
         assert m["brand_skipped"] is False
+
+
+class TestDesignStep:
+    """Design tokens as OPTIONAL Step 6.
+
+    No MAIN theme found -> skipped=True, contributes ok=True
+    (doesn't block ready_to_launch).
+    MAIN theme + engine + applier all succeed -> applied=True.
+    Engine returns non-success -> step records error (no
+    skip), blocks ready.
+    Applier fails -> step records error, blocks ready.
+    Outer raise -> step records error, blocks ready.
+    """
+
+    def _common(self):
+        """Patches for the mandatory upstream steps."""
+        return [
+            patch(
+                "engines.store_setup.policy_generator."
+                "generate_policies",
+                return_value={"REFUND_POLICY": "r"},
+            ),
+            patch(
+                "engines.store_setup.policy_applier."
+                "apply_policies",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.page_generator."
+                "generate_pages",
+                return_value={"About": "<h1>x</h1>"},
+            ),
+            patch(
+                "engines.store_setup.page_applier.apply_pages",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "generate_welcome_discount",
+                return_value={"code": "WELCOME10",
+                              "percentage": 10},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "apply_welcome_discount",
+                return_value={
+                    "applied": True, "code": "WELCOME10",
+                    "percentage": 10, "error": None,
+                },
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "generate_starter_collections",
+                return_value=[{"title": "x", "handle": "x"}],
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "apply_starter_collections",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.launch_orchestrator."
+                "record_writeback",
+            ),
+        ]
+
+    def test_no_main_theme_step_skipped(self):
+        """Router returns no MAIN theme -> step skipped,
+        doesn't block readiness."""
+        from types import SimpleNamespace
+        themes_result = SimpleNamespace(
+            ok=True, data={"themes": []}, error=None,
+        )
+        router = type("R", (), {})()
+        router.execute = lambda cap, params: themes_result
+        with self._common()[0], self._common()[1], \
+                self._common()[2], self._common()[3], \
+                self._common()[4], self._common()[5], \
+                self._common()[6], self._common()[7], \
+                self._common()[8], patch(
+            "core.adapters.get_router", return_value=router,
+        ):
+            result = launch_store(store_name="Acme")
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["design"]["ok"] is True
+        assert steps["design"]["skipped"] is True
+        assert "no_main_theme" in (
+            result["design"]["error"] or ""
+        )
+        # Mandatory + brand-skipped + design-skipped -> ready
+        assert result["ready_to_launch"] is True
+
+    def test_themes_call_fails_step_skipped(self):
+        """SHOPIFY_LIST_THEMES returning ok=False resolves to
+        skipped (no_main_theme)."""
+        from types import SimpleNamespace
+        themes_result = SimpleNamespace(
+            ok=False, data=None, error="x",
+        )
+        router = type("R", (), {})()
+        router.execute = lambda cap, params: themes_result
+        with self._common()[0], self._common()[1], \
+                self._common()[2], self._common()[3], \
+                self._common()[4], self._common()[5], \
+                self._common()[6], self._common()[7], \
+                self._common()[8], patch(
+            "core.adapters.get_router", return_value=router,
+        ):
+            result = launch_store(store_name="Acme")
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["design"]["skipped"] is True
+        assert steps["design"]["ok"] is True
+
+    def test_engine_failure_marks_error_not_skipped(self):
+        """MAIN theme found but design engine returned non-
+        success -> step records error, NOT skipped."""
+        from types import SimpleNamespace
+        themes_result = SimpleNamespace(
+            ok=True,
+            data={"themes": [{
+                "id": "gid://shopify/OnlineStoreTheme/1",
+                "role": "MAIN",
+            }]},
+            error=None,
+        )
+        router = type("R", (), {})()
+        router.execute = lambda cap, params: themes_result
+        engine_mock = MagicMock()
+        engine_mock.run.return_value = {
+            "status": "error", "data": {}, "meta": {},
+            "error": "engine_broken",
+        }
+        with self._common()[0], self._common()[1], \
+                self._common()[2], self._common()[3], \
+                self._common()[4], self._common()[5], \
+                self._common()[6], self._common()[7], \
+                self._common()[8], patch(
+            "core.adapters.get_router", return_value=router,
+        ), patch(
+            "engines.store_design.flow.StoreDesignEngine",
+            return_value=engine_mock,
+        ):
+            result = launch_store(store_name="Acme")
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["design"]["skipped"] is False
+        assert steps["design"]["ok"] is False
+        assert "engine_broken" in result["design"]["error"]
+        assert result["ready_to_launch"] is False
+
+    def test_full_success_path(self):
+        from types import SimpleNamespace
+        themes_result = SimpleNamespace(
+            ok=True,
+            data={"themes": [{
+                "id": "gid://shopify/OnlineStoreTheme/1",
+                "role": "MAIN",
+            }]},
+            error=None,
+        )
+        router = type("R", (), {})()
+        router.execute = lambda cap, params: themes_result
+        engine_mock = MagicMock()
+        engine_mock.run.return_value = {
+            "status": "success",
+            "data": {"brand": {}, "products": [],
+                     "analytics": {}},
+            "meta": {}, "error": None,
+        }
+        applier_result = {
+            "applied": True,
+            "theme_id": "gid://shopify/OnlineStoreTheme/1",
+            "files_written": [
+                "assets/shopai-design-tokens.json",
+                "snippets/shopai-design.liquid",
+            ],
+            "error": None,
+        }
+        with self._common()[0], self._common()[1], \
+                self._common()[2], self._common()[3], \
+                self._common()[4], self._common()[5], \
+                self._common()[6], self._common()[7], \
+                self._common()[8], patch(
+            "core.adapters.get_router", return_value=router,
+        ), patch(
+            "engines.store_design.flow.StoreDesignEngine",
+            return_value=engine_mock,
+        ), patch(
+            "engines.store_design.design_applier.apply_design",
+            return_value=applier_result,
+        ):
+            result = launch_store(store_name="Acme")
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["design"]["ok"] is True
+        assert steps["design"]["skipped"] is False
+        assert steps["design"]["applied"] == 1
+        assert result["design"]["applied"] is True
+        assert len(result["design"]["files_written"]) == 2
+        assert result["ready_to_launch"] is True
+
+    def test_rollup_carries_design_metrics(self):
+        from types import SimpleNamespace
+        themes_result = SimpleNamespace(
+            ok=True, data={"themes": []}, error=None,
+        )
+        router = type("R", (), {})()
+        router.execute = lambda cap, params: themes_result
+        with patch(
+            "engines.store_setup.policy_generator."
+            "generate_policies",
+            return_value={"REFUND_POLICY": "r"},
+        ), patch(
+            "engines.store_setup.policy_applier.apply_policies",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.page_generator.generate_pages",
+            return_value={"About": "<h1>x</h1>"},
+        ), patch(
+            "engines.store_setup.page_applier.apply_pages",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "generate_welcome_discount",
+            return_value={"code": "W", "percentage": 10},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "W",
+                "percentage": 10, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "generate_starter_collections",
+            return_value=[{"title": "x", "handle": "x"}],
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "core.adapters.get_router", return_value=router,
+        ), patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ) as record_mock:
+            launch_store(store_name="Acme")
+        m = record_mock.call_args.kwargs["metrics"]
+        assert "design_applied" in m
+        assert "design_skipped" in m
+        assert m["design_applied"] == 0
+        assert m["design_skipped"] is True
