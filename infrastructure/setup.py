@@ -168,7 +168,16 @@ class ShopAISetup:
                     {"id": s["store_id"], "url": s["shop_url"]}
                     for s in sm.list_stores()
                 ]
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # Without this log, a broken StoreManager (DB
+                # schema mismatch, import error) silently looks
+                # like "no stores registered" -- operators
+                # can't tell the difference.
+                logger.warning(
+                    "ShopAISetup.status: StoreManager probe "
+                    "failed (DB exists but list_stores raised): "
+                    "%s", exc,
+                )
+                status["stores_error"] = str(exc)
 
         return status
