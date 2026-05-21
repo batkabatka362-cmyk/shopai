@@ -241,7 +241,8 @@ class TestNextAction:
         all_keys = [
             "legal_policies", "standard_pages",
             "active_discounts", "curated_collections",
-            "design_tokens", "active_products",
+            "design_tokens", "brand_assets",
+            "active_products",
             "shipping_zones", "fulfillable_locations",
         ]
         checks = []

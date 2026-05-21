@@ -107,6 +107,14 @@ _ALL_GOOD = {
             "filename": "assets/shopai-design-tokens.json",
         }],
     }),
+    "shopify_list_files": _ok({
+        "files": [
+            {"file_id": "gid://shopify/MediaImage/1",
+             "alt": "Acme logo"},
+            {"file_id": "gid://shopify/MediaImage/2",
+             "alt": "Acme favicon"},
+        ],
+    }),
 }
 
 
@@ -145,8 +153,8 @@ class TestAllPass:
             "engines.store_setup.launch_audit.record_writeback",
         ):
             result = audit_store()
-        # 7 of 8 pass -> round(100 * 7/8) = 88
-        assert result["completion_pct"] == 88
+        # 8 of 9 pass -> round(100 * 8/9) = 89
+        assert result["completion_pct"] == 89
         assert result["ready_to_launch"] is False
 
 
@@ -470,6 +478,109 @@ class TestActiveProductsCheck:
         )
         assert products["applied"] == 2
         assert products["ok"] is True
+
+
+class TestBrandAssetsCheck:
+    """The brand_assets probe reads SHOPIFY_LIST_FILES + counts
+    files whose alts match the brand_uploader's convention."""
+
+    def test_both_logo_and_favicon_pass(self):
+        # _ALL_GOOD fixture already has both
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is True
+        assert brand["applied"] == 2
+        assert brand["missing"] == []
+
+    def test_only_logo_fails(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_files"] = _ok({
+            "files": [
+                {"file_id": "gid://shopify/MediaImage/1",
+                 "alt": "Acme logo"},
+                # No favicon
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is False
+        assert brand["applied"] == 1
+        assert "favicon" in brand["missing"]
+
+    def test_no_brand_files_at_all(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_files"] = _ok({
+            "files": [
+                # Unrelated file -- doesn't match brand alt
+                # convention
+                {"file_id": "gid://shopify/MediaImage/9",
+                 "alt": "Product hero shot"},
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is False
+        assert brand["applied"] == 0
+
+    def test_extra_brand_assets_dont_count_against(self):
+        """A store with logo + favicon + hero + og_image
+        passes. Extras beyond the required two don't hurt."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_files"] = _ok({
+            "files": [
+                {"alt": "Acme logo"},
+                {"alt": "Acme favicon"},
+                {"alt": "Acme hero"},
+                {"alt": "Acme og_image"},
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is True
 
 
 class TestShippingZonesCheck:

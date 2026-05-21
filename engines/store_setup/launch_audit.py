@@ -84,6 +84,14 @@ _MIN_SHIPPING_ZONES: int = 1
 # pickup-only outpost) can't satisfy a website checkout.
 _MIN_FULFILLABLE_LOCATIONS: int = 1
 
+# The minimum brand assets a launchable store needs. Mirrors
+# ``brand_uploader._BRAND_ASSETS`` minimum-viable set (logo +
+# favicon). The other two (hero, og_image) are nice-to-haves
+# that don't gate launchability.
+_REQUIRED_BRAND_ASSETS: frozenset[str] = frozenset({
+    "logo", "favicon",
+})
+
 
 # Per-check operator-actionable next steps. The fix_hint
 # tells the operator HOW to close each missing check, so the
@@ -106,6 +114,9 @@ _FIX_HINTS: dict[str, str] = {
     "design_tokens": (
         "Run: shopai launch (requires a MAIN theme installed "
         "on the store)"
+    ),
+    "brand_assets": (
+        "Run: shopai launch --logo-url URL --favicon-url URL"
     ),
     "active_products": (
         "Add ACTIVE products via Shopify admin or run a niche "
@@ -183,6 +194,7 @@ def audit_store(
         ),
     )
     checks.append(_check_design_tokens())
+    checks.append(_check_brand_assets())
     checks.append(
         _check_active_products(
             expected=expected_products,
@@ -453,6 +465,49 @@ def _check_design_tokens() -> dict[str, Any]:
             [] if present
             else ["assets/shopai-design-tokens.json"]
         ),
+    }
+
+
+def _check_brand_assets() -> dict[str, Any]:
+    """Verify the minimum brand-asset set was uploaded.
+
+    Mirrors the contract of
+    ``engines.store_setup.brand_uploader``: the uploader tags
+    each file with an alt of ``"{store_name} {asset}"`` (e.g.
+    ``"Acme Beauty logo"``). This probe pages
+    ``SHOPIFY_LIST_FILES`` and counts how many alts end in one
+    of the required asset labels (``logo``, ``favicon``).
+
+    A launchable store needs BOTH logo and favicon visible to
+    Shopify; ``hero`` / ``og_image`` are nice-to-haves and
+    aren't gated.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_LIST_FILES",
+        params={"limit": 250},
+        empty_default={},
+    )
+    files = data.get("files") if isinstance(data, dict) else []
+    present: set[str] = set()
+    if isinstance(files, list):
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            alt = (f.get("alt") or "").lower().strip()
+            for asset in _REQUIRED_BRAND_ASSETS:
+                if alt.endswith(f" {asset}") or alt == asset:
+                    present.add(asset)
+                    break
+
+    expected = set(_REQUIRED_BRAND_ASSETS)
+    missing = sorted(expected - present)
+    applied = len(expected & present)
+    return {
+        "key": "brand_assets",
+        "ok": not missing,
+        "applied": applied,
+        "expected": len(expected),
+        "missing": missing,
     }
 
 

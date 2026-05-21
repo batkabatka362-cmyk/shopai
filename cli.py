@@ -10669,7 +10669,7 @@ def _suggest_next_audit_action(
     launch_keys = {
         "legal_policies", "standard_pages",
         "active_discounts", "curated_collections",
-        "design_tokens",
+        "design_tokens", "brand_assets",
     }
     manual_admin_keys = {
         "shipping_zones", "fulfillable_locations",
