@@ -7,11 +7,14 @@ process restarts.  Uses only the Python standard library.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _JOBS_PATH = "/tmp/shopai_scheduler.json"
 _lock = threading.Lock()
@@ -151,9 +154,14 @@ class ContentScheduler:
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 json.dump(self._jobs, fh, indent=2)
             os.replace(tmp_path, self._jobs_path)
-        except OSError:
-            # Non-fatal: in-memory jobs are still valid
-            pass
+        except OSError as exc:
+            # Non-fatal: in-memory jobs are still valid. But
+            # silently dropping the persistence step means jobs
+            # vanish on next restart -- operators need the log.
+            logger.warning(
+                "ContentScheduler persist failed (%s): %s",
+                self._jobs_path, exc,
+            )
 
     def _load_jobs(self) -> None:
         """Read jobs from the JSON file if it exists."""

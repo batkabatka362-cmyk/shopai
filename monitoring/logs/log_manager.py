@@ -1,10 +1,13 @@
 """Centralized log management with in-memory storage and optional file persistence."""
 
 import json
+import logging
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+_meta_logger = logging.getLogger(__name__)
 
 
 class LogManager:
@@ -110,5 +113,13 @@ class LogManager:
         try:
             with open(self._persist_path, "a") as f:
                 f.write(json.dumps(entry) + "\n")
-        except OSError:
-            pass
+        except OSError as exc:
+            # A LOG MANAGER silently dropping log writes is
+            # the worst possible silent failure -- we lose the
+            # signal we'd need to debug the very thing we're
+            # logging. ``_meta_logger`` is a separate (stdlib)
+            # logger so we don't recurse into ourselves.
+            _meta_logger.warning(
+                "LogManager._append_to_file failed (%s): %s",
+                self._persist_path, exc,
+            )
