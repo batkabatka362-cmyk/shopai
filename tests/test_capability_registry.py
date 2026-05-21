@@ -275,6 +275,39 @@ class TestBootstrap:
         # launch_store can close up to 7 audit checks
         assert len(cap.audit_checks_closed) >= 5
 
+    def test_external_batch_registered(self):
+        """The sixth batch (external adapters) locks in the
+        non-Shopify integration surface: LLM providers,
+        supplier APIs, ad platforms."""
+        ensure_registered()
+        names = set(get_registry().names())
+        expected = {
+            # LLM providers
+            "ollama_llm", "gemini_llm", "groq_llm",
+            "deepseek_llm", "mistral_llm_cloud",
+            "openrouter_llm", "huggingface_llm",
+            # Sourcing
+            "cj_dropshipping",
+            # Ads
+            "meta_ads",
+        }
+        missing = expected - names
+        assert not missing, (
+            f"external batch missing: {missing}"
+        )
+
+    def test_external_adapters_tagged(self):
+        """All external adapters carry the 'external' tag
+        so planner / list filters can isolate them."""
+        ensure_registered()
+        externals = get_registry().find(tag="external")
+        # Every external adapter has kind=adapter
+        assert all(
+            c.kind == "adapter" for c in externals
+        )
+        # 9 entries from batch 6
+        assert len(externals) >= 9
+
     def test_audits_batch_registered(self):
         """The fifth batch (institutional audits) locks in
         the dev-facing audit suite + the consolidated

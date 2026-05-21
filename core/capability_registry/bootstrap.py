@@ -83,6 +83,15 @@ def ensure_registered() -> None:
             exc,
         )
 
+    try:
+        from . import _register_external
+        _register_external.register_all()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "capability_registry: external batch raised: %s",
+            exc,
+        )
+
     _BOOTSTRAPPED = True
 
 
