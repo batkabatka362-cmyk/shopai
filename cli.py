@@ -1378,6 +1378,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    launch_audit_p = sub.add_parser(
+        "launch-audit",
+        help=(
+            "Read-only launch-readiness audit: which checklist "
+            "items are applied? (policies, pages, discounts, "
+            "products, shipping zones, ...)"
+        ),
+    )
+    launch_audit_p.add_argument(
+        "--store",
+        help=(
+            "Per-store scope tag for Pattern Z recording. "
+            "Optional; falls back to the active-store thread-"
+            "local when omitted."
+        ),
+    )
+    launch_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     shopify_webhooks_live_p = sub.add_parser(
         "shopify-webhooks-live-check",
         help=(
@@ -10149,6 +10170,87 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_launch_audit(args) -> None:
+    """Run the read-only launch-readiness audit and render the
+    per-check results.
+
+    Wraps ``engines.store_setup.launch_audit.audit_store`` --
+    the existing checklist coverage (legal policies, standard
+    pages, discounts, collections, design tokens, active
+    products, shipping zones, fulfillable locations,
+    shop setup-complete) -- and surfaces it through the same
+    text / --json convention as the other ``shopai`` commands.
+
+    Exits 0 when ``ready_to_launch=True``, 1 when one or more
+    checks fail. Lets cron / CI gate "is this store ready?"
+    just like ``shopify-scopes-live-check`` gates scope drift.
+    """
+    try:
+        from engines.store_setup.launch_audit import audit_store
+        result = audit_store(
+            store_id=getattr(args, "store", None) or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("launch-audit raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "ok": None,
+                "error": "audit_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"Launch audit unavailable: {exc}")
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": result["ready_to_launch"],
+            "completion_pct": result["completion_pct"],
+            "ready_to_launch": result["ready_to_launch"],
+            "checks": result["checks"],
+            "missing_summary": result["missing_summary"],
+        }, indent=2))
+        if not result["ready_to_launch"]:
+            sys.exit(1)
+        return
+
+    pct = result["completion_pct"]
+    total = len(result["checks"])
+    passed = sum(1 for c in result["checks"] if c["ok"])
+    if result["ready_to_launch"]:
+        print(
+            f"Launch audit OK -- {passed}/{total} checks "
+            f"passed ({pct}%). Store is ready to take orders."
+        )
+        return
+
+    print(
+        f"Launch audit FAILED -- {passed}/{total} checks "
+        f"passed ({pct}%). Outstanding items below:"
+    )
+    print()
+    for check in result["checks"]:
+        if check["ok"]:
+            continue
+        missing = check.get("missing") or []
+        missing_str = (
+            f"  ({', '.join(missing)})" if missing else ""
+        )
+        print(
+            f"  [FAIL] {check['key']:<24s} "
+            f"{check.get('applied', 0)}/{check.get('expected', 0)}"
+            f"{missing_str}"
+        )
+    print()
+    print(
+        "Fix: re-run the autonomous setup flow "
+        "(``python -m engines.store_setup.launch_orchestrator``) "
+        "and re-audit. Each check's ``missing`` list names the "
+        "specific items to apply."
+    )
+    sys.exit(1)
+
+
 def _cmd_shopify_scopes_live_check(args) -> None:
     """Compare the registry's declared scopes against the live
     app installation's granted scopes.
@@ -17802,6 +17904,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-scopes-live-check":
         _cmd_shopify_scopes_live_check(args)
+        return
+
+    if args.command == "launch-audit":
+        _cmd_launch_audit(args)
         return
 
     if args.command == "shopify-webhooks-live-check":
