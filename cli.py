@@ -11195,6 +11195,15 @@ def _cmd_launch(args) -> None:
             nxt = _suggest_next_audit_action(a_checks)
             if nxt:
                 print(f"  Next: {nxt}")
+            # Surface the structured plan's CLI sequence
+            # if the audit attached one (audit.result["plan"]
+            # via the planner). Mirrors daily-brief's
+            # per-store punch-list rendering.
+            plan = audit_after.get("plan") or {}
+            cli_seq = plan.get("cli_sequence") or []
+            if cli_seq:
+                for cmd in cli_seq[:3]:
+                    print(f"  $ {cmd}")
     elif audit_after is not None and audit_after.get("error"):
         print()
         print(
@@ -11665,6 +11674,14 @@ def _render_post_launch_audit_followup(
     nxt = audit_after.get("next_action") or ""
     if not a_ready and nxt:
         print(f"  Next: {nxt}")
+    # Same per-store punch-list rendering as the launch
+    # CLI's follow-up: print the planner's recommended CLI
+    # sequence (top 3) when the audit attached a plan.
+    plan = audit_after.get("plan") or {}
+    cli_seq = plan.get("cli_sequence") or []
+    if cli_seq and not a_ready:
+        for cmd in cli_seq[:3]:
+            print(f"  $ {cmd}")
 
 
 def _cmd_shopify_scopes_live_check(args) -> None:
