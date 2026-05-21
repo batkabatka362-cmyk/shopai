@@ -144,6 +144,75 @@ def _fix_hint(check_key: str) -> str:
     return _FIX_HINTS.get(check_key, "")
 
 
+# Which audit checks each "remediation bucket" closes. Lives
+# alongside ``_FIX_HINTS`` so adding a new check + its
+# bucket assignment is a single-file edit.
+_LAUNCH_CLOSEABLE: frozenset[str] = frozenset({
+    "legal_policies", "standard_pages",
+    "active_discounts", "curated_collections",
+    "design_tokens", "brand_assets",
+    "active_products",
+})
+_MANUAL_ADMIN_KEYS: frozenset[str] = frozenset({
+    "shipping_zones", "fulfillable_locations",
+})
+_MANUAL_ADMIN_URLS: dict[str, str] = {
+    "shipping_zones":
+        "admin.shopify.com/settings/shipping",
+    "fulfillable_locations":
+        "admin.shopify.com/settings/locations",
+}
+
+
+def next_action_hint(checks: list[dict[str, Any]]) -> str:
+    """Return the single highest-leverage next command for
+    closing the most failing audit checks.
+
+    Groups failing checks by remediation bucket
+    (launch-closeable vs Shopify-admin-driven) and picks
+    the bucket that closes the most gaps in one shot. The
+    seven launch-closeable checks all collapse into a single
+    ``shopai launch`` invocation; the two admin-driven
+    checks each get their own URL.
+
+    Returns "" when there are no failing checks (audit
+    passes), so callers can use truthiness to decide whether
+    to render the hint.
+    """
+    if not checks:
+        return ""
+    failing = [c for c in checks if not c.get("ok")]
+    if not failing:
+        return ""
+    failing_keys = {c.get("key", "") for c in failing}
+
+    launchable_gaps = failing_keys & _LAUNCH_CLOSEABLE
+    manual_gaps = failing_keys & _MANUAL_ADMIN_KEYS
+
+    if (
+        len(launchable_gaps) >= len(manual_gaps)
+        and launchable_gaps
+    ):
+        # active_products needs the --seed-products opt-in;
+        # include it only when that gap is in the bundle.
+        seed_flag = (
+            " --seed-products"
+            if "active_products" in launchable_gaps
+            else ""
+        )
+        return (
+            f"shopai launch --store-name <NAME> "
+            f"--niche <NICHE>{seed_flag}  "
+            f"(closes {len(launchable_gaps)} of "
+            f"{len(failing)} gaps)"
+        )
+    if manual_gaps:
+        target = sorted(manual_gaps)[0]
+        url = _MANUAL_ADMIN_URLS.get(target, "Shopify admin")
+        return f"Visit {url} to close {target}"
+    return ""
+
+
 def audit_store(
     *,
     store_id: str | None = None,
@@ -238,6 +307,7 @@ def audit_store(
         "ready_to_launch": ready_to_launch,
         "completion_pct": completion_pct,
         "missing_summary": missing_summary,
+        "next_action": next_action_hint(checks),
     }
 
     _record_audit(

@@ -963,6 +963,88 @@ class TestStoreIdPropagation:
         assert params["store_id"] == "store-a"
 
 
+class TestNextActionHint:
+    """The audit engine exposes the smart Next-action
+    recommendation as part of the result dict so callers
+    (CLI, daily-brief, JSON consumers) don't have to
+    re-derive it."""
+
+    def _result_with_failing(self, failing_keys):
+        from engines.store_setup.launch_audit import (
+            next_action_hint,
+        )
+        all_keys = [
+            "legal_policies", "standard_pages",
+            "active_discounts", "curated_collections",
+            "design_tokens", "brand_assets",
+            "active_products",
+            "shipping_zones", "fulfillable_locations",
+        ]
+        checks = [
+            {"key": k, "ok": k not in failing_keys,
+             "applied": 0 if k in failing_keys else 1,
+             "expected": 1,
+             "missing": (["need 1"] if k in failing_keys
+                         else [])}
+            for k in all_keys
+        ]
+        return next_action_hint(checks)
+
+    def test_all_pass_returns_empty(self):
+        hint = self._result_with_failing(set())
+        assert hint == ""
+
+    def test_launch_bucket_recommends_launch(self):
+        hint = self._result_with_failing({
+            "legal_policies", "standard_pages",
+        })
+        assert hint.startswith("shopai launch")
+        assert "closes 2 of 2" in hint
+
+    def test_active_products_appends_seed_flag(self):
+        hint = self._result_with_failing({
+            "active_products",
+        })
+        assert "shopai launch" in hint
+        assert "--seed-products" in hint
+
+    def test_manual_only_returns_admin_url(self):
+        hint = self._result_with_failing({
+            "shipping_zones",
+        })
+        assert "admin.shopify.com/settings/shipping" in hint
+
+    def test_audit_result_carries_next_action(self):
+        """End-to-end: audit_store()['next_action'] is
+        populated."""
+        responses = dict(_ALL_GOOD)
+        # Drop a page so the audit fails
+        responses["shopify_list_pages"] = _ok({"pages": []})
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert "next_action" in result
+        assert "shopai launch" in result["next_action"]
+
+    def test_audit_pass_next_action_empty(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert result["next_action"] == ""
+
+
 class TestFixHint:
     """Every check carries an operator-actionable ``fix_hint``
     string. The hint is purely advisory -- it doesn't gate

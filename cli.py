@@ -10827,71 +10827,19 @@ def _cmd_launch_audit(args) -> None:
 def _suggest_next_audit_action(
     checks: list[dict],
 ) -> str:
-    """Pick the highest-leverage next command from a launch
-    audit result.
-
-    Groups failing checks by which command can fix them, then
-    returns the command that closes the most gaps. The four
-    mandatory orchestrator steps (legal_policies,
-    standard_pages, active_discounts, curated_collections)
-    are all closed by a single ``shopai launch`` run, so any
-    failing combination of those collapses into one
-    recommendation. Manual steps (shipping_zones,
-    fulfillable_locations) get separate URLs.
+    """Thin wrapper around the audit engine's authoritative
+    ``next_action_hint``. Kept as a separate CLI symbol so
+    legacy callers (and tests) keep working; new code should
+    read ``result["next_action"]`` straight from
+    ``audit_store()``.
     """
-    if not checks:
+    try:
+        from engines.store_setup.launch_audit import (
+            next_action_hint,
+        )
+    except Exception:  # noqa: BLE001
         return ""
-    # Group failing checks by remediation bucket
-    launch_keys = {
-        "legal_policies", "standard_pages",
-        "active_discounts", "curated_collections",
-        "design_tokens", "brand_assets",
-        "active_products",
-    }
-    manual_admin_keys = {
-        "shipping_zones", "fulfillable_locations",
-    }
-
-    failing = [c for c in checks if not c.get("ok")]
-    if not failing:
-        return ""
-    failing_keys = {c.get("key", "") for c in failing}
-
-    launchable_gaps = failing_keys & launch_keys
-    manual_gaps = failing_keys & manual_admin_keys
-
-    # Pick the bucket that closes the most gaps in one shot
-    if (
-        len(launchable_gaps) >= len(manual_gaps)
-        and launchable_gaps
-    ):
-        # active_products requires the --seed-products opt-in.
-        # Include it in the suggested command only when that
-        # gap is in the recommended bundle.
-        seed_flag = (
-            " --seed-products"
-            if "active_products" in launchable_gaps
-            else ""
-        )
-        return (
-            f"shopai launch --store-name <NAME> "
-            f"--niche <NICHE>{seed_flag}  "
-            f"(closes {len(launchable_gaps)} of "
-            f"{len(failing)} gaps)"
-        )
-    if manual_gaps:
-        urls = {
-            "shipping_zones":
-                "admin.shopify.com/settings/shipping",
-            "fulfillable_locations":
-                "admin.shopify.com/settings/locations",
-        }
-        target = sorted(manual_gaps)[0]
-        return (
-            f"Visit {urls.get(target, 'Shopify admin')} "
-            f"to close {target}"
-        )
-    return ""
+    return next_action_hint(checks)
 
 
 def _cmd_post_launch(args) -> None:
