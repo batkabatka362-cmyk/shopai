@@ -334,8 +334,16 @@ class SyncService:
                             "UPDATE products SET cost = ? WHERE store_id = ? AND shopify_id = ?",
                             (cost, store_id, str(pid)),
                         )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # Per-product fetch failure shouldn't abort
+                    # the whole sync -- continue to next product.
+                    # Debug-level so a flaky API doesn't spam,
+                    # but operators chasing "why is this product's
+                    # cost stale?" see the signal.
+                    logger.debug(
+                        "Cost sync: inventory_item fetch failed "
+                        "for product %s: %s", pid, exc,
+                    )
 
             conn.commit()
         except Exception as exc:  # noqa: BLE001
