@@ -328,6 +328,64 @@ def _inside_logged_except(
     return False
 
 
+# Substring markers in nearby comments that indicate the
+# silent ``except: pass`` is INTENTIONAL. Operators
+# explicitly opted in -- the audit respects that as long as
+# the marker is present on the handler line, the pass line,
+# or the line immediately before/after.
+_INTENTIONAL_COMMENT_MARKERS = (
+    "silently",         # ""# skip silently""
+    "best-effort",      # ""# best-effort""
+    "best effort",
+    "intentional",      # ""# intentional fall-through""
+    "fall through",     # ""# fall through to default""
+    "fall-through",
+    "no-op",            # ""# no-op when not present""
+    "not present",      # ``list.remove`` idiom
+    "tolerate",         # ""# tolerate corrupt rows""
+    "degrade silently",
+    "non-fatal",
+)
+
+
+def _has_intentional_marker_comment(
+    handler: ast.ExceptHandler,
+    src_lines: list[str],
+) -> bool:
+    """True iff the source code near this handler has an inline
+    comment matching one of the recognised ``intentional``
+    markers.
+
+    Checked lines: the ``except`` line, the ``pass`` line, and
+    the lines immediately before and after the handler.
+    Matching is case-insensitive.
+    """
+    if not src_lines:
+        return False
+    # ast lines are 1-indexed; src_lines is 0-indexed.
+    candidate_lines = set()
+    for ln in (handler.lineno, handler.lineno + 1):
+        # except line + pass line (the body is on the next line
+        # for the canonical ``except X:\n    pass`` shape).
+        candidate_lines.add(ln)
+    # Also the line above the except and the line below the
+    # pass, since operators sometimes put the comment there.
+    candidate_lines.add(handler.lineno - 1)
+    candidate_lines.add(handler.lineno + 2)
+
+    for ln in candidate_lines:
+        if 1 <= ln <= len(src_lines):
+            line = src_lines[ln - 1].lower()
+            # Quick gate: must contain a comment marker
+            if "#" not in line:
+                continue
+            comment_part = line.split("#", 1)[1]
+            for marker in _INTENTIONAL_COMMENT_MARKERS:
+                if marker in comment_part:
+                    return True
+    return False
+
+
 def _collect_silent_sites(
     py_path: Path,
     base: Path,
@@ -348,6 +406,7 @@ def _collect_silent_sites(
         logger.debug("syntax error in %s: %s", py_path, exc)
         return []
 
+    src_lines = src.splitlines()
     rel = py_path.relative_to(base).as_posix()
     sites: list[SilentSite] = []
     for node in ast.walk(tree):
@@ -358,6 +417,8 @@ def _collect_silent_sites(
         if _inside_logged_except(node, tree):
             continue
         if _inside_fall_through_chain(node, tree):
+            continue
+        if _has_intentional_marker_comment(node, src_lines):
             continue
         sites.append(SilentSite(
             file=rel, lineno=node.lineno,
