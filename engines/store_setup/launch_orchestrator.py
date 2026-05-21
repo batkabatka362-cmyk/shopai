@@ -1,10 +1,11 @@
 """Single-command autonomous store launch.
 
 Bundles the per-capability generators + appliers introduced in
-PRs #364 (policies), #365 (pages), #367 (welcome discount), and
-#370 (starter collections) so an operator can run a SINGLE
-command to take a fresh Shopify store from "credentials
-configured" to "launchable" with no manual paste required.
+PRs #364 (policies), #365 (pages), #367 (welcome discount),
+#370 (starter collections), and #369 (brand assets) so an
+operator can run a SINGLE command to take a fresh Shopify
+store from "credentials configured" to "launchable" with no
+manual paste required.
 
 Workflow::
 
@@ -17,20 +18,32 @@ Workflow::
         niche="beauty",
         region="us",
         founder_name="Jane Doe",
+        logo_url="https://example.com/logo.png",
+        favicon_url="https://example.com/favicon.png",
     )
     # result = {
     #     "policies":    {applied_count: 5, results: [...]},
     #     "pages":       {applied_count: 4, results: [...]},
     #     "discount":    {applied: True, code: "WELCOME15", ...},
     #     "collections": {applied_count: 4, results: [...]},
+    #     "brand":       {uploaded_count: 2, files: [...],
+    #                     skipped: False, ok: True},
     #     "checklist": [
     #         {step: "policies",    ok: True, applied: 5},
     #         {step: "pages",       ok: True, applied: 4},
     #         {step: "discount",    ok: True, applied: 1},
     #         {step: "collections", ok: True, applied: 4},
+    #         {step: "brand",       ok: True, applied: 2,
+    #          skipped: False},
     #     ],
     #     "ready_to_launch": True,
     # }
+
+The brand step is OPTIONAL: when no image URLs are supplied
+it's marked ``skipped: True`` and contributes ``ok: True`` to
+``ready_to_launch``. A launch without brand assets is still
+launchable; assets are polish, not a prerequisite for taking
+orders.
 
 Each step is wrapped so a failure in one (policies fail, but
 pages still apply) doesn't poison the others. The
@@ -61,6 +74,10 @@ def launch_store(
     store_id: str | None = None,
     include_legal_notice: bool = False,
     include_subscription_policy: bool = False,
+    logo_url: str | None = None,
+    favicon_url: str | None = None,
+    hero_url: str | None = None,
+    og_image_url: str | None = None,
 ) -> dict[str, Any]:
     """Run the autonomous setup steps and return a checklist.
 
@@ -76,10 +93,20 @@ def launch_store(
             scope on every fan-out call.
         include_legal_notice: Forwarded to policy_generator.
         include_subscription_policy: Forwarded to policy_generator.
+        logo_url: Optional public HTTPS URL for the brand logo.
+            When ANY of the four image URLs is supplied the
+            brand-uploader step runs; when NONE are supplied
+            the step is skipped (record as ``skipped``, not
+            failed -- a launch without brand assets is still
+            launchable, just polish).
+        favicon_url: Optional URL for the favicon.
+        hero_url: Optional URL for the homepage hero image.
+        og_image_url: Optional URL for the social-sharing image.
 
     Returns:
-        ``{policies, pages, discount, collections, checklist,
-        ready_to_launch}`` -- see module docstring for the schema.
+        ``{policies, pages, discount, collections, brand,
+        checklist, ready_to_launch}`` -- see module docstring
+        for the schema.
     """
     name = (store_name or "").strip()
     if not name:
@@ -90,6 +117,10 @@ def launch_store(
                          "percentage": None,
                          "error": "store_name_required"},
             "collections": {"applied_count": 0, "results": []},
+            "brand": {"uploaded_count": 0, "files": [],
+                      "missing_assets": [], "ok": False,
+                      "skipped": True,
+                      "error": "store_name_required"},
             "checklist": [],
             "ready_to_launch": False,
             "error": "store_name_required",
@@ -222,6 +253,62 @@ def launch_store(
             "error": str(exc),
         }
 
+    # ── Step 5: Brand assets (optional) ──────────────────
+    # brand_uploader needs operator-supplied image URLs.
+    # When NONE of the four are provided, skip the step
+    # entirely -- a launch without brand assets is still
+    # launchable (the storefront just uses Shopify's default
+    # placeholders). When AT LEAST ONE URL is provided, run
+    # the uploader; ``ok`` mirrors the uploader's own
+    # "logo+favicon both succeeded" contract.
+    any_brand_url = any([
+        logo_url, favicon_url, hero_url, og_image_url,
+    ])
+    brand_result: dict[str, Any] = {
+        "uploaded_count": 0,
+        "files": [],
+        "missing_assets": [],
+        "ok": True,
+        "skipped": True,
+        "error": None,
+    }
+    if any_brand_url:
+        try:
+            from engines.store_setup.brand_uploader import (
+                upload_brand_assets,
+            )
+            inner = upload_brand_assets(
+                store_name=name,
+                logo_url=logo_url,
+                favicon_url=favicon_url,
+                hero_url=hero_url,
+                og_image_url=og_image_url,
+                store_id=store_id,
+            )
+            brand_result = {
+                "uploaded_count": inner.get("uploaded_count", 0),
+                "files": inner.get("files", []),
+                "missing_assets": inner.get(
+                    "missing_assets", [],
+                ),
+                "ok": bool(inner.get("ok", False)),
+                "skipped": False,
+                "error": inner.get("error"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "launch_orchestrator brand step raised: %s",
+                exc,
+            )
+            brand_result = {
+                "uploaded_count": 0,
+                "files": [],
+                "missing_assets": [],
+                "ok": False,
+                "skipped": False,
+                "error": str(exc),
+            }
+
     # ── Checklist ────────────────────────────────────────
     checklist: list[dict[str, Any]] = []
 
@@ -269,11 +356,28 @@ def launch_store(
         "error": collections_result.get("error"),
     })
 
+    # Brand step is "ok" when it was skipped (no URLs given)
+    # or when the uploader's own ok flag was True. The whole
+    # point of the skip semantics is that absent brand assets
+    # don't block ready_to_launch.
+    brand_ok = (
+        bool(brand_result.get("skipped"))
+        or bool(brand_result.get("ok"))
+    )
+    checklist.append({
+        "step": "brand",
+        "ok": brand_ok,
+        "applied": brand_result.get("uploaded_count", 0),
+        "skipped": bool(brand_result.get("skipped")),
+        "error": brand_result.get("error"),
+    })
+
     ready_to_launch = bool(
         policies_ok
         and pages_ok
         and discount_ok
         and collections_ok
+        and brand_ok
     )
 
     out = {
@@ -281,6 +385,7 @@ def launch_store(
         "pages": pages_result,
         "discount": discount_result,
         "collections": collections_result,
+        "brand": brand_result,
         "checklist": checklist,
         "ready_to_launch": ready_to_launch,
     }
@@ -320,6 +425,12 @@ def launch_store(
                 "discount_applied": 1 if discount_ok else 0,
                 "collections_applied": (
                     collections_result.get("applied_count", 0)
+                ),
+                "brand_uploaded": (
+                    brand_result.get("uploaded_count", 0)
+                ),
+                "brand_skipped": bool(
+                    brand_result.get("skipped"),
                 ),
                 "ready_to_launch": ready_to_launch,
             },
