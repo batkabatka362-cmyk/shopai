@@ -695,3 +695,220 @@ class TestCollectionsStep:
             result = launch_store(store_name="Acme")
         assert "seeder broken" in result["collections"]["error"]
         assert result["ready_to_launch"] is False
+
+
+class TestBrandStep:
+    """Brand assets are OPTIONAL: when no URLs are supplied the
+    step is recorded as ``skipped=True, ok=True`` so it doesn't
+    block ``ready_to_launch``. When URLs ARE supplied the step
+    runs and the uploader's own ok/error flow drives the
+    checklist entry."""
+
+    def _patch_first_four_steps_ok(self):
+        return (
+            patch(
+                "engines.store_setup.policy_generator."
+                "generate_policies",
+                return_value={"REFUND_POLICY": "r"},
+            ),
+            patch(
+                "engines.store_setup.policy_applier.apply_policies",
+                return_value={"applied_count": 1, "results": []},
+            ),
+            patch(
+                "engines.store_setup.page_generator.generate_pages",
+                return_value={"About": "<h1>x</h1>"},
+            ),
+            patch(
+                "engines.store_setup.page_applier.apply_pages",
+                return_value={"applied_count": 1, "results": []},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "apply_welcome_discount",
+                return_value={
+                    "applied": True, "code": "WELCOME15",
+                    "percentage": 15, "error": None,
+                },
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "apply_starter_collections",
+                return_value={"applied_count": 4, "results": []},
+            ),
+            patch(
+                "engines.store_setup.launch_orchestrator."
+                "record_writeback",
+            ),
+        )
+
+    def test_no_urls_skips_brand_step_still_ready(self):
+        """Default-args launch (no URLs) -> brand step is
+        skipped and ``ready_to_launch`` stays True."""
+        patches = self._patch_first_four_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+        ) as brand_mock:
+            result = launch_store(store_name="Acme")
+        # Uploader was NEVER called -- no URLs provided
+        brand_mock.assert_not_called()
+        assert result["brand"]["skipped"] is True
+        assert result["brand"]["uploaded_count"] == 0
+        # Checklist entry exists with ok=True (skip != failure)
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["brand"]["ok"] is True
+        assert steps["brand"]["skipped"] is True
+        # And the launch is still ready
+        assert result["ready_to_launch"] is True
+
+    def test_urls_provided_runs_uploader(self):
+        patches = self._patch_first_four_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            return_value={
+                "uploaded_count": 2,
+                "files": [
+                    {"asset": "logo"}, {"asset": "favicon"},
+                ],
+                "missing_assets": ["hero", "og_image"],
+                "ok": True,
+                "error": None,
+            },
+        ) as brand_mock:
+            result = launch_store(
+                store_name="Acme",
+                logo_url="https://x/logo.png",
+                favicon_url="https://x/favicon.png",
+            )
+        brand_mock.assert_called_once()
+        kwargs = brand_mock.call_args.kwargs
+        assert kwargs["logo_url"] == "https://x/logo.png"
+        assert kwargs["favicon_url"] == "https://x/favicon.png"
+        assert result["brand"]["skipped"] is False
+        assert result["brand"]["uploaded_count"] == 2
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["brand"]["ok"] is True
+        assert steps["brand"]["applied"] == 2
+        assert result["ready_to_launch"] is True
+
+    def test_uploader_failure_blocks_ready(self):
+        """When URLs were provided but the uploader returned
+        ok=False (e.g. logo+favicon didn't both upload), the
+        brand step counts as a failure and blocks
+        ready_to_launch."""
+        patches = self._patch_first_four_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            return_value={
+                "uploaded_count": 1,
+                "files": [{"asset": "logo"}],
+                "missing_assets": ["favicon"],
+                "ok": False,
+                "error": "favicon_upload_rejected",
+            },
+        ):
+            result = launch_store(
+                store_name="Acme",
+                logo_url="https://x/logo.png",
+            )
+        assert result["brand"]["ok"] is False
+        assert result["brand"]["skipped"] is False
+        assert result["ready_to_launch"] is False
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["brand"]["ok"] is False
+
+    def test_uploader_module_raise_captured(self):
+        patches = self._patch_first_four_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            side_effect=RuntimeError("uploader broken"),
+        ):
+            result = launch_store(
+                store_name="Acme",
+                logo_url="https://x/logo.png",
+            )
+        assert "uploader broken" in result["brand"]["error"]
+        assert result["brand"]["skipped"] is False
+        assert result["ready_to_launch"] is False
+
+    def test_partial_url_set_still_runs_uploader(self):
+        """Even just one URL (e.g. only hero) should trigger
+        the step -- the uploader itself decides whether the
+        minimum set is met."""
+        patches = self._patch_first_four_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            return_value={
+                "uploaded_count": 1,
+                "files": [{"asset": "hero"}],
+                "missing_assets": ["logo", "favicon", "og_image"],
+                "ok": False,
+                "error": "missing_required: logo, favicon",
+            },
+        ) as brand_mock:
+            launch_store(
+                store_name="Acme",
+                hero_url="https://x/hero.png",
+            )
+        brand_mock.assert_called_once()
+        kwargs = brand_mock.call_args.kwargs
+        assert kwargs["hero_url"] == "https://x/hero.png"
+        assert kwargs["logo_url"] is None
+        assert kwargs["favicon_url"] is None
+
+    def test_rollup_metrics_carry_brand(self):
+        patches = self._patch_first_four_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            return_value={
+                "uploaded_count": 4,
+                "files": [],
+                "missing_assets": [],
+                "ok": True,
+                "error": None,
+            },
+        ), patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ) as record_mock:
+            launch_store(
+                store_name="Acme",
+                logo_url="https://x/l.png",
+                favicon_url="https://x/f.png",
+                hero_url="https://x/h.png",
+                og_image_url="https://x/og.png",
+            )
+        kwargs = record_mock.call_args.kwargs
+        assert kwargs["metrics"]["brand_uploaded"] == 4
+        assert kwargs["metrics"]["brand_skipped"] is False
+        assert kwargs["success"] is True
+
+    def test_skip_recorded_in_rollup(self):
+        """When the step is skipped, the rollup metrics
+        explicitly say so -- so the Phase 8 learning loop can
+        tell apart "no brand URLs supplied" from "brand
+        failed"."""
+        patches = self._patch_first_four_steps_ok()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ) as record_mock:
+            launch_store(store_name="Acme")
+        kwargs = record_mock.call_args.kwargs
+        assert kwargs["metrics"]["brand_uploaded"] == 0
+        assert kwargs["metrics"]["brand_skipped"] is True
+        # Skip doesn't block ready_to_launch
+        assert kwargs["success"] is True
