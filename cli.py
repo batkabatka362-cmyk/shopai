@@ -1378,6 +1378,61 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    launch_p = sub.add_parser(
+        "launch",
+        help=(
+            "WRITER: end-to-end autonomous store launch -- runs "
+            "policies + pages + welcome discount + starter "
+            "collections (the launch_orchestrator) against the "
+            "configured Shopify store. Single command from "
+            "'credentials configured' to 'launchable'."
+        ),
+    )
+    launch_p.add_argument(
+        "store_name",
+        help=(
+            "Display name for the store (used in policies + "
+            "page bodies)."
+        ),
+    )
+    launch_p.add_argument(
+        "--niche", default="general",
+        choices=[
+            "general", "beauty", "fashion", "home",
+            "tech", "food",
+        ],
+        help="Niche key for niche-aware generators (default: general)",
+    )
+    launch_p.add_argument(
+        "--region", default="us",
+        choices=["us", "eu", "uk"],
+        help="Region code (default: us)",
+    )
+    launch_p.add_argument(
+        "--founder-name", default=None,
+        help="Optional founder name, used in the About page.",
+    )
+    launch_p.add_argument(
+        "--store-id", default=None,
+        help=(
+            "Per-store recording scope for Pattern Z. Falls "
+            "back to the active-store thread-local when "
+            "omitted."
+        ),
+    )
+    launch_p.add_argument(
+        "--include-legal-notice", action="store_true",
+        help="Forwarded to policy_generator.",
+    )
+    launch_p.add_argument(
+        "--include-subscription-policy", action="store_true",
+        help="Forwarded to policy_generator.",
+    )
+    launch_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     shopify_webhooks_live_p = sub.add_parser(
         "shopify-webhooks-live-check",
         help=(
@@ -10149,6 +10204,104 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_launch(args) -> None:
+    """Run the autonomous launch_store orchestrator and render
+    the checklist.
+
+    Single command from "credentials configured" to "launchable":
+    pushes policies + pages + welcome discount + starter
+    collections through the standard adapter layer, fan-out
+    failure-isolated so a single step's failure doesn't poison
+    the others.
+
+    Exits 0 when ``ready_to_launch=True``, 1 when ANY step
+    failed. ``--json`` for automation. The companion read-only
+    audit is ``shopai launch-audit`` -- run it after to verify
+    what Shopify thinks of the result.
+    """
+    try:
+        from engines.store_setup.launch_orchestrator import (
+            launch_store,
+        )
+        result = launch_store(
+            store_name=args.store_name,
+            niche=getattr(args, "niche", "general"),
+            region=getattr(args, "region", "us"),
+            founder_name=getattr(
+                args, "founder_name", None,
+            ),
+            store_id=getattr(args, "store_id", None),
+            include_legal_notice=bool(
+                getattr(args, "include_legal_notice", False),
+            ),
+            include_subscription_policy=bool(
+                getattr(args, "include_subscription_policy", False),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("launch raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "ok": None,
+                "error": "launch_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"launch unavailable: {exc}")
+        return
+
+    ready = bool(result.get("ready_to_launch"))
+    checklist = result.get("checklist") or []
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": ready,
+            "ready_to_launch": ready,
+            "checklist": checklist,
+            "policies": result.get("policies"),
+            "pages": result.get("pages"),
+            "discount": result.get("discount"),
+            "collections": result.get("collections"),
+            "error": result.get("error"),
+        }, indent=2, default=str))
+        if not ready:
+            sys.exit(1)
+        return
+
+    total = len(checklist) or 1
+    passed = sum(1 for c in checklist if c.get("ok"))
+    if ready:
+        print(
+            f"Launch complete -- {passed}/{total} steps "
+            "applied. Store is ready to take orders."
+        )
+        for c in checklist:
+            print(
+                f"  [OK]   {c['step']:<14s} applied={c.get('applied', 0)}"
+            )
+        return
+
+    print(
+        f"Launch INCOMPLETE -- {passed}/{total} steps "
+        "applied. Outstanding items below:"
+    )
+    for c in checklist:
+        marker = "OK" if c.get("ok") else "FAIL"
+        err = c.get("error")
+        suffix = f"  ({err})" if err else ""
+        print(
+            f"  [{marker:<4s}] {c['step']:<14s} "
+            f"applied={c.get('applied', 0)}{suffix}"
+        )
+    print()
+    print(
+        "Run `shopai launch-audit` to see what Shopify thinks "
+        "of the result, then fix per the per-step error and "
+        "re-run."
+    )
+    sys.exit(1)
+
+
 def _cmd_shopify_scopes_live_check(args) -> None:
     """Compare the registry's declared scopes against the live
     app installation's granted scopes.
@@ -17802,6 +17955,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-scopes-live-check":
         _cmd_shopify_scopes_live_check(args)
+        return
+
+    if args.command == "launch":
+        _cmd_launch(args)
         return
 
     if args.command == "shopify-webhooks-live-check":
