@@ -11315,7 +11315,19 @@ def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
                 }
             else:
                 # Missing scopes are fatal; extras are a warning
-                # (recorded but don't fail the doctor)
+                # (recorded but don't fail the doctor).
+                # ``missing_adapters`` (PR #461) is read via
+                # getattr for back-compat with reports that
+                # predate the field.
+                missing_adapters = (
+                    getattr(
+                        health_report, "missing_adapters", {},
+                    ) or {}
+                )
+                impacted = sorted({
+                    a for adapters in missing_adapters.values()
+                    for a in adapters
+                })
                 sections["live_scope_drift"] = {
                     "status": (
                         "pass" if health_report.is_healthy
@@ -11331,6 +11343,9 @@ def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
                     "required_count": (
                         len(health_report.required_scopes)
                     ),
+                    "missing_adapters": missing_adapters,
+                    "impacted_adapter_count": len(impacted),
+                    "sample_impacted_adapters": impacted[:5],
                 }
                 if not health_report.is_healthy:
                     overall_ok = False
@@ -11767,6 +11782,24 @@ def _doctor_render_live(section: dict) -> None:
             f"{len(missing)} scope(s) declared but NOT granted: "
             f"{sample}"
         )
+        # Blast radius (PR #461): surface impacted adapter count
+        # + sample inline. Operators get a quick "this many
+        # adapters will fail" preview without drilling into
+        # ``shopai shopify-scopes-live-check``.
+        impacted_count = int(
+            section.get("impacted_adapter_count", 0) or 0,
+        )
+        if impacted_count > 0:
+            sample_adapters = section.get(
+                "sample_impacted_adapters", [],
+            )
+            sample_str = ", ".join(sample_adapters[:3])
+            if impacted_count > 3:
+                sample_str += f", ... +{impacted_count - 3} more"
+            print(
+                f"       impacted adapters ({impacted_count}): "
+                f"{sample_str}"
+            )
         print(
             "       fix: re-install the app on the merchant so the "
             "OAuth consent re-runs with the current scope set "

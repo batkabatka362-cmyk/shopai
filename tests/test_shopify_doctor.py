@@ -329,6 +329,178 @@ class TestLiveWarnings:
         assert "read_unused" in data["sections"]["live_scope_drift"]["extra_in_app"]
 
 
+# ─── Blast radius (PR #461 + this PR) ────────────────────────
+
+
+class TestLiveBlastRadius:
+    """When the live drift check fails, the doctor surfaces
+    HOW MANY adapters will hit ACCESS_DENIED inline with the
+    fail line. Operators see the blast radius without drilling
+    into ``shopify-scopes-live-check``.
+
+    Uses MagicMock for the report rather than the real
+    ``ScopeHealthReport`` dataclass: the ``missing_adapters``
+    field only exists on the post-PR-#461 dataclass, and we
+    want this PR's tests to pass on either side of that merge.
+    The doctor's section builder reads via ``getattr`` so a
+    mock with the attribute set works identically to the
+    real dataclass.
+    """
+
+    def _build_drift_report(self, missing_adapters=None):
+        """Build a mock ScopeHealthReport with drift."""
+        from unittest.mock import MagicMock
+        report = MagicMock()
+        report.is_healthy = False
+        report.granted_scopes = frozenset({"read_orders"})
+        report.required_scopes = frozenset({
+            "read_orders", "write_orders", "read_customers",
+        })
+        report.missing_from_app = [
+            "read_customers", "write_orders",
+        ]
+        report.extra_in_app = []
+        # MagicMock auto-creates attributes on access; we
+        # explicitly set missing_adapters so getattr resolves
+        # to the desired value (dict or {} for no-data tests).
+        report.missing_adapters = (
+            missing_adapters if missing_adapters is not None
+            else {}
+        )
+        return report
+
+    def test_blast_radius_renders_inline(self, cli):
+        """When ``missing_adapters`` is populated, the doctor
+        shows an 'impacted adapters' line under the FAIL banner."""
+        report = self._build_drift_report(
+            missing_adapters={
+                "read_customers": [
+                    "shopify_customers", "shopify_segments",
+                ],
+                "write_orders": ["shopify_orders"],
+            },
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(),
+            )
+        assert code == 1
+        # Failure line stays
+        assert "[FAIL] Live scope" in out
+        # New line: impacted adapter count + sample
+        # (3 adapters total -- no truncation needed at this size)
+        assert "impacted adapters" in out
+        # Sample includes at least one of the impacted adapters
+        # (sorted, so 'shopify_customers' comes first)
+        assert "shopify_customers" in out
+
+    def test_blast_radius_truncates_past_3_adapters(self, cli):
+        """The doctor's inline preview caps at 3 adapter
+        names with a +N more collapse. The full list lives
+        behind ``shopify-scopes-live-check``."""
+        many = [f"shopify_adapter_{i}" for i in range(10)]
+        report = self._build_drift_report(
+            missing_adapters={"read_customers": many},
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(),
+            )
+        assert code == 1
+        # First 3 adapters appear; rest collapsed
+        assert "+7 more" in out
+
+    def test_blast_radius_json_includes_impacted_count(self, cli):
+        """JSON payload exposes ``impacted_adapter_count`` and
+        ``sample_impacted_adapters`` so automation can react
+        without parsing the text output."""
+        report = self._build_drift_report(
+            missing_adapters={
+                "read_customers": ["shopify_customers"],
+                "write_orders": ["shopify_orders"],
+            },
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(json=True),
+            )
+        assert code == 1
+        data = json.loads(out)
+        section = data["sections"]["live_scope_drift"]
+        assert section["impacted_adapter_count"] == 2
+        # Sample is alphabetically sorted from the union
+        assert "shopify_customers" in section[
+            "sample_impacted_adapters"
+        ]
+        assert "shopify_orders" in section[
+            "sample_impacted_adapters"
+        ]
+
+    def test_no_blast_radius_means_no_impacted_line(self, cli):
+        """When ``missing_adapters`` is empty (registry resolve
+        failed, or scope_health predates PR #461), the doctor
+        renders the FAIL line without the 'impacted adapters'
+        suffix -- no crashes, no missing-data placeholders."""
+        report = self._build_drift_report(missing_adapters={})
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(),
+            )
+        assert code == 1
+        assert "[FAIL] Live scope" in out
+        assert "impacted adapters" not in out
+
+    def test_blast_radius_back_compat_missing_field(self, cli):
+        """Defensive: a report whose ``missing_adapters``
+        attribute raises AttributeError (simulating a strict
+        dataclass that predates PR #461) still works -- the
+        doctor's ``getattr(..., {})`` swallows it and degrades
+        to no blast-radius line, no crash."""
+        from unittest.mock import MagicMock, PropertyMock
+        # Use spec so accessing an undefined attribute raises
+        # AttributeError instead of auto-creating a child mock.
+        report = MagicMock(
+            spec=[
+                "is_healthy", "granted_scopes",
+                "required_scopes", "missing_from_app",
+                "extra_in_app",
+            ],
+        )
+        report.is_healthy = False
+        report.granted_scopes = frozenset({"read_orders"})
+        report.required_scopes = frozenset({
+            "read_orders", "read_customers",
+        })
+        report.missing_from_app = ["read_customers"]
+        report.extra_in_app = []
+        # ``missing_adapters`` is NOT in spec → AttributeError
+        # on access, exactly the pre-#461 dataclass behavior.
+
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ):
+            out, code = _capture(
+                cli._cmd_shopify_doctor, _ns(),
+            )
+        # Failure surfaced; no crash; no blast-radius line
+        assert code == 1
+        assert "[FAIL] Live scope" in out
+        assert "impacted adapters" not in out
+
+
 # ─── Engines-writebacks section (PR #188) ──────────────────────
 
 
