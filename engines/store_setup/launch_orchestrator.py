@@ -395,25 +395,42 @@ def launch_store(
     }
     if seed_products:
         try:
-            from engines.store_setup.product_seeder import (
-                generate_starter_products,
-                apply_starter_products,
-            )
-            starter_products = generate_starter_products(
-                niche=niche,
-                vendor=name,
-            )
-            applied = apply_starter_products(
-                starter_products, store_id=store_id,
-            )
-            products_result = {
-                "applied_count": applied.get(
-                    "applied_count", 0,
-                ),
-                "results": applied.get("results") or [],
-                "skipped": False,
-                "error": None,
-            }
+            # Safeguard: if the store already has ACTIVE
+            # products, skip seeding rather than dump 4
+            # starter-tagged items on top of the real
+            # catalog. Operators who hit --seed-products
+            # by accident on a populated store should get a
+            # no-op, not junk to clean up.
+            existing_active = _count_active_products()
+            if existing_active > 0:
+                products_result = {
+                    "applied_count": 0, "results": [],
+                    "skipped": True,
+                    "error": (
+                        f"already_has_active_products "
+                        f"(count={existing_active})"
+                    ),
+                }
+            else:
+                from engines.store_setup.product_seeder import (
+                    generate_starter_products,
+                    apply_starter_products,
+                )
+                starter_products = generate_starter_products(
+                    niche=niche,
+                    vendor=name,
+                )
+                applied = apply_starter_products(
+                    starter_products, store_id=store_id,
+                )
+                products_result = {
+                    "applied_count": applied.get(
+                        "applied_count", 0,
+                    ),
+                    "results": applied.get("results") or [],
+                    "skipped": False,
+                    "error": None,
+                }
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "launch_orchestrator products step raised: %s",
@@ -613,3 +630,62 @@ def launch_store(
         )
 
     return out
+
+
+def _count_active_products() -> int:
+    """Count ACTIVE products on the store via
+    ``SHOPIFY_LIST_PRODUCTS``. Used by Step 7 as a safeguard
+    against seeding starter products on top of an existing
+    catalog.
+
+    Returns 0 on any failure (no router, capability missing,
+    raise, ok=False). The safeguard's job is to AVOID writes
+    when products exist; a zero-on-failure default means a
+    transient probe error makes the seeder do MORE writes, not
+    fewer -- which is fine because the seeder itself records
+    each create via Pattern Z and operators can spot the
+    duplicates after the fact. Failing closed (refuse to
+    seed) would hide misconfigured-router cases where the
+    operator EXPECTED Step 7 to fire.
+    """
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "launch_orchestrator product-count import "
+            "failed: %s", exc,
+        )
+        return 0
+
+    try:
+        router = get_router()
+        result = router.execute(
+            Capability.SHOPIFY_LIST_PRODUCTS,
+            {"limit": 50},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "launch_orchestrator product-count execute "
+            "raised: %s", exc,
+        )
+        return 0
+
+    if not getattr(result, "ok", False):
+        return 0
+
+    data = getattr(result, "data", None) or {}
+    products = (
+        data.get("products") if isinstance(data, dict) else []
+    )
+    if not isinstance(products, list):
+        return 0
+
+    count = 0
+    for p in products:
+        if not isinstance(p, dict):
+            continue
+        status = (p.get("status") or "").upper()
+        if status == "ACTIVE":
+            count += 1
+    return count

@@ -1176,3 +1176,61 @@ class TestProductsStep:
         assert "products_skipped" in m
         assert m["products_seeded"] == 1
         assert m["products_skipped"] is False
+
+    def test_skips_when_store_already_has_active_products(self):
+        """Safeguard: if the store already has ACTIVE
+        products, --seed-products is a no-op so operators
+        don't dump junk on top of a real catalog."""
+        p = self._upstream_patches()
+        # Pre-flight count returns >0 -> seeder skips
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6], \
+                p[7], p[8], patch(
+            "engines.store_setup.launch_orchestrator."
+            "_count_active_products",
+            return_value=3,
+        ), patch(
+            "engines.store_setup.product_seeder."
+            "apply_starter_products",
+        ) as apply_mock:
+            result = launch_store(
+                store_name="Acme", seed_products=True,
+            )
+        # No actual create calls -- safeguard kicked in
+        apply_mock.assert_not_called()
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["products"]["skipped"] is True
+        # Skipped contributes ok=True (no-op != failure)
+        assert steps["products"]["ok"] is True
+        assert (
+            "already_has_active_products"
+            in (result["products"]["error"] or "")
+        )
+
+    def test_proceeds_when_store_has_zero_active_products(
+        self,
+    ):
+        """The complement: with zero ACTIVE products the
+        safeguard lets the seeder run."""
+        p = self._upstream_patches()
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6], \
+                p[7], p[8], patch(
+            "engines.store_setup.launch_orchestrator."
+            "_count_active_products",
+            return_value=0,
+        ), patch(
+            "engines.store_setup.product_seeder."
+            "generate_starter_products",
+            return_value=[{"title": "X", "handle": "x"}],
+        ), patch(
+            "engines.store_setup.product_seeder."
+            "apply_starter_products",
+            return_value={"applied_count": 1,
+                          "results": []},
+        ) as apply_mock:
+            result = launch_store(
+                store_name="Acme", seed_products=True,
+            )
+        apply_mock.assert_called_once()
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["products"]["skipped"] is False
+        assert steps["products"]["applied"] == 1
