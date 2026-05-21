@@ -197,10 +197,16 @@ class _Registry:
         """Filter capabilities by one or more criteria.
 
         Empty / None filters are skipped (logical AND across
-        the supplied ones). ``query`` does substring match
-        across name + description + when_to_use + tags --
-        the goal is "does this capability seem relevant to a
-        free-form phrase like 'design' or 'mobile'?"
+        the supplied ones). ``query`` does substring +
+        token-AND match across name + description +
+        when_to_use + tags + side_effects.
+
+        Query fallback: when the strict AND match returns
+        zero results, fall back to OR-match (any token
+        present). This handles long queries like "cash flow
+        forecast" where no single capability contains every
+        token but several contain SOME tokens. Discovery
+        beats silence.
 
         Returns a list in the stable order from ``all()``.
         """
@@ -226,9 +232,18 @@ class _Registry:
         if query:
             q = query.lower().strip()
             if q:
-                results = [
+                # Strict AND first
+                strict = [
                     c for c in results
                     if _matches_query(c, q)
+                ]
+                if strict:
+                    return strict
+                # Fallback: OR-match. Only fires when
+                # strict returned zero.
+                results = [
+                    c for c in results
+                    if _matches_query_any_token(c, q)
                 ]
         return results
 
@@ -238,6 +253,27 @@ _STOPWORDS: frozenset[str] = frozenset({
     "with", "by", "from", "this", "that", "these", "those",
     "is", "be", "do", "in", "on", "at", "as", "it",
 })
+
+
+import re as _re
+
+
+def _token_in_blob(token: str, blob: str) -> bool:
+    """Word-boundary substring match.
+
+    ``token in blob`` would match 'flow' inside 'workflow' --
+    a false positive that pollutes the OR-fallback for
+    common 4-letter tokens. Word-boundary regex eliminates
+    that without losing accurate full-word hits.
+    """
+    if not token:
+        return False
+    # Escape regex meta in token. Wrap with \b on both
+    # sides. For tokens ending in non-word chars (rare),
+    # the \b still works because \b is at word/non-word
+    # transitions.
+    pattern = r"\b" + _re.escape(token) + r"\b"
+    return bool(_re.search(pattern, blob))
 
 
 def _matches_query(cap: Capability, q: str) -> bool:
@@ -279,14 +315,39 @@ def _matches_query(cap: Capability, q: str) -> bool:
     if q in blob:
         return True
 
-    # Token AND: drop stopwords + sub-3-char noise
+    # Token AND with word-boundary match
     tokens = [
         t for t in q.split()
         if len(t) >= 3 and t not in _STOPWORDS
     ]
     if not tokens:
         return False
-    return all(t in blob for t in tokens)
+    return all(_token_in_blob(t, blob) for t in tokens)
+
+
+def _matches_query_any_token(
+    cap: Capability, q: str,
+) -> bool:
+    """OR-match fallback for ``find()``. Only invoked when
+    the strict AND-match returned zero results -- prevents
+    silent empty responses for diffuse phrases like
+    "cash flow forecast".
+    """
+    haystacks = [
+        cap.name,
+        cap.description,
+        cap.when_to_use,
+        " ".join(cap.tags),
+        " ".join(cap.side_effects),
+    ]
+    blob = " ".join(haystacks).lower()
+    tokens = [
+        t for t in q.split()
+        if len(t) >= 3 and t not in _STOPWORDS
+    ]
+    if not tokens:
+        return False
+    return any(_token_in_blob(t, blob) for t in tokens)
 
 
 # Module-level singleton.

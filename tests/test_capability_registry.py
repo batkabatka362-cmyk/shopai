@@ -275,6 +275,44 @@ class TestBootstrap:
         # launch_store can close up to 7 audit checks
         assert len(cap.audit_checks_closed) >= 5
 
+    def test_analytics_batch_registered(self):
+        """The fourth batch (analytics / financial /
+        competitive / strategy / ops) locks in the
+        remaining operator surface."""
+        ensure_registered()
+        names = set(get_registry().names())
+        expected = {
+            # Financial
+            "accounting", "cash_flow", "cashflow_simulator",
+            "profit_optimization",
+            "profitability_calculator",
+            "ltv_cac_dashboard",
+            # Analytics
+            "conversion_tracking", "customer_effort_score",
+            "customer_behavior_simulator", "forecasting",
+            "data_collection", "data_enrichment",
+            # Competitive
+            "competitor_analysis",
+            "competitor_ad_intelligence",
+            "competitor_monitor",
+            "competitor_reaction_simulator",
+            "competitor_social",
+            # Strategy + Ops
+            "campaign_strategy", "dropshipping",
+            "gift_card", "returns_management",
+            "warranty", "upsell",
+        }
+        missing = expected - names
+        assert not missing, (
+            f"analytics batch missing: {missing}"
+        )
+
+    def test_registry_at_target_size(self):
+        """Smoke: after all batches, registry has ~85
+        entries covering the operator-merchant surface."""
+        ensure_registered()
+        assert get_registry().count() >= 80
+
     def test_marketing_batch_registered(self):
         """The third batch (marketing / content / ops /
         customer-facing engines) locks in the broader

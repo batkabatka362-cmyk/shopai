@@ -65,6 +65,15 @@ def ensure_registered() -> None:
             exc,
         )
 
+    try:
+        from . import _register_analytics
+        _register_analytics.register_all()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "capability_registry: analytics batch raised: %s",
+            exc,
+        )
+
     _BOOTSTRAPPED = True
 
 
