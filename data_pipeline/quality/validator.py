@@ -214,8 +214,21 @@ class DataQualityPipeline:
                         rule_pass[rule_name] += 1
                     elif rule_name in critical_rules:
                         rec_valid = False
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # A rule function raising (e.g. KeyError on
+                    # missing field, TypeError on bad value) was
+                    # previously treated as ""rule passed"" --
+                    # silently inflating the pass count and
+                    # potentially marking a critical-rule-broken
+                    # record as valid. Log so operators see the
+                    # signal; we still leave the rule's
+                    # pass-count unchanged (status-quo behavior)
+                    # so this PR is a pure visibility addition.
+                    logger.debug(
+                        "validator: rule %s raised on record "
+                        "(treated as not-pass): %s",
+                        rule_name, exc,
+                    )
 
             if rec_valid:
                 valid += 1
