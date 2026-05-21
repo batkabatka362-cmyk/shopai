@@ -44,6 +44,16 @@ class PlanStep:
         default_factory=dict,
     )
 
+    # Composition: when this step receives its primary
+    # input from a PRIOR step in the plan, ``pipe_from``
+    # names the prior step's capability_name, and
+    # ``pipe_as`` names the kwarg this step expects.
+    # The multi-step executor reads both at runtime and
+    # replaces ``suggested_args[pipe_as]`` with the prior
+    # step's result.data. Empty strings = no piping.
+    pipe_from: str = ""
+    pipe_as: str = ""
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "capability_name": self.capability_name,
@@ -55,6 +65,8 @@ class PlanStep:
                 self.composes_with_next,
             ),
             "suggested_args": dict(self.suggested_args),
+            "pipe_from": self.pipe_from,
+            "pipe_as": self.pipe_as,
         }
 
 

@@ -171,6 +171,56 @@ class TestLlmFlag:
         )
 
 
+class TestExecutePiping:
+    """End-to-end composition piping: when a downstream
+    applier's pipe_from points at an upstream peer in the
+    plan, the executor replaces suggested_args[pipe_as]
+    with the upstream step's actual result.data."""
+
+    def test_pipe_replaces_arg_at_runtime(self, cli):
+        """A goal that pulls in a generator + applier pair
+        runs through the executor with the generator's output
+        flowing into the applier's pipe_as kwarg."""
+        # We use the real launch-chain registry. The pair
+        # we exercise: generate_policies + apply_policies
+        # (composes_input='policies').
+        # Mocking: replace both module-level functions so we
+        # don't touch Shopify.
+        captured: dict = {}
+
+        def fake_gen(**kw):
+            return {"REFUND_POLICY": "<p>r</p>"}
+
+        def fake_apply(policies=None, **kw):
+            captured["policies"] = policies
+            captured["other"] = kw
+            return {"applied_count": 1, "results": []}
+
+        with patch(
+            "engines.store_setup.policy_generator."
+            "generate_policies",
+            side_effect=fake_gen,
+        ), patch(
+            "engines.store_setup.policy_applier.apply_policies",
+            side_effect=fake_apply,
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(
+                    goal="policies",
+                    execute=True,
+                    yes=True,
+                    json=True,
+                ),
+            )
+        assert code == 0
+        # apply_policies was called with policies kwarg piped
+        # from the generator's return value
+        assert captured["policies"] == {
+            "REFUND_POLICY": "<p>r</p>",
+        }
+
+
 class TestExecute:
     """--execute runs each plan step via the in-process
     capability executor. Default dry-run; --yes invokes."""

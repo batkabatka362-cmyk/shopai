@@ -336,6 +336,7 @@ def register_all() -> None:
         scopes_used=["write_legal_policies"],
         audit_checks_closed=["legal_policies"],
         composes_with=["generate_policies"],
+        composes_input="policies",
         tags=["launch", "policies", "writer"],
     ))
 
@@ -370,6 +371,7 @@ def register_all() -> None:
         scopes_used=["write_content"],
         audit_checks_closed=["standard_pages"],
         composes_with=["generate_pages"],
+        composes_input="pages",
         tags=["launch", "pages", "writer"],
     ))
 
@@ -408,6 +410,7 @@ def register_all() -> None:
         scopes_used=["write_discounts"],
         audit_checks_closed=["active_discounts"],
         composes_with=["generate_welcome_discount"],
+        composes_input="params",
         tags=["launch", "discount", "writer"],
     ))
 
@@ -443,6 +446,7 @@ def register_all() -> None:
         scopes_used=["write_products"],
         audit_checks_closed=["curated_collections"],
         composes_with=["generate_starter_collections"],
+        composes_input="specs",
         tags=["launch", "collections", "writer"],
     ))
 
@@ -485,6 +489,7 @@ def register_all() -> None:
         scopes_used=["write_products"],
         audit_checks_closed=["active_products"],
         composes_with=["generate_starter_products"],
+        composes_input="specs",
         tags=["launch", "products", "writer", "seeder"],
         cli_commands=["shopai store seed-products"],
     ))
@@ -536,6 +541,8 @@ def register_all() -> None:
         ],
         scopes_used=["write_themes"],
         audit_checks_closed=["design_tokens"],
+        composes_with=["store_design_engine"],
+        composes_input="engine_output",
         tags=["launch", "design", "writer"],
         cli_commands=["shopai store design-apply"],
     ))

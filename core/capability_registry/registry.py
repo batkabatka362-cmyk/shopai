@@ -115,6 +115,22 @@ class Capability:
     # An LLM planner can use this to suggest a one-liner.
     cli_commands: list[str] = field(default_factory=list)
 
+    # Composition contract: when this capability is a
+    # downstream applier of an upstream peer (generator /
+    # engine), ``composes_input`` names the kwarg that
+    # receives the upstream's output. The multi-step
+    # executor reads this + replaces the corresponding
+    # suggested_args entry with the prior step's result.
+    #
+    # Example:
+    #   apply_policies.composes_input = "policies"
+    #   apply_design.composes_input = "engine_output"
+    #
+    # Empty string ("") means no piping -- the step runs
+    # independently with its example_input or operator-
+    # supplied args.
+    composes_input: str = ""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dict.
 
@@ -136,6 +152,7 @@ class Capability:
             "example_input": dict(self.example_input),
             "tags": list(self.tags),
             "cli_commands": list(self.cli_commands),
+            "composes_input": self.composes_input,
         }
 
 

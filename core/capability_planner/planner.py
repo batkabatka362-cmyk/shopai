@@ -457,12 +457,21 @@ class Planner:
         )
 
     def _finalise(self, plan: Plan) -> None:
-        """Compute audit_coverage + cli_sequence from steps.
+        """Compute audit_coverage + cli_sequence + piping
+        wire-up from the plan's step list.
 
         ``cli_sequence`` deduplicates: an orchestrator
         CLI claims the steps it covers, so per-step CLIs
         whose capabilities are in the orchestrator's
         composes_with are dropped.
+
+        Composition piping: when step N declares
+        ``composes_input`` in its registry record AND step
+        N-1 (or earlier) is in its ``composes_with`` set,
+        set ``step.pipe_from = prior_name`` and
+        ``step.pipe_as = composes_input``. The multi-step
+        executor reads these at runtime and pipes the
+        prior step's result.data into step N's kwargs.
         """
         coverage: list[str] = []
         for s in plan.steps:
@@ -470,6 +479,24 @@ class Planner:
                 if k not in coverage:
                     coverage.append(k)
         plan.audit_coverage = coverage
+
+        # Composition piping wire-up. Scan each step
+        # against EARLIER steps; pipe from the latest peer
+        # that matches.
+        for idx, step in enumerate(plan.steps):
+            cap = self._registry.get(step.capability_name)
+            if cap is None or not cap.composes_input:
+                continue
+            # Find an earlier step that is in this
+            # capability's composes_with set.
+            for prior in reversed(plan.steps[:idx]):
+                if (
+                    prior.capability_name
+                    in cap.composes_with
+                ):
+                    step.pipe_from = prior.capability_name
+                    step.pipe_as = cap.composes_input
+                    break
 
         # Build CLI sequence with orchestrator dedup
         cmds: list[str] = []

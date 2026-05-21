@@ -11251,10 +11251,27 @@ def _run_plan_multi_step(
     executor = CapabilityExecutor()
     steps_out: list[dict] = []
     overall_ok = True
+    # Map capability_name -> last successful result.data for
+    # composition piping.
+    prior_results: dict = {}
 
     with scope:
         for step in plan.steps:
             args_dict = dict(step.suggested_args or {})
+            # Composition piping: replace the kwarg named in
+            # step.pipe_as with the actual output of the
+            # capability named in step.pipe_from -- when
+            # that prior step succeeded and we're in --yes
+            # mode (dry-run has no real prior data).
+            if (
+                yes
+                and step.pipe_from
+                and step.pipe_as
+                and step.pipe_from in prior_results
+            ):
+                args_dict[step.pipe_as] = prior_results[
+                    step.pipe_from
+                ]
             if yes:
                 result = executor.execute(
                     step.capability_name, args_dict,
@@ -11264,6 +11281,12 @@ def _run_plan_multi_step(
                     step.capability_name, args_dict,
                 )
             steps_out.append(result.to_dict())
+            # Track successful step outputs for downstream
+            # piping.
+            if result.ok and result.data is not None:
+                prior_results[
+                    step.capability_name
+                ] = result.data
             # CLI handler refusals don't break the chain --
             # they're informational. Real failures (raise,
             # bad args) do stop the chain.

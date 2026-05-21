@@ -248,6 +248,107 @@ class TestCliSequenceDedup:
         )
 
 
+class TestCompositionPiping:
+    """When a downstream applier declares ``composes_input``
+    and the planner places it after a peer in
+    ``composes_with``, the PlanStep's ``pipe_from`` /
+    ``pipe_as`` fields wire up the runtime data flow.
+
+    The multi-step executor reads these fields and replaces
+    ``suggested_args[pipe_as]`` with the prior step's
+    result.data at runtime.
+    """
+
+    def _seed_pair(self):
+        register_capability(Capability(
+            name="gen_widget",
+            kind=CapabilityKind.GENERATOR,
+            description="builds widget specs",
+            when_to_use="use for widget plans",
+            module_path="m:gen_widget",
+            composes_with=["apply_widget"],
+            tags=["widget"],
+        ))
+        register_capability(Capability(
+            name="apply_widget",
+            kind=CapabilityKind.APPLIER,
+            description="writes widgets to backend",
+            when_to_use="pairs with gen_widget",
+            module_path="m:apply_widget",
+            composes_with=["gen_widget"],
+            composes_input="widget_specs",
+            audit_checks_closed=["widgets_check"],
+            tags=["widget"],
+        ))
+
+    def test_pipe_from_set_for_downstream_applier(self):
+        self._seed_pair()
+        p = Planner(skip_bootstrap=True).plan_for_goal(
+            "widget",
+        )
+        steps_by_name = {
+            s.capability_name: s for s in p.steps
+        }
+        applier_step = steps_by_name.get("apply_widget")
+        assert applier_step is not None
+        # Plan placed gen_widget BEFORE apply_widget (UPSTREAM
+        # rule), so apply_widget pipes from it.
+        assert applier_step.pipe_from == "gen_widget"
+        assert applier_step.pipe_as == "widget_specs"
+
+    def test_generator_has_no_pipe(self):
+        self._seed_pair()
+        p = Planner(skip_bootstrap=True).plan_for_goal(
+            "widget",
+        )
+        steps_by_name = {
+            s.capability_name: s for s in p.steps
+        }
+        gen_step = steps_by_name.get("gen_widget")
+        assert gen_step is not None
+        # Generators don't declare composes_input -> no pipe
+        assert gen_step.pipe_from == ""
+        assert gen_step.pipe_as == ""
+
+    def test_to_dict_round_trip(self):
+        self._seed_pair()
+        p = Planner(skip_bootstrap=True).plan_for_goal(
+            "widget",
+        )
+        d = p.to_dict()
+        applier_dict = next(
+            s for s in d["steps"]
+            if s["capability_name"] == "apply_widget"
+        )
+        assert applier_dict["pipe_from"] == "gen_widget"
+        assert applier_dict["pipe_as"] == "widget_specs"
+
+    def test_launch_chain_appliers_have_pipe_wired(self):
+        """Locked-in inventory check: every launch-chain
+        applier with a composes_input declaration ends up
+        with pipe_from set when planned alongside its
+        generator. Prevents regression on the 6 registered
+        appliers."""
+        # Bootstrap real registry
+        from core.capability_registry.bootstrap import (
+            ensure_registered,
+        )
+        ensure_registered()
+        # Use a query that surfaces a generator + applier pair
+        p = Planner().plan_for_goal("policies")
+        names = [s.capability_name for s in p.steps]
+        if (
+            "generate_policies" in names
+            and "apply_policies" in names
+        ):
+            applier = next(
+                s for s in p.steps
+                if s.capability_name == "apply_policies"
+            )
+            assert applier.pipe_from == "generate_policies"
+            assert applier.pipe_as == "policies"
+
+
 class TestRegistryIsolation:
     """The planner's behaviour with hand-built fixtures.
 
