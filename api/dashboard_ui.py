@@ -170,8 +170,13 @@ class DashboardUI(BaseHTTPRequestHandler):
                                 for r in mi.get_rules()]
             result["strategies"] = [{"category": s.get("category","")}
                                      for s in mi.get_strategies()]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Without this log, a dashboard with empty memory /
+            # rules / strategies sections is indistinguishable
+            # from a healthy first-run with no data.
+            logger.debug(
+                "dashboard memory probe failed: %s", exc,
+            )
         try:
             from core.data.architecture import get_data_architecture
             da = get_data_architecture()
@@ -179,8 +184,10 @@ class DashboardUI(BaseHTTPRequestHandler):
             result["data"] = {"total_records": ds.get("total_records",0),
                                "domains": len(ds.get("domains",{})),
                                "result_rate": ds.get("result_rate",0)}
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "dashboard data probe failed: %s", exc,
+            )
         try:
             from core.system.alerts import get_alert_system
             result["alerts"] = get_alert_system().get_recent(5)
