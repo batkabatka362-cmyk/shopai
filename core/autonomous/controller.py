@@ -232,6 +232,68 @@ def _detect_regressions() -> dict[str, Any]:
     return {"regressions": rows, "count": len(rows)}
 
 
+def _planner_consultation_phase(
+    sid: str,
+) -> dict[str, Any]:
+    """Read-only Phase 2c: capability planner consultation
+    for the autonomous cycle.
+
+    Runs ``audit_store(store_id=sid)``, extracts failing
+    audit checks, routes them through
+    ``plan_for_audit_gaps()``. Returns a compact dict for
+    inclusion in ``cycle_result["phases"]["planner"]``.
+
+    Lifted to a module-level helper so tests can exercise
+    it without spinning up the full controller -- mirrors
+    the pattern used by ``_compute_fleet_health``,
+    ``_detect_regressions``, etc.
+
+    Failure-safe: any raise is converted to a dict with an
+    ``error`` key so the inline call site doesn't have to
+    branch.
+    """
+    try:
+        from engines.store_setup.launch_audit import (
+            audit_store,
+        )
+        from core.capability_planner import (
+            plan_for_audit_gaps,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"import_failed: {exc}"}
+
+    try:
+        audit = audit_store(store_id=sid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"audit_failed: {exc}"}
+
+    failing = [
+        c.get("key", "")
+        for c in (audit.get("checks") or [])
+        if not c.get("ok")
+    ]
+    try:
+        plan = plan_for_audit_gaps(failing)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"planner_failed: {exc}"}
+
+    return {
+        "ready_to_launch": bool(
+            audit.get("ready_to_launch"),
+        ),
+        "completion_pct": int(
+            audit.get("completion_pct", 0),
+        ),
+        "next_action": (
+            audit.get("next_action") or ""
+        ),
+        "plan_steps": [
+            s.capability_name for s in plan.steps
+        ],
+        "cli_sequence": plan.cli_sequence,
+    }
+
+
 def _bootstrap_brain_stack() -> bool:
     """Attach goal-feedback handlers to the approval-queue hooks.
 
@@ -1072,6 +1134,21 @@ class AutonomousController:
                     "AutonomousController: layer dispatch raised: %s", exc,
                 )
                 cycle_result["phases"]["layers"] = {"error": str(exc)[:80]}
+
+        # Phase 2c: PLANNER CONSULTATION — capability planner
+        # reads the audit's failing checks + emits a structured
+        # plan for this store. Read-only / observability layer
+        # added by the substrate lane (see project-capability-
+        # planner). Surfaces the recommended next action in
+        # cycle_result without affecting downstream phases --
+        # operators can compare what the planner recommends vs
+        # what the controller's DECIDE phase actually proposes.
+        try:
+            cycle_result["phases"]["planner"] = (
+                _planner_consultation_phase(sid)
+            )
+        except Exception as exc:  # noqa: BLE001
+            _record("planner_consultation", exc)
 
         # Phase 3: DECIDE — Convert brain decisions + analysis to actions
         brain_decisions = cycle_result.get("_brain_decisions", [])
