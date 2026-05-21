@@ -308,6 +308,7 @@ def audit_store(
         "completion_pct": completion_pct,
         "missing_summary": missing_summary,
         "next_action": next_action_hint(checks),
+        "plan": _build_audit_plan(checks),
     }
 
     _record_audit(
@@ -763,3 +764,44 @@ def _record_audit(
         logger.debug(
             "launch_audit record_writeback raised: %s", exc,
         )
+
+
+def _build_audit_plan(
+    checks: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Compute a structured plan for the audit's failing
+    checks via the capability planner.
+
+    The plan complements the simpler ``next_action`` string:
+    JSON consumers (daily-brief, LLM agents, autonomous loop)
+    get a structured sequence with per-step capability names,
+    CLI commands, and audit_coverage.
+
+    Returns None when:
+      - There are no failing checks (audit passes).
+      - The planner module isn't available (degrades to the
+        ``next_action`` string only).
+      - The planner raises -- failure is recorded silently;
+        the audit's primary output is the checks list, not
+        the plan.
+
+    Pattern: this function imports lazily so the audit
+    module doesn't carry the planner as a hard dependency.
+    """
+    failing_keys = [
+        c.get("key", "") for c in checks
+        if not c.get("ok") and c.get("key")
+    ]
+    if not failing_keys:
+        return None
+    try:
+        from core.capability_planner import (
+            plan_for_audit_gaps,
+        )
+        plan = plan_for_audit_gaps(failing_keys)
+        return plan.to_dict()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "launch_audit plan build raised: %s", exc,
+        )
+        return None

@@ -963,6 +963,57 @@ class TestStoreIdPropagation:
         assert params["store_id"] == "store-a"
 
 
+class TestAuditPlan:
+    """The audit result carries a structured ``plan`` field
+    derived from the capability planner. This complements
+    the simpler ``next_action`` string for JSON consumers
+    (daily-brief, LLM agents) that need step-by-step
+    sequences."""
+
+    def test_passing_audit_plan_is_none(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert result["ready_to_launch"] is True
+        # No failing checks -> no plan
+        assert result["plan"] is None
+
+    def test_failing_audit_plan_carries_steps(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_pages"] = _ok({"pages": []})
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert "plan" in result
+        # Plan exists, has steps
+        plan = result["plan"]
+        assert plan is not None
+        assert isinstance(plan.get("steps"), list)
+        assert plan.get("goal", "").startswith(
+            "close audit gaps:"
+        )
+        # CLI sequence should include something runnable
+        assert isinstance(plan.get("cli_sequence"), list)
+        # The recommended action should reference shopai launch
+        # (since launch_store closes the missing pages gap)
+        names = {
+            s.get("capability_name") for s in plan["steps"]
+        }
+        assert "launch_store" in names
+
+
 class TestNextActionHint:
     """The audit engine exposes the smart Next-action
     recommendation as part of the result dict so callers
