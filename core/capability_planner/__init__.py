@@ -51,6 +51,8 @@ from .llm_planner import LLMPlanner, plan_for_goal_with_llm
 from .plan_history import (
     PlanEvent,
     clear as clear_plan_history,
+    goal_breakdown,
+    outcome_breakdown,
     record_outcome,
     record_plan_invocation,
     recent_history,
@@ -68,5 +70,7 @@ __all__ = [
     "record_plan_invocation",
     "record_outcome",
     "recent_history",
+    "outcome_breakdown",
+    "goal_breakdown",
     "clear_plan_history",
 ]

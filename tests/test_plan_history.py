@@ -180,6 +180,136 @@ class TestRecentHistoryWindow:
         assert len(recent) == 1
 
 
+class TestOutcomeBreakdown:
+    """Aggregate outcomes across the history window. Powers
+    operator-facing 'success rate' summaries + future
+    planner learning."""
+
+    def test_breakdown_counts_outcomes(self, temp_history):
+        # Three executed invocations with different outcomes
+        e1 = ph.record_plan_invocation(
+            goal="g1", plan={}, executed=True,
+        )
+        ph.record_outcome(e1, "success")
+        e2 = ph.record_plan_invocation(
+            goal="g2", plan={}, executed=True,
+        )
+        ph.record_outcome(e2, "partial")
+        e3 = ph.record_plan_invocation(
+            goal="g3", plan={}, executed=True,
+        )
+        ph.record_outcome(e3, "success")
+        # One dry-run
+        ph.record_plan_invocation(
+            goal="g4", plan={}, executed=False,
+            outcome="skipped",
+        )
+        b = ph.outcome_breakdown(since_seconds=3600)
+        assert b["total"] == 4
+        assert b["executed_total"] == 3
+        assert b["by_outcome"]["success"] == 2
+        assert b["by_outcome"]["partial"] == 1
+        assert b["by_outcome"]["skipped"] == 1
+        # 2 success / 3 executed = ~66.7%
+        assert abs(b["success_rate"] - 0.667) < 0.01
+
+    def test_breakdown_filter_by_goal(self, temp_history):
+        ph.record_plan_invocation(
+            goal="mobile design",
+            plan={}, executed=True,
+            outcome="success",
+        )
+        ph.record_plan_invocation(
+            goal="launch store",
+            plan={}, executed=True,
+            outcome="fail",
+        )
+        b = ph.outcome_breakdown(
+            since_seconds=3600, goal="mobile",
+        )
+        # Only the "mobile design" event matches
+        assert b["total"] == 1
+        assert b["by_outcome"]["success"] == 1
+
+    def test_breakdown_filter_by_capability(
+        self, temp_history,
+    ):
+        # Two plans, only one uses store_design_engine
+        ph.record_plan_invocation(
+            goal="g1",
+            plan={
+                "steps": [
+                    {"capability_name": "store_design_engine"},
+                    {"capability_name": "apply_design"},
+                ],
+            },
+            executed=True,
+            outcome="success",
+        )
+        ph.record_plan_invocation(
+            goal="g2",
+            plan={
+                "steps": [
+                    {"capability_name": "launch_store"},
+                ],
+            },
+            executed=True,
+            outcome="success",
+        )
+        b = ph.outcome_breakdown(
+            since_seconds=3600,
+            capability="store_design_engine",
+        )
+        assert b["total"] == 1
+
+
+class TestGoalBreakdown:
+
+    def test_per_goal_aggregates(self, temp_history):
+        # 3x "launch store" all successful
+        for _ in range(3):
+            eid = ph.record_plan_invocation(
+                goal="launch store",
+                plan={}, executed=True,
+            )
+            ph.record_outcome(eid, "success")
+        # 2x "mobile design", one success + one partial
+        eid = ph.record_plan_invocation(
+            goal="mobile design",
+            plan={}, executed=True,
+        )
+        ph.record_outcome(eid, "success")
+        eid = ph.record_plan_invocation(
+            goal="mobile design",
+            plan={}, executed=True,
+        )
+        ph.record_outcome(eid, "partial")
+
+        rows = ph.goal_breakdown(since_seconds=3600)
+        # Sorted by count desc -> launch store first
+        assert rows[0]["goal"] == "launch store"
+        assert rows[0]["count"] == 3
+        assert rows[0]["success_rate"] == 1.0
+        # mobile design: 1/2 success
+        mobile = next(
+            r for r in rows if r["goal"] == "mobile design"
+        )
+        assert mobile["count"] == 2
+        assert mobile["success_rate"] == 0.5
+
+    def test_top_n_limit(self, temp_history):
+        for i in range(5):
+            ph.record_plan_invocation(
+                goal=f"goal_{i}",
+                plan={}, executed=True,
+                outcome="success",
+            )
+        rows = ph.goal_breakdown(
+            since_seconds=3600, top_n=3,
+        )
+        assert len(rows) == 3
+
+
 class TestFailOpen:
 
     def test_missing_file_returns_empty(

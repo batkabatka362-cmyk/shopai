@@ -275,6 +275,131 @@ def recent_history(
     return recent
 
 
+def outcome_breakdown(
+    *,
+    since_seconds: int = 86400 * 7,
+    goal: str | None = None,
+    capability: str | None = None,
+) -> dict[str, Any]:
+    """Aggregate outcome counts over the history window.
+
+    Filters:
+      - ``goal`` -- exact goal phrase match (case-sensitive
+        substring). None = no filter.
+      - ``capability`` -- only events whose plan.steps
+        include a step with this capability_name. None = no
+        filter.
+
+    Returns a dict with:
+      - ``total`` -- number of matched events
+      - ``executed_total`` -- subset with executed=True
+      - ``by_outcome`` -- ``{outcome: count}``
+      - ``success_rate`` -- success / executed_total (0.0
+        when executed_total == 0)
+
+    The learning loop's primary observability primitive: it
+    tells the planner / operator "this goal succeeds N% of
+    the time" or "capability X appears in plans that
+    succeed M% of the time".
+    """
+    events = recent_history(since_seconds=since_seconds)
+    if goal:
+        goal_l = goal.lower()
+        events = [
+            e for e in events
+            if goal_l in (e.get("goal", "") or "").lower()
+        ]
+    if capability:
+        cap_name = capability
+        filtered = []
+        for e in events:
+            plan = e.get("plan") or {}
+            steps = plan.get("steps") or []
+            for s in steps:
+                if (
+                    isinstance(s, dict)
+                    and s.get("capability_name")
+                    == cap_name
+                ):
+                    filtered.append(e)
+                    break
+        events = filtered
+
+    by_outcome: dict[str, int] = {}
+    executed_total = 0
+    for e in events:
+        out = (e.get("outcome") or "(none)").strip() or (
+            "(none)"
+        )
+        by_outcome[out] = by_outcome.get(out, 0) + 1
+        if e.get("executed"):
+            executed_total += 1
+
+    success_count = by_outcome.get("success", 0)
+    success_rate = (
+        success_count / executed_total
+        if executed_total > 0 else 0.0
+    )
+
+    return {
+        "total": len(events),
+        "executed_total": executed_total,
+        "by_outcome": dict(sorted(
+            by_outcome.items(),
+            key=lambda kv: (-kv[1], kv[0]),
+        )),
+        "success_rate": round(success_rate, 3),
+    }
+
+
+def goal_breakdown(
+    *,
+    since_seconds: int = 86400 * 7,
+    top_n: int = 10,
+) -> list[dict[str, Any]]:
+    """Per-goal aggregate: which goals are most frequently
+    planned, how often they succeed.
+
+    Returns a list of ``{goal, count, success, success_rate}``
+    dicts sorted by count desc. Top ``top_n`` returned.
+
+    Useful for the operator dashboard: "which strategic
+    goals am I planning most often + which actually work?"
+    """
+    events = recent_history(since_seconds=since_seconds)
+    per_goal: dict[str, dict[str, int]] = {}
+    for e in events:
+        g = (e.get("goal") or "").strip()
+        if not g:
+            continue
+        entry = per_goal.setdefault(g, {
+            "count": 0, "success": 0, "executed": 0,
+        })
+        entry["count"] += 1
+        if e.get("executed"):
+            entry["executed"] += 1
+        if e.get("outcome") == "success":
+            entry["success"] += 1
+    rows = []
+    for g, stats in per_goal.items():
+        executed = stats["executed"]
+        rate = (
+            stats["success"] / executed
+            if executed > 0 else 0.0
+        )
+        rows.append({
+            "goal": g,
+            "count": stats["count"],
+            "executed": executed,
+            "success": stats["success"],
+            "success_rate": round(rate, 3),
+        })
+    rows.sort(
+        key=lambda r: (-r["count"], r["goal"]),
+    )
+    return rows[:max(1, int(top_n))]
+
+
 def clear() -> None:
     """Wipe the history. Operator escape hatch / test
     cleanup."""

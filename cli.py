@@ -10936,7 +10936,11 @@ def _cmd_plan_history(args) -> None:
             86400 * 7),
     )
     try:
-        from core.capability_planner import recent_history
+        from core.capability_planner import (
+            goal_breakdown,
+            outcome_breakdown,
+            recent_history,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "plan history: import failed: %s", exc,
@@ -10952,8 +10956,15 @@ def _cmd_plan_history(args) -> None:
         return
 
     events = recent_history(since_seconds=window)
+    breakdown = outcome_breakdown(since_seconds=window)
+    by_goal = goal_breakdown(since_seconds=window, top_n=5)
+
     if as_json:
-        print(json.dumps(events, indent=2, default=str))
+        print(json.dumps({
+            "events": events,
+            "outcome_breakdown": breakdown,
+            "top_goals": by_goal,
+        }, indent=2, default=str))
         return
 
     if not events:
@@ -10969,7 +10980,9 @@ def _cmd_plan_history(args) -> None:
     )
     print()
     import time as _t
-    for e in events:
+    # Show only the 20 most-recent events in the text view;
+    # the JSON --json path carries everything.
+    for e in events[:20]:
         ts = float(e.get("timestamp", 0) or 0)
         age_h = max(0, int((_t.time() - ts) / 3600))
         outcome = e.get("outcome") or "(no outcome)"
@@ -10984,6 +10997,32 @@ def _cmd_plan_history(args) -> None:
         notes = e.get("notes")
         if notes:
             print(f"          notes: {notes}")
+    if len(events) > 20:
+        print(f"  ... +{len(events) - 20} more")
+
+    # Aggregate footer
+    print()
+    print(
+        f"Outcomes ({breakdown['executed_total']} "
+        f"executed): "
+        + ", ".join(
+            f"{k}={v}"
+            for k, v in breakdown["by_outcome"].items()
+        )
+    )
+    if breakdown["executed_total"] > 0:
+        pct = breakdown["success_rate"] * 100
+        print(f"Success rate: {pct:.1f}%")
+    if by_goal:
+        print()
+        print("Top goals (by frequency):")
+        for r in by_goal:
+            rate_pct = r["success_rate"] * 100
+            print(
+                f"  {r['count']:>3}x  "
+                f"({rate_pct:>5.1f}% success)  "
+                f"{r['goal']}"
+            )
 
 
 def _cmd_plan(args) -> None:

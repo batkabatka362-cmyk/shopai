@@ -143,6 +143,15 @@ class TestHistory:
         with patch(
             "core.capability_planner.recent_history",
             return_value=[],
+        ), patch(
+            "core.capability_planner.outcome_breakdown",
+            return_value={
+                "total": 0, "executed_total": 0,
+                "by_outcome": {}, "success_rate": 0.0,
+            },
+        ), patch(
+            "core.capability_planner.goal_breakdown",
+            return_value=[],
         ):
             out, code = _capture(
                 cli._cmd_plan, _ns(history=True),
@@ -172,9 +181,25 @@ class TestHistory:
                 "notes": "",
             },
         ]
+        breakdown = {
+            "total": 2, "executed_total": 1,
+            "by_outcome": {"success": 1, "skipped": 1},
+            "success_rate": 1.0,
+        }
+        goals = [
+            {"goal": "mobile design", "count": 1,
+             "success": 1, "executed": 1,
+             "success_rate": 1.0},
+        ]
         with patch(
             "core.capability_planner.recent_history",
             return_value=events,
+        ), patch(
+            "core.capability_planner.outcome_breakdown",
+            return_value=breakdown,
+        ), patch(
+            "core.capability_planner.goal_breakdown",
+            return_value=goals,
         ):
             out, code = _capture(
                 cli._cmd_plan, _ns(history=True),
@@ -186,6 +211,10 @@ class TestHistory:
         assert "success" in out
         assert "skipped" in out
         assert "closed 3 of 5 gaps" in out
+        # Aggregate footer
+        assert "Outcomes (1 executed)" in out
+        assert "Success rate: 100.0%" in out
+        assert "Top goals" in out
 
     def test_history_json_passthrough(self, cli):
         events = [{
@@ -194,9 +223,24 @@ class TestHistory:
             "executed": True, "outcome": "success",
             "notes": "",
         }]
+        breakdown = {
+            "total": 1, "executed_total": 1,
+            "by_outcome": {"success": 1},
+            "success_rate": 1.0,
+        }
+        goals = [{
+            "goal": "g", "count": 1, "executed": 1,
+            "success": 1, "success_rate": 1.0,
+        }]
         with patch(
             "core.capability_planner.recent_history",
             return_value=events,
+        ), patch(
+            "core.capability_planner.outcome_breakdown",
+            return_value=breakdown,
+        ), patch(
+            "core.capability_planner.goal_breakdown",
+            return_value=goals,
         ):
             out, code = _capture(
                 cli._cmd_plan,
@@ -204,7 +248,9 @@ class TestHistory:
             )
         assert code == 0
         data = json.loads(out)
-        assert data == events
+        assert data["events"] == events
+        assert data["outcome_breakdown"] == breakdown
+        assert data["top_goals"] == goals
 
 
 class TestLlmFlag:
