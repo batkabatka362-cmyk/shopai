@@ -624,6 +624,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw brief as JSON.",
     )
 
+    # ── Fleet plan -- empire-scale planning surface ─────────
+    fleet_plan_p = sub.add_parser(
+        "fleet-plan",
+        help=(
+            "Run the capability planner across the entire "
+            "store fleet -- per-store plan based on each "
+            "store's audit gaps. The 'what should I do "
+            "across all my stores?' command for the "
+            "20-store empire vision."
+        ),
+    )
+    fleet_plan_p.add_argument(
+        "goal", nargs="?", default="",
+        help=(
+            "Free-form goal phrase. When omitted, runs "
+            "audit-driven planning per store (planner "
+            "consumes each store's failing audit checks)."
+        ),
+    )
+    fleet_plan_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the fleet plan as JSON.",
+    )
+
     # ── Transfer (cross-store) commands ──────────────────────
     transfer_p = sub.add_parser(
         "transfer",
@@ -10995,6 +11019,137 @@ def _cmd_plan(args) -> None:
             print(f"  - {n}")
 
 
+def _cmd_fleet_plan(args) -> None:
+    """Empire-scale planner. For each store in the fleet,
+    runs the planner -- either with the supplied goal
+    phrase, or in audit-driven mode (consumes each store's
+    failing audit checks).
+
+    Output: per-store plan + a fleet-level summary
+    (how many stores ready, how many need each kind of
+    action).
+
+    Read-only -- doesn't execute. Operators wanting to
+    execute per-store should use ``shopai plan <goal>
+    --execute --store <id>`` after reviewing the fleet
+    plan.
+    """
+    as_json = bool(getattr(args, "json", False))
+    goal = (getattr(args, "goal", "") or "").strip()
+
+    try:
+        from core.capability_planner import (
+            plan_for_audit_gaps,
+            plan_for_goal,
+        )
+        from core.context import active_store
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "fleet-plan: import failed: %s", exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "planner_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"fleet-plan unavailable: {exc}")
+        return
+
+    sm = _get_store_manager()
+    stores = sm.list_stores() or []
+
+    per_store: list[dict] = []
+    for s in stores:
+        sid = s.get("store_id") or ""
+        if not sid:
+            continue
+        plan: object | None = None
+        try:
+            with active_store(sid):
+                if goal:
+                    plan = plan_for_goal(goal)
+                else:
+                    # Audit-driven: consume this store's
+                    # failing audit checks.
+                    from engines.store_setup.launch_audit \
+                        import audit_store
+                    audit = audit_store(store_id=sid)
+                    failing = [
+                        c.get("key", "")
+                        for c in (audit.get("checks") or [])
+                        if not c.get("ok")
+                    ]
+                    plan = plan_for_audit_gaps(failing)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "fleet-plan: store %s raised: %s", sid, exc,
+            )
+            per_store.append({
+                "store_id": sid,
+                "error": str(exc),
+                "plan": None,
+            })
+            continue
+        per_store.append({
+            "store_id": sid,
+            "shop_url": s.get("shop_url", ""),
+            "niche": s.get("niche") or None,
+            "plan": plan.to_dict() if plan else None,
+        })
+
+    # Fleet rollup
+    needs_action = [
+        p for p in per_store
+        if p.get("plan") and p["plan"].get("steps")
+    ]
+    rollup = {
+        "stores_total": len(per_store),
+        "stores_with_plan": len(needs_action),
+        "stores_clean": len([
+            p for p in per_store
+            if p.get("plan") and not p["plan"].get("steps")
+        ]),
+        "stores_errored": len([
+            p for p in per_store if p.get("error")
+        ]),
+    }
+
+    if as_json:
+        print(json.dumps({
+            "goal": goal or "(audit-driven)",
+            "rollup": rollup,
+            "stores": per_store,
+        }, indent=2, default=str))
+        return
+
+    # Text view
+    label = goal or "(audit-driven)"
+    print(f"Fleet plan -- goal: {label}")
+    print(
+        f"  Stores: {rollup['stores_total']}  "
+        f"with-plan={rollup['stores_with_plan']}  "
+        f"clean={rollup['stores_clean']}  "
+        f"errored={rollup['stores_errored']}"
+    )
+    print()
+    for p in per_store:
+        sid = p.get("store_id", "?")
+        if p.get("error"):
+            print(f"  {sid}: ERROR ({p['error']})")
+            continue
+        plan_d = p.get("plan") or {}
+        steps = plan_d.get("steps") or []
+        cli_seq = plan_d.get("cli_sequence") or []
+        if not steps:
+            print(f"  {sid}: clean")
+            continue
+        print(f"  {sid}: {len(steps)} step(s)")
+        for cmd in cli_seq[:2]:
+            print(f"    $ {cmd}")
+
+
 def _run_plan_multi_step(
     plan, *, yes: bool, as_json: bool,
     store_id: str | None = None,
@@ -19920,6 +20075,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "plan":
         _cmd_plan(args)
+        return
+
+    if args.command == "fleet-plan":
+        _cmd_fleet_plan(args)
         return
 
     if args.command == "launch":
