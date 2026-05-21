@@ -4686,6 +4686,37 @@ def _cmd_daily_brief(args) -> None:
                 "raised: %s", exc,
             )
 
+    # ── Plan-history aggregate (always rendered when
+    #     plan_history has invocations in the window) ─────
+    plan_history_summary: dict[str, Any] = {
+        "events_in_window": 0,
+        "outcome_breakdown": None,
+        "top_goals": [],
+    }
+    try:
+        from core.capability_planner import (
+            goal_breakdown,
+            outcome_breakdown,
+            recent_history,
+        )
+        ph_window = window_hours * 3600
+        events = recent_history(since_seconds=ph_window)
+        if events:
+            plan_history_summary = {
+                "events_in_window": len(events),
+                "outcome_breakdown": outcome_breakdown(
+                    since_seconds=ph_window,
+                ),
+                "top_goals": goal_breakdown(
+                    since_seconds=ph_window, top_n=3,
+                ),
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief plan_history section raised: %s",
+            exc,
+        )
+
     # ── Totals ─────────────────────────────────────────────
     totals = {
         "stores": len(store_rows),
@@ -4722,6 +4753,7 @@ def _cmd_daily_brief(args) -> None:
             "quarantine": quarantine_summary,
             "fleet_health": fleet_health,
             "launch_readiness": launch_readiness,
+            "plan_history": plan_history_summary,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -4890,6 +4922,38 @@ def _cmd_daily_brief(args) -> None:
                 if cli_seq:
                     for cmd in cli_seq[:2]:
                         print(f"    $ {cmd}")
+        print()
+
+    # Plan-history aggregate -- compounding learning loop
+    # signal for the operator's morning brief.
+    if plan_history_summary["events_in_window"] > 0:
+        n = plan_history_summary["events_in_window"]
+        ob = plan_history_summary["outcome_breakdown"] or {}
+        ex = ob.get("executed_total", 0)
+        rate = ob.get("success_rate", 0.0) * 100
+        print()
+        print(f"Plan invocations ({n}):")
+        print(
+            f"  Outcomes: "
+            + ", ".join(
+                f"{k}={v}"
+                for k, v in (
+                    ob.get("by_outcome") or {}
+                ).items()
+            )
+        )
+        if ex > 0:
+            print(f"  Success rate: {rate:.1f}%")
+        top_goals = plan_history_summary["top_goals"] or []
+        if top_goals:
+            print("  Top goals:")
+            for r in top_goals:
+                rate_pct = r["success_rate"] * 100
+                print(
+                    f"    {r['count']:>2}x  "
+                    f"({rate_pct:>5.1f}% success)  "
+                    f"{r['goal']}"
+                )
         print()
 
     # Alerts

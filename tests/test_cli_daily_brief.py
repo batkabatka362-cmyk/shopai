@@ -1566,3 +1566,115 @@ class TestLaunchReadiness:
             )
         data = json.loads(out)
         assert data["totals"]["launchable_stores"] == 1
+
+
+class TestPlanHistorySection:
+    """daily-brief carries the plan_history aggregate
+    section -- the cron-able operator surface for the
+    learning loop."""
+
+    def test_empty_history_renders_no_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        # No "Plan invocations" header when history empty
+        assert "Plan invocations" not in out
+
+    def test_history_populates_text_section(self, cli):
+        import time as _time
+        sm = _fake_sm([])
+        events = [{
+            "event_id": "x", "timestamp": _time.time() - 100,
+            "goal": "launch store", "store_id": "store-a",
+            "executed": True, "outcome": "success",
+            "notes": "",
+        }]
+        breakdown = {
+            "total": 1, "executed_total": 1,
+            "by_outcome": {"success": 1},
+            "success_rate": 1.0,
+        }
+        goals = [{
+            "goal": "launch store", "count": 1,
+            "executed": 1, "success": 1,
+            "success_rate": 1.0,
+        }]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner.outcome_breakdown",
+            return_value=breakdown,
+        ), patch(
+            "core.capability_planner.goal_breakdown",
+            return_value=goals,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        # Section header + aggregate values rendered
+        assert "Plan invocations (1)" in out
+        assert "success=1" in out
+        assert "Success rate: 100.0%" in out
+        assert "launch store" in out
+
+    def test_history_json_envelope_carries_summary(
+        self, cli,
+    ):
+        import time as _time
+        sm = _fake_sm([])
+        events = [{
+            "event_id": "x", "timestamp": _time.time() - 100,
+            "goal": "g", "store_id": "s",
+            "executed": True, "outcome": "success",
+            "notes": "",
+        }]
+        breakdown = {
+            "total": 1, "executed_total": 1,
+            "by_outcome": {"success": 1},
+            "success_rate": 1.0,
+        }
+        goals = [{
+            "goal": "g", "count": 1, "executed": 1,
+            "success": 1, "success_rate": 1.0,
+        }]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner.outcome_breakdown",
+            return_value=breakdown,
+        ), patch(
+            "core.capability_planner.goal_breakdown",
+            return_value=goals,
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        # plan_history section in the JSON envelope
+        assert "plan_history" in data
+        assert (
+            data["plan_history"]["events_in_window"] == 1
+        )
+        assert (
+            data["plan_history"]["outcome_breakdown"][
+                "success_rate"
+            ] == 1.0
+        )
