@@ -141,6 +141,51 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    brand_upload_p = store_sub.add_parser(
+        "brand-upload",
+        help=(
+            "WRITER: upload brand assets (logo, favicon, hero, "
+            "og_image) to the store's Shopify Files. At least "
+            "one URL is required. Designed for stand-alone "
+            "operation -- ``launch`` also wires brand upload "
+            "but only when URLs are provided as kwargs."
+        ),
+    )
+    brand_upload_p.add_argument(
+        "store_name",
+        help=(
+            "Display name for the store -- used to build the "
+            "alt text on each uploaded asset."
+        ),
+    )
+    brand_upload_p.add_argument(
+        "--logo-url", default=None,
+        help="Public HTTPS URL for the brand logo.",
+    )
+    brand_upload_p.add_argument(
+        "--favicon-url", default=None,
+        help="Public HTTPS URL for the favicon.",
+    )
+    brand_upload_p.add_argument(
+        "--hero-url", default=None,
+        help="Optional public HTTPS URL for the homepage hero.",
+    )
+    brand_upload_p.add_argument(
+        "--og-image-url", default=None,
+        help="Optional public HTTPS URL for the social-sharing image.",
+    )
+    brand_upload_p.add_argument(
+        "--store-id", default=None,
+        help=(
+            "Per-store recording scope for Pattern Z. Falls "
+            "back to the active-store thread-local when omitted."
+        ),
+    )
+    brand_upload_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     setup_p = store_sub.add_parser(
         "setup",
         help=(
@@ -5915,6 +5960,112 @@ def _cmd_memory_recall(args) -> None:
                 for k, v in components.items()
             )
             print(comp_line)
+
+
+def _cmd_store_brand_upload(args) -> None:
+    """Upload brand assets to the store's Shopify Files.
+
+    Stand-alone operator surface for ``brand_uploader`` (#369).
+    The orchestrator (``shopai launch``) also runs this step
+    when URLs are passed as kwargs, but operators often want
+    to re-upload assets AFTER launch (logo refresh, favicon
+    A/B) without re-running the whole launch flow.
+
+    Exits 0 when the uploader reports ok=True (at minimum
+    logo + favicon uploaded). Exits 1 otherwise. Friendly
+    unavailable on probe failure (matches scopes-live-check
+    convention).
+    """
+    as_json = bool(getattr(args, "json", False))
+
+    # Validate: at least one URL must be given. Otherwise the
+    # uploader would no-op and the operator would be confused.
+    urls = {
+        "logo_url": getattr(args, "logo_url", None),
+        "favicon_url": getattr(args, "favicon_url", None),
+        "hero_url": getattr(args, "hero_url", None),
+        "og_image_url": getattr(args, "og_image_url", None),
+    }
+    if not any(urls.values()):
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "no_urls_provided",
+                "message": (
+                    "Pass at least one of --logo-url / "
+                    "--favicon-url / --hero-url / --og-image-url"
+                ),
+            }, indent=2))
+        else:
+            print(
+                "Pass at least one of --logo-url / --favicon-url "
+                "/ --hero-url / --og-image-url"
+            )
+        sys.exit(1)
+
+    try:
+        from engines.store_setup.brand_uploader import (
+            upload_brand_assets,
+        )
+        result = upload_brand_assets(
+            store_name=args.store_name,
+            logo_url=urls["logo_url"],
+            favicon_url=urls["favicon_url"],
+            hero_url=urls["hero_url"],
+            og_image_url=urls["og_image_url"],
+            store_id=getattr(args, "store_id", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("brand-upload raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "upload_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"brand-upload unavailable: {exc}")
+        return
+
+    ok = bool(result.get("ok", False))
+    uploaded = int(result.get("uploaded_count", 0))
+    missing = result.get("missing_assets") or []
+    error = result.get("error")
+
+    if as_json:
+        print(json.dumps({
+            "ok": ok,
+            "uploaded_count": uploaded,
+            "missing_assets": missing,
+            "files": result.get("files") or [],
+            "error": error,
+        }, indent=2, default=str))
+        if not ok:
+            sys.exit(1)
+        return
+
+    if ok:
+        print(
+            f"Brand assets uploaded -- {uploaded} file(s) "
+            "now live on the storefront."
+        )
+        if missing:
+            print(
+                f"Optional assets not provided: "
+                f"{', '.join(missing)}"
+            )
+        return
+
+    print(
+        f"Brand upload FAILED -- {uploaded} file(s) uploaded "
+        f"but the minimum set (logo + favicon) wasn't "
+        "satisfied."
+    )
+    if error:
+        print(f"  error: {error}")
+    if missing:
+        print(f"  missing: {', '.join(missing)}")
+    sys.exit(1)
 
 
 def _cmd_store_verify(args) -> None:
@@ -17583,6 +17734,7 @@ def main(argv: list[str] | None = None) -> None:
             "remove": _cmd_store_remove,
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
+            "brand-upload": _cmd_store_brand_upload,
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
@@ -17594,7 +17746,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
+                "{add|list|switch|status|connect|remove|configure|design|brand-upload|verify|setup|report|fleet}"
             )
         return
 
