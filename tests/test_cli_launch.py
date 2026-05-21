@@ -140,8 +140,8 @@ class TestReady:
             out, code = _capture(cli._cmd_launch, _ns())
         assert code == 0
         assert "READY TO LAUNCH" in out
-        assert "[OK ] policies" in out
-        assert "[OK ] pages" in out
+        assert "[OK  ] policies" in out
+        assert "[OK  ] pages" in out
         # Mentions the next-step command
         assert "post-launch" in out
 
@@ -249,6 +249,50 @@ class TestKwargPropagation:
         assert kwargs["store_id"] == "store-a"
         assert kwargs["include_legal_notice"] is True
         assert kwargs["include_subscription_policy"] is True
+
+    def test_skipped_steps_render_distinct_mark(self, cli):
+        """A skipped step renders [SKIP] not [OK  ] so the
+        operator can tell "didn't attempt" from "succeeded".
+        """
+        result = {
+            "policies": {"applied_count": 5, "results": []},
+            "pages": {"applied_count": 4, "results": []},
+            "discount": {"applied": True, "code": "W"},
+            "collections": {"applied_count": 4, "results": []},
+            "brand": {"uploaded_count": 0, "files": [],
+                      "skipped": True},
+            "design": {"applied": False, "skipped": True,
+                       "error": "no_main_theme"},
+            "checklist": [
+                {"step": "policies", "ok": True, "applied": 5,
+                 "error": None},
+                {"step": "pages", "ok": True, "applied": 4,
+                 "error": None},
+                {"step": "discount", "ok": True, "applied": 1,
+                 "error": None},
+                {"step": "collections", "ok": True, "applied": 4,
+                 "error": None},
+                {"step": "brand", "ok": True, "applied": 0,
+                 "skipped": True, "error": None},
+                {"step": "design", "ok": True, "applied": 0,
+                 "skipped": True, "error": "no_main_theme"},
+            ],
+            "ready_to_launch": True,
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value=result,
+        ):
+            out, code = _capture(cli._cmd_launch, _ns())
+        assert code == 0
+        assert "[SKIP] brand" in out
+        assert "[SKIP] design" in out
+        # The skip reason renders as 'reason=' (not 'error=')
+        assert "reason=no_main_theme" in out
+        # Mandatory steps still render [OK  ]
+        assert "[OK  ] policies" in out
 
     def test_brand_urls_forwarded(self, cli):
         with patch.object(

@@ -10435,10 +10435,22 @@ def _cmd_launch(args) -> None:
         step = entry.get("step", "?")
         ok = entry.get("ok", False)
         applied = entry.get("applied", 0)
+        skipped = entry.get("skipped", False)
         err = entry.get("error")
-        mark = "OK " if ok else "FAIL"
+        # Skipped steps are "didn't attempt" -- they contribute
+        # ok=True but aren't actual writes. Render distinctly
+        # so operators don't confuse them with successful
+        # applies.
+        if skipped:
+            mark = "SKIP"
+        elif ok:
+            mark = "OK  "
+        else:
+            mark = "FAIL"
         line = f"  [{mark}] {step:<16} applied={applied}"
-        if err:
+        if skipped and err:
+            line += f"  reason={err}"
+        elif err:
             line += f"  error={err}"
         print(line)
     print()
