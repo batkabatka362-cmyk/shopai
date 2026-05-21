@@ -63,6 +63,8 @@ def _ns(**kw):
         as_context=False,
         execute=False,
         yes=False,
+        llm=False,
+        llm_model="qwen2.5",
         json=False,
     )
     defaults.update(kw)
@@ -129,6 +131,44 @@ class TestGoalPath:
         assert "apply_design" in names
         assert isinstance(data["cli_sequence"], list)
         assert isinstance(data["audit_coverage"], list)
+
+
+class TestLlmFlag:
+    """``shopai plan <goal> --llm`` opts in to LLM-driven
+    seed selection. Falls back to deterministic when Ollama
+    isn't reachable -- and the operator-visible output
+    looks identical."""
+
+    def test_llm_unavailable_falls_back_silently(self, cli):
+        # No real Ollama in test env -> LLMPlanner returns
+        # a deterministic plan with a note.
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(goal="mobile design", llm=True),
+        )
+        # Output renders normally; LLM flag is graceful.
+        assert code == 0
+        assert "Plan for: mobile design" in out
+        # Substring match still found store_design_engine
+        assert "store_design_engine" in out
+
+    def test_llm_with_json_carries_note(self, cli):
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(
+                goal="mobile design",
+                llm=True,
+                json=True,
+            ),
+        )
+        assert code == 0
+        data = json.loads(out)
+        # Falls back to deterministic; the note explains
+        # LLM was unavailable (Ollama not running in tests).
+        assert any(
+            "LLM" in n or "llm" in n
+            for n in data["notes"]
+        )
 
 
 class TestExecute:

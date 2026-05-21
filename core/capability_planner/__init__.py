@@ -47,6 +47,7 @@ from __future__ import annotations
 
 from .plan import Plan, PlanStep
 from .planner import Planner, plan_for_goal, plan_for_audit_gaps
+from .llm_planner import LLMPlanner, plan_for_goal_with_llm
 
 __all__ = [
     "Plan",
@@ -54,4 +55,6 @@ __all__ = [
     "Planner",
     "plan_for_goal",
     "plan_for_audit_gaps",
+    "LLMPlanner",
+    "plan_for_goal_with_llm",
 ]

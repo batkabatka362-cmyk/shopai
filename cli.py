@@ -570,6 +570,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan_p.add_argument(
+        "--llm", action="store_true",
+        help=(
+            "Use LLM-driven seed selection (local Ollama) "
+            "instead of the deterministic substring "
+            "matcher. Falls back to deterministic when "
+            "Ollama isn't running. Useful for diffuse "
+            "phrases the substring AND matcher can't "
+            "resolve."
+        ),
+    )
+    plan_p.add_argument(
+        "--llm-model", default="qwen2.5",
+        dest="llm_model",
+        help=(
+            "Ollama model name for LLM planning "
+            "(default: qwen2.5). Used only when --llm is "
+            "set."
+        ),
+    )
+    plan_p.add_argument(
         "--execute", action="store_true",
         help=(
             "Run each step's capability in-process using "
@@ -10951,7 +10971,26 @@ def _cmd_plan(args) -> None:
                 "shopai plan --close-audit-gaps"
             )
             sys.exit(1)
-        plan = plan_for_goal(goal)
+        # LLM-driven seed selection when --llm is set; falls
+        # back to deterministic when Ollama isn't reachable.
+        if bool(getattr(args, "llm", False)):
+            try:
+                from core.capability_planner import (
+                    LLMPlanner,
+                )
+                plan = LLMPlanner(
+                    model=getattr(
+                        args, "llm_model", "qwen2.5",
+                    ),
+                ).plan_for_goal(goal)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "shopai plan --llm: planner raised: %s",
+                    exc,
+                )
+                plan = plan_for_goal(goal)
+        else:
+            plan = plan_for_goal(goal)
 
     if bool(getattr(args, "execute", False)):
         # Resolve store_id for the per-step thread-local
