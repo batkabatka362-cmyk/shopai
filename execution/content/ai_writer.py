@@ -29,14 +29,22 @@ class AIWriter:
             try:
                 from core.system.llm_adapter import get_llm
                 self._llm = get_llm()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "ai_writer llm_adapter init failed: %s "
+                    "(falling back to template-based generation)",
+                    exc,
+                )
         if not self._experience:
             try:
                 from core.ai.experience import get_experience
                 self._experience = get_experience()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "ai_writer experience init failed: %s "
+                    "(generation outcomes won't be recorded)",
+                    exc,
+                )
 
     # ── Product Description ──────────────────────────────────
 
@@ -296,8 +304,11 @@ Return JSON:
                     impact_score=0.5,
                     engine="ai_writer",
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "ai_writer experience.record_decision_outcome "
+                    "failed for %s: %s", product_name, exc,
+                )
 
     def get_stats(self) -> dict[str, Any]:
         return {"total_generated": self._generated_count}
