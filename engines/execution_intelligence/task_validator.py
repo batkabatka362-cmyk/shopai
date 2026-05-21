@@ -281,7 +281,15 @@ def _check_business_rules(
                 else:
                     passed.append("business_rule: price is positive")
             except (ValueError, TypeError):
-                pass
+                # Pre-audit this branch silently dropped the
+                # check. Unparseable price IS worth surfacing --
+                # the caller should know the validation didn't
+                # run. Record as a warning rather than a failed
+                # check (status quo on the pass/fail counts).
+                warnings.append(
+                    f"business_rule: price not a valid number "
+                    f"({price!r})"
+                )
 
     elif action_type == "launch_ad":
         budget = parameters.get("budget")
@@ -295,7 +303,10 @@ def _check_business_rules(
                 else:
                     passed.append("business_rule: ad budget is valid")
             except (ValueError, TypeError):
-                pass
+                warnings.append(
+                    f"business_rule: ad budget not a valid "
+                    f"number ({budget!r})"
+                )
 
         platform = parameters.get("platform", "")
         supported_platforms = {"facebook", "google", "instagram", "tiktok", "pinterest"}
@@ -314,7 +325,10 @@ def _check_business_rules(
                 else:
                     passed.append("business_rule: inventory quantity valid")
             except (ValueError, TypeError):
-                pass
+                warnings.append(
+                    f"business_rule: inventory quantity not "
+                    f"a valid integer ({quantity!r})"
+                )
 
     elif action_type == "create_discount":
         percentage = parameters.get("percentage")
@@ -328,7 +342,10 @@ def _check_business_rules(
                 else:
                     passed.append("business_rule: discount percentage valid")
             except (ValueError, TypeError):
-                pass
+                warnings.append(
+                    f"business_rule: discount percentage not "
+                    f"a valid number ({percentage!r})"
+                )
 
     elif action_type == "send_email":
         recipient = parameters.get("recipient", "")
