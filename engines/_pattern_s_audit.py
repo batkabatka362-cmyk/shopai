@@ -105,6 +105,131 @@ def _has_logger_call(node: ast.AST) -> bool:
     return False
 
 
+def _find_owning_try(
+    handler: ast.ExceptHandler,
+    tree: ast.AST,
+) -> ast.Try | None:
+    """Return the ``Try`` statement that owns this handler."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and handler in node.handlers:
+            return node
+    return None
+
+
+def _parent_block_and_index(
+    target: ast.Try,
+    tree: ast.AST,
+) -> tuple[list[ast.stmt], int] | None:
+    """Find the list-of-statements that contains ``target`` and
+    the index where it lives.
+
+    Python doesn't expose parent pointers on the AST, so we walk
+    every node and look for one whose ``.body`` /
+    ``.orelse`` / ``.finalbody`` / ``.handlers[].body`` list
+    contains ``target``. Returns (block, index) or None when not
+    found (shouldn't happen for a well-formed tree).
+    """
+    candidate_attrs = ("body", "orelse", "finalbody")
+    for node in ast.walk(tree):
+        for attr in candidate_attrs:
+            block = getattr(node, attr, None)
+            if not isinstance(block, list):
+                continue
+            try:
+                idx = block.index(target)
+            except ValueError:
+                continue
+            return block, idx
+        # Also check ExceptHandler bodies (these are inside Try
+        # nodes but not addressable via ``body``).
+        if isinstance(node, ast.Try):
+            for h in node.handlers:
+                try:
+                    idx = h.body.index(target)
+                except ValueError:
+                    continue
+                return h.body, idx
+    return None
+
+
+def _statement_is_logger_call(stmt: ast.stmt) -> bool:
+    """True iff the statement is a bare expression whose value
+    is a call to a logger.<level>(...) method."""
+    if not isinstance(stmt, ast.Expr):
+        return False
+    if not isinstance(stmt.value, ast.Call):
+        return False
+    func = stmt.value.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr in _LOGGER_LEVELS
+    )
+
+
+def _inside_fall_through_chain(
+    handler: ast.ExceptHandler,
+    tree: ast.AST,
+) -> bool:
+    """True iff this handler is part of a ``parse fall-through``
+    pattern: ``except: pass`` immediately followed in the same
+    parent block by either:
+
+      - Another ``try:`` statement (chained parse attempts).
+      - A bare logger call (parse-then-log-on-fail).
+      - A ``return`` statement (parse-then-return-default).
+
+    Two canonical patterns this catches::
+
+        # Fall-through to next strategy
+        try:
+            return float(s)
+        except ValueError:
+            pass
+        try:
+            return parse_iso(s)
+        except ValueError:
+            return fallback
+
+        # Fall-through to single log at end
+        for fmt in FORMATS:
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        # ... try one more thing ...
+        try:
+            return datetime.fromisoformat(s)
+        except ValueError:
+            pass
+        logger.warning("could not parse '%s'", s)
+        return s
+    """
+    owning_try = _find_owning_try(handler, tree)
+    if owning_try is None:
+        return False
+    parent = _parent_block_and_index(owning_try, tree)
+    if parent is None:
+        return False
+    block, idx = parent
+    # Look at the very next statement in the same block.
+    next_idx = idx + 1
+    if next_idx >= len(block):
+        return False
+    nxt = block[next_idx]
+    if isinstance(nxt, ast.Try):
+        # Another parse attempt follows -> fall-through chain.
+        return True
+    if _statement_is_logger_call(nxt):
+        # Parse failed, fall through, log once at end.
+        return True
+    if isinstance(nxt, ast.Return):
+        # ``except: pass`` then ``return default`` is the
+        # ""tried it, returning the fallback"" idiom -- not a
+        # silent swallow because the default IS the signal.
+        return True
+    return False
+
+
 def _inside_logged_except(
     handler: ast.ExceptHandler,
     tree: ast.AST,
@@ -178,6 +303,8 @@ def _collect_silent_sites(
         if not _is_just_pass(node):
             continue
         if _inside_logged_except(node, tree):
+            continue
+        if _inside_fall_through_chain(node, tree):
             continue
         sites.append(SilentSite(
             file=rel, lineno=node.lineno,

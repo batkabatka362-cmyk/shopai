@@ -282,3 +282,158 @@ class TestNestedRollbackSkipped:
             ''')
         report = audit_pattern_s(roots=[tmp_path])
         assert report.has_violations is False
+
+
+class TestFallThroughChainSkipped:
+    """Refinement: an ``except: pass`` followed by ANOTHER try
+    statement (parse-chain), a logger call (parse-then-log), or
+    a return (parse-then-return-default) is intentional control
+    flow and not a silent swallow."""
+
+    def test_followed_by_another_try_skipped(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def parse(s):
+                try:
+                    return float(s)
+                except ValueError:
+                    pass
+                try:
+                    return parse_iso(s)
+                except ValueError:
+                    return None
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        # First handler is followed by another try -> skipped.
+        # Second handler isn't a just-pass.
+        assert report.has_violations is False
+
+    def test_followed_by_logger_call_skipped(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            import logging
+            def parse(s):
+                try:
+                    return datetime.fromisoformat(s)
+                except ValueError:
+                    pass
+                logging.warning("could not parse '%s'", s)
+                return s
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        # except: pass followed by logger.warning -> skipped.
+        assert report.has_violations is False
+
+    def test_followed_by_return_skipped(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def parse(s):
+                try:
+                    return float(s)
+                except ValueError:
+                    pass
+                return 0.0
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        # except: pass followed by return -> the return IS the
+        # signal (default value).
+        assert report.has_violations is False
+
+    def test_followed_by_assignment_still_flagged(
+        self, tmp_path,
+    ):
+        """An assignment is NOT a recognised end-of-chain marker
+        (could be hiding a real bug like ``x = some_default``
+        with no diagnostic). Stays a violation."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f(x):
+                try:
+                    do_thing(x)
+                except Exception:
+                    pass
+                x = 1
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert len(report.silent_sites) == 1
+
+    def test_followed_by_nothing_still_flagged(self, tmp_path):
+        """``except: pass`` at the end of a block with no
+        following statement is the classic silent swallow."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f():
+                try:
+                    do_thing()
+                except Exception:
+                    pass
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert len(report.silent_sites) == 1
+
+    def test_continue_then_pass_in_loop_still_flagged(
+        self, tmp_path,
+    ):
+        """Inside a for-loop body, ``except: pass`` followed by
+        the next iteration is NOT a fall-through chain -- the
+        next ""statement"" is the continue from loop iteration,
+        not a sibling statement in the same block."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f(items):
+                for x in items:
+                    try:
+                        do_thing(x)
+                    except Exception:
+                        pass
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        # The except is the last statement in the for-body, so
+        # there's no next sibling -> still flagged.
+        assert len(report.silent_sites) == 1
+
+    def test_followed_by_logger_attribute_chain(self, tmp_path):
+        """Logger calls via ``logger.warning(...)`` style with
+        a bound module attribute -- the detector should match
+        on the .warning method name."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            from utils.logger import get_logger
+            logger = get_logger("mod")
+            def parse(s):
+                try:
+                    return _strict_parse(s)
+                except ValueError:
+                    pass
+                logger.warning("falling back for %s", s)
+                return s
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
+
+    def test_followed_by_log_via_func_call_not_skipped(
+        self, tmp_path,
+    ):
+        """A bare function call like ``record(s)`` is NOT
+        recognised as a log -- only attribute-method calls
+        with the standard logger-level names qualify."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def record(s): pass
+            def parse(s):
+                try:
+                    return _strict_parse(s)
+                except ValueError:
+                    pass
+                record(s)
+                return s
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        # record(s) isn't a logger.<level>(...) call, so the
+        # except: pass is still flagged (return after the
+        # record IS a return-default, though). Wait -- the
+        # IMMEDIATELY next statement after the try is
+        # record(s), which isn't a logger call. So the
+        # fall-through rule doesn't apply. The handler IS
+        # flagged.
+        assert len(report.silent_sites) == 1
