@@ -912,3 +912,190 @@ class TestBrandStep:
         assert kwargs["metrics"]["brand_skipped"] is True
         # Skip doesn't block ready_to_launch
         assert kwargs["success"] is True
+
+
+class TestDesignStep:
+    """Step 6: design tokens via StoreDesignEngine +
+    apply_design.
+
+    Optional: if no MAIN theme exists yet, the step is
+    skipped and contributes ok=True to ready_to_launch (the
+    operator hasn't installed a theme; a dev-store launch is
+    still valid). When a MAIN theme exists, the engine runs
+    and the apply result drives the checklist.
+    """
+
+    def _patch_first_five_steps_ok(self):
+        return (
+            patch(
+                "engines.store_setup.policy_generator."
+                "generate_policies",
+                return_value={"REFUND_POLICY": "r"},
+            ),
+            patch(
+                "engines.store_setup.policy_applier."
+                "apply_policies",
+                return_value={"applied_count": 1, "results": []},
+            ),
+            patch(
+                "engines.store_setup.page_generator."
+                "generate_pages",
+                return_value={"About": "<h1>x</h1>"},
+            ),
+            patch(
+                "engines.store_setup.page_applier.apply_pages",
+                return_value={"applied_count": 1, "results": []},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "apply_welcome_discount",
+                return_value={
+                    "applied": True, "code": "WELCOME15",
+                    "percentage": 15, "error": None,
+                },
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "apply_starter_collections",
+                return_value={"applied_count": 4, "results": []},
+            ),
+            patch(
+                "engines.store_setup.launch_orchestrator."
+                "record_writeback",
+            ),
+        )
+
+    def test_no_main_theme_skips_step_still_ready(self):
+        from unittest.mock import MagicMock
+        patches = self._patch_first_five_steps_ok()
+        router = MagicMock()
+        themes_result = MagicMock()
+        themes_result.ok = True
+        themes_result.data = {"themes": []}
+        router.execute.return_value = themes_result
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "core.adapters.get_router", return_value=router,
+        ):
+            result = launch_store(store_name="Acme")
+        assert result["design"]["skipped"] is True
+        assert result["design"]["error"] == "no_main_theme"
+        # Skip -> contributes ok=True -> launch is ready
+        assert result["ready_to_launch"] is True
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["design"]["ok"] is True
+        assert steps["design"]["skipped"] is True
+
+    def test_themes_call_fails_skips_step(self):
+        from unittest.mock import MagicMock
+        patches = self._patch_first_five_steps_ok()
+        router = MagicMock()
+        themes_result = MagicMock()
+        themes_result.ok = False
+        themes_result.error = "access denied"
+        router.execute.return_value = themes_result
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "core.adapters.get_router", return_value=router,
+        ):
+            result = launch_store(store_name="Acme")
+        # main_theme_id stays "" -> no_main_theme,
+        # skipped stays True from default
+        assert result["design"]["skipped"] is True
+        assert result["ready_to_launch"] is True
+
+    def test_engine_failure_marks_error_not_skipped(self):
+        from unittest.mock import MagicMock
+        patches = self._patch_first_five_steps_ok()
+        router = MagicMock()
+        themes_result = MagicMock()
+        themes_result.ok = True
+        themes_result.data = {"themes": [
+            {"id": "gid://shopify/OnlineStoreTheme/1",
+             "role": "MAIN"},
+        ]}
+        router.execute.return_value = themes_result
+        engine_cls = MagicMock()
+        engine_cls.return_value.run.return_value = {
+            "status": "error",
+            "data": {},
+            "error": "missing brand",
+        }
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "core.adapters.get_router", return_value=router,
+        ), patch(
+            "engines.store_design.flow.StoreDesignEngine",
+            engine_cls,
+        ):
+            result = launch_store(store_name="Acme")
+        assert result["design"]["applied"] is False
+        assert result["design"]["skipped"] is False
+        assert "engine" in (result["design"]["error"] or "")
+        assert result["ready_to_launch"] is False
+
+    def test_success_path_drives_checklist(self):
+        from unittest.mock import MagicMock
+        patches = self._patch_first_five_steps_ok()
+        router = MagicMock()
+        themes_result = MagicMock()
+        themes_result.ok = True
+        themes_result.data = {"themes": [
+            {"id": "gid://shopify/OnlineStoreTheme/1",
+             "role": "MAIN"},
+        ]}
+        router.execute.return_value = themes_result
+        engine_cls = MagicMock()
+        engine_cls.return_value.run.return_value = {
+            "status": "success",
+            "data": {"color_palette": {"primary": "#000"}},
+            "error": None,
+        }
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], patch(
+            "core.adapters.get_router", return_value=router,
+        ), patch(
+            "engines.store_design.flow.StoreDesignEngine",
+            engine_cls,
+        ), patch(
+            "engines.store_design.design_applier.apply_design",
+            return_value={
+                "applied": True,
+                "theme_id": (
+                    "gid://shopify/OnlineStoreTheme/1"
+                ),
+                "files_written": [
+                    "assets/shopai-design-tokens.json",
+                    "snippets/shopai-design.liquid",
+                ],
+                "error": None,
+            },
+        ):
+            result = launch_store(store_name="Acme")
+        assert result["design"]["applied"] is True
+        assert result["design"]["skipped"] is False
+        assert len(result["design"]["files_written"]) == 2
+        assert result["ready_to_launch"] is True
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["design"]["ok"] is True
+        assert steps["design"]["applied"] == 2
+
+    def test_rollup_metrics_carry_design(self):
+        from unittest.mock import MagicMock
+        patches = self._patch_first_five_steps_ok()
+        router = MagicMock()
+        themes_result = MagicMock()
+        themes_result.ok = True
+        themes_result.data = {"themes": []}
+        router.execute.return_value = themes_result
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patch(
+            "core.adapters.get_router", return_value=router,
+        ), patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ) as record_mock:
+            launch_store(store_name="Acme")
+        kwargs = record_mock.call_args.kwargs
+        assert kwargs["metrics"]["design_applied"] is False
+        assert kwargs["metrics"]["design_skipped"] is True

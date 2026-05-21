@@ -2,10 +2,10 @@
 
 Bundles the per-capability generators + appliers introduced in
 PRs #364 (policies), #365 (pages), #367 (welcome discount),
-#370 (starter collections), and #369 (brand assets) so an
-operator can run a SINGLE command to take a fresh Shopify
-store from "credentials configured" to "launchable" with no
-manual paste required.
+#370 (starter collections), #369 (brand assets), and #362
+(design tokens) so an operator can run a SINGLE command to
+take a fresh Shopify store from "credentials configured" to
+"launchable" with no manual paste required.
 
 Workflow::
 
@@ -28,6 +28,8 @@ Workflow::
     #     "collections": {applied_count: 4, results: [...]},
     #     "brand":       {uploaded_count: 2, files: [...],
     #                     skipped: False, ok: True},
+    #     "design":      {applied: True, theme_id: "gid://...",
+    #                     files_written: [...], skipped: False},
     #     "checklist": [
     #         {step: "policies",    ok: True, applied: 5},
     #         {step: "pages",       ok: True, applied: 4},
@@ -35,9 +37,20 @@ Workflow::
     #         {step: "collections", ok: True, applied: 4},
     #         {step: "brand",       ok: True, applied: 2,
     #          skipped: False},
+    #         {step: "design",      ok: True, applied: 2,
+    #          skipped: False},
     #     ],
     #     "ready_to_launch": True,
     # }
+
+Steps 5 (brand) and 6 (design) are OPTIONAL:
+- ``brand`` is skipped when no image URLs are supplied.
+- ``design`` is skipped when the store has no MAIN theme yet
+  (operator hasn't installed one).
+
+In both cases ``skipped: True`` contributes ``ok: True`` to
+``ready_to_launch`` -- a store without brand assets or a
+dev-stub theme is still launchable.
 
 The brand step is OPTIONAL: when no image URLs are supplied
 it's marked ``skipped: True`` and contributes ``ok: True`` to
@@ -121,6 +134,9 @@ def launch_store(
                       "missing_assets": [], "ok": False,
                       "skipped": True,
                       "error": "store_name_required"},
+            "design": {"applied": False, "theme_id": "",
+                       "files_written": [], "skipped": True,
+                       "error": "store_name_required"},
             "checklist": [],
             "ready_to_launch": False,
             "error": "store_name_required",
@@ -309,6 +325,110 @@ def launch_store(
                 "error": str(exc),
             }
 
+    # ── Step 6: Design tokens (optional) ─────────────────
+    # Run the store_design engine + apply_design to write the
+    # ``shopai-design-tokens.json`` + matching snippet into
+    # the MAIN theme. This satisfies the ``design_tokens``
+    # launch-audit check.
+    #
+    # Optional: if no MAIN theme exists yet (dev store
+    # without a theme), or the engine returns no data, mark
+    # as ``skipped: True``. A launch without design tokens
+    # is still launchable -- the storefront just uses the
+    # theme defaults.
+    design_result: dict[str, Any] = {
+        "applied": False,
+        "theme_id": "",
+        "files_written": [],
+        "skipped": True,
+        "error": None,
+    }
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+        from engines.store_design.flow import StoreDesignEngine
+        from engines.store_design.design_applier import apply_design
+
+        # 1. Locate the MAIN theme. If the router or list_themes
+        # call fails, skip the design step entirely.
+        router = get_router()
+        themes_result = router.execute(
+            Capability.SHOPIFY_LIST_THEMES, {},
+        )
+        main_theme_id = ""
+        if getattr(themes_result, "ok", False):
+            themes_data = (
+                getattr(themes_result, "data", None) or {}
+            )
+            themes = themes_data.get("themes") or []
+            for t in themes:
+                if isinstance(t, dict) and t.get("role") == "MAIN":
+                    main_theme_id = str(t.get("id", "") or "")
+                    break
+
+        if not main_theme_id:
+            design_result["error"] = "no_main_theme"
+        else:
+            # Got a theme -- we ARE attempting the step now.
+            # Any failure below is an error, not a skip.
+            design_result["skipped"] = False
+            # 2. Run the engine with minimum-viable input.
+            engine_input = {
+                "status": "success",
+                "data": {
+                    "brand": {
+                        "name": name,
+                        "niche": niche,
+                        "colors": [],
+                        "fonts": [],
+                        "voice": "professional",
+                    },
+                    "products": [],
+                    "analytics": {
+                        "bounce_rate": 0.0,
+                        "device_split": {},
+                    },
+                },
+                "meta": {},
+                "error": None,
+            }
+            engine_out = StoreDesignEngine().run(engine_input)
+
+            if engine_out.get("status") != "success":
+                design_result["error"] = (
+                    "engine: "
+                    f"{engine_out.get('error', 'unknown')}"
+                )
+            else:
+                # 3. Apply tokens + snippet via the theme adapter.
+                applied = apply_design(
+                    engine_out,
+                    theme_id=main_theme_id,
+                    store_id=store_id,
+                )
+                design_result = {
+                    "applied": bool(applied.get("applied")),
+                    "theme_id": applied.get(
+                        "theme_id", main_theme_id,
+                    ),
+                    "files_written": (
+                        applied.get("files_written") or []
+                    ),
+                    "skipped": False,
+                    "error": applied.get("error"),
+                }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "launch_orchestrator design step raised: %s", exc,
+        )
+        design_result = {
+            "applied": False,
+            "theme_id": "",
+            "files_written": [],
+            "skipped": False,
+            "error": str(exc),
+        }
+
     # ── Checklist ────────────────────────────────────────
     checklist: list[dict[str, Any]] = []
 
@@ -372,12 +492,33 @@ def launch_store(
         "error": brand_result.get("error"),
     })
 
+    # Design step is ``ok`` when:
+    #   - it was skipped (no main theme yet -- the operator
+    #     hasn't picked a theme), OR
+    #   - it was applied successfully.
+    # Skip-on-no-theme keeps the orchestrator usable on dev
+    # stores that haven't installed a theme yet.
+    design_ok = (
+        bool(design_result.get("skipped"))
+        or bool(design_result.get("applied"))
+    )
+    checklist.append({
+        "step": "design",
+        "ok": design_ok,
+        "applied": (
+            len(design_result.get("files_written") or [])
+        ),
+        "skipped": bool(design_result.get("skipped")),
+        "error": design_result.get("error"),
+    })
+
     ready_to_launch = bool(
         policies_ok
         and pages_ok
         and discount_ok
         and collections_ok
         and brand_ok
+        and design_ok
     )
 
     out = {
@@ -386,6 +527,7 @@ def launch_store(
         "discount": discount_result,
         "collections": collections_result,
         "brand": brand_result,
+        "design": design_result,
         "checklist": checklist,
         "ready_to_launch": ready_to_launch,
     }
@@ -431,6 +573,12 @@ def launch_store(
                 ),
                 "brand_skipped": bool(
                     brand_result.get("skipped"),
+                ),
+                "design_applied": bool(
+                    design_result.get("applied"),
+                ),
+                "design_skipped": bool(
+                    design_result.get("skipped"),
                 ),
                 "ready_to_launch": ready_to_launch,
             },
