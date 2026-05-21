@@ -84,6 +84,28 @@ class TestAllSuccess:
                 ],
             },
         ), patch(
+            "engines.store_setup.welcome_discount."
+            "generate_welcome_discount",
+            return_value={"code": "WELCOME15", "percentage": 15},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME15",
+                "percentage": 15, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "generate_starter_collections",
+            return_value=[{"title": "New Arrivals",
+                           "handle": "new-arrivals"}],
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={
+                "applied_count": 4, "results": [],
+            },
+        ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
         ):
@@ -94,12 +116,17 @@ class TestAllSuccess:
         assert result["ready_to_launch"] is True
         assert result["policies"]["applied_count"] == 2
         assert result["pages"]["applied_count"] == 2
-        # Checklist has both steps as OK
+        assert result["discount"]["applied"] is True
+        assert result["collections"]["applied_count"] == 4
+        # Checklist has all 4 steps as OK
         steps = {c["step"]: c for c in result["checklist"]}
         assert steps["policies"]["ok"] is True
         assert steps["policies"]["applied"] == 2
         assert steps["pages"]["ok"] is True
         assert steps["pages"]["applied"] == 2
+        assert steps["discount"]["ok"] is True
+        assert steps["collections"]["ok"] is True
+        assert steps["collections"]["applied"] == 4
 
     def test_rollup_writeback_recorded(self):
         with patch(
@@ -116,6 +143,26 @@ class TestAllSuccess:
             "engines.store_setup.page_applier.apply_pages",
             return_value={"applied_count": 1, "results": []},
         ), patch(
+            "engines.store_setup.welcome_discount."
+            "generate_welcome_discount",
+            return_value={"code": "WELCOME10", "percentage": 10},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME10",
+                "percentage": 10, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "generate_starter_collections",
+            return_value=[{"title": "New Arrivals",
+                           "handle": "new-arrivals"}],
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={"applied_count": 4, "results": []},
+        ), patch(
             "engines.store_setup.launch_orchestrator."
             "record_writeback",
         ) as record_mock:
@@ -128,6 +175,8 @@ class TestAllSuccess:
         assert kwargs["success"] is True
         assert kwargs["metrics"]["policies_applied"] == 1
         assert kwargs["metrics"]["pages_applied"] == 1
+        assert kwargs["metrics"]["discount_applied"] == 1
+        assert kwargs["metrics"]["collections_applied"] == 4
 
 
 class TestPartialFailure:
@@ -329,3 +378,174 @@ class TestOptionalFlags:
             gen_mock.call_args.kwargs["founder_name"]
             == "Jane"
         )
+
+
+class TestDiscountStep:
+    """Welcome discount as Step 3 of the launch pipeline."""
+
+    def _patches(self, **overrides):
+        """Build the standard set of patches with sensible
+        defaults that callers can override per-test."""
+        defaults = {
+            "policies_apply": {"applied_count": 1, "results": []},
+            "pages_apply": {"applied_count": 1, "results": []},
+            "discount_apply": {
+                "applied": True, "code": "WELCOME10",
+                "percentage": 10, "error": None,
+            },
+            "collections_apply": {
+                "applied_count": 1, "results": [],
+            },
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _run(self, defaults):
+        with patch(
+            "engines.store_setup.policy_generator."
+            "generate_policies",
+            return_value={"REFUND_POLICY": "r"},
+        ), patch(
+            "engines.store_setup.policy_applier.apply_policies",
+            return_value=defaults["policies_apply"],
+        ), patch(
+            "engines.store_setup.page_generator.generate_pages",
+            return_value={"About": "<h1>x</h1>"},
+        ), patch(
+            "engines.store_setup.page_applier.apply_pages",
+            return_value=defaults["pages_apply"],
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "generate_welcome_discount",
+            return_value={"code": "WELCOME10", "percentage": 10},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value=defaults["discount_apply"],
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "generate_starter_collections",
+            return_value=[{"title": "x", "handle": "x"}],
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value=defaults["collections_apply"],
+        ), patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ):
+            return launch_store(store_name="Acme")
+
+    def test_discount_success_marks_step_ok(self):
+        result = self._run(self._patches())
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["discount"]["ok"] is True
+        assert result["discount"]["code"] == "WELCOME10"
+
+    def test_discount_failure_blocks_ready(self):
+        result = self._run(self._patches(
+            discount_apply={
+                "applied": False, "code": None,
+                "percentage": None, "error": "router_unavailable",
+            },
+        ))
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["discount"]["ok"] is False
+        assert "router_unavailable" in (
+            steps["discount"]["error"] or ""
+        )
+        assert result["ready_to_launch"] is False
+
+    def test_discount_raise_captured(self):
+        # Make the module-level import succeed but apply raise
+        with patch(
+            "engines.store_setup.policy_generator."
+            "generate_policies",
+            return_value={"REFUND_POLICY": "r"},
+        ), patch(
+            "engines.store_setup.policy_applier.apply_policies",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.page_generator.generate_pages",
+            return_value={"About": "<h1>x</h1>"},
+        ), patch(
+            "engines.store_setup.page_applier.apply_pages",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "generate_welcome_discount",
+            side_effect=RuntimeError("boom"),
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "generate_starter_collections",
+            return_value=[],
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={"applied_count": 0, "results": []},
+        ), patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ):
+            result = launch_store(store_name="Acme")
+        assert "boom" in result["discount"]["error"]
+
+
+class TestCollectionsStep:
+    """Starter collections as Step 4 of the launch pipeline."""
+
+    def _run(self, *, collections_apply):
+        with patch(
+            "engines.store_setup.policy_generator."
+            "generate_policies",
+            return_value={"REFUND_POLICY": "r"},
+        ), patch(
+            "engines.store_setup.policy_applier.apply_policies",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.page_generator.generate_pages",
+            return_value={"About": "<h1>x</h1>"},
+        ), patch(
+            "engines.store_setup.page_applier.apply_pages",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "generate_welcome_discount",
+            return_value={"code": "WELCOME10", "percentage": 10},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "WELCOME10",
+                "percentage": 10, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "generate_starter_collections",
+            return_value=[{"title": "x", "handle": "x"}],
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value=collections_apply,
+        ), patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ):
+            return launch_store(store_name="Acme")
+
+    def test_collections_success_marks_step_ok(self):
+        result = self._run(collections_apply={
+            "applied_count": 4, "results": [],
+        })
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["collections"]["ok"] is True
+        assert steps["collections"]["applied"] == 4
+        assert result["ready_to_launch"] is True
+
+    def test_collections_zero_count_blocks_ready(self):
+        result = self._run(collections_apply={
+            "applied_count": 0, "results": [],
+        })
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["collections"]["ok"] is False
+        assert result["ready_to_launch"] is False
