@@ -64,10 +64,93 @@ def _ns(**kw):
         closes_audit=None,
         name=None,
         query=None,
+        depth=2,
         json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
+
+
+class TestTree:
+    """``shopai capabilities tree <name>`` renders the
+    composition graph from a root capability as an indented
+    ASCII tree."""
+
+    def test_tree_renders_launch_store(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="tree",
+                name="launch_store",
+            ),
+        )
+        assert code == 0
+        # Root header + kind
+        assert "launch_store [orchestrator]" in out
+        # composes_with peers as children
+        assert "audit_store" in out
+        # ASCII connectors (not Unicode)
+        assert "`--" in out or "|--" in out
+
+    def test_tree_audit_all_shows_full_audit_suite(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="tree",
+                name="audit_all",
+                depth=1,
+            ),
+        )
+        assert code == 0
+        # All 9 audits appear as children
+        for audit_name in (
+            "pattern_k_audit", "pattern_y_audit",
+            "pattern_i_audit", "pattern_j_audit",
+            "pattern_z_audit", "pattern_q_audit",
+            "pattern_s_audit", "oauth_audit",
+            "scope_health_check",
+        ):
+            assert audit_name in out
+
+    def test_tree_unknown_exits_1(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="tree",
+                name="ghost",
+            ),
+        )
+        assert code == 1
+
+    def test_tree_json(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="tree",
+                name="launch_store",
+                depth=1,
+                json=True,
+            ),
+        )
+        assert code == 0
+        data = json.loads(out)
+        assert data["name"] == "launch_store"
+        assert data["kind"] == "orchestrator"
+        assert isinstance(data["children"], list)
+
+    def test_tree_depth_zero_no_children(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="tree",
+                name="launch_store",
+                depth=0,
+                json=True,
+            ),
+        )
+        assert code == 0
+        data = json.loads(out)
+        assert data["children"] == []
 
 
 class TestStats:

@@ -435,6 +435,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_tree_p = capabilities_sub.add_parser(
+        "tree",
+        help=(
+            "Render the composition graph from a root "
+            "capability as an indented tree. Useful for "
+            "understanding multi-step chains."
+        ),
+    )
+    cap_tree_p.add_argument(
+        "name",
+        help="Root capability name.",
+    )
+    cap_tree_p.add_argument(
+        "--depth", type=int, default=2,
+        help="Maximum depth to walk (default: 2).",
+    )
+    cap_tree_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_stats_p = capabilities_sub.add_parser(
         "stats",
         help=(
@@ -11099,6 +11120,85 @@ def _cmd_capabilities(args) -> None:
             print("  example input:")
             for k, v in cap.example_input.items():
                 print(f"    {k}: {v}")
+        return
+
+    if action == "tree":
+        root = registry.get(args.name)
+        if root is None:
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "error": "not_found",
+                    "name": args.name,
+                }, indent=2))
+            else:
+                print(f"Unknown capability: {args.name}")
+            sys.exit(1)
+        # Don't use `or 2` here -- 0 is a valid depth (root
+        # only) and `0 or 2` would silently bump it to 2.
+        depth_raw = getattr(args, "depth", 2)
+        if depth_raw is None:
+            depth_raw = 2
+        max_depth = max(0, int(depth_raw))
+
+        def _walk_tree(name: str, depth: int,
+                       seen: set | None = None) -> dict:
+            # Cycle protection: don't re-visit a node we're
+            # already mid-rendering.
+            seen = (seen or set()) | {name}
+            cap = registry.get(name)
+            if cap is None:
+                return {
+                    "name": name, "kind": "?",
+                    "children": [],
+                }
+            children = []
+            if depth > 0:
+                for peer in cap.composes_with:
+                    if peer in seen:
+                        continue
+                    children.append(
+                        _walk_tree(peer, depth - 1, seen),
+                    )
+            return {
+                "name": cap.name,
+                "kind": cap.kind,
+                "children": children,
+            }
+
+        tree = _walk_tree(args.name, max_depth)
+
+        if as_json:
+            print(json.dumps(tree, indent=2))
+            return
+
+        def _render_tree(node: dict, prefix: str = "",
+                         is_last: bool = True) -> None:
+            # ASCII connectors -- Windows cp1252 console
+            # can't render Unicode box-drawing chars.
+            connector = "`-- " if is_last else "|-- "
+            print(
+                f"{prefix}{connector}{node['name']} "
+                f"[{node['kind']}]"
+            )
+            children = node["children"]
+            for i, child in enumerate(children):
+                child_prefix = prefix + (
+                    "    " if is_last else "|   "
+                )
+                _render_tree(
+                    child, child_prefix,
+                    is_last=(i == len(children) - 1),
+                )
+
+        # Root: no connector, print + walk children.
+        print(f"{tree['name']} [{tree['kind']}]")
+        children = tree["children"]
+        for i, child in enumerate(children):
+            _render_tree(
+                child, "",
+                is_last=(i == len(children) - 1),
+            )
         return
 
     if action == "stats":
