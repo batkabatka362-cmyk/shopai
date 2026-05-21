@@ -141,6 +141,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    design_apply_p = store_sub.add_parser(
+        "design-apply",
+        help=(
+            "WRITER: apply store_design recommendations to a "
+            "live Shopify theme. Runs the engine, then upserts "
+            "the tokens + snippet files via the theme adapter. "
+            "Operator must supply --theme-id explicitly (no "
+            "auto-target)."
+        ),
+    )
+    design_apply_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    design_apply_p.add_argument(
+        "--theme-id", required=True,
+        help=(
+            "Shopify theme GID to write into "
+            "(e.g. gid://shopify/OnlineStoreTheme/123). "
+            "Required -- operator picks which theme."
+        ),
+    )
+    design_apply_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     setup_p = store_sub.add_parser(
         "setup",
         help=(
@@ -5915,6 +5942,139 @@ def _cmd_memory_recall(args) -> None:
                 for k, v in components.items()
             )
             print(comp_line)
+
+
+def _cmd_store_design_apply(args) -> None:
+    """WRITER: apply the store_design engine's recommendations
+    to a live Shopify theme.
+
+    Mirrors ``store design`` (the read-only preview) but
+    instead of rendering the engine output, pipes it through
+    ``apply_design(theme_id=...)`` which upserts the
+    ``shopai-design-tokens.json`` + matching snippet via the
+    theme adapter. The theme_id is REQUIRED (no auto-target)
+    so an operator never blasts the wrong theme by mistake.
+
+    Exits 0 on successful write, 1 on any failure (engine
+    didn't produce data / adapter rejected / theme write
+    raised).
+    """
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store_id", None) or sm.active_store_id
+    )
+    theme_id = (getattr(args, "theme_id", "") or "").strip()
+
+    # Build the engine input (same shape as the preview command).
+    payload: dict = {
+        "status": "success",
+        "data": {},
+        "meta": {},
+        "error": None,
+    }
+    if store_id:
+        try:
+            stats = sm.get_stats(store_id) if hasattr(
+                sm, "get_stats",
+            ) else {}
+            payload["data"] = {
+                "brand": {
+                    "colors": [],
+                    "fonts": [],
+                    "voice": "professional",
+                },
+                "products": [],
+                "analytics": {
+                    "bounce_rate": 0.0,
+                    "device_split": {},
+                },
+            }
+            if isinstance(stats, dict):
+                payload["data"]["_store_stats"] = {
+                    "products": stats.get("products", 0),
+                    "orders": stats.get("orders", 0),
+                    "customers": stats.get("customers", 0),
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "store_design_apply store-data probe raised: %s",
+                exc,
+            )
+
+    try:
+        from engines.store_design.flow import StoreDesignEngine
+        engine_output = StoreDesignEngine().run(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "store_design_apply engine raised: %s", exc,
+        )
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "applied": False,
+                "error": f"engine_unavailable: {exc}",
+            }, indent=2))
+        else:
+            print(f"store_design engine unavailable: {exc}")
+        sys.exit(1)
+
+    if engine_output.get("status") != "success":
+        msg = engine_output.get("error") or "engine_no_data"
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "applied": False,
+                "error": f"engine_output_not_successful: {msg}",
+            }, indent=2))
+        else:
+            print(
+                f"Engine produced no recommendations to apply: "
+                f"{msg}"
+            )
+        sys.exit(1)
+
+    try:
+        from engines.store_design.design_applier import apply_design
+        result = apply_design(
+            engine_output,
+            theme_id=theme_id,
+            store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "store_design_apply apply_design raised: %s", exc,
+        )
+        if getattr(args, "json", False):
+            print(json.dumps({
+                "applied": False,
+                "error": f"apply_design_raise: {exc}",
+            }, indent=2))
+        else:
+            print(f"apply_design unavailable: {exc}")
+        sys.exit(1)
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "applied": bool(result.get("applied")),
+            "theme_id": result.get("theme_id", theme_id),
+            "files_written": result.get("files_written") or [],
+            "error": result.get("error"),
+        }, indent=2))
+        if not result.get("applied"):
+            sys.exit(1)
+        return
+
+    if result.get("applied"):
+        files = result.get("files_written") or []
+        print(
+            f"Design applied to {theme_id} -- "
+            f"{len(files)} file(s) written:"
+        )
+        for f in files:
+            print(f"  {f}")
+        return
+
+    err = result.get("error") or "unknown_error"
+    print(f"Design apply FAILED on {theme_id}: {err}")
+    sys.exit(1)
 
 
 def _cmd_store_verify(args) -> None:
@@ -17583,6 +17743,7 @@ def main(argv: list[str] | None = None) -> None:
             "remove": _cmd_store_remove,
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
+            "design-apply": _cmd_store_design_apply,
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
@@ -17594,7 +17755,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
+                "{add|list|switch|status|connect|remove|configure|design|design-apply|verify|setup|report|fleet}"
             )
         return
 
