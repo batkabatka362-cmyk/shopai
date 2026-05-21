@@ -1391,6 +1391,64 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    post_launch_p = sub.add_parser(
+        "post-launch",
+        help=(
+            "Polish flow that runs AFTER ``shopai launch``: "
+            "enrich-seo + enrich-descriptions in one shot. "
+            "Default is read-only preview; pass --apply to "
+            "actually write to Shopify."
+        ),
+    )
+    post_launch_p.add_argument(
+        "--store", default=None,
+        help=(
+            "Store ID for Pattern Z scope (falls back to active "
+            "store thread-local)"
+        ),
+    )
+    post_launch_p.add_argument(
+        "--niche", default="general",
+        choices=[
+            "general", "beauty", "fashion", "home",
+            "tech", "food",
+        ],
+        help="Niche key passed to both enrichers (default: general)",
+    )
+    post_launch_p.add_argument(
+        "--store-name", default="",
+        help="Optional brand suffix passed to enrich-seo.",
+    )
+    post_launch_p.add_argument(
+        "--limit", type=int, default=100,
+        help="Max products to fetch + enrich (default: 100)",
+    )
+    post_launch_p.add_argument(
+        "--min-description-length", type=int, default=80,
+        help=(
+            "Skip description enrichment for products whose "
+            "existing description is at least this many chars."
+        ),
+    )
+    post_launch_p.add_argument(
+        "--overwrite-seo", action="store_true",
+        help=(
+            "Replace existing SEO metadata even when non-empty"
+        ),
+    )
+    post_launch_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "WRITE: push both enrichments via "
+            "SHOPIFY_UPDATE_PRODUCT. Default is read-only "
+            "preview."
+        ),
+    )
+    post_launch_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     shopify_doctor_p = sub.add_parser(
         "shopify-doctor",
         help=(
@@ -10149,6 +10207,265 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_post_launch(args) -> None:
+    """Post-launch polish: run SEO + description enrichment
+    over the store's products in one shot.
+
+    Companion to ``shopai launch`` (the create-stuff flow).
+    After launch the operator typically adds products; this
+    command then walks every product and:
+      1. Generates SEO title + meta_description.
+      2. Generates body_html for products without one (or
+         with a placeholder shorter than ``--min-description-
+         length``).
+      3. With ``--apply``, writes both via SHOPIFY_UPDATE_PRODUCT.
+
+    Mirrors the safety pattern of the underlying CLIs
+    (#471 enrich-seo, #472 enrich-descriptions): default is
+    read-only preview; ``--apply`` opts in to writes.
+
+    Exits 0 on preview / clean apply; exits 1 when ``--apply``
+    is set AND at least one write failed. Probe failures
+    (router down, no products) exit 0 with a friendly
+    message.
+    """
+    as_json = bool(getattr(args, "json", False))
+    apply_writes = bool(getattr(args, "apply", False))
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store", None) or sm.active_store_id
+    )
+
+    # ── Fetch products via the router ────────────────────
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+        router = get_router()
+        list_result = router.execute(
+            Capability.SHOPIFY_LIST_PRODUCTS,
+            {"limit": int(getattr(args, "limit", 100) or 100)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("post-launch router fetch raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "products_fetch_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"Product fetch unavailable: {exc}")
+        return
+
+    if not getattr(list_result, "ok", False):
+        err = getattr(list_result, "error", "unknown")
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "products_fetch_failed",
+                "message": str(err),
+            }, indent=2))
+        else:
+            print(f"Product fetch failed: {err}")
+        return
+
+    data = getattr(list_result, "data", None) or {}
+    products = (
+        data.get("products") if isinstance(data, dict) else []
+    )
+    if not isinstance(products, list):
+        products = []
+
+    if not products:
+        if as_json:
+            print(json.dumps({
+                "ok": True,
+                "applied": apply_writes,
+                "products_total": 0,
+                "seo": {"generated_count": 0, "skipped_count": 0},
+                "descriptions": {
+                    "generated_count": 0, "skipped_count": 0,
+                },
+            }, indent=2))
+        else:
+            print(
+                "post-launch: no products to enrich -- add "
+                "products via Shopify admin or `shopai store "
+                "add-product` first."
+            )
+        return
+
+    niche = getattr(args, "niche", "general")
+
+    # ── Step 1: SEO enrichment ────────────────────────────
+    try:
+        from engines.store_setup.seo_meta_enricher import (
+            enrich_seo,
+        )
+        seo_gen = enrich_seo(
+            products,
+            niche=niche,
+            store_name=(getattr(args, "store_name", "") or ""),
+            overwrite_existing=bool(
+                getattr(args, "overwrite_seo", False),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("enrich_seo raised: %s", exc)
+        seo_gen = {"generated": [], "skipped": []}
+
+    # ── Step 2: Description enrichment ────────────────────
+    try:
+        from engines.store_setup.product_description_enricher import (
+            enrich_products,
+        )
+        desc_gen = enrich_products(
+            products,
+            niche=niche,
+            min_existing_length=int(
+                getattr(args, "min_description_length", 80)
+                or 80,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("enrich_products raised: %s", exc)
+        desc_gen = {"generated": [], "skipped": []}
+
+    seo_generated = seo_gen.get("generated") or []
+    seo_skipped = seo_gen.get("skipped") or []
+    desc_generated = desc_gen.get("generated") or []
+    desc_skipped = desc_gen.get("skipped") or []
+
+    # ── Preview-only path ─────────────────────────────────
+    if not apply_writes:
+        if as_json:
+            print(json.dumps({
+                "ok": True,
+                "applied": False,
+                "products_total": len(products),
+                "seo": {
+                    "generated_count": len(seo_generated),
+                    "skipped_count": len(seo_skipped),
+                    "generated": seo_generated,
+                },
+                "descriptions": {
+                    "generated_count": len(desc_generated),
+                    "skipped_count": len(desc_skipped),
+                    "generated": desc_generated,
+                },
+            }, indent=2))
+            return
+        print(
+            f"post-launch PREVIEW -- {len(products)} product(s) "
+            "scanned."
+        )
+        print(
+            f"  SEO:          {len(seo_generated)} updates, "
+            f"{len(seo_skipped)} skipped"
+        )
+        print(
+            f"  Descriptions: {len(desc_generated)} updates, "
+            f"{len(desc_skipped)} skipped"
+        )
+        print()
+        print("Re-run with --apply to write to Shopify.")
+        return
+
+    # ── Apply path ────────────────────────────────────────
+    seo_applied = 0
+    seo_failures: list[dict] = []
+    desc_applied = 0
+    desc_failures: list[dict] = []
+
+    try:
+        from engines.store_setup.seo_meta_enricher import apply_seo
+        seo_apply = apply_seo(
+            seo_generated, store_id=store_id,
+        )
+        seo_applied = int(seo_apply.get("applied_count", 0))
+        seo_failures = [
+            r for r in (seo_apply.get("results") or [])
+            if not r.get("ok")
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("apply_seo raised: %s", exc)
+        seo_failures = [{
+            "product_id": "?", "error": f"apply_raised: {exc}",
+        }]
+
+    try:
+        from engines.store_setup.product_description_enricher import (
+            apply_descriptions,
+        )
+        desc_apply = apply_descriptions(
+            desc_generated, store_id=store_id,
+        )
+        desc_applied = int(desc_apply.get("applied_count", 0))
+        desc_failures = [
+            r for r in (desc_apply.get("results") or [])
+            if not r.get("ok")
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("apply_descriptions raised: %s", exc)
+        desc_failures = [{
+            "product_id": "?", "error": f"apply_raised: {exc}",
+        }]
+
+    total_failures = len(seo_failures) + len(desc_failures)
+
+    if as_json:
+        print(json.dumps({
+            "ok": total_failures == 0,
+            "applied": True,
+            "products_total": len(products),
+            "seo": {
+                "applied_count": seo_applied,
+                "failure_count": len(seo_failures),
+            },
+            "descriptions": {
+                "applied_count": desc_applied,
+                "failure_count": len(desc_failures),
+            },
+        }, indent=2))
+        if total_failures:
+            sys.exit(1)
+        return
+
+    if total_failures == 0:
+        print(
+            f"post-launch APPLIED -- "
+            f"{seo_applied} SEO updates + "
+            f"{desc_applied} description updates "
+            f"across {len(products)} product(s)."
+        )
+        return
+
+    print(
+        f"post-launch PARTIAL -- "
+        f"{seo_applied + desc_applied} applied, "
+        f"{total_failures} failed:"
+    )
+    if seo_failures:
+        print(f"  SEO failures ({len(seo_failures)}):")
+        for f in seo_failures[:3]:
+            print(
+                f"    {f.get('product_id', '?')}: "
+                f"{f.get('error', 'unknown')}"
+            )
+        if len(seo_failures) > 3:
+            print(f"    ... +{len(seo_failures) - 3} more")
+    if desc_failures:
+        print(f"  Description failures ({len(desc_failures)}):")
+        for f in desc_failures[:3]:
+            print(
+                f"    {f.get('product_id', '?')}: "
+                f"{f.get('error', 'unknown')}"
+            )
+        if len(desc_failures) > 3:
+            print(f"    ... +{len(desc_failures) - 3} more")
+    sys.exit(1)
+
+
 def _cmd_shopify_scopes_live_check(args) -> None:
     """Compare the registry's declared scopes against the live
     app installation's granted scopes.
@@ -17806,6 +18123,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-webhooks-live-check":
         _cmd_shopify_webhooks_live_check(args)
+        return
+
+    if args.command == "post-launch":
+        _cmd_post_launch(args)
         return
 
     if args.command == "shopify-install-manifest":
