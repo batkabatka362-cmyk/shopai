@@ -56,6 +56,15 @@ def ensure_registered() -> None:
             exc,
         )
 
+    try:
+        from . import _register_marketing
+        _register_marketing.register_all()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "capability_registry: marketing batch raised: %s",
+            exc,
+        )
+
     _BOOTSTRAPPED = True
 
 

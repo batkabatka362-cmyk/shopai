@@ -275,6 +275,39 @@ class TestBootstrap:
         # launch_store can close up to 7 audit checks
         assert len(cap.audit_checks_closed) >= 5
 
+    def test_marketing_batch_registered(self):
+        """The third batch (marketing / content / ops /
+        customer-facing engines) locks in the broader
+        operator surface."""
+        ensure_registered()
+        names = set(get_registry().names())
+        expected = {
+            # Acquisition
+            "ad_creative_generator", "email_marketing",
+            "trend_detection", "trend_discovery",
+            # Conversion
+            "ab_testing", "checkout_optimizer", "chatbot",
+            # Content + brand
+            "content_generation", "brand_voice_enforcer",
+            "brand_visual", "brand_positioning",
+            # Customer-facing
+            "customer_service", "customer_support",
+            "customer_segmentation", "review_management",
+            # Operations
+            "inventory", "order_management",
+            "order_quality", "shipping_optimization",
+            "fraud_detection", "subscription",
+            # Supply
+            "supplier", "supplier_discovery",
+            "supplier_communication", "wholesale_b2b",
+            # Reporting
+            "email_reporter",
+        }
+        missing = expected - names
+        assert not missing, (
+            f"marketing batch missing: {missing}"
+        )
+
     def test_engines_batch_post_launch_engines_registered(self):
         """The second batch (post-launch operational
         engines) locks in the Phase 6 writeback set + the
