@@ -1265,3 +1265,143 @@ class TestRecordScoresWiring:
         # render even when the trajectory writer raises.
         data = json.loads(out)
         assert data["fleet_health"]["checked"] is True
+
+
+# ─── Scope-health cache wiring ────────────────────────────────
+
+
+class TestScopeHealthCacheSection:
+    """daily-brief reads the last ``compare_to_live`` snapshot
+    from disk (written by ``shopify-scopes-live-check``). When
+    the cache is missing the section is empty; when drift is
+    cached an alert fires and the text render shows a fix line."""
+
+    def test_no_cache_section_skipped(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.adapters.shopify.scope_health"
+            ".load_report_from_cache",
+            return_value=None,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert data["scope_health"]["checked"] is False
+        assert data["scope_health"]["is_healthy"] is None
+        # No scope_drift in alerts when there's no cached data
+        assert not any(
+            a["kind"] == "scope_drift"
+            for a in data.get("alerts", [])
+        )
+
+    def test_healthy_cache_no_alert(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.adapters.shopify.scope_health"
+            ".load_report_from_cache",
+            return_value={
+                "generated_at": time.time() - 3600.0,
+                "is_healthy": True,
+                "granted_count": 42,
+                "required_count": 42,
+                "missing_from_app": [],
+                "extra_in_app": [],
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert data["scope_health"]["checked"] is True
+        assert data["scope_health"]["is_healthy"] is True
+        assert data["scope_health"]["missing_count"] == 0
+        assert not any(
+            a["kind"] == "scope_drift"
+            for a in data.get("alerts", [])
+        )
+
+    def test_drift_in_cache_fires_alert(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.adapters.shopify.scope_health"
+            ".load_report_from_cache",
+            return_value={
+                "generated_at": time.time() - 1800.0,
+                "is_healthy": False,
+                "granted_count": 5,
+                "required_count": 8,
+                "missing_from_app": [
+                    "write_orders", "read_customers", "read_products",
+                ],
+                "extra_in_app": [],
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert data["scope_health"]["checked"] is True
+        assert data["scope_health"]["is_healthy"] is False
+        assert data["scope_health"]["missing_count"] == 3
+        # sample_missing is capped at 5 (we passed 3)
+        assert len(data["scope_health"]["sample_missing"]) == 3
+        # The drift produced a scope_drift alert
+        drift_alerts = [
+            a for a in data["alerts"] if a["kind"] == "scope_drift"
+        ]
+        assert len(drift_alerts) == 1
+        assert "3 required scope" in drift_alerts[0]["detail"]
+
+    def test_drift_renders_in_text(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.adapters.shopify.scope_health"
+            ".load_report_from_cache",
+            return_value={
+                "generated_at": time.time() - 1800.0,
+                "is_healthy": False,
+                "granted_count": 5,
+                "required_count": 6,
+                "missing_from_app": ["write_orders"],
+                "extra_in_app": [],
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Scope health" in out
+        assert "write_orders" in out
+        assert "shopify-scopes-live-check" in out
+
+    def test_cache_probe_raise_does_not_break_brief(self, cli):
+        """If load_report_from_cache somehow raises, the rest of
+        the brief still renders cleanly."""
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.adapters.shopify.scope_health"
+            ".load_report_from_cache",
+            side_effect=RuntimeError("boom"),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns(json=True))
+        data = json.loads(out)
+        assert data["scope_health"]["checked"] is False
+        # Daily-brief still produced its other sections
+        assert "totals" in data

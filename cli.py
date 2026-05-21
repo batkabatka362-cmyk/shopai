@@ -4065,6 +4065,57 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief fleet_health rollup raised: %s", exc,
         )
 
+    # ── Scope health (cached) ──────────────────────────────
+    # daily-brief is intentionally "no live probe". The
+    # last successful ``shopify-scopes-live-check`` writes a
+    # snapshot to disk; here we read it. When the cache is
+    # missing or stale, the section is omitted from the text
+    # render but still appears in JSON with ``checked=False``
+    # so automation can detect "no recent check".
+    scope_health: dict[str, Any] = {
+        "checked": False,
+        "is_healthy": None,
+        "missing_count": 0,
+        "extra_count": 0,
+        "generated_at": None,
+        "age_seconds": None,
+        "sample_missing": [],
+    }
+    try:
+        from core.adapters.shopify.scope_health import (
+            load_report_from_cache,
+        )
+        cached = load_report_from_cache()
+        if cached is not None:
+            generated = float(cached.get("generated_at") or 0.0)
+            age = (
+                time.time() - generated if generated > 0 else None
+            )
+            missing = cached.get("missing_from_app") or []
+            extra = cached.get("extra_in_app") or []
+            scope_health = {
+                "checked": True,
+                "is_healthy": bool(cached.get("is_healthy")),
+                "missing_count": len(missing),
+                "extra_count": len(extra),
+                "generated_at": generated,
+                "age_seconds": age,
+                "sample_missing": list(missing)[:5],
+            }
+            if not scope_health["is_healthy"]:
+                alerts.append({
+                    "kind": "scope_drift",
+                    "store_id": None,
+                    "detail": (
+                        f"{len(missing)} required scope(s) "
+                        "missing on live install"
+                    ),
+                })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief scope_health cache probe raised: %s", exc,
+        )
+
     # ── Totals ─────────────────────────────────────────────
     totals = {
         "stores": len(store_rows),
@@ -4094,6 +4145,7 @@ def _cmd_daily_brief(args) -> None:
             "transfer_activity": transfer_activity,
             "quarantine": quarantine_summary,
             "fleet_health": fleet_health,
+            "scope_health": scope_health,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -4193,6 +4245,33 @@ def _cmd_daily_brief(args) -> None:
                 f"+{transfer_activity['positive_outcomes']}  "
                 f"-{transfer_activity['negative_outcomes']}"
             )
+        print()
+
+    # Scope health (from cache) — only render when there's a
+    # cached snapshot AND drift exists. A clean scope-health
+    # state is uninteresting on the morning brief; drift is
+    # exactly what an operator wants to know about.
+    if scope_health["checked"] and not scope_health["is_healthy"]:
+        age = scope_health.get("age_seconds")
+        age_str = (
+            f"{int(age/3600)}h ago" if age and age >= 3600
+            else f"{int(age/60)}m ago" if age and age >= 60
+            else "just now" if age is not None
+            else "?"
+        )
+        print()
+        print(f"Scope health (cached {age_str}):")
+        print(
+            f"  {scope_health['missing_count']} required scope(s) "
+            "missing on live install"
+        )
+        if scope_health["sample_missing"]:
+            preview = ", ".join(scope_health["sample_missing"])
+            print(f"  e.g. {preview}")
+        print(
+            "  Fix: shopai shopify-scopes-live-check && "
+            "shopai shopify-install-manifest"
+        )
         print()
 
     # Quarantine summary — only render when there's something
@@ -10170,7 +10249,10 @@ def _cmd_shopify_scopes_live_check(args) -> None:
     rather than an opaque crash.
     """
     try:
-        from core.adapters.shopify.scope_health import compare_to_live
+        from core.adapters.shopify.scope_health import (
+            compare_to_live,
+            save_report_to_cache,
+        )
         report = compare_to_live()
     except Exception as exc:  # noqa: BLE001
         logger.debug("scope health check raised: %s", exc)
@@ -10194,6 +10276,13 @@ def _cmd_shopify_scopes_live_check(args) -> None:
                 "SHOPAI_SHOPIFY_KEY and re-run."
             )
         return
+
+    # Persist the snapshot for cron-able no-live-probe surfaces
+    # (daily-brief). Best-effort -- the cache is non-critical.
+    try:
+        save_report_to_cache(report)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("scope_health cache write raised: %s", exc)
 
     if getattr(args, "json", False):
         print(json.dumps({

@@ -323,3 +323,35 @@ class TestCli:
             )
         assert code == 0
         assert "unavailable" in out.lower()
+
+    def test_successful_check_writes_cache(self, cli):
+        """After a successful comparison the CLI must call
+        save_report_to_cache so daily-brief can read it later."""
+        from core.adapters.shopify.scope_health import ScopeHealthReport
+        report = ScopeHealthReport(
+            granted_scopes=frozenset({"read_orders"}),
+            required_scopes=frozenset({"read_orders"}),
+            missing_from_app=[],
+            extra_in_app=[],
+            is_healthy=True,
+        )
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=report,
+        ), patch(
+            "core.adapters.shopify.scope_health.save_report_to_cache",
+        ) as save:
+            _capture(cli._cmd_shopify_scopes_live_check, _ns())
+        save.assert_called_once_with(report)
+
+    def test_check_unavailable_does_not_write_cache(self, cli):
+        """When compare_to_live returns None there's nothing to
+        cache; save_report_to_cache must NOT be called."""
+        with patch(
+            "core.adapters.shopify.scope_health.compare_to_live",
+            return_value=None,
+        ), patch(
+            "core.adapters.shopify.scope_health.save_report_to_cache",
+        ) as save:
+            _capture(cli._cmd_shopify_scopes_live_check, _ns())
+        save.assert_not_called()
