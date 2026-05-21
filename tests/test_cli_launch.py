@@ -62,6 +62,7 @@ def _ns(**kw):
         hero_url=None,
         og_image_url=None,
         strict=False,
+        audit=False,
         json=False,
     )
     defaults.update(kw)
@@ -293,6 +294,103 @@ class TestKwargPropagation:
         assert "reason=no_main_theme" in out
         # Mandatory steps still render [OK  ]
         assert "[OK  ] policies" in out
+
+    def test_audit_flag_runs_audit_after_launch(self, cli):
+        audit_result = {
+            "checks": [
+                {"key": "legal_policies", "ok": True,
+                 "applied": 5, "expected": 5, "missing": [],
+                 "fix_hint": ""},
+                {"key": "active_products", "ok": False,
+                 "applied": 0, "expected": 1,
+                 "missing": ["need 1 more"],
+                 "fix_hint": "Add ACTIVE products via Shopify "
+                             "admin"},
+            ],
+            "ready_to_launch": False,
+            "completion_pct": 50,
+            "missing_summary": "active_products: need 1 more",
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value=_ready_result(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ) as audit_mock:
+            out, code = _capture(
+                cli._cmd_launch, _ns(audit=True),
+            )
+        assert code == 0
+        # Audit was called
+        audit_mock.assert_called_once()
+        # Launch READY header still rendered
+        assert "READY TO LAUNCH" in out
+        # Audit follow-up section + MISS line + fix
+        assert "Launch-audit follow-up" in out
+        assert "1/2 pass" in out
+        assert "[MISS] active_products" in out
+        assert "fix: Add ACTIVE products" in out
+
+    def test_audit_flag_skipped_by_default(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value=_ready_result(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+        ) as audit_mock:
+            out, code = _capture(cli._cmd_launch, _ns())
+        # Default --audit unset -> audit_store never called
+        audit_mock.assert_not_called()
+        assert "Launch-audit follow-up" not in out
+
+    def test_audit_flag_in_json(self, cli):
+        audit_result = {
+            "checks": [],
+            "ready_to_launch": True,
+            "completion_pct": 100,
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value=_ready_result(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ):
+            out, code = _capture(
+                cli._cmd_launch, _ns(audit=True, json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        # Both launch result + audit_after_launch in one payload
+        assert data["ready_to_launch"] is True
+        assert "audit_after_launch" in data
+        assert data["audit_after_launch"]["ready_to_launch"] is True
+
+    def test_audit_failure_surfaces_friendly(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value=_ready_result(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            side_effect=RuntimeError("network"),
+        ):
+            out, code = _capture(
+                cli._cmd_launch, _ns(audit=True),
+            )
+        # Audit raise doesn't break the launch CLI -- launch
+        # result still surfaced, audit reported unavailable.
+        assert code == 0
+        assert "READY TO LAUNCH" in out
+        assert "unavailable" in out.lower()
 
     def test_brand_urls_forwarded(self, cli):
         with patch.object(

@@ -1472,6 +1472,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     launch_p.add_argument(
+        "--audit", action="store_true",
+        help=(
+            "After launch, automatically run "
+            "``shopai launch-audit`` and print the readiness "
+            "summary so the operator sees one combined result. "
+            "Useful for sanity-checking that the orchestrator "
+            "left the store in a launchable state per the "
+            "audit's source of truth."
+        ),
+    )
+    launch_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -10412,8 +10423,31 @@ def _cmd_launch(args) -> None:
             print(f"launch failed: {exc}")
         return
 
+    # Optionally run launch-audit after the orchestrator. The
+    # result is attached to the launch output under
+    # ``audit_after_launch`` so JSON callers see both in one
+    # payload; text view prints the readiness summary below.
+    audit_after: dict | None = None
+    if getattr(args, "audit", False):
+        try:
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+            audit_after = audit_store(store_id=store_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "launch --audit follow-up raised: %s", exc,
+            )
+            audit_after = {
+                "error": "audit_unavailable",
+                "message": str(exc),
+            }
+
     if as_json:
-        print(json.dumps(result, indent=2))
+        payload = dict(result)
+        if audit_after is not None:
+            payload["audit_after_launch"] = audit_after
+        print(json.dumps(payload, indent=2))
         if strict and not result.get("ready_to_launch"):
             sys.exit(1)
         return
@@ -10473,6 +10507,38 @@ def _cmd_launch(args) -> None:
             "`shopai launch-audit` for the full readiness "
             "checklist + fix hints."
         )
+
+    # Optional post-launch audit summary
+    if audit_after is not None and not audit_after.get("error"):
+        a_checks = audit_after.get("checks") or []
+        a_passed = sum(1 for c in a_checks if c.get("ok"))
+        a_pct = audit_after.get("completion_pct", 0)
+        a_ready = audit_after.get("ready_to_launch", False)
+        print()
+        print(
+            f"Launch-audit follow-up -- "
+            f"{'READY' if a_ready else 'NOT READY'} "
+            f"({a_passed}/{len(a_checks)} pass, {a_pct}%)"
+        )
+        for c in a_checks:
+            if c.get("ok"):
+                continue
+            key = c.get("key", "?")
+            missing = c.get("missing") or []
+            hint = c.get("fix_hint") or ""
+            line = f"  [MISS] {key}"
+            if missing:
+                line += f"  missing: {', '.join(missing)}"
+            print(line)
+            if hint:
+                print(f"        fix: {hint}")
+    elif audit_after is not None and audit_after.get("error"):
+        print()
+        print(
+            f"Launch-audit follow-up: unavailable "
+            f"({audit_after.get('message') or audit_after.get('error')})"
+        )
+
     if strict and not ready:
         sys.exit(1)
 
