@@ -65,6 +65,9 @@ def validate_review_dataset(reviews):
                     recent.append(r)
                     continue
             except (ValueError, TypeError):
+                # Unparseable date -- intentional fall-through
+                # to ``recent.append(r)`` below so the review
+                # still contributes to the count.
                 pass
         # Keep reviews with no parseable date — they might still be useful.
         recent.append(r)

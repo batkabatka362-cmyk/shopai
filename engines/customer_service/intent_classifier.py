@@ -213,6 +213,9 @@ def _extract_entities(text: str) -> dict[str, Any]:
         try:
             amounts.append(float(m.group(1)))
         except ValueError:
+            # regex pre-filters to digit-like matches; tolerate
+            # the rare edge case (e.g. "1.2.3") that float()
+            # rejects -- intentional fall-through.
             pass
 
     product_names: list[str] = []

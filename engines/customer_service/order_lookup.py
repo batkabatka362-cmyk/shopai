@@ -136,6 +136,8 @@ def _build_order_info(record: dict[str, Any]) -> dict[str, Any]:
                 is_late = True
                 days_late = delta
         except (ValueError, TypeError):
+            # Unparseable date -- intentional fall-through;
+            # is_late stays False.
             pass
 
     return {

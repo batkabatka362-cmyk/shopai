@@ -142,6 +142,7 @@ class SharedHTTPClient:
             try:
                 parsed_json = json.loads(body)
             except (json.JSONDecodeError, ValueError):
+                # non-fatal: caller still gets the raw body
                 pass
 
         return {
@@ -203,6 +204,9 @@ class SharedHTTPClient:
                 try:
                     return float(val)
                 except ValueError:
+                    # Retry-After can be a HTTP-date string too;
+                    # intentional fall-through to the default
+                    # backoff at the caller.
                     pass
         return None
 

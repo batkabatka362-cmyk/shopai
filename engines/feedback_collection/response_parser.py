@@ -46,6 +46,9 @@ def parse_responses(
                         total_rating += r
                         rating_count += 1
                     except (ValueError, TypeError):
+                        # Non-numeric rating ("good", None) --
+                        # skip silently; the rest of the response
+                        # is still considered for sentiment.
                         pass
 
                 # Sentiment from text

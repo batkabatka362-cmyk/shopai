@@ -190,6 +190,8 @@ def _safe_market_score(market: dict | None) -> float | None:
         try:
             return float(score)
         except (TypeError, ValueError):
+            # Non-numeric score -- intentional fall-through to
+            # the verdict-map lookup below.
             pass
     verdict_map = {
         "excellent": 90.0,

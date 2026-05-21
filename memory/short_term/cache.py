@@ -103,6 +103,7 @@ class ShortTermCache:
         try:
             self._access_order.remove(key)
         except ValueError:
+            # no-op when not present in access order yet
             pass
         self._access_order.append(key)
 
@@ -112,6 +113,7 @@ class ShortTermCache:
         try:
             self._access_order.remove(key)
         except ValueError:
+            # no-op when not present
             pass
 
     def _evict_lru(self) -> None:

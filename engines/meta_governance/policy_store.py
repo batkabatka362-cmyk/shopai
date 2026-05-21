@@ -696,6 +696,8 @@ class PolicyStore:
                 try:
                     os.unlink(tmp)
                 except OSError:
+                    # best-effort cleanup; raise the original
+                    # write failure regardless.
                     pass
                 raise
             logger.debug(
@@ -884,6 +886,8 @@ class PolicyStore:
                 try:
                     entries.append(json.loads(buf.strip().decode("utf-8")))
                 except (json.JSONDecodeError, UnicodeDecodeError):
+                    # tolerate corrupt leading line; the rest
+                    # of the file already loaded.
                     pass
         return entries
 
