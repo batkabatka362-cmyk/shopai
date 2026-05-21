@@ -115,18 +115,32 @@ class ShopifyAdapter(BaseToolAdapter):
     def health_check(self) -> HealthStatus:
         start = time.monotonic()
         healthy = bool(self._credentials.get("access_token"))
-        # Try a real API call if configured
+        # Capture the actual probe exception so the HealthStatus
+        # surface tells operators WHY (auth failure / network /
+        # schema) instead of the generic "unreachable" message.
+        probe_error: str | None = None
         if healthy and self._api:
             try:
                 self._api.fetch_products(self._shop_domain, self._credentials["access_token"])
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
                 healthy = False
+                probe_error = str(exc)
+                logger.warning(
+                    "ShopifyAdapter health probe failed (shop=%s): %s",
+                    self._shop_domain, exc,
+                )
         latency = (time.monotonic() - start) * 1000
+        if healthy:
+            error_msg = None
+        elif probe_error:
+            error_msg = f"Shopify API probe failed: {probe_error}"
+        else:
+            error_msg = "Shopify API unreachable or not configured"
         return HealthStatus(
             healthy=healthy,
             latency_ms=latency,
             last_check=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            error=None if healthy else "Shopify API unreachable or not configured",
+            error=error_msg,
         )
 
     def get_rate_config(self) -> RateConfig:
@@ -260,7 +274,12 @@ class ShopifyAdapter(BaseToolAdapter):
         return result
 
     def _get_store_info(self, params: dict) -> dict:
-        """Get store info — try live API, fallback to stored config."""
+        """Get store info — try live API, fallback to stored config.
+
+        Mirrors the _fetch_* handlers' fall-back-with-log pattern
+        (line 146-147 etc.) so operators see the signal when the
+        live API call silently degrades to the config-only path.
+        """
         if self._api:
             try:
                 from execution.shopify.product_updater import ProductUpdater
@@ -271,8 +290,12 @@ class ShopifyAdapter(BaseToolAdapter):
                     updater._build_headers(self._credentials.get("access_token", "")),
                 )
                 return {"shop": result.get("shop", result), "source": "live_api"}
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Live get_store_info failed (shop=%s), "
+                    "falling back to config: %s",
+                    self._shop_domain, exc,
+                )
         return {"shop_domain": self._shop_domain, "source": "config"}
 
     def _manage_collections(self, params: dict) -> dict:
