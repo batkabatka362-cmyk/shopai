@@ -188,3 +188,97 @@ class TestPatternSAudit:
         ''')
         report = audit_pattern_s(roots=[tmp_path])
         assert report.has_violations is False
+
+
+class TestNestedRollbackSkipped:
+    """Refinement: an inner ``except: pass`` whose OUTER handler
+    has a logger call is the canonical 'rollback after a logged
+    failure' pattern and not a violation. The outer log already
+    carries the diagnostic signal."""
+
+    def test_inner_rollback_after_logged_outer_skipped(
+        self, tmp_path,
+    ):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            import logging
+            def f(conn):
+                try:
+                    conn.execute("INSERT ...")
+                    conn.commit()
+                except RuntimeError as exc:
+                    logging.warning("insert failed: %s", exc)
+                    try:
+                        conn.rollback()
+                    except RuntimeError:
+                        pass
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        # Inner pass is suppressed; outer logged so the
+        # nested-rollback pattern is recognised as fine.
+        assert report.has_violations is False
+
+    def test_inner_pass_without_outer_log_still_flagged(
+        self, tmp_path,
+    ):
+        """If the OUTER except also doesn't log, the inner
+        ``except: pass`` IS a violation (the outer is too, but
+        we report each handler separately)."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f(conn):
+                try:
+                    conn.execute("INSERT ...")
+                except RuntimeError:
+                    try:
+                        conn.rollback()
+                    except RuntimeError:
+                        pass
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        # The inner ``except: pass`` is the only just-pass
+        # handler. Outer doesn't log -> inner is flagged.
+        assert len(report.silent_sites) == 1
+
+    def test_outer_log_via_unknown_method_does_not_count(
+        self, tmp_path,
+    ):
+        """Detection looks for attribute names in the logger-
+        level set. A method named ``record`` does NOT count."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            class X:
+                def record(self, msg): pass
+            x = X()
+            def f(conn):
+                try:
+                    conn.execute("X")
+                except RuntimeError as exc:
+                    x.record(str(exc))
+                    try:
+                        conn.rollback()
+                    except RuntimeError:
+                        pass
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert len(report.silent_sites) == 1
+
+    def test_any_log_level_qualifies(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        for level in (
+            "debug", "info", "warning", "error", "critical",
+        ):
+            _write(tmp_path, f"{level}_mod.py", f'''
+                import logging
+                def f(conn):
+                    try:
+                        conn.execute("X")
+                    except RuntimeError as exc:
+                        logging.{level}("oops: %s", exc)
+                        try:
+                            conn.rollback()
+                        except RuntimeError:
+                            pass
+            ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False

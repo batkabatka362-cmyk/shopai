@@ -87,12 +87,78 @@ def _is_just_pass(handler: ast.ExceptHandler) -> bool:
     return isinstance(stmt, ast.Pass)
 
 
+_LOGGER_LEVELS = frozenset({
+    "debug", "info", "warning", "error", "critical",
+})
+
+
+def _has_logger_call(node: ast.AST) -> bool:
+    """True iff any descendant call's receiver attribute is a
+    standard logger level. Used to detect the canonical
+    ``rollback after a logged failure`` pattern."""
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        func = sub.func
+        if isinstance(func, ast.Attribute) and func.attr in _LOGGER_LEVELS:
+            return True
+    return False
+
+
+def _inside_logged_except(
+    handler: ast.ExceptHandler,
+    tree: ast.AST,
+) -> bool:
+    """True iff this handler is nested inside another
+    ExceptHandler whose body contains a logger call.
+
+    The pattern is::
+
+        except sqlite3.Error as exc:
+            logger.warning("X failed: %s", exc)  # outer logs
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass                              # inner is OK
+
+    The outer log already carries the diagnostic signal; the
+    inner ``except: pass`` on the rollback is not a violation.
+
+    Detection: walk every ExceptHandler in the tree; for each
+    one OTHER than ``handler``, check whether ``handler``
+    appears anywhere in its body. If so, check whether the
+    OUTER handler has a logger call.
+    """
+    for outer in ast.walk(tree):
+        if not isinstance(outer, ast.ExceptHandler):
+            continue
+        if outer is handler:
+            continue
+        # Does outer's body contain `handler` as a descendant?
+        for body_stmt in outer.body:
+            for sub in ast.walk(body_stmt):
+                if sub is handler:
+                    # Found the nesting. Outer is logged -> skip.
+                    for outer_stmt in outer.body:
+                        if _has_logger_call(outer_stmt):
+                            return True
+                    # Outer is itself silent -- not a skip
+                    # (the inner is still a violation; the
+                    # outer one is too and is reported
+                    # separately).
+                    return False
+    return False
+
+
 def _collect_silent_sites(
     py_path: Path,
     base: Path,
 ) -> list[SilentSite]:
     """Walk one file's AST, return the list of silent-pass
-    except-handlers."""
+    except-handlers. Skips handlers nested inside a logged
+    outer except (the standard ``rollback after a logged
+    failure`` pattern is not a violation -- the outer log
+    already carries the diagnostic signal)."""
     try:
         src = py_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -109,10 +175,13 @@ def _collect_silent_sites(
     for node in ast.walk(tree):
         if not isinstance(node, ast.ExceptHandler):
             continue
-        if _is_just_pass(node):
-            sites.append(SilentSite(
-                file=rel, lineno=node.lineno,
-            ))
+        if not _is_just_pass(node):
+            continue
+        if _inside_logged_except(node, tree):
+            continue
+        sites.append(SilentSite(
+            file=rel, lineno=node.lineno,
+        ))
     return sites
 
 
