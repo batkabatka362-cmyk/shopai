@@ -74,8 +74,11 @@ class ContinuousOptimizer:
             result = opt.optimize([product], shop_url, token, max_changes=1)
             if result.get("total_changes", 0) > 0:
                 return {"type": "description", "product": str(product.get("id", ""))}
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_fix_description failed for product %s: %s",
+                product.get("id", "?"), exc,
+            )
         return None
 
     def _fix_tags(self, product: dict, shop_url: str, token: str) -> dict | None:
@@ -85,8 +88,11 @@ class ContinuousOptimizer:
             result = opt.optimize([product], shop_url, token, max_changes=1)
             if result.get("total_changes", 0) > 0:
                 return {"type": "tags", "product": str(product.get("id", ""))}
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_fix_tags failed for product %s: %s",
+                product.get("id", "?"), exc,
+            )
         return None
 
     @staticmethod
@@ -116,8 +122,11 @@ class ContinuousOptimizer:
             result = auto.tag_customers(customers)
             if result.get("tagged", 0) > 0:
                 return [{"type": "customer_retag", "count": result["tagged"]}]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_update_segments failed (%d customers): %s",
+                len(customers), exc,
+            )
         return []
 
     @staticmethod
@@ -140,8 +149,12 @@ class ContinuousOptimizer:
                     "action_type": "auto_fix_{}".format(f["type"]),
                     "id": f.get("product", f.get("count", "")),
                 }, source="continuous_optimizer", store_id=store_id, score=4.0)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_record telemetry write failed "
+                "(%d fixes, store=%s): %s",
+                len(fixes), store_id, exc,
+            )
 
     def get_stats(self) -> dict[str, Any]:
         return {
