@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 _MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory", "fraud_detection")
@@ -114,8 +117,17 @@ def _load_blacklists() -> dict[str, list[str]]:
             data = json.load(fh)
             if isinstance(data, dict):
                 return data
-    except (json.JSONDecodeError, OSError):
-        pass
+    except (json.JSONDecodeError, OSError) as exc:
+        # Falling back to an empty blacklist means fraud
+        # checks PASS for everyone -- a real security blindspot.
+        # Without this warning a corrupt blacklists.json could
+        # let known-bad emails / IPs through for weeks unnoticed.
+        logger.warning(
+            "_load_blacklists failed (%s), falling back to "
+            "empty blacklist (fraud checks effectively "
+            "disabled): %s",
+            _BLACKLIST_PATH, exc,
+        )
     return copy.deepcopy(_EMPTY_BLACKLIST)
 
 
