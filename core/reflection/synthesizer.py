@@ -524,7 +524,14 @@ class ReflectionSynthesizer:
         trailing line just loses the latest entry and the earlier
         state is still intact.
         """
-        assert self._persist_path is not None
+        if self._persist_path is None:
+            # Runtime guard -- the type-checker invariant was
+            # previously an ``assert`` which python -O strips,
+            # leaving a confusing AttributeError downstream.
+            raise RuntimeError(
+                "synthesizer persist_path not configured "
+                "(caller should have checked _persist_enabled)"
+            )
         target = self._persist_path
         target.parent.mkdir(parents=True, exist_ok=True)
         row = {
@@ -642,7 +649,14 @@ class ReflectionSynthesizer:
         Written via ``tempfile.mkstemp`` + ``os.replace`` so a
         crash mid-rewrite leaves the previous ledger intact.
         """
-        assert self._persist_path is not None
+        if self._persist_path is None:
+            # Runtime guard -- the type-checker invariant was
+            # previously an ``assert`` which python -O strips,
+            # leaving a confusing AttributeError downstream.
+            raise RuntimeError(
+                "synthesizer persist_path not configured "
+                "(caller should have checked _persist_enabled)"
+            )
         target = self._persist_path
         target.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
@@ -689,7 +703,14 @@ class ReflectionSynthesizer:
 
         A missing file is a no-op — fresh deploy.
         """
-        assert self._persist_path is not None
+        if self._persist_path is None:
+            # Runtime guard -- the type-checker invariant was
+            # previously an ``assert`` which python -O strips,
+            # leaving a confusing AttributeError downstream.
+            raise RuntimeError(
+                "synthesizer persist_path not configured "
+                "(caller should have checked _persist_enabled)"
+            )
         path = self._persist_path
         if not path.exists():
             return
