@@ -141,6 +141,51 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    seed_products_p = store_sub.add_parser(
+        "seed-products",
+        help=(
+            "Seed 4 niche-aware starter products (ACTIVE, "
+            "tagged ``starter``) so the audit's "
+            "active_products check passes. Same engine the "
+            "launch flow's optional Step 7 uses; this CLI is "
+            "the stand-alone surface for stores that need a "
+            "catalog backfill without re-running the full "
+            "launch. Default preview; --apply opts in to "
+            "writes."
+        ),
+    )
+    seed_products_p.add_argument(
+        "--store", default=None,
+        help=(
+            "Store ID for Pattern Z scope (falls back to "
+            "active store thread-local)"
+        ),
+    )
+    seed_products_p.add_argument(
+        "--niche", default="general",
+        choices=[
+            "general", "beauty", "fashion", "home",
+            "tech", "food",
+        ],
+        help="Niche key (default: general)",
+    )
+    seed_products_p.add_argument(
+        "--vendor", default="",
+        help="Optional vendor / brand label per product",
+    )
+    seed_products_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "WRITE: push each spec via "
+            "SHOPIFY_CREATE_PRODUCT. Default is read-only "
+            "preview."
+        ),
+    )
+    seed_products_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     setup_p = store_sub.add_parser(
         "setup",
         help=(
@@ -5081,6 +5126,118 @@ def _cmd_store_design(args) -> None:
         "your Shopify theme/menu/settings (no Phase 7 writeback "
         "yet for store_design)."
     )
+
+
+def _cmd_store_seed_products(args) -> None:
+    """Standalone surface for the product seeder.
+
+    Same engine the launch flow's Step 7 uses. Use this CLI
+    when a store has already launched but is failing the
+    audit's active_products check -- e.g. an operator
+    onboarded a store and skipped Step 7 originally, then
+    needs to backfill a catalog before going live.
+
+    Default behaviour: read-only preview (renders the spec
+    list). ``--apply`` opts in to writes.
+
+    Exits 0 on preview and on clean apply; exits 1 only when
+    ``--apply`` is set AND at least one create call failed.
+    """
+    as_json = bool(getattr(args, "json", False))
+    apply_writes = bool(getattr(args, "apply", False))
+    niche = getattr(args, "niche", "general") or "general"
+    vendor = getattr(args, "vendor", "") or ""
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store", None) or sm.active_store_id
+    )
+
+    try:
+        from engines.store_setup.product_seeder import (
+            generate_starter_products,
+            apply_starter_products,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "seed-products import failed: %s", exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "product_seeder_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"seed-products unavailable: {exc}")
+        return
+
+    specs = generate_starter_products(
+        niche=niche, vendor=vendor,
+    )
+
+    if not apply_writes:
+        if as_json:
+            print(json.dumps({
+                "ok": True,
+                "applied": False,
+                "niche": niche,
+                "specs": specs,
+                "spec_count": len(specs),
+            }, indent=2))
+            return
+        print(
+            f"seed-products PREVIEW -- niche={niche}, "
+            f"vendor={vendor or '<store default>'}, "
+            f"{len(specs)} starter product(s)"
+        )
+        print()
+        for spec in specs:
+            print(
+                f"  - {spec['title']}  "
+                f"[{spec['product_type']}]"
+            )
+        print()
+        print("Re-run with --apply to push via Shopify.")
+        return
+
+    applied = apply_starter_products(
+        specs, store_id=store_id,
+    )
+    applied_count = int(applied.get("applied_count", 0))
+    results = applied.get("results") or []
+    failures = [r for r in results if not r.get("ok")]
+
+    if as_json:
+        print(json.dumps({
+            "ok": not failures,
+            "applied": True,
+            "niche": niche,
+            "spec_count": len(specs),
+            "applied_count": applied_count,
+            "failures": failures,
+        }, indent=2))
+        if failures:
+            sys.exit(1)
+        return
+
+    if not failures:
+        print(
+            f"seed-products APPLIED -- "
+            f"{applied_count}/{len(specs)} created"
+        )
+        return
+
+    print(
+        f"seed-products PARTIAL -- "
+        f"{applied_count}/{len(specs)} created, "
+        f"{len(failures)} failed"
+    )
+    for f in failures:
+        print(
+            f"  FAIL {f.get('title')} "
+            f"({f.get('handle')}): {f.get('error')}"
+        )
+    sys.exit(1)
 
 
 def _cmd_store_setup(args) -> None:
@@ -18434,6 +18591,7 @@ def main(argv: list[str] | None = None) -> None:
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
             "fleet": _cmd_store_fleet,
+            "seed-products": _cmd_store_seed_products,
         }
         handler = dispatch.get(args.store_action)
         if handler:
