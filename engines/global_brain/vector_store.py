@@ -10,10 +10,13 @@ No connections to other modules — called only from memory_writer/memory_reader
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 _STORE_PATH = os.path.join(os.path.dirname(__file__), ".vector_store.json")
@@ -186,8 +189,16 @@ class VectorStore:
             }
             with open(_STORE_PATH, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2, default=str)
-        except Exception:
-            pass  # non-fatal
+        except (OSError, TypeError, ValueError) as exc:
+            # Silent loss of the vector store means search calls
+            # return cold-start results next session and the
+            # operator never knows the persistence step failed.
+            # Same shape as the profit_tracker / global_brain
+            # memory fixes.
+            logger.warning(
+                "VectorStore._save failed (%s): %s",
+                _STORE_PATH, exc,
+            )
 
     def _load(self) -> None:
         """Load store from disk if available."""
@@ -200,8 +211,11 @@ class VectorStore:
                 self._entries = data.get("entries", [])
                 self._vocabulary = data.get("vocabulary", {})
                 self._doc_freq = data.get("doc_freq", {})
-        except (json.JSONDecodeError, OSError):
-            pass  # start fresh
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "VectorStore._load failed (%s), starting "
+                "with empty store: %s", _STORE_PATH, exc,
+            )
 
 
 # ---------------------------------------------------------------------------
