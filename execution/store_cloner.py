@@ -86,8 +86,14 @@ class StoreCloner:
                 "knowledge": "OK",
                 "rules_shared": shared.get("shareable_rules", 0),
             })
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Knowledge-share step is bonus -- the clone has
+            # already happened. But operators want to know
+            # ""why isn't the new store getting AI insights?""
+            logger.debug(
+                "store_cloner knowledge share %s -> %s "
+                "failed: %s", source_url, target_url, exc,
+            )
 
         return {"status": "cloned", "results": results}
 

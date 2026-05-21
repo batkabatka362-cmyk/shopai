@@ -260,8 +260,13 @@ class ShopifyAutomation:
                     reverse=True)
                 results["blog_posts"] = self.create_product_blog_posts(
                     by_margin[:3], str(blog_id))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Blog-post step failure shouldn't abort the full
+            # automation, but operators need the signal.
+            logger.debug(
+                "full_automation blog-post step failed: %s",
+                exc,
+            )
 
         self._log_action("full_automation", "", "complete")
         return results

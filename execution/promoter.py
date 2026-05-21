@@ -92,8 +92,14 @@ class ExecutionPromoter:
                                 dry_success, dry_total, len(prefer_rules)),
                             "confidence": round(success_rate, 2),
                         }
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # MI rule-fetch failed -- action stays at
+                    # default mode. Operator chasing ""why isn't
+                    # X getting promoted?"" needs this log.
+                    logger.debug(
+                        "promoter MI rule-fetch failed for %s: %s",
+                        action_type, exc,
+                    )
 
         return {"mode": default_mode, "reason": "not_yet_promotable"}
 
