@@ -174,7 +174,8 @@ def _normalize_prices(data: dict[str, Any]) -> dict[str, Any]:
             try:
                 result[key] = float(value)
             except (ValueError, TypeError):
-                pass  # Keep original if conversion fails
+                # non-fatal: keep original if conversion fails
+                pass
     return result
 
 

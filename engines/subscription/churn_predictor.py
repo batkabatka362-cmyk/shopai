@@ -83,6 +83,9 @@ def predict_churn(
                         factors.append("moderate_tenure")
                         risk_score += 0.05
                 except (ValueError, OverflowError):
+                    # Unparseable join_date -- skip the tenure
+                    # factor silently; other factors still
+                    # contribute to risk_score.
                     pass
 
             # Factor 4: Low lifetime value
