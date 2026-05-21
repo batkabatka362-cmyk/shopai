@@ -533,7 +533,14 @@ class BeliefStore:
         readers from ever seeing a half-written file.
         Must be called under ``self._lock``.
         """
-        assert self._persist_path is not None
+        if self._persist_path is None:
+            # Runtime guard -- the type-checker invariant was
+            # previously an ``assert`` which python -O strips,
+            # leaving a confusing AttributeError downstream.
+            raise RuntimeError(
+                "values persist_path not configured "
+                "(caller should have checked _persist_enabled)"
+            )
         target = self._persist_path
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -586,7 +593,14 @@ class BeliefStore:
         Malformed JSON, wrong shapes, and non-positive parameters
         are skipped with a warning; valid rows still load.
         """
-        assert self._persist_path is not None
+        if self._persist_path is None:
+            # Runtime guard -- the type-checker invariant was
+            # previously an ``assert`` which python -O strips,
+            # leaving a confusing AttributeError downstream.
+            raise RuntimeError(
+                "values persist_path not configured "
+                "(caller should have checked _persist_enabled)"
+            )
         path = self._persist_path
         if not path.exists():
             return
