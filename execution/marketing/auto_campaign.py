@@ -78,14 +78,22 @@ class MarketingAutomation:
             try:
                 from core.memory.intelligence import get_memory_intelligence
                 self._memory_intel = get_memory_intelligence()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "auto_campaign memory_intelligence init "
+                    "failed: %s (memory-aware copy generation "
+                    "disabled)", exc,
+                )
         if not self._data_arch:
             try:
                 from core.data.architecture import get_data_architecture
                 self._data_arch = get_data_architecture()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "auto_campaign data_architecture init "
+                    "failed: %s (campaign outcomes won't be "
+                    "recorded)", exc,
+                )
 
     def generate_campaigns(self, products: list[dict],
                            customers: list[dict],
