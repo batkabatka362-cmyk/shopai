@@ -10640,8 +10640,84 @@ def _cmd_launch_audit(args) -> None:
         print(
             f"Missing: {result.get('missing_summary', '')}"
         )
+        next_action = _suggest_next_audit_action(checks)
+        if next_action:
+            print()
+            print(f"Next action: {next_action}")
     if strict and not ready:
         sys.exit(1)
+
+
+def _suggest_next_audit_action(
+    checks: list[dict],
+) -> str:
+    """Pick the highest-leverage next command from a launch
+    audit result.
+
+    Groups failing checks by which command can fix them, then
+    returns the command that closes the most gaps. The four
+    mandatory orchestrator steps (legal_policies,
+    standard_pages, active_discounts, curated_collections)
+    are all closed by a single ``shopai launch`` run, so any
+    failing combination of those collapses into one
+    recommendation. Manual steps (shipping_zones,
+    fulfillable_locations) get separate URLs.
+    """
+    if not checks:
+        return ""
+    # Group failing checks by remediation bucket
+    launch_keys = {
+        "legal_policies", "standard_pages",
+        "active_discounts", "curated_collections",
+        "design_tokens",
+    }
+    manual_admin_keys = {
+        "shipping_zones", "fulfillable_locations",
+    }
+    seeder_keys = {"active_products"}
+
+    failing = [c for c in checks if not c.get("ok")]
+    if not failing:
+        return ""
+    failing_keys = {c.get("key", "") for c in failing}
+
+    launchable_gaps = failing_keys & launch_keys
+    manual_gaps = failing_keys & manual_admin_keys
+    seeder_gaps = failing_keys & seeder_keys
+
+    # Pick the bucket that closes the most gaps in one shot
+    if (
+        len(launchable_gaps) >= len(manual_gaps)
+        and len(launchable_gaps) >= len(seeder_gaps)
+        and launchable_gaps
+    ):
+        return (
+            f"shopai launch --store-name <NAME> "
+            f"--niche <NICHE>  "
+            f"(closes {len(launchable_gaps)} of "
+            f"{len(failing)} gaps)"
+        )
+    if (
+        len(manual_gaps) >= len(seeder_gaps)
+        and manual_gaps
+    ):
+        urls = {
+            "shipping_zones":
+                "admin.shopify.com/settings/shipping",
+            "fulfillable_locations":
+                "admin.shopify.com/settings/locations",
+        }
+        target = sorted(manual_gaps)[0]
+        return (
+            f"Visit {urls.get(target, 'Shopify admin')} "
+            f"to close {target}"
+        )
+    if seeder_gaps:
+        return (
+            "Add ACTIVE products via Shopify admin (or a "
+            "niche seeder) to close active_products"
+        )
+    return ""
 
 
 def _cmd_post_launch(args) -> None:

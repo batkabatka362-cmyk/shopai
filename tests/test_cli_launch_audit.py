@@ -233,6 +233,107 @@ class TestResilience:
         assert "failed" in out.lower()
 
 
+class TestNextAction:
+    """Smart 'next action' line picks the single command that
+    closes the most launch-audit gaps."""
+
+    def _result_with_failing(self, failing_keys):
+        all_keys = [
+            "legal_policies", "standard_pages",
+            "active_discounts", "curated_collections",
+            "design_tokens", "active_products",
+            "shipping_zones", "fulfillable_locations",
+        ]
+        checks = []
+        for k in all_keys:
+            checks.append({
+                "key": k,
+                "ok": k not in failing_keys,
+                "applied": 0 if k in failing_keys else 1,
+                "expected": 1,
+                "missing": (["need 1 more"]
+                            if k in failing_keys else []),
+                "fix_hint": "...",
+            })
+        return {
+            "checks": checks,
+            "ready_to_launch": False,
+            "completion_pct": (
+                100 * (len(all_keys) - len(failing_keys))
+                // len(all_keys)
+            ),
+            "missing_summary": ", ".join(sorted(failing_keys)),
+        }
+
+    def test_multiple_orchestrator_gaps_recommend_launch(
+        self, cli,
+    ):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=self._result_with_failing({
+                "legal_policies", "standard_pages",
+                "active_discounts", "curated_collections",
+            }),
+        ):
+            out, code = _capture(cli._cmd_launch_audit, _ns())
+        assert "Next action: shopai launch" in out
+        assert "closes 4 of 4" in out
+
+    def test_only_manual_gaps_recommend_admin_url(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=self._result_with_failing({
+                "shipping_zones",
+            }),
+        ):
+            out, code = _capture(cli._cmd_launch_audit, _ns())
+        assert "Next action: Visit admin.shopify.com" in out
+        assert "shipping" in out
+
+    def test_only_seeder_gap_recommends_products(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=self._result_with_failing({
+                "active_products",
+            }),
+        ):
+            out, code = _capture(cli._cmd_launch_audit, _ns())
+        assert "Next action:" in out
+        assert "active_products" in out
+
+    def test_all_pass_no_next_action(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=_all_pass_result(),
+        ):
+            out, code = _capture(cli._cmd_launch_audit, _ns())
+        assert "Next action:" not in out
+
+    def test_json_unaffected_by_next_action(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=self._result_with_failing({
+                "legal_policies",
+            }),
+        ):
+            out, code = _capture(
+                cli._cmd_launch_audit, _ns(json=True),
+            )
+        # JSON output is pure audit result, no Next action
+        data = json.loads(out)
+        assert data["ready_to_launch"] is False
+
+
 class TestKwargPropagation:
 
     def test_expected_counts_forwarded(self, cli):
