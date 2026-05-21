@@ -456,6 +456,73 @@ class Planner:
             "plan's outcome is checkable."
         )
 
+    def _add_cross_store_advisory(self, plan: Plan) -> None:
+        """Surface peer-store success signal for the plan's
+        goal. When ``successful_plans`` returns rows for a
+        similar goal, add a plan.notes line so operators see
+        "this goal has worked elsewhere with these
+        capabilities".
+
+        Read-only advisory -- doesn't change the plan's
+        steps (the deterministic walker has already
+        decided them). Future PR can promote this from
+        advisory to actually boosting the seed set.
+        """
+        goal = (plan.goal or "").strip()
+        if not goal:
+            return
+        try:
+            from .plan_history import successful_plans
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_add_cross_store_advisory: import "
+                "raised: %s", exc,
+            )
+            return
+        try:
+            # Look back further than the planner's
+            # default decoration (30d) -- recommendations
+            # surface even older successes if relevant.
+            rows = successful_plans(
+                since_seconds=86400 * 30,
+                top_n=3,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_add_cross_store_advisory: lookup "
+                "raised: %s", exc,
+            )
+            return
+
+        # Filter to peer-store successes whose goal phrase
+        # overlaps the current goal (loose substring match).
+        goal_l = goal.lower()
+        matches = []
+        for r in rows:
+            past_goal = (r.get("goal") or "").lower()
+            if not past_goal:
+                continue
+            # Match either direction: past goal contained
+            # in current OR current contained in past.
+            if (
+                past_goal in goal_l
+                or goal_l in past_goal
+            ):
+                matches.append(r)
+        if not matches:
+            return
+
+        # Compose a single advisory line summarising the
+        # cross-store signal.
+        first = matches[0]
+        n_stores = len(first.get("stores") or [])
+        plan.notes.append(
+            f"Cross-store signal: '{first['goal']}' has "
+            f"succeeded {first['success_count']}x across "
+            f"{n_stores} peer store(s) with capabilities: "
+            f"{', '.join(first['capabilities'])}"
+        )
+
     def _decorate_with_history(self, plan: Plan) -> None:
         """Populate ``history_sample_size`` +
         ``history_success_rate`` on each step from
@@ -563,6 +630,11 @@ class Planner:
         # planner stays usable when the history file is
         # empty / corrupt / hidden by the test-env guard.
         self._decorate_with_history(plan)
+        # Best-effort: append a cross-store advisory note
+        # when peer stores have succeeded with similar
+        # goals. Read-only advisory; planner steps
+        # unchanged.
+        self._add_cross_store_advisory(plan)
 
 
 # ── Module-level convenience wrappers ─────────────────────
