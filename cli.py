@@ -1391,6 +1391,70 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    launch_p = sub.add_parser(
+        "launch",
+        help=(
+            "Flagship: single-command store launch. Runs the "
+            "autonomous setup pipeline (policies + pages "
+            "today; brand / discount / collections / design "
+            "as they land) and prints a checklist of what "
+            "applied vs failed. Mission-critical wrapper "
+            "around launch_orchestrator.launch_store."
+        ),
+    )
+    launch_p.add_argument(
+        "store_name",
+        help=(
+            "Display name for the store (required). Threads "
+            "into policies, pages, and the founder/about flow."
+        ),
+    )
+    launch_p.add_argument(
+        "--niche", default="general",
+        choices=[
+            "general", "beauty", "fashion", "home",
+            "tech", "food",
+        ],
+        help="Niche key (default: general)",
+    )
+    launch_p.add_argument(
+        "--region", default="us",
+        choices=["us", "eu", "uk"],
+        help="Region code (default: us)",
+    )
+    launch_p.add_argument(
+        "--founder-name", default=None,
+        help="Optional founder name for the About page",
+    )
+    launch_p.add_argument(
+        "--store-id", default=None,
+        help=(
+            "Optional store_id for Pattern Z scope on every "
+            "fan-out write (falls back to active store "
+            "thread-local)"
+        ),
+    )
+    launch_p.add_argument(
+        "--include-legal-notice", action="store_true",
+        help="Forwarded to policy_generator",
+    )
+    launch_p.add_argument(
+        "--include-subscription-policy", action="store_true",
+        help="Forwarded to policy_generator",
+    )
+    launch_p.add_argument(
+        "--strict", action="store_true",
+        help=(
+            "Exit 1 when ready_to_launch is False. Default "
+            "behaviour is exit 0 -- the checklist is the "
+            "operator-visible result either way."
+        ),
+    )
+    launch_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     launch_audit_p = sub.add_parser(
         "launch-audit",
         help=(
@@ -10258,6 +10322,124 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_launch(args) -> None:
+    """Flagship: single-command store launch.
+
+    Calls ``launch_orchestrator.launch_store(...)`` with the
+    operator-supplied args and renders the checklist. Each
+    step in the orchestrator's output becomes one line in
+    the text view so the operator sees what applied, what
+    failed, and where to look next.
+
+    Exits 0 by default (the checklist is the result regardless
+    of pass/fail). ``--strict`` flips to exit 1 when
+    ``ready_to_launch`` is False so CI / autonomous loops can
+    gate on it.
+    """
+    as_json = bool(getattr(args, "json", False))
+    strict = bool(getattr(args, "strict", False))
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store_id", None)
+        or sm.active_store_id
+    )
+
+    try:
+        from engines.store_setup.launch_orchestrator import (
+            launch_store,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("launch_orchestrator import failed: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "launch_orchestrator_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"launch unavailable: {exc}")
+        return
+
+    try:
+        result = launch_store(
+            store_name=args.store_name,
+            niche=getattr(args, "niche", "general"),
+            region=getattr(args, "region", "us"),
+            founder_name=getattr(args, "founder_name", None),
+            store_id=store_id,
+            include_legal_notice=bool(
+                getattr(args, "include_legal_notice", False)
+            ),
+            include_subscription_policy=bool(
+                getattr(args, "include_subscription_policy",
+                        False)
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("launch_store raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "launch_failed",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"launch failed: {exc}")
+        return
+
+    if as_json:
+        print(json.dumps(result, indent=2))
+        if strict and not result.get("ready_to_launch"):
+            sys.exit(1)
+        return
+
+    # ── Text view ───────────────────────────────────────────
+    if result.get("error") == "store_name_required":
+        print(
+            "launch failed: store_name is required (empty "
+            "string was supplied)."
+        )
+        sys.exit(1)
+
+    ready = bool(result.get("ready_to_launch"))
+    header = "READY TO LAUNCH" if ready else "NOT READY"
+    print(f"Store launch -- {header}")
+    print()
+    checklist = result.get("checklist") or []
+    for entry in checklist:
+        step = entry.get("step", "?")
+        ok = entry.get("ok", False)
+        applied = entry.get("applied", 0)
+        err = entry.get("error")
+        mark = "OK " if ok else "FAIL"
+        line = f"  [{mark}] {step:<16} applied={applied}"
+        if err:
+            line += f"  error={err}"
+        print(line)
+    print()
+    if ready:
+        print(
+            f"Store '{args.store_name}' is launchable. "
+            "Next: shopai post-launch to enrich SEO + "
+            "descriptions."
+        )
+    else:
+        # Surface per-step errors compactly
+        failed = [
+            f"{c['step']}: {c.get('error') or 'no_writes'}"
+            for c in checklist if not c.get("ok")
+        ]
+        if failed:
+            print("Failed steps: " + "; ".join(failed))
+        print(
+            "Re-run after fixing, or run "
+            "`shopai launch-audit` for the full readiness "
+            "checklist + fix hints."
+        )
+    if strict and not ready:
+        sys.exit(1)
+
+
 def _cmd_launch_audit(args) -> None:
     """Read-only launch-readiness audit.
 
@@ -18275,6 +18457,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-webhooks-live-check":
         _cmd_shopify_webhooks_live_check(args)
+        return
+
+    if args.command == "launch":
+        _cmd_launch(args)
         return
 
     if args.command == "launch-audit":
