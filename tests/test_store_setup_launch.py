@@ -549,3 +549,215 @@ class TestCollectionsStep:
         steps = {c["step"]: c for c in result["checklist"]}
         assert steps["collections"]["ok"] is False
         assert result["ready_to_launch"] is False
+
+
+class TestBrandStep:
+    """Brand assets as OPTIONAL Step 5.
+
+    No URLs supplied -> skipped=True, contributes ok=True to
+    the checklist (doesn't block ready_to_launch).
+    URLs supplied + success -> ok=True, applied counts.
+    URLs supplied + failure -> ok=False, blocks ready.
+    """
+
+    def _common_patches(self, *, brand_result=None,
+                        brand_side_effect=None):
+        patches = [
+            patch(
+                "engines.store_setup.policy_generator."
+                "generate_policies",
+                return_value={"REFUND_POLICY": "r"},
+            ),
+            patch(
+                "engines.store_setup.policy_applier."
+                "apply_policies",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.page_generator."
+                "generate_pages",
+                return_value={"About": "<h1>x</h1>"},
+            ),
+            patch(
+                "engines.store_setup.page_applier.apply_pages",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "generate_welcome_discount",
+                return_value={"code": "WELCOME10",
+                              "percentage": 10},
+            ),
+            patch(
+                "engines.store_setup.welcome_discount."
+                "apply_welcome_discount",
+                return_value={
+                    "applied": True, "code": "WELCOME10",
+                    "percentage": 10, "error": None,
+                },
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "generate_starter_collections",
+                return_value=[{"title": "x", "handle": "x"}],
+            ),
+            patch(
+                "engines.store_setup.collection_seeder."
+                "apply_starter_collections",
+                return_value={"applied_count": 1,
+                              "results": []},
+            ),
+            patch(
+                "engines.store_setup.launch_orchestrator."
+                "record_writeback",
+            ),
+        ]
+        if brand_side_effect is not None:
+            patches.append(patch(
+                "engines.store_setup.brand_uploader."
+                "upload_brand_assets",
+                side_effect=brand_side_effect,
+            ))
+        elif brand_result is not None:
+            patches.append(patch(
+                "engines.store_setup.brand_uploader."
+                "upload_brand_assets",
+                return_value=brand_result,
+            ))
+        return patches
+
+    def test_no_urls_skipped_doesnt_block(self):
+        # No brand_uploader patch needed: the step
+        # short-circuits before importing it when all URLs are
+        # None.
+        patches = self._common_patches()
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], \
+                patches[7], patches[8]:
+            result = launch_store(store_name="Acme")
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["brand"]["ok"] is True
+        assert steps["brand"]["skipped"] is True
+        assert steps["brand"]["applied"] == 0
+        # All other steps OK + brand skipped -> ready
+        assert result["ready_to_launch"] is True
+        assert result["brand"]["skipped"] is True
+
+    def test_urls_supplied_success(self):
+        brand_ok = {
+            "uploaded_count": 2,
+            "files": [
+                {"file_id": "gid://f/1", "alt": "logo"},
+                {"file_id": "gid://f/2", "alt": "favicon"},
+            ],
+            "missing_assets": [],
+            "ok": True,
+            "error": None,
+        }
+        patches = self._common_patches(brand_result=brand_ok)
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], \
+                patches[7], patches[8], patches[9]:
+            result = launch_store(
+                store_name="Acme",
+                logo_url="https://cdn/logo.png",
+                favicon_url="https://cdn/favicon.ico",
+            )
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["brand"]["ok"] is True
+        assert steps["brand"]["skipped"] is False
+        assert steps["brand"]["applied"] == 2
+        assert result["ready_to_launch"] is True
+
+    def test_urls_supplied_failure_blocks(self):
+        brand_fail = {
+            "uploaded_count": 0,
+            "files": [],
+            "missing_assets": ["logo", "favicon"],
+            "ok": False,
+            "error": "router_unavailable",
+        }
+        patches = self._common_patches(brand_result=brand_fail)
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], \
+                patches[7], patches[8], patches[9]:
+            result = launch_store(
+                store_name="Acme",
+                logo_url="https://cdn/logo.png",
+            )
+        steps = {c["step"]: c for c in result["checklist"]}
+        assert steps["brand"]["ok"] is False
+        assert steps["brand"]["skipped"] is False
+        assert result["ready_to_launch"] is False
+        assert "router_unavailable" in (
+            result["brand"]["error"] or ""
+        )
+
+    def test_brand_uploader_raise_captured(self):
+        patches = self._common_patches(
+            brand_side_effect=RuntimeError("boom"),
+        )
+        with patches[0], patches[1], patches[2], patches[3], \
+                patches[4], patches[5], patches[6], \
+                patches[7], patches[8], patches[9]:
+            result = launch_store(
+                store_name="Acme",
+                logo_url="https://cdn/logo.png",
+            )
+        assert "boom" in result["brand"]["error"]
+        assert result["ready_to_launch"] is False
+
+    def test_rollup_carries_brand_metrics(self):
+        brand_ok = {
+            "uploaded_count": 2, "files": [],
+            "missing_assets": [], "ok": True, "error": None,
+        }
+        with patch(
+            "engines.store_setup.policy_generator."
+            "generate_policies",
+            return_value={"REFUND_POLICY": "r"},
+        ), patch(
+            "engines.store_setup.policy_applier.apply_policies",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.page_generator.generate_pages",
+            return_value={"About": "<h1>x</h1>"},
+        ), patch(
+            "engines.store_setup.page_applier.apply_pages",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "generate_welcome_discount",
+            return_value={"code": "W", "percentage": 10},
+        ), patch(
+            "engines.store_setup.welcome_discount."
+            "apply_welcome_discount",
+            return_value={
+                "applied": True, "code": "W",
+                "percentage": 10, "error": None,
+            },
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "generate_starter_collections",
+            return_value=[{"title": "x", "handle": "x"}],
+        ), patch(
+            "engines.store_setup.collection_seeder."
+            "apply_starter_collections",
+            return_value={"applied_count": 1, "results": []},
+        ), patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            return_value=brand_ok,
+        ), patch(
+            "engines.store_setup.launch_orchestrator."
+            "record_writeback",
+        ) as record_mock:
+            launch_store(
+                store_name="Acme",
+                logo_url="https://cdn/logo.png",
+            )
+        m = record_mock.call_args.kwargs["metrics"]
+        assert m["brand_uploaded"] == 2
+        assert m["brand_skipped"] is False

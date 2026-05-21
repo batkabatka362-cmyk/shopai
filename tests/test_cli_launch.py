@@ -57,6 +57,10 @@ def _ns(**kw):
         store_id=None,
         include_legal_notice=False,
         include_subscription_policy=False,
+        logo_url=None,
+        favicon_url=None,
+        hero_url=None,
+        og_image_url=None,
         strict=False,
         json=False,
     )
@@ -245,3 +249,25 @@ class TestKwargPropagation:
         assert kwargs["store_id"] == "store-a"
         assert kwargs["include_legal_notice"] is True
         assert kwargs["include_subscription_policy"] is True
+
+    def test_brand_urls_forwarded(self, cli):
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value=_ready_result(),
+        ) as launch_mock:
+            _capture(
+                cli._cmd_launch,
+                _ns(
+                    logo_url="https://cdn/logo.png",
+                    favicon_url="https://cdn/favicon.ico",
+                    hero_url="https://cdn/hero.jpg",
+                    og_image_url="https://cdn/og.jpg",
+                ),
+            )
+        kwargs = launch_mock.call_args.kwargs
+        assert kwargs["logo_url"] == "https://cdn/logo.png"
+        assert kwargs["favicon_url"] == "https://cdn/favicon.ico"
+        assert kwargs["hero_url"] == "https://cdn/hero.jpg"
+        assert kwargs["og_image_url"] == "https://cdn/og.jpg"

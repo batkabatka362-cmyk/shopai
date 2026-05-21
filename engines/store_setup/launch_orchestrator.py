@@ -61,6 +61,10 @@ def launch_store(
     store_id: str | None = None,
     include_legal_notice: bool = False,
     include_subscription_policy: bool = False,
+    logo_url: str | None = None,
+    favicon_url: str | None = None,
+    hero_url: str | None = None,
+    og_image_url: str | None = None,
 ) -> dict[str, Any]:
     """Run the autonomous setup steps and return a checklist.
 
@@ -76,6 +80,13 @@ def launch_store(
             scope on every fan-out call.
         include_legal_notice: Forwarded to policy_generator.
         include_subscription_policy: Forwarded to policy_generator.
+        logo_url: Optional brand logo URL. When ANY of the
+            brand-asset URLs is supplied, Step 5 runs; when
+            all are None, the step is skipped (skipped=True,
+            doesn't block ready_to_launch).
+        favicon_url: Optional brand favicon URL.
+        hero_url: Optional hero image URL.
+        og_image_url: Optional social-sharing image URL.
 
     Returns:
         ``{policies, pages, checklist, ready_to_launch}`` --
@@ -92,6 +103,11 @@ def launch_store(
             },
             "collections": {
                 "applied_count": 0, "results": [],
+            },
+            "brand": {
+                "uploaded_count": 0, "files": [],
+                "missing_assets": [], "ok": True,
+                "skipped": True, "error": None,
             },
             "checklist": [],
             "ready_to_launch": False,
@@ -211,6 +227,56 @@ def launch_store(
             "error": str(exc),
         }
 
+    # ── Step 5: Brand assets (optional) ──────────────────
+    # Only fires when at least one asset URL is supplied. When
+    # all are None, the step is SKIPPED -- a no-op rather than
+    # a failure. Skipped contributes ok=True to the checklist
+    # so omitting brand URLs doesn't block ``ready_to_launch``.
+    brand_result: dict[str, Any] = {
+        "uploaded_count": 0, "files": [],
+        "missing_assets": [], "ok": True,
+        "skipped": True, "error": None,
+    }
+    any_brand_url = any([
+        logo_url, favicon_url, hero_url, og_image_url,
+    ])
+    if any_brand_url:
+        try:
+            from engines.store_setup.brand_uploader import (
+                upload_brand_assets,
+            )
+            brand_out = upload_brand_assets(
+                store_name=name,
+                logo_url=logo_url,
+                favicon_url=favicon_url,
+                hero_url=hero_url,
+                og_image_url=og_image_url,
+                store_id=store_id,
+            )
+            brand_result = {
+                "uploaded_count": brand_out.get(
+                    "uploaded_count", 0,
+                ),
+                "files": brand_out.get("files") or [],
+                "missing_assets": (
+                    brand_out.get("missing_assets") or []
+                ),
+                "ok": bool(brand_out.get("ok")),
+                "skipped": False,
+                "error": brand_out.get("error"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "launch_orchestrator brand step raised: %s",
+                exc,
+            )
+            brand_result = {
+                "uploaded_count": 0, "files": [],
+                "missing_assets": [],
+                "ok": False, "skipped": False,
+                "error": str(exc),
+            }
+
     # ── Checklist ────────────────────────────────────────
     checklist: list[dict[str, Any]] = []
 
@@ -258,11 +324,30 @@ def launch_store(
         "error": collections_result.get("error"),
     })
 
+    # Brand: skipped contributes ok=True (no-op, not a failure);
+    # attempted-but-failed contributes ok=False.
+    brand_skipped = bool(brand_result.get("skipped"))
+    brand_ok = (
+        brand_skipped
+        or (
+            bool(brand_result.get("ok"))
+            and not brand_result.get("error")
+        )
+    )
+    checklist.append({
+        "step": "brand",
+        "ok": brand_ok,
+        "applied": brand_result.get("uploaded_count", 0),
+        "skipped": brand_skipped,
+        "error": brand_result.get("error"),
+    })
+
     ready_to_launch = bool(
         policies_ok
         and pages_ok
         and discount_ok
         and collections_ok
+        and brand_ok
     )
 
     out = {
@@ -270,6 +355,7 @@ def launch_store(
         "pages": pages_result,
         "discount": discount_result,
         "collections": collections_result,
+        "brand": brand_result,
         "checklist": checklist,
         "ready_to_launch": ready_to_launch,
     }
@@ -315,6 +401,10 @@ def launch_store(
                         "applied_count", 0,
                     )
                 ),
+                "brand_uploaded": (
+                    brand_result.get("uploaded_count", 0)
+                ),
+                "brand_skipped": brand_skipped,
                 "ready_to_launch": ready_to_launch,
             },
         )

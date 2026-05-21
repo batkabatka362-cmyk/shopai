@@ -1443,6 +1443,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Forwarded to policy_generator",
     )
     launch_p.add_argument(
+        "--logo-url", default=None,
+        help=(
+            "Public HTTPS URL for the brand logo. When set "
+            "(alone or with the other brand-url flags), Step 5 "
+            "uploads it via SHOPIFY_CREATE_FILES. Omit to skip "
+            "the step entirely."
+        ),
+    )
+    launch_p.add_argument(
+        "--favicon-url", default=None,
+        help="Public HTTPS URL for the brand favicon",
+    )
+    launch_p.add_argument(
+        "--hero-url", default=None,
+        help="Public HTTPS URL for the brand hero image",
+    )
+    launch_p.add_argument(
+        "--og-image-url", default=None,
+        help="Public HTTPS URL for the social-sharing image",
+    )
+    launch_p.add_argument(
         "--strict", action="store_true",
         help=(
             "Exit 1 when ready_to_launch is False. Default "
@@ -10374,6 +10395,10 @@ def _cmd_launch(args) -> None:
                 getattr(args, "include_subscription_policy",
                         False)
             ),
+            logo_url=getattr(args, "logo_url", None),
+            favicon_url=getattr(args, "favicon_url", None),
+            hero_url=getattr(args, "hero_url", None),
+            og_image_url=getattr(args, "og_image_url", None),
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("launch_store raised: %s", exc)
