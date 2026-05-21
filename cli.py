@@ -10930,10 +10930,24 @@ def _cmd_plan(args) -> None:
         plan = plan_for_goal(goal)
 
     if bool(getattr(args, "execute", False)):
+        # Resolve store_id for the per-step thread-local
+        # scope (so Pattern Z records carry the right
+        # store_id when the executed capability records to
+        # MemoryIntel + DataArch + LearningLoop).
+        if not close_gaps:
+            # Goal mode -- we haven't initialised store_id
+            # yet because the audit path is the only branch
+            # that needed it earlier.
+            sm = _get_store_manager()
+            store_id = (
+                getattr(args, "store", None)
+                or sm.active_store_id
+            )
         _run_plan_multi_step(
             plan,
             yes=bool(getattr(args, "yes", False)),
             as_json=as_json,
+            store_id=store_id,
         )
         return
 
@@ -10983,6 +10997,7 @@ def _cmd_plan(args) -> None:
 
 def _run_plan_multi_step(
     plan, *, yes: bool, as_json: bool,
+    store_id: str | None = None,
 ) -> None:
     """Execute each step of a plan via the in-process
     capability executor, using ``suggested_args`` from the
@@ -10993,6 +11008,12 @@ def _run_plan_multi_step(
     invocation failure. Each step's outcome is captured +
     emitted in the per-step result.
 
+    The execution is wrapped in ``active_store(store_id)``
+    when a store_id is supplied (or available from the
+    active store thread-local). This ensures per-store-aware
+    capabilities (Pattern Z recording, world_model probes)
+    see the right scope.
+
     Default DRY-RUN. With --yes, actually invokes; without,
     just resolves each step's module + reports.
     """
@@ -11000,6 +11021,7 @@ def _run_plan_multi_step(
         from core.capability_executor import (
             CapabilityExecutor,
         )
+        from contextlib import nullcontext
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "plan --execute: executor import failed: %s",
@@ -11015,29 +11037,47 @@ def _run_plan_multi_step(
             print(f"executor unavailable: {exc}")
         sys.exit(1)
 
+    # Resolve the per-store scope context manager. Missing
+    # store_id -> nullcontext (no-op). Lazy import so the
+    # planner stays usable in environments without
+    # core.context available.
+    if store_id:
+        try:
+            from core.context import active_store
+            scope = active_store(store_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "plan --execute: active_store import "
+                "raised: %s", exc,
+            )
+            scope = nullcontext()
+    else:
+        scope = nullcontext()
+
     executor = CapabilityExecutor()
     steps_out: list[dict] = []
     overall_ok = True
 
-    for step in plan.steps:
-        args_dict = dict(step.suggested_args or {})
-        if yes:
-            result = executor.execute(
-                step.capability_name, args_dict,
-            )
-        else:
-            result = executor.dry_run(
-                step.capability_name, args_dict,
-            )
-        steps_out.append(result.to_dict())
-        # CLI handler refusals don't break the chain --
-        # they're informational. Real failures (raise,
-        # bad args) do stop the chain.
-        if not result.ok and (
-            result.invocation_kind != "cli_handler"
-        ):
-            overall_ok = False
-            break
+    with scope:
+        for step in plan.steps:
+            args_dict = dict(step.suggested_args or {})
+            if yes:
+                result = executor.execute(
+                    step.capability_name, args_dict,
+                )
+            else:
+                result = executor.dry_run(
+                    step.capability_name, args_dict,
+                )
+            steps_out.append(result.to_dict())
+            # CLI handler refusals don't break the chain --
+            # they're informational. Real failures (raise,
+            # bad args) do stop the chain.
+            if not result.ok and (
+                result.invocation_kind != "cli_handler"
+            ):
+                overall_ok = False
+                break
 
     if as_json:
         print(json.dumps({
