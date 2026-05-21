@@ -141,6 +141,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    design_history_p = store_sub.add_parser(
+        "design-history",
+        help=(
+            "Inspect past store_design engine runs (from local "
+            "memory). Read-only; no Shopify round-trip. Surfaces "
+            "the count of runs + avg conversion lift + per-run "
+            "summary so operators can audit how the design "
+            "engine has been evolving over time."
+        ),
+    )
+    design_history_p.add_argument(
+        "--limit", type=int, default=10,
+        help="Max records to return (default: 10).",
+    )
+    design_history_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     setup_p = store_sub.add_parser(
         "setup",
         help=(
@@ -5915,6 +5934,86 @@ def _cmd_memory_recall(args) -> None:
                 for k, v in components.items()
             )
             print(comp_line)
+
+
+def _cmd_store_design_history(args) -> None:
+    """Inspect past store_design engine runs from local memory.
+
+    Read-only audit surface for the design lane: how many times
+    has the design engine been run? What was the average
+    conversion lift the engine projected? When was the last run?
+
+    Pairs with ``store design`` (preview) + ``store design-apply``
+    (writer): history closes the "did this engine work?" loop
+    without making a Shopify round-trip. Cron-able.
+    """
+    as_json = bool(getattr(args, "json", False))
+    limit = int(getattr(args, "limit", 10) or 10)
+
+    try:
+        from engines.store_design.memory_reader import (
+            read_past_designs,
+        )
+        result = read_past_designs(limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("design-history raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "history_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"Design history unavailable: {exc}")
+        return
+
+    records = result.get("records") or []
+    summary = result.get("summary") or {}
+
+    if as_json:
+        print(json.dumps({
+            "ok": True,
+            "count": len(records),
+            "summary": summary,
+            "records": records,
+        }, indent=2, default=str))
+        return
+
+    if not records:
+        print(
+            "No past store_design runs found "
+            f"({_MEMORY_DIR_HINT})."
+        )
+        return
+
+    total_runs = int(summary.get("total_runs", len(records)))
+    avg_lift = float(summary.get("avg_conversion_lift", 0.0))
+    avg_recs = float(
+        summary.get("avg_recommendations_count", 0.0),
+    )
+    print(
+        f"Store design history -- {total_runs} run(s) recorded "
+        f"(avg lift {avg_lift:.1%}, avg {avg_recs:.0f} recs/run)."
+    )
+    print()
+    print(
+        f"  {'TIMESTAMP':<26s} {'LIFT':>6s} "
+        f"{'RECS':>5s}"
+    )
+    print("  " + "-" * 40)
+    for r in records:
+        ts = (r.get("timestamp") or "?")[:26]
+        lift = float(r.get("estimated_conversion_lift", 0.0))
+        recs = int(r.get("recommendations_count", 0))
+        print(f"  {ts:<26s} {lift:>5.1%} {recs:>5d}")
+
+
+# Surfacing helper for the "no records" message in
+# _cmd_store_design_history. Kept module-level so the path
+# stays grep-able and easy to update if memory_reader moves.
+_MEMORY_DIR_HINT = (
+    "engines/store_design/.memory/ -- runs the engine first"
+)
 
 
 def _cmd_store_verify(args) -> None:
@@ -17583,6 +17682,7 @@ def main(argv: list[str] | None = None) -> None:
             "remove": _cmd_store_remove,
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
+            "design-history": _cmd_store_design_history,
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
@@ -17594,7 +17694,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
+                "{add|list|switch|status|connect|remove|configure|design|design-history|verify|setup|report|fleet}"
             )
         return
 
