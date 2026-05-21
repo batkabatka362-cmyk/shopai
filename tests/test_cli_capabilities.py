@@ -70,6 +70,46 @@ def _ns(**kw):
     return argparse.Namespace(**defaults)
 
 
+class TestStats:
+
+    def test_stats_text_renders_kind_and_tag_breakdown(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(capability_action="stats"),
+        )
+        assert code == 0
+        # Header + kind + tag breakdown
+        assert "Substrate registry:" in out
+        assert "By kind:" in out
+        assert "Top tags:" in out
+        # The post-launch tag dominates (>50% of registry)
+        assert "post-launch" in out
+        # Audit coverage block
+        assert "Audit checks with at least one closer" in out
+        assert "active_products" in out
+        assert "apply_starter_products" in out
+
+    def test_stats_json_carries_full_breakdown(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(capability_action="stats", json=True),
+        )
+        assert code == 0
+        data = json.loads(out)
+        assert data["total"] >= 80
+        # by_kind has engine + applier + ...
+        assert data["by_kind"]["engine"] > 0
+        assert data["by_kind"]["applier"] > 0
+        # Audit coverage maps each check to its closers
+        assert "active_products" in data["audit_coverage"]
+        assert (
+            "apply_starter_products"
+            in data["audit_coverage"]["active_products"]
+        )
+        # CLI count is reasonable (a few -- mostly orchestrators)
+        assert data["with_cli_count"] >= 1
+
+
 class TestList:
 
     def test_default_list_renders_all(self, cli):

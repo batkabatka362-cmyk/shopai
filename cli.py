@@ -435,6 +435,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_stats_p = capabilities_sub.add_parser(
+        "stats",
+        help=(
+            "Substrate overview: counts by kind / tag / "
+            "audit coverage. The 'what's in this registry?' "
+            "query."
+        ),
+    )
+    cap_stats_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_find_p = capabilities_sub.add_parser(
         "find",
         help=(
@@ -10981,6 +10994,67 @@ def _cmd_capabilities(args) -> None:
             print("  example input:")
             for k, v in cap.example_input.items():
                 print(f"    {k}: {v}")
+        return
+
+    if action == "stats":
+        all_caps = registry.all()
+        by_kind: dict[str, int] = {}
+        by_tag: dict[str, int] = {}
+        audit_coverage: dict[str, list[str]] = {}
+        with_cli: list[str] = []
+        for c in all_caps:
+            by_kind[c.kind] = by_kind.get(c.kind, 0) + 1
+            for t in c.tags:
+                by_tag[t] = by_tag.get(t, 0) + 1
+            for a in c.audit_checks_closed:
+                audit_coverage.setdefault(a, []).append(
+                    c.name,
+                )
+            if c.cli_commands:
+                with_cli.append(c.name)
+        stats = {
+            "total": len(all_caps),
+            "by_kind": dict(sorted(
+                by_kind.items(),
+                key=lambda kv: (-kv[1], kv[0]),
+            )),
+            "by_tag": dict(sorted(
+                by_tag.items(),
+                key=lambda kv: (-kv[1], kv[0]),
+            )),
+            "audit_coverage": {
+                k: sorted(v)
+                for k, v in audit_coverage.items()
+            },
+            "with_cli_count": len(with_cli),
+        }
+        if as_json:
+            print(json.dumps(stats, indent=2))
+            return
+        print(f"Substrate registry: {stats['total']} capabilities")
+        print()
+        print("By kind:")
+        for kind, n in stats["by_kind"].items():
+            print(f"  {kind:<16} {n}")
+        print()
+        print("Top tags:")
+        for tag, n in list(stats["by_tag"].items())[:10]:
+            print(f"  {tag:<24} {n}")
+        if stats["audit_coverage"]:
+            print()
+            print("Audit checks with at least one closer:")
+            for k, closers in sorted(
+                stats["audit_coverage"].items(),
+            ):
+                print(
+                    f"  {k:<24} "
+                    f"-> {', '.join(closers)}"
+                )
+        print()
+        print(
+            f"With CLI surface: {stats['with_cli_count']} "
+            f"of {stats['total']}"
+        )
         return
 
     if action == "find":
